@@ -1,10 +1,10 @@
 from enum import Enum
-from typing import Dict, Type, Any, Union, TypedDict
+from typing import Dict, Type, Any, Union, TypedDict, Callable
 
 
 class RelationType(Enum):
     """
-    Defines the types of relations between models.
+    Defines the types of relations between models, mirroring Objection.js relation types.
     """
     BelongsToOneRelation = "BelongsToOneRelation"
     HasManyRelation = "HasManyRelation"
@@ -37,12 +37,26 @@ Join = Union[BasicJoinMapping, JoinMappingWithThrough]
 
 
 class RelationMapping(TypedDict):
+    """
+    Describes a relationship between two models.
+
+    Attributes:
+        relation (RelationType): The type of the relation.
+        modelClass (Union[Type["Model"], str]): The related model class or its name.
+        join (Join): The join mapping that defines how the tables are connected.
+    """
     relation: RelationType
     modelClass: Union[Type["Model"], str]
     join: Join
 
 
 class QueryBuilder:
+    """
+    A builder for creating and executing SQL queries in a programmatic way.
+
+    This class is not meant to be instantiated directly. Instead, you should use
+    the `query()` class method on a `Model` subclass.
+    """
     _JOIN_METHOD_MAP = {
         "": "JOIN",
         "inner": "INNER JOIN",
@@ -56,16 +70,37 @@ class QueryBuilder:
     }
 
     def __init__(self, model_class: Type["Model"]):
+        """
+        Initializes the QueryBuilder.
+
+        Args:
+            model_class (Type[Model]): The `Model` subclass this query is based on.
+        """
         self._model_class = model_class
         self._selected_columns = []
         self._joins = []
         self._where_clauses = []
 
-    def select(self, *columns) -> "QueryBuilder":
+    def select(self, *columns: str) -> "QueryBuilder":
+        """
+        Specifies the columns to be selected in the query.
+
+        Args:
+            *columns (str): A list of column names to select.
+
+        Returns:
+            QueryBuilder: The current QueryBuilder instance for chaining.
+        """
         self._selected_columns.extend(columns)
         return self
 
-    def __str__(self):
+    def __str__(self) -> str:
+        """
+        Builds and returns the final SQL query string.
+
+        Returns:
+            str: The complete SQL query.
+        """
         cols = ", ".join(self._selected_columns) if self._selected_columns else "*"
         model_cls = self._model_class
         parts = []
@@ -93,7 +128,44 @@ class QueryBuilder:
 
         return " ".join(query_parts)
 
-    def __getattr__(self, name: str):
+    def __getattr__(self, name: str) -> Callable:
+        """
+        Dynamically handles method calls for joins and where clauses.
+
+        This allows for methods like `where('id', '=', 1)`, `orWhere(...)`,
+        `innerJoinRelated('owner')`, etc., to be called on the query builder.
+
+        Supported join methods:
+            - `joinRelated`
+            - `innerJoinRelated`
+            - `leftJoinRelated`
+            - `leftOuterJoinRelated`
+            - `rightJoinRelated`
+            - `rightOuterJoinRelated`
+            - `fullJoinRelated`
+            - `fullOuterJoinRelated`
+            - `crossJoinRelated`
+
+        Supported where methods:
+            - `where`
+            - `andWhere`
+            - `orWhere`
+            - `whereIn`
+            - `andWhereIn`
+            - `orWhereIn`
+            - `whereNotIn`
+            - `andWhereNotIn`
+            - `orWhereNotIn`
+
+        Args:
+            name (str): The name of the method being called.
+
+        Returns:
+            Callable: A function that executes the corresponding join or where logic.
+
+        Raises:
+            AttributeError: If the method name is not a valid dynamic method.
+        """
         if name.endswith("JoinRelated"):
             join_prefix = name[:-len("JoinRelated")]
 
@@ -130,7 +202,7 @@ class QueryBuilder:
                     elif len(args) == 3:
                         self._add_where_internal(conjunction, *args)
                     else:
-                        raise ValueError("Invalid arguments for 'where' method.")
+                        raise ValueError("Invalid arguments for 'where' method. Use `where(column, operator, value)` or `where(lambda q: ...)`.")
                 elif where_type == "wherein":
                     self._add_where_in_internal(conjunction, "IN", *args)
                 elif where_type == "wherenotin":
@@ -141,6 +213,7 @@ class QueryBuilder:
         raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
 
     def _build_where_clause(self, column: str, operator: str, value: Any) -> str:
+        """Formats a single where clause condition."""
         formatted_value = value
         if isinstance(value, str):
             escaped_value = value.replace("'", "''")
@@ -148,10 +221,12 @@ class QueryBuilder:
         return f"{column} {operator} {formatted_value}"
 
     def _add_where_internal(self, conjunction: str, column_or_callable: Any, op: str = None, val: Any = None):
+        """Internal handler for adding `where` clauses."""
         if not self._where_clauses and conjunction:
             raise RuntimeError(f"Cannot use '{conjunction}' on the first where clause.")
 
         if callable(column_or_callable):
+            # Handle grouped where clauses, e.g., where(lambda q: q.where(...))
             temp_builder = QueryBuilder(self._model_class)
             column_or_callable(temp_builder)
             if temp_builder._where_clauses:
@@ -162,6 +237,7 @@ class QueryBuilder:
             self._where_clauses.append((conjunction, clause))
 
     def _add_where_in_internal(self, conjunction: str, op: str, col: str, vals: list):
+        """Internal handler for adding `WHERE IN` and `WHERE NOT IN` clauses."""
         if not self._where_clauses and conjunction:
             raise RuntimeError(f"Cannot use '{conjunction}' on the first where clause.")
 
@@ -176,15 +252,18 @@ class QueryBuilder:
         self._where_clauses.append((conjunction, clause))
 
     def _build_clause_list_string(self) -> str:
+        """Builds the complete WHERE clause string from all parts."""
         if not self._where_clauses:
             return ""
 
+        # The first clause doesn't have a preceding conjunction
         parts = [self._where_clauses[0][1]]
         for conjunction, clause in self._where_clauses[1:]:
             parts.append(f"{conjunction} {clause}")
         return " ".join(parts)
 
     def _join_related_internal(self, join_type: str, relation_name: str, alias: str = None):
+        """Internal handler for adding a join based on a defined relation."""
         relation = self._model_class.relationMappings.get(relation_name)
         if not relation:
             raise ValueError(f"Relation '{relation_name}' not found in model '{self._model_class.__name__}'")
@@ -198,7 +277,10 @@ class QueryBuilder:
             self._add_basic_join(join_type, join_info, related_model_class, alias)
 
     def _resolve_model_class(self, model_class_ref: Union[Type["Model"], str]) -> Type["Model"]:
+        """Resolves a model class reference (string or class) to a class type."""
         if isinstance(model_class_ref, str):
+            # Try to find the model class in the global scope.
+            # This is a simple mechanism for resolving string references.
             if model_class_ref in globals():
                 return globals()[model_class_ref]
             else:
@@ -206,6 +288,7 @@ class QueryBuilder:
         return model_class_ref
 
     def _add_basic_join(self, join_type: str, join_info: BasicJoinMapping, related_model_class: Type["Model"], alias: str = None):
+        """Adds a basic (e.g., one-to-one, one-to-many) join to the query."""
         from_col = join_info["from"]
         to_col = join_info["to"]
         on_clause = f"{from_col} = {to_col}"
@@ -214,6 +297,7 @@ class QueryBuilder:
         join_table_part = final_related_table_name
         if alias:
             join_table_part = f"{final_related_table_name} AS {alias}"
+            # If an alias is used, update the `ON` clause to reference it.
             to_table, to_column = to_col.split(".")
             if to_table == final_related_table_name:
                 on_clause = f"{from_col} = {alias}.{to_column}"
@@ -222,7 +306,8 @@ class QueryBuilder:
         self._joins.append(join_clause)
 
     def _add_through_join(self, join_type: str, join_info: JoinMappingWithThrough, related_model_class: Type["Model"], alias: str = None):
-        # First join (base to through)
+        """Adds a many-to-many join using a 'through' table."""
+        # First join: from the base model's table to the 'through' table.
         from_col = join_info["from"]
         through_from_mapping = join_info["through"]["from"]
         through_table = through_from_mapping["table"]
@@ -231,10 +316,11 @@ class QueryBuilder:
         through_from_key = through_from_mapping["key"]
 
         on_clause1 = f"{from_col} = {through_table}.{through_from_key}"
+        # The join to the through table is always an INNER JOIN.
         join_clause1 = f"INNER JOIN {through_table} ON {on_clause1}"
         self._joins.append(join_clause1)
 
-        # Second join (through to related)
+        # Second join: from the 'through' table to the final related model's table.
         through_to_mapping = join_info["through"]["to"]
         through_to_key = through_to_mapping["key"]
         to_col = join_info["to"]
@@ -245,6 +331,7 @@ class QueryBuilder:
         join_table_part = related_table_name_from_model
         if alias:
             join_table_part = f"{related_table_name_from_model} AS {alias}"
+            # If an alias is used, update the `ON` clause to reference it.
             to_table, to_column = to_col.split(".")
             if to_table == related_table_name_from_model:
                 on_clause2 = f"{through_table}.{through_to_key} = {alias}.{to_column}"
@@ -255,10 +342,18 @@ class QueryBuilder:
 
 class Model:
     """
-    A base model class that mimics the behavior of Objection.js models for
-    defining relational mappings.
+    A base model class that mimics Objection.js models for defining database tables
+    and their relationships.
 
-    To use this, create a subclass and define `tableName` and `relationMappings`
+    To use this, create a subclass and define the `tableName` and, optionally,
+    `relationMappings`, `tableSchema`, and `database`.
+
+    Attributes:
+        database (str, optional): The name of the database. Defaults to None.
+        tableName (str): The name of the table in the database. Defaults to None.
+        tableSchema (str, optional): The schema of the table. Defaults to None.
+        relationMappings (Dict[str, RelationMapping]): A dictionary defining
+            relationships to other models.
     """
     database: str = None
     tableName: str = None
@@ -274,13 +369,22 @@ class Model:
             setattr(self, key, value)
 
     def __repr__(self):
+        """Provides a developer-friendly representation of the model instance."""
         attributes = ", ".join(f"{k}={v!r}" for k, v in self.__dict__.items())
         return f"{self.__class__.__name__}({attributes})"
 
     def __getattr__(self, name: str) -> str:
         """
-        Provides access to table columns as strings, following the format
-        'database.tableSchema?.tableName.column'.
+        Provides attribute-style access to table columns, which returns a
+        fully-qualified column name string for use in queries.
+
+        Example:
+            If a `User` model has `tableName = 'users'`, then `User().id` would
+            return `'users.id'`.
+
+        Raises:
+            AttributeError: If the attribute does not exist or if `tableName`
+                            is not defined on the model.
         """
         cls = self.__class__
         if name.startswith("__") and name.endswith("__"):
@@ -289,14 +393,28 @@ class Model:
         database = getattr(cls, "database", None)
         table_schema = getattr(cls, "tableSchema", None)
         table_name = getattr(cls, "tableName", None)
-        if database and table_name:
+
+        # We must have a table name to provide a column reference.
+        if table_name:
+            parts = []
+            if database:
+                parts.append(database)
             if table_schema:
-                return f"{database}.{table_schema}.{table_name}.{name}"
-            return f"{database}.{table_name}.{name}"
+                parts.append(table_schema)
+            parts.append(table_name)
+            parts.append(name)
+            return ".".join(parts)
+
         raise AttributeError(f"'{cls.__name__}' object has no attribute '{name}'")
 
     @classmethod
     def query(cls) -> "QueryBuilder":
+        """
+        Starts a new query for this model.
+
+        Returns:
+            QueryBuilder: A new QueryBuilder instance for this model.
+        """
         return QueryBuilder(cls)
 
 
@@ -308,13 +426,52 @@ def create_model(
     database: str = None
 ) -> Type[Model]:
     """
-    Dynamically creates a Model subclass.
+    Dynamically creates a `Model` subclass.
+
+    This is useful when you need to define models programmatically instead of
+    declaratively.
+
+    Args:
+        name (str): The name of the new model class (e.g., "Animal").
+        table_name (str): The database table name for the model.
+        mappings (Dict[str, RelationMapping], optional): A dictionary of
+            relation mappings. Defaults to None.
+        table_schema (str, optional): The database schema. Defaults to None.
+        database (str, optional): The database name. Defaults to None.
+
+    Returns:
+        Type[Model]: A new class that inherits from `Model`.
+
+    Example:
+        .. code-block:: python
+
+            Person = create_model('Person', 'persons')
+
+            Animal = create_model(
+                'Animal',
+                'animals',
+                mappings={
+                    'owner': {
+                        'relation': RelationType.BelongsToOneRelation,
+                        'modelClass': Person,
+                        'join': {'from': 'animals.ownerId', 'to': 'persons.id'}
+                    }
+                }
+            )
+
+            query = Animal.query().select('name').joinRelated('owner')
     """
     if mappings is None:
         mappings = {}
-    model_attrs = {'tableName': table_name, 'relationMappings': mappings}
+
+    model_attrs = {
+        'tableName': table_name,
+        'relationMappings': mappings
+    }
+
     if table_schema:
         model_attrs['tableSchema'] = table_schema
     if database:
         model_attrs['database'] = database
+
     return type(name, (Model,), model_attrs)
