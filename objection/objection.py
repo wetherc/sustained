@@ -61,11 +61,11 @@ class QueryBuilder:
         "": "JOIN",
         "inner": "INNER JOIN",
         "left": "LEFT JOIN",
-        "leftOuter": "LEFT OUTER JOIN",
+        "leftouter": "LEFT OUTER JOIN",
         "right": "RIGHT JOIN",
-        "rightOuter": "RIGHT OUTER JOIN",
+        "rightouter": "RIGHT OUTER JOIN",
         "full": "FULL JOIN",
-        "fullOuter": "FULL OUTER JOIN",
+        "fullouter": "FULL OUTER JOIN",
         "cross": "CROSS JOIN",
     }
 
@@ -166,12 +166,21 @@ class QueryBuilder:
         Raises:
             AttributeError: If the method name is not a valid dynamic method.
         """
-        if name.endswith("JoinRelated"):
-            join_prefix = name[:-len("JoinRelated")]
+        import re
 
-            if join_prefix not in self._JOIN_METHOD_MAP:
-                valid_methods = [f"{prefix}JoinRelated" for prefix in self._JOIN_METHOD_MAP.keys()]
-                raise AttributeError(f"'{name}' is not a valid join method. Valid methods are: {valid_methods}")
+        # Handle join methods (e.g., innerJoinRelated, joinRelated)
+        join_prefixes = "|".join(k for k in self._JOIN_METHOD_MAP.keys() if k)
+        join_match = re.match(rf"^({join_prefixes})?(JoinRelated)$", name, re.IGNORECASE)
+
+        if join_match:
+            join_prefix, _ = join_match.groups()
+
+            if join_prefix is None:
+                # This handles 'JoinRelated', 'joinRelated', etc.
+                join_prefix = ""
+            else:
+                # Normalize to the lowercase key format used in the map
+                join_prefix = join_prefix.lower()
 
             sql_join_type = self._JOIN_METHOD_MAP[join_prefix]
 
@@ -181,10 +190,10 @@ class QueryBuilder:
 
             return dynamic_join_caller
 
-        import re
-        match = re.match(r"^(or|and)?(Where|WhereIn|WhereNotIn)$", name, re.IGNORECASE)
-        if match:
-            conjunction_str, where_type_str = match.groups()
+        # Handle where methods (e.g., where, andWhereIn)
+        where_match = re.match(r"^(or|and)?(Where|WhereIn|WhereNotIn)$", name, re.IGNORECASE)
+        if where_match:
+            conjunction_str, where_type_str = where_match.groups()
 
             if not self._where_clauses:
                 if conjunction_str and conjunction_str.lower() != "and":

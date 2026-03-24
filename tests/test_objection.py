@@ -168,6 +168,10 @@ class TestJoinBuilder(unittest.TestCase):
         query = self.Person.query().innerJoinRelated("movies", alias="m")
         self.assertEqual(str(query), "SELECT * FROM persons INNER JOIN persons_movies ON persons.id = persons_movies.personId INNER JOIN movies AS m ON persons_movies.movieId = m.id")
 
+    def test_default_join_related(self):
+        query = self.Animal.query().joinRelated("owner")
+        self.assertEqual(str(query), "SELECT * FROM animals JOIN persons ON animals.ownerId = persons.id")
+
 
 if __name__ == "__main__":
     unittest.main()
