@@ -9,28 +9,31 @@ in a more programmatic and reusable way. The main components are:
 - RelationType: An Enum for defining the type of relationship between models.
 - create_model: A factory function for dynamically creating Model classes.
 """
-from .objection import (
-    RelationType,
+
+from .builder import QueryBuilder
+from .model import Model, create_model
+from .types import (
     BasicJoinMapping,
-    ThroughJoinValue,
-    ThroughJoinMapping,
-    JoinMappingWithThrough,
     Join,
+    JoinMappingWithThrough,
     RelationMapping,
-    QueryBuilder,
-    Model,
-    create_model,
+    RelationType,
+    ThroughJoinMapping,
+    ThroughJoinValue,
 )
 
 __all__ = [
-    'RelationType',
-    'BasicJoinMapping',
-    'ThroughJoinValue',
-    'ThroughJoinMapping',
-    'JoinMappingWithThrough',
-    'Join',
-    'RelationMapping',
-    'QueryBuilder',
-    'Model',
-    'create_model',
+    # from types
+    "RelationType",
+    "BasicJoinMapping",
+    "ThroughJoinValue",
+    "ThroughJoinMapping",
+    "JoinMappingWithThrough",
+    "Join",
+    "RelationMapping",
+    # from builder
+    "QueryBuilder",
+    # from model
+    "Model",
+    "create_model",
 ]

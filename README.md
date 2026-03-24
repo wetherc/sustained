@@ -41,3 +41,22 @@ query = Animal.query().select('animals.name', 'persons.name').leftOuterJoinRelat
 print(query)
 # SELECT animals.name, persons.name FROM animals LEFT OUTER JOIN persons ON animals.ownerId = persons.id
 ```
+
+## Development
+
+This project uses `pre-commit` to enforce code quality and run tests before committing code.
+
+### Pre-commit Hooks Setup
+
+1.  **Install pre-commit:**
+    ```bash
+    pip install pre-commit
+    ```
+
+2.  **Install the Git hooks:**
+    From the root of the project directory, run:
+    ```bash
+    pre-commit install
+    ```
+
+Now, the pre-commit hooks (including `black`, `isort`, `mypy`, and unit tests) will run automatically on every commit.
