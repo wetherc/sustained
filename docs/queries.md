@@ -2,7 +2,7 @@
 
 Once you have defined your models, you can start building queries using the `QueryBuilder`.
 
-[<-- Back to Index](./index.md)
+[<-- Back to Index](./index)
 
 ## Starting a Query
 
@@ -78,7 +78,7 @@ query = User.query().join(
 )
 ```
 
-For more complex joins based on your data model, see the [Relations documentation](./relations.md).
+For more complex joins based on your data model, see the [Relations documentation](./relations).
 
 ## Common Table Expressions (CTEs)
 

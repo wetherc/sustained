@@ -2,7 +2,7 @@
 
 Sustained provides a dynamic API for adding `WHERE` clauses to your queries.
 
-[<-- Back to Index](./index.md)
+[<-- Back to Index](./index)
 
 ## Basic `where` Methods
 

@@ -8,10 +8,10 @@ This documentation provides a detailed guide on how to use the library to define
 
 If you are new to Sustained, it's recommended to read the guides in the following order:
 
-1.  **[Models](./models.md):** Learn how to define models that map to your database tables.
-2.  **[Queries](./queries.md):** Understand how to start queries and select data.
-3.  **[Filtering](./filtering.md):** Dive into the various `where` methods for filtering your results.
-4.  **[Relations and Joins](./relations.md):** Learn how to define relationships between models and join them in your queries.
+1.  **[Models](./models):** Learn how to define models that map to your database tables.
+2.  **[Queries](./queries):** Understand how to start queries and select data.
+3.  **[Filtering](./filtering):** Dive into the various `where` methods for filtering your results.
+4.  **[Relations and Joins](./relations):** Learn how to define relationships between models and join them in your queries.
 
 ## API Reference
 

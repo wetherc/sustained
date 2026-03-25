@@ -2,7 +2,7 @@
 
 Sustained allows you to easily define relationships between models and join them in your queries.
 
-[<-- Back to Index](./index.md)
+[<-- Back to Index](./index)
 
 ## Defining Relations
 
