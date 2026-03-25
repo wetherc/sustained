@@ -57,6 +57,27 @@ They accept four arguments:
 query = Person.query().leftJoin('animals', 'persons.id', '=', 'animals.ownerId')
 ```
 
+### Complex Joins with Lambdas
+
+For joins that require multiple or complex `ON` conditions, you can pass a lambda function as the second argument to any of the `join` methods. This lambda receives a `JoinBuilder` object that you can use to construct the join conditions.
+
+The `JoinBuilder` has the following methods:
+*   `on(col1, op, col2)`: Adds the initial `ON` condition.
+*   `andOn(col1, op, col2)`: Adds an `AND` condition to the join.
+*   `orOn(col1, op, col2)`: Adds an `OR` condition to the join.
+
+```python
+# Builds:
+# SELECT * FROM users
+# JOIN accounts ON accounts.id = users.account_id AND accounts.enabled = 1 OR accounts.owner_id = users.id
+query = User.query().join(
+    'accounts',
+    lambda j: j.on('accounts.id', '=', 'users.account_id')
+    .andOn('accounts.enabled', '=', '1')
+    .orOn('accounts.owner_id', '=', 'users.id'),
+)
+```
+
 For more complex joins based on your data model, see the [Relations documentation](./relations.md).
 
 ## Common Table Expressions (CTEs)

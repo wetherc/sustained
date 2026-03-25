@@ -20,6 +20,55 @@ if TYPE_CHECKING:
     from .model import Model
 
 
+class JoinClauseBuilder:
+    """
+    A helper class for building complex JOIN ... ON clauses.
+    An instance of this is passed to the lambda in `...join(..., lambda j: ...)` calls.
+    """
+
+    def __init__(self):
+        self._conditions: List[Tuple[str, str]] = []
+
+    def on(self, col1: str, op: str, col2: str) -> "JoinClauseBuilder":
+        """Adds an ON condition. If this is not the first condition, it's treated as AND ON."""
+        conjunction = "AND" if self._conditions else ""
+        self._add_condition(conjunction, col1, op, col2)
+        return self
+
+    def andOn(self, col1: str, op: str, col2: str) -> "JoinClauseBuilder":
+        """Adds an AND ON condition."""
+        if not self._conditions:
+            raise RuntimeError(
+                "Cannot use 'andOn' for the first join condition. Use 'on' instead."
+            )
+        self._add_condition("AND", col1, op, col2)
+        return self
+
+    def orOn(self, col1: str, op: str, col2: str) -> "JoinClauseBuilder":
+        """Adds an OR ON condition."""
+        if not self._conditions:
+            raise RuntimeError(
+                "Cannot use 'orOn' for the first join condition. Use 'on' instead."
+            )
+        self._add_condition("OR", col1, op, col2)
+        return self
+
+    def _add_condition(self, conjunction: str, col1: str, op: str, col2: str):
+        condition_str = f"{col1} {op} {col2}"
+        self._conditions.append((conjunction, condition_str))
+
+    def __str__(self) -> str:
+        """Builds the final ON clause string."""
+        if not self._conditions:
+            raise RuntimeError("A join condition must be specified inside the lambda.")
+
+        # The first condition doesn't have a preceding conjunction
+        parts = [self._conditions[0][1]]
+        for conjunction, clause in self._conditions[1:]:
+            parts.append(f"{conjunction} {clause}")
+        return " ".join(parts)
+
+
 class QueryBuilder:
     """
     A builder for creating and executing SQL queries in a programmatic way.
@@ -188,8 +237,22 @@ class QueryBuilder:
                 return dynamic_join_caller
             else:
                 # This is a raw ...join() call
-                def dynamic_raw_join_caller(table: str, col1: str, op: str, col2: str):
-                    on_clause = f"{col1} {op} {col2}"
+                def dynamic_raw_join_caller(table: str, *args: Any):
+                    if len(args) == 3:
+                        # Static syntax: .join('table', 'col1', '=', 'col2')
+                        col1, op, col2 = args
+                        on_clause = f"{col1} {op} {col2}"
+                    elif len(args) == 1 and callable(args[0]):
+                        # Composable syntax: .join('table', lambda j: ...)
+                        join_builder_fn = args[0]
+                        join_builder = JoinClauseBuilder()
+                        join_builder_fn(join_builder)
+                        on_clause = str(join_builder)
+                    else:
+                        raise ValueError(
+                            "Invalid arguments for join method. Use `join(table, col1, op, col2)` or `join(table, lambda j: ...)`."
+                        )
+
                     join_clause = f"{sql_join_type} {table} ON {on_clause}"
                     self._joins.append(join_clause)
                     return self
