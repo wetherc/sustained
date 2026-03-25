@@ -1,12 +1,12 @@
-# Objection.py Documentation
+# Sustained Documentation
 
-Welcome to the documentation for Objection.py, a Python query builder inspired by [Objection.js](https://vincit.github.io/objection.js/).
+Welcome to the documentation for Sustained, a Python query builder inspired by [Objection.js](https://vincit.github.io/objection.js/).
 
 This documentation provides a detailed guide on how to use the library to define models and build complex SQL queries in a programmatic way.
 
 ## Getting Started
 
-If you are new to Objection.py, it's recommended to read the guides in the following order:
+If you are new to Sustained, it's recommended to read the guides in the following order:
 
 1.  **[Models](./models.md):** Learn how to define models that map to your database tables.
 2.  **[Queries](./queries.md):** Understand how to start queries and select data.
@@ -18,7 +18,7 @@ If you are new to Objection.py, it's recommended to read the guides in the follo
 The docstrings in the source code provide a comprehensive API reference. You can use Python's built-in `help()` function to get detailed information about any class or method.
 
 ```python
-from objection import Model, QueryBuilder
+from sustained import Model, QueryBuilder
 
 # Get help on the Model class
 help(Model)

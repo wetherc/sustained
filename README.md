@@ -1,4 +1,4 @@
-# Objection.py
+# Sustained.py
 
 A Python query builder inspired by [Objection.js](https://vincit.github.io/objection.js/).
 
@@ -7,14 +7,13 @@ A Python query builder inspired by [Objection.js](https://vincit.github.io/objec
 This package is not available on PyPI and must be installed from source.
 
 ```bash
-# From within the objection directory:
 pip install .
 ```
 
 ## Usage
 
 ```python
-from objection import Model, RelationType, create_model
+from sustained import Model, RelationType, create_model
 
 class Person(Model):
     database = 'my_db'

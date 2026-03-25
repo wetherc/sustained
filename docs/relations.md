@@ -1,6 +1,6 @@
 # Relations and Joins
 
-A powerful feature of Objection.py is its ability to define relationships between models and easily join them in your queries.
+Sustained allows you to easily define relationships between models and join them in your queries.
 
 [<-- Back to Index](./index.md)
 
@@ -15,7 +15,7 @@ A `RelationMapping` requires three properties:
 
 ### Relation Types
 
-Objection.py supports the following relation types via the `RelationType` enum:
+Sustained supports the following relation types via the `RelationType` enum:
 - `BelongsToOneRelation`: A one-to-one or many-to-one relationship.
 - `HasManyRelation`: A one-to-many relationship.
 - `HasOneRelation`: A special case of a one-to-one relationship.
@@ -26,7 +26,7 @@ Objection.py supports the following relation types via the `RelationType` enum:
 This is used for both one-to-one and many-to-one relations. For example, an `Animal` has one `owner` (`Person`), and a `Person` can own many `Animal`s.
 
 ```python
-from objection import Model, RelationType
+from sustained import Model, RelationType
 
 class Person(Model):
     tableName = 'persons'
@@ -101,7 +101,7 @@ query = Animal.query().innerJoinRelated('owner', alias='p')
 
 ### Joins with `through` Tables
 
-When you join a `ManyToManyRelation`, Objection.py automatically handles joining the intermediate table first, followed by the final table.
+When you join a `ManyToManyRelation`, Sustained automatically handles joining the intermediate table first, followed by the final table.
 
 ```python
 # Join from Person -> persons_movies -> movies

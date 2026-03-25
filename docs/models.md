@@ -1,15 +1,16 @@
 # Defining Models
 
-The `Model` class is the foundation of Objection.py. Each model you create represents a database table.
+
+The `Model` class is the foundation of sustained.py. Each model you create represents a database table.
 
 [<-- Back to Index](./index.md)
 
 ## Basic Setup
 
-To define a model, create a class that inherits from `objection.Model` and give it a `tableName`.
+To define a model, create a class that inherits from `sustained.Model` and give it a `tableName`.
 
 ```python
-from objection import Model
+from sustained import Model
 
 class Person(Model):
     # This is the only required property.
@@ -40,7 +41,7 @@ These properties are used by the `QueryBuilder` to construct the `FROM` clause o
 In some cases, you might need to create models at runtime. The `create_model` function is provided for this purpose. It takes the desired class name and table name as arguments.
 
 ```python
-from objection import create_model, RelationType
+from sustained import create_model, RelationType
 
 # A simple dynamic model
 Vehicle = create_model('Vehicle', 'vehicles')

@@ -1,6 +1,6 @@
 # Filtering Queries
 
-Objection.py provides a rich, dynamic API for adding `WHERE` clauses to your queries.
+Sustained provides a dynamic API for adding `WHERE` clauses to your queries.
 
 [<-- Back to Index](./index.md)
 
@@ -79,8 +79,8 @@ You can nest these groups as deeply as you need.
 #   (genre = 'Drama' AND rating > 8)
 # )
 
-query = Movie.query() 
-    .where('status', '=', 'available') 
+query = Movie.query()
+    .where('status', '=', 'available')
     .andWhere(lambda q: (
         q.where(lambda group1: (
             group1.where('genre', '=', 'Comedy').andWhere('rating', '>', 7)

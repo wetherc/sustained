@@ -1,6 +1,6 @@
 import unittest
 
-from objection import Model, RelationType
+from sustained import Model, RelationType
 
 
 class TestJoinBuilder(unittest.TestCase):

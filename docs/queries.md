@@ -121,4 +121,4 @@ print(sql_string)
 # "SELECT name FROM users WHERE id = 1"
 ```
 
-This design allows you to use Objection.py with any database driver. You build the query with Objection.py, and then execute the resulting SQL string with your preferred library (e.g., `psycopg2`, `pyodbc`, etc.).
+This design allows you to use Sustained with any database driver. You build the query with Sustained, and then execute the resulting SQL string with your preferred library (e.g., `psycopg2`, `pyodbc`, etc.).

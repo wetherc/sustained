@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "objection"
+name = "sustained"
 version = "0.0.1"
 description = "A Python query builder inspired by Objection.js"
 readme = "README.md"
