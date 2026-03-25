@@ -40,6 +40,20 @@ query = Animal.query().select('animals.name', 'persons.name').leftOuterJoinRelat
 
 print(query)
 # SELECT animals.name, persons.name FROM animals LEFT OUTER JOIN persons ON animals.ownerId = persons.id
+
+
+# Build a more complex query with a CTE and a raw join
+active_owners = Person.query().select('id').where('status', '=', 'active')
+
+query = (
+    Animal.query()
+    .with_('active_owners', active_owners)
+    .join('active_owners', 'animals.ownerId', '=', 'active_owners.id')
+    .select('animals.name')
+)
+
+print(query)
+# WITH active_owners AS (SELECT id FROM persons WHERE status = 'active') SELECT animals.name FROM animals JOIN active_owners ON animals.ownerId = active_owners.id
 ```
 
 ## Development

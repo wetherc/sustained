@@ -51,6 +51,7 @@ class QueryBuilder:
         self._selected_columns: List[str] = []
         self._joins: List[str] = []
         self._where_clauses: List[Tuple[str, str]] = []
+        self._with_clauses: List[Tuple[str, str]] = []
 
     def select(self, *columns: str) -> "QueryBuilder":
         """
@@ -65,6 +66,25 @@ class QueryBuilder:
         self._selected_columns.extend(columns)
         return self
 
+    def with_(self, table_alias: str, subquery: "QueryBuilder") -> "QueryBuilder":
+        """
+        Adds a Common Table Expression (CTE) to the query.
+        NOTE: This method is named `with_` to avoid conflict with the Python `with` keyword.
+
+        Example:
+            cte_query = OtherModel.query().select("id", "name")
+            main_query = MyModel.query().with_("my_cte", cte_query).select("*")
+
+        Args:
+            table_alias (str): The alias for the CTE.
+            subquery (QueryBuilder): The query builder instance for the CTE's subquery.
+
+        Returns:
+            QueryBuilder: The current QueryBuilder instance for chaining.
+        """
+        self._with_clauses.append((table_alias, str(subquery)))
+        return self
+
     def __str__(self) -> str:
         """
         Builds and returns the final SQL query string.
@@ -72,6 +92,16 @@ class QueryBuilder:
         Returns:
             str: The complete SQL query.
         """
+        query_parts = []
+
+        if self._with_clauses:
+            cte_strs = [
+                f"{alias} AS ({subquery_str})"
+                for alias, subquery_str in self._with_clauses
+            ]
+            with_str = "WITH " + ", ".join(cte_strs)
+            query_parts.append(with_str)
+
         cols = ", ".join(self._selected_columns) if self._selected_columns else "*"
         model_cls = self._model_class
         parts = []
@@ -89,7 +119,7 @@ class QueryBuilder:
         if self._where_clauses:
             where_str = "WHERE " + self._build_clause_list_string()
 
-        query_parts = [f"SELECT {cols} FROM {full_table_name}"]
+        query_parts.append(f"SELECT {cols} FROM {full_table_name}")
 
         if joins_str:
             query_parts.append(joins_str)
@@ -137,21 +167,34 @@ class QueryBuilder:
         Raises:
             AttributeError: If the method name is not a valid dynamic method.
         """
-        # Handle join methods (e.g., innerJoinRelated, joinRelated)
+        # Handle all join methods (e.g., innerJoinRelated, leftJoin)
         join_prefixes = "|".join(k for k in self._JOIN_METHOD_MAP.keys() if k)
         join_match = re.match(
-            rf"^({join_prefixes})?(JoinRelated)$", name, re.IGNORECASE
+            rf"^({join_prefixes})?(Join)(Related)?$", name, re.IGNORECASE
         )
 
         if join_match:
-            join_prefix, _ = join_match.groups()
+            join_prefix, _, related_suffix = join_match.groups()
             sql_join_type = self._JOIN_METHOD_MAP[join_prefix or ""]
 
-            def dynamic_join_caller(relation_name: str, alias: Optional[str] = None):
-                self._join_related_internal(sql_join_type, relation_name, alias)
-                return self
+            if related_suffix:
+                # This is a ...joinRelated() call
+                def dynamic_join_caller(
+                    relation_name: str, alias: Optional[str] = None
+                ):
+                    self._join_related_internal(sql_join_type, relation_name, alias)
+                    return self
 
-            return dynamic_join_caller
+                return dynamic_join_caller
+            else:
+                # This is a raw ...join() call
+                def dynamic_raw_join_caller(table: str, col1: str, op: str, col2: str):
+                    on_clause = f"{col1} {op} {col2}"
+                    join_clause = f"{sql_join_type} {table} ON {on_clause}"
+                    self._joins.append(join_clause)
+                    return self
+
+                return dynamic_raw_join_caller
 
         # Handle where methods (e.g., where, andWhereIn)
         where_match = re.match(

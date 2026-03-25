@@ -42,6 +42,50 @@ person = Person()
 query = User.query().select(user.id, person.firstName)
 ```
 
+## Joining Tables
+
+For simple joins where you don't have or need a pre-defined relation on your model, you can use the raw join methods. These methods are generated dynamically for each join type (`join`, `innerJoin`, `leftJoin`, `rightJoin`, etc.).
+
+They accept four arguments:
+1.  The table to join to.
+2.  The first column for the `ON` condition.
+3.  The operator for the `ON` condition.
+4.  The second column for the `ON` condition.
+
+```python
+# Builds: SELECT persons.*, animals.name FROM persons LEFT JOIN animals ON persons.id = animals.ownerId
+query = Person.query().leftJoin('animals', 'persons.id', '=', 'animals.ownerId')
+```
+
+For more complex joins based on your data model, see the [Relations documentation](./relations.md).
+
+## Common Table Expressions (CTEs)
+
+You can add CTEs to your query using the `.with_()` method. Note the trailing underscore, which is necessary to avoid conflicting with Python's `with` keyword.
+
+The `.with_()` method takes two arguments:
+1.  An alias (string) for the CTE.
+2.  A `QueryBuilder` instance for the CTE's subquery.
+
+```python
+# Build a CTE for active users
+active_users_cte = User.query().select('id').where('status', '=', 'active')
+
+# Use the CTE in a main query to get their posts
+# (Assumes a Post model exists)
+posts_query = (
+    Post.query()
+    .with_('active_users', active_users_cte)
+    .join('active_users', 'posts.user_id', '=', 'active_users.id')
+    .select('posts.title')
+)
+
+# Builds:
+# WITH active_users AS (SELECT id FROM users WHERE status = 'active')
+# SELECT posts.title FROM posts JOIN active_users ON posts.user_id = active_users.id
+print(posts_query)
+```
+
 ## Retrieving the SQL
 
 The `QueryBuilder` does not execute the query. It only builds the SQL string. To get the final SQL, simply convert the builder instance to a string.
