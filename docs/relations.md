@@ -1,4 +1,7 @@
-# Relations and Joins
+---
+layout: default
+title: Relations and Joins
+---
 
 Sustained allows you to easily define relationships between models and join them in your queries.
 

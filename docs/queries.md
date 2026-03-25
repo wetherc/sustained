@@ -1,4 +1,7 @@
-# Building Queries
+---
+layout: default
+title: Building Queries
+---
 
 Once you have defined your models, you can start building queries using the `QueryBuilder`.
 

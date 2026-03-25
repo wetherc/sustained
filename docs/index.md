@@ -1,4 +1,7 @@
-# Sustained Documentation
+---
+layout: default
+title: Sustained Documentation
+---
 
 Welcome to the documentation for Sustained, a Python query builder inspired by [Objection.js](https://vincit.github.io/objection.js/).
 

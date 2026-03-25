@@ -1,4 +1,7 @@
-# Defining Models
+---
+layout: default
+title: Defining Models
+---
 
 
 The `Model` class is the foundation of sustained.py. Each model you create represents a database table.

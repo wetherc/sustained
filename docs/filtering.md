@@ -1,4 +1,7 @@
-# Filtering Queries
+---
+layout: default
+title: Filtering Queries
+---
 
 Sustained provides a dynamic API for adding `WHERE` clauses to your queries.
 
