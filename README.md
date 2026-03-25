@@ -4,11 +4,26 @@ A Python query builder inspired by [Objection.js](https://vincit.github.io/objec
 
 ## Installation
 
-This package is not available on PyPI and must be installed from source.
-
 ```bash
-pip install .
+python3 -m pip install sustained
 ```
+
+## Local Installation from Source
+
+To install `sustained` from source for local development:
+
+1.  **Clone the repository:**
+    ```bash
+    git clone https://github.com/wetherc/sustained.git
+    cd sustained
+    ```
+
+2.  **Install in editable mode:**
+    ```bash
+    python3 -m pip install -e .
+    ```
+
+This will install the package in "editable" mode, meaning any changes you make to the source code will be reflected without needing to reinstall.
 
 ## Usage
 
