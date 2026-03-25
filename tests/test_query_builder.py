@@ -1,6 +1,6 @@
 import unittest
 
-from sustained import Model, QueryBuilder, RelationType
+from src.sustained import Model, QueryBuilder, RelationType
 
 
 class TestQueryBuilder(unittest.TestCase):

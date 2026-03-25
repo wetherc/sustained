@@ -26,7 +26,7 @@ class JoinClauseBuilder:
     An instance of this is passed to the lambda in `...join(..., lambda j: ...)` calls.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._conditions: List[Tuple[str, str]] = []
 
     def on(self, col1: str, op: str, col2: str) -> "JoinClauseBuilder":
@@ -53,7 +53,7 @@ class JoinClauseBuilder:
         self._add_condition("OR", col1, op, col2)
         return self
 
-    def _add_condition(self, conjunction: str, col1: str, op: str, col2: str):
+    def _add_condition(self, conjunction: str, col1: str, op: str, col2: str) -> None:
         condition_str = f"{col1} {op} {col2}"
         self._conditions.append((conjunction, condition_str))
 
@@ -178,7 +178,7 @@ class QueryBuilder:
 
         return " ".join(query_parts)
 
-    def __getattr__(self, name: str) -> Callable:
+    def __getattr__(self, name: str) -> Callable[..., "QueryBuilder"]:
         """
         Dynamically handles method calls for joins and where clauses.
 
@@ -230,14 +230,14 @@ class QueryBuilder:
                 # This is a ...joinRelated() call
                 def dynamic_join_caller(
                     relation_name: str, alias: Optional[str] = None
-                ):
+                ) -> "QueryBuilder":
                     self._join_related_internal(sql_join_type, relation_name, alias)
                     return self
 
                 return dynamic_join_caller
             else:
                 # This is a raw ...join() call
-                def dynamic_raw_join_caller(table: str, *args: Any):
+                def dynamic_raw_join_caller(table: str, *args: Any) -> "QueryBuilder":
                     if len(args) == 3:
                         # Static syntax: .join('table', 'col1', '=', 'col2')
                         col1, op, col2 = args
@@ -277,7 +277,7 @@ class QueryBuilder:
 
             where_type = where_type_str.lower()
 
-            def dynamic_where_caller(*args):
+            def dynamic_where_caller(*args: Any) -> "QueryBuilder":
                 if where_type == "where":
                     if len(args) == 1 and callable(args[0]):
                         self._add_where_internal(conjunction, args[0])
@@ -313,7 +313,7 @@ class QueryBuilder:
         column_or_callable: Any,
         op: Optional[str] = None,
         val: Optional[Any] = None,
-    ):
+    ) -> None:
         """Internal handler for adding `where` clauses."""
         if not self._where_clauses and conjunction:
             raise RuntimeError(f"Cannot use '{conjunction}' on the first where clause.")
@@ -331,7 +331,9 @@ class QueryBuilder:
             clause = self._build_where_clause(column_or_callable, op, val)
             self._where_clauses.append((conjunction, clause))
 
-    def _add_where_in_internal(self, conjunction: str, op: str, col: str, vals: list):
+    def _add_where_in_internal(
+        self, conjunction: str, op: str, col: str, vals: List[Any]
+    ) -> None:
         """Internal handler for adding `WHERE IN` and `WHERE NOT IN` clauses."""
         if not self._where_clauses and conjunction:
             raise RuntimeError(f"Cannot use '{conjunction}' on the first where clause.")
@@ -359,7 +361,7 @@ class QueryBuilder:
 
     def _join_related_internal(
         self, join_type: str, relation_name: str, alias: Optional[str] = None
-    ):
+    ) -> None:
         """Internal handler for adding a join based on a defined relation."""
         relation = self._model_class.relationMappings.get(relation_name)
         if not relation:
@@ -377,7 +379,7 @@ class QueryBuilder:
                 join_type, through_join_info, related_model_class, alias
             )
         else:
-            basic_join_info = cast(BasicJoinMapping, join_info)
+            basic_join_info = join_info
             self._add_basic_join(join_type, basic_join_info, related_model_class, alias)
 
     def _resolve_model_class(
@@ -388,7 +390,7 @@ class QueryBuilder:
             # Try to find the model class in the global scope.
             # This is a simple mechanism for resolving string references.
             if model_class_ref in globals():
-                return globals()[model_class_ref]
+                return cast(Type["Model"], globals()[model_class_ref])
             else:
                 raise ValueError(
                     f"Could not resolve model class string '{model_class_ref}'"
@@ -401,7 +403,7 @@ class QueryBuilder:
         join_info: BasicJoinMapping,
         related_model_class: Type["Model"],
         alias: Optional[str] = None,
-    ):
+    ) -> None:
         """Adds a basic (e.g., one-to-one, one-to-many) join to the query."""
         final_related_table_name = related_model_class.tableName
         assert (
@@ -429,7 +431,7 @@ class QueryBuilder:
         join_info: JoinMappingWithThrough,
         related_model_class: Type["Model"],
         alias: Optional[str] = None,
-    ):
+    ) -> None:
         """Adds a many-to-many join using a 'through' table."""
         related_table_name_from_model = related_model_class.tableName
         assert (

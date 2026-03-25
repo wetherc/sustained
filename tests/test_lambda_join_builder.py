@@ -1,6 +1,6 @@
 import unittest
 
-from sustained import Model
+from src.sustained import Model
 
 
 class TestLambdaJoinBuilder(unittest.TestCase):

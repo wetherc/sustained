@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Dict, Optional, Type
+from typing import TYPE_CHECKING, Any, Dict, Optional, Type
 
 from .types import RelationMapping
 
@@ -29,7 +29,7 @@ class Model:
     tableSchema: Optional[str] = None
     relationMappings: Dict[str, RelationMapping] = {}
 
-    def __init__(self, **kwargs):
+    def __init__(self, **kwargs: Any) -> None:
         """
         Initializes a model instance, allowing attributes to be set from
         keyword arguments.
@@ -37,7 +37,7 @@ class Model:
         for key, value in kwargs.items():
             setattr(self, key, value)
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         """Provides a developer-friendly representation of the model instance."""
         attributes = ", ".join(f"{k}={v!r}" for k, v in self.__dict__.items())
         return f"{self.__class__.__name__}({attributes})"

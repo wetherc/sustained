@@ -5,14 +5,29 @@ build-backend = "hatchling.build"
 [project]
 name = "sustained"
 version = "0.0.1"
+authors = [
+  { name="Christopher Wetherill", email="git@tbmh.org" },
+]
 description = "A Python query builder inspired by Objection.js"
 readme = "README.md"
 requires-python = ">=3.7"
 classifiers = [
     "Programming Language :: Python :: 3",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
 ]
+license = "MIT"
+license-files = ["LICENSE"]
+
+[project.urls]
+Homepage = "https://github.com/wetherc/sustained"
+Issues = "https://github.com/wetherc/sustained/issues"
 
 [tool.isort]
 profile = "black"
+
+[tool.mypy]
+mypy_path = "src"
+explicit_package_bases = true
+strict = true
+check_untyped_defs = true
+exclude = ["build/", "venv/"]
