@@ -45,6 +45,17 @@ person = Person()
 query = User.query().select(user.id, person.firstName)
 ```
 
+## Offsetting Results
+
+The `offset()` method allows you to skip a specified number of rows in the query result. This is useful for pagination.
+
+```python
+# Builds: SELECT * FROM users OFFSET 10
+query = User.query().select('*').offset(10)
+```
+
+The `offset()` method can only be called once per query and requires an integer value.
+
 ## Common Table Expressions (CTEs)
 
 You can add CTEs to your query using the `.with_()` method. Note the trailing underscore, which is necessary to avoid conflicting with Python's `with` keyword.
