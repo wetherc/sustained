@@ -33,7 +33,7 @@ class WhereClauseBuilder:
             conjunction_str, where_type_str = where_match.groups()
 
             if not self._where_clauses:
-                if conjunction_str and conjunction_str.lower() != "and":
+                if conjunction_str:
                     raise RuntimeError(
                         f"Cannot start a where clause with '{conjunction_str}'."
                     )
