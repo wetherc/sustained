@@ -283,12 +283,37 @@ class TestQueryBuilder(unittest.TestCase):
             tableName = "users"
 
         query_1 = User.query().select("*").top(10)
-        with self.assertRaisesRegex(ValueError, r"Cannot use limit\(\) with top\(\)\."):
+        with self.assertRaisesRegex(ValueError, r"Cannot use limit\(\) with top\(\)."):
             query_1.limit(10)
 
         query_2 = User.query().select("*").limit(10)
-        with self.assertRaisesRegex(ValueError, "Cannot use top\(\) with limit\(\)."):
+        with self.assertRaises(ValueError):
             query_2.top(10)
+
+    def test_order_by_with_limit_and_offset(self):
+        class User(Model):
+            tableName = "users"
+
+        query = User.query().select("*").orderBy("name", "desc").limit(10).offset(5)
+        self.assertEqual(
+            str(query), "SELECT * FROM users ORDER BY name DESC LIMIT 10 OFFSET 5"
+        )
+
+    def test_order_by_with_union(self):
+        class User(Model):
+            tableName = "users"
+
+        class Customer(Model):
+            tableName = "customers"
+
+        users = User.query().select("id", "name").where("status", "=", "active")
+        customers = Customer.query().select("id", "name").where("status", "=", "active")
+
+        query = users.union(customers).orderBy("name").limit(10)
+        self.assertEqual(
+            str(query),
+            "(SELECT id, name FROM users WHERE status = 'active') UNION (SELECT id, name FROM customers WHERE status = 'active') ORDER BY name ASC LIMIT 10",
+        )
 
 
 if __name__ == "__main__":

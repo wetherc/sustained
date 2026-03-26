@@ -87,6 +87,36 @@ query = User.query().select('*').top(10)
 -   The `limit()` and `top()` methods are mutually exclusive. Using both in the same query will result in a `ValueError`.
 -   Both methods can only be called once per query and require an integer value.
 
+## Ordering Results
+
+The `orderBy()` method allows you to sort the result set of your query.
+
+### `orderBy()`
+
+You can specify one or more columns to sort by, along with an optional direction (`'asc'` for ascending or `'desc'` for descending). If no direction is provided, `'asc'` is assumed.
+
+```python
+# Builds: SELECT * FROM users ORDER BY name ASC
+query = User.query().select('*').orderBy('name')
+
+# Builds: SELECT * FROM users ORDER BY age DESC
+query = User.query().select('*').orderBy('age', 'desc')
+
+# You can chain multiple orderBy calls to sort by multiple columns
+# Builds: SELECT * FROM users ORDER BY name ASC, age DESC
+query = User.query().select('*').orderBy('name').orderBy('age', 'desc')
+```
+
+### Behavior with Other Clauses
+
+-   **`LIMIT` and `OFFSET`**: The `ORDER BY` clause is applied before `LIMIT` and `OFFSET`. This ensures that the correct rows are selected for limiting and offsetting after the sorting has occurred.
+-   **`UNION`**: When used with a `UNION`, the `ORDER BY` clause applies to the entire result set of the combined queries, not to individual `SELECT` statements within the `UNION`.
+
+```python
+# Builds: SELECT * FROM users ORDER BY name DESC LIMIT 10 OFFSET 5
+query = User.query().select('*').orderBy('name', 'desc').limit(10).offset(5)
+```
+
 ## Common Table Expressions (CTEs)
 
 You can add CTEs to your query using the `.with_()` method. Note the trailing underscore, which is necessary to avoid conflicting with Python's `with` keyword.

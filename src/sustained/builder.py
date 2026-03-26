@@ -18,6 +18,7 @@ from .builders import (
     GroupByClauseBuilder,
     HavingClauseBuilder,
     JoinClauseBuilder,
+    OrderByClauseBuilder,
     WhereClauseBuilder,
 )
 
@@ -46,6 +47,7 @@ class QueryBuilder:
         self._where_builder = WhereClauseBuilder(model_class)
         self._group_by_builder = GroupByClauseBuilder(model_class)
         self._having_builder = HavingClauseBuilder(model_class)
+        self._order_by_builder = OrderByClauseBuilder(model_class)
         self._with_clauses: List[Tuple[str, str]] = []
         self._offset_value: Optional[int] = None
         self._union_clauses: List[Tuple[str, "QueryBuilder"]] = []
@@ -194,7 +196,11 @@ class QueryBuilder:
             # Otherwise, just add the base select statement.
             query_parts.append(base_select)
 
-        # Append LIMIT and OFFSET clauses, which apply to the entire query.
+        # Append ORDER BY, LIMIT, and OFFSET clauses, which apply to the entire query.
+        order_by_str = str(self._order_by_builder)
+        if order_by_str:
+            query_parts.append(order_by_str)
+
         if self._limit_value is not None:
             query_parts.append(f"LIMIT {self._limit_value}")
 
@@ -333,6 +339,17 @@ class QueryBuilder:
 
             def dynamic_caller(*args: Any, **kwargs: Any) -> "QueryBuilder":
                 method_to_call = getattr(self._group_by_builder, name)
+                method_to_call(*args, **kwargs)
+                return self
+
+            return dynamic_caller
+
+        # Handle order by methods by delegating to OrderByClauseBuilder
+        order_by_match = re.match(r"^orderBy$", name, re.IGNORECASE)
+        if order_by_match:
+
+            def dynamic_caller(*args: Any, **kwargs: Any) -> "QueryBuilder":
+                method_to_call = getattr(self._order_by_builder, name)
                 method_to_call(*args, **kwargs)
                 return self
 
