@@ -64,6 +64,25 @@ This generates a `WHERE col NOT IN (...)` clause.
 Movie.query().whereNotIn('rating', [1, 2, 3])
 ```
 
+### Using Subqueries with `whereIn` and `whereNotIn`
+
+You can also provide a `QueryBuilder` instance or a callable to `whereIn` and `whereNotIn` to use a subquery.
+
+```python
+from my_project import User, BannedUser
+
+# SELECT *
+# FROM users
+# WHERE id IN (
+#   SELECT user_id
+#   FROM banned_users
+# )
+User.query().whereIn(
+    'id',
+    BannedUser.query().select('user_id')
+)
+```
+
 ## Grouped `where` Clauses
 
 For complex logical groupings, you can pass a callable (like a lambda function) to any `where` method. The function will receive a temporary `QueryBuilder` instance that you can use to build the grouped condition.

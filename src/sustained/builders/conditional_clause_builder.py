@@ -157,17 +157,29 @@ class ConditionalClauseBuilder(ABC):
             clause = self._build_clause(column_or_callable, op, val)
             self._clauses.append((conjunction, clause))
 
-    def _add_in_internal(
-        self, conjunction: str, op: str, col: str, vals: List[Any]
-    ) -> None:
+    def _add_in_internal(self, conjunction: str, op: str, col: str, vals: Any) -> None:
         """Internal handler for adding `IN` and `NOT IN` clauses."""
-        formatted_values = []
-        for v in vals:
-            if isinstance(v, str):
-                formatted_values.append(f"'{v.replace("'", "''")}'")
-            else:
-                formatted_values.append(str(v))
-        values_str = ", ".join(formatted_values)
+        from ..builder import QueryBuilder
+
+        if isinstance(vals, list):
+            formatted_values = []
+            for v in vals:
+                if isinstance(v, str):
+                    formatted_values.append(f"'{v.replace("'", "''")}'")
+                else:
+                    formatted_values.append(str(v))
+            values_str = ", ".join(formatted_values)
+        elif isinstance(vals, (str, QueryBuilder)):
+            values_str = str(vals)
+        elif callable(vals):
+            sub_query = QueryBuilder(self._model_class)
+            vals(sub_query)
+            values_str = str(sub_query)
+        else:
+            raise ValueError(
+                "Argument for In/NotIn must be a list, a callable, string, or QueryBuilder instance."
+            )
+
         clause = f"{col} {op} ({values_str})"
         self._clauses.append((conjunction, clause))
 

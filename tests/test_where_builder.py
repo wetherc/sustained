@@ -86,6 +86,19 @@ class TestWhereBuilder(unittest.TestCase):
         query = User.query().whereNotIn("id", [1, 2, 3])
         self.assertEqual(str(query), "SELECT * FROM users WHERE id NOT IN (1, 2, 3)")
 
+    def test_where_in_with_subquery(self):
+        class User(Model):
+            tableName = "users"
+
+        class BannedUser(Model):
+            tableName = "banned_users"
+
+        query = User.query().whereIn("id", BannedUser.query().select("user_id"))
+        self.assertEqual(
+            str(query),
+            "SELECT * FROM users WHERE id IN (SELECT user_id FROM banned_users)",
+        )
+
     def test_where_between(self):
         class User(Model):
             tableName = "users"
