@@ -23,6 +23,17 @@
 
         <p>{{ site.description | default: site.github.project_tagline }}</p>
 
+        <span>
+          <ul>
+            <li><a href="index">Home</a></li>
+            <li><a href="models">Models</a></li>
+            <li><a href="queries">Building Queries</a></li>
+            <li><a href="filtering">Filtering Queries</a></li>
+            <li><a href="relations">Relations</a></li>
+            <li><a href="grouping">Grouping</a></li>
+          </ul>
+        </nav>
+
         {% if site.github.is_project_page %}
         <p class="view"><a href="{{ site.github.repository_url }}">View the Project on GitHub <small>{{ site.github.repository_nwo }}</small></a></p>
         {% endif %}
@@ -39,16 +50,6 @@
         </ul>
         {% endif %}
       </header>
-      <nav>
-        <ul>
-          <li><a href="index">Home</a></li>
-          <li><a href="models">Models</a></li>
-          <li><a href="queries">Building Queries</a></li>
-          <li><a href="filtering">Filtering Queries</a></li>
-          <li><a href="relations">Relations</a></li>
-          <li><a href="grouping">Grouping</a></li>
-        </ul>
-      </nav>
       <section>
 
       {{ content }}
