@@ -12,7 +12,7 @@ from typing import (
 )
 
 if TYPE_CHECKING:
-    from .model import Model
+    from ..model import Model
 
 
 class WhereClauseBuilder:

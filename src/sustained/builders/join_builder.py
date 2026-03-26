@@ -13,10 +13,10 @@ from typing import (
     cast,
 )
 
-from .types import BasicJoinMapping, JoinMappingWithThrough
+from ..types import BasicJoinMapping, JoinMappingWithThrough
 
 if TYPE_CHECKING:
-    from .model import Model
+    from ..model import Model
 
 
 class OnClauseBuilder:
