@@ -3,8 +3,6 @@ layout: default
 title: Relations and Joins
 ---
 
-Sustained allows you to easily define relationships between models and join them in your queries.
-
 [<-- Back to Index](./index)
 
 ## Defining Relations
@@ -85,10 +83,13 @@ Once relations are defined, you can use a family of `...JoinRelated` methods to 
 - `rightJoinRelated()`
 - `rightOuterJoinRelated()`
 - `fullOuterJoinRelated()`
+- `crossJoinRelated()`
 
 ```python
-# SELECT animals.name, persons.name FROM animals
-# LEFT OUTER JOIN persons ON animals.ownerId = persons.id
+# SELECT animals.name, persons.name
+# FROM animals
+# LEFT OUTER JOIN persons
+#   ON animals.ownerId = persons.id
 query = Animal.query().select('animals.name', 'persons.name').leftOuterJoinRelated('owner')
 ```
 
@@ -97,9 +98,11 @@ query = Animal.query().select('animals.name', 'persons.name').leftOuterJoinRelat
 You can also provide a custom alias for the joined table, which is useful for complex queries or self-joins.
 
 ```python
-# SELECT * FROM animals
-# INNER JOIN persons AS p ON animals.ownerId = p.id
-query = Animal.query().innerJoinRelated('owner', alias='p')
+# SELECT *
+# FROM animals
+# INNER JOIN persons AS p
+#   ON animals.ownerId = p.id
+query = Animal.query().select('animals.name', 'p.name').innerJoinRelated('owner', alias='p')
 ```
 
 ### Joins with `through` Tables
@@ -107,13 +110,56 @@ query = Animal.query().innerJoinRelated('owner', alias='p')
 When you join a `ManyToManyRelation`, Sustained automatically handles joining the intermediate table first, followed by the final table.
 
 ```python
-# Join from Person -> persons_movies -> movies
-query = Person.query().leftJoinRelated('movies')
-
-print(query)
-# SELECT * FROM persons
-# INNER JOIN persons_movies ON persons.id = persons_movies.personId
-# LEFT JOIN movies ON persons_movies.movieId = movies.id
+# SELECT *
+# FROM persons
+# INNER JOIN persons_movies
+#   ON persons.id = persons_movies.personId
+# LEFT JOIN movies
+#   ON persons_movies.movieId = movies.id
+query = Person.query().select('persons.name', 'movies.title').leftJoinRelated('movies')
 ```
 
 Notice that the join from `persons` to `persons_movies` is an `INNER JOIN`, while the join from `persons_movies` to `movies` is the `LEFT JOIN` you requested. This is the standard, expected behavior for joining through tables.
+
+
+## Raw Joins
+
+For simple joins where you don't have or need a pre-defined relation on your model, you can use the raw join methods. These methods are generated dynamically for each join type (`join`, `innerJoin`, `leftJoin`, `rightJoin`, etc.).
+
+They accept four arguments:
+1.  The table to join to.
+2.  The first column for the `ON` condition.
+3.  The operator for the `ON` condition.
+4.  The second column for the `ON` condition.
+
+```python
+# SELECT persons.*, animals.name
+# FROM persons
+# LEFT JOIN animals
+#   ON persons.id = animals.ownerId
+query = Person.query().leftJoin('animals', 'persons.id', '=', 'animals.ownerId')
+```
+
+### Complex Joins with Lambdas
+
+For joins that require multiple or complex `ON` conditions, you can pass a lambda function as the second argument to any of the `join` methods. This lambda receives a `JoinBuilder` object that you can use to construct the join conditions.
+
+The `JoinBuilder` has the following methods:
+*   `on(col1, op, col2)`: Adds the initial `ON` condition.
+*   `andOn(col1, op, col2)`: Adds an `AND` condition to the join.
+*   `orOn(col1, op, col2)`: Adds an `OR` condition to the join.
+
+```python
+# SELECT *
+# FROM users
+# JOIN accounts
+#   ON accounts.id = users.account_id
+#   OR accounts.owner_id = users.id
+query = User.query().join(
+    'accounts',
+    lambda j: j.on('accounts.id', '=', 'users.account_id')
+    .orOn('accounts.owner_id', '=', 'users.id'),
+)
+```
+
+Note that more complex nested join criteria are not supported.

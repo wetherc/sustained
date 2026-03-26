@@ -3,8 +3,6 @@ layout: default
 title: Filtering Queries
 ---
 
-Sustained provides a dynamic API for adding `WHERE` clauses to your queries.
-
 [<-- Back to Index](./index)
 
 ## Basic `where` Methods
@@ -16,18 +14,26 @@ A `where` clause takes three arguments: a column, an operator, and a value.
 ```python
 from my_project import Movie
 
-# SELECT * FROM movies WHERE director = 'Quentin Tarantino'
+# SELECT *
+# FROM movies
+# WHERE director = 'Quentin Tarantino'
 Movie.query().where('director', '=', 'Quentin Tarantino')
 
 # Chain multiple `where` clauses
-# SELECT * FROM movies WHERE release_year > 2000 AND rating > 8.5
+#   SELECT *
+#   FROM movies
+#   WHERE release_year > 2000
+#     AND rating > 8.5
 Movie.query().where('release_year', '>', 2000).andWhere('rating', '>', 8.5)
 
 # Use `orWhere` to add an alternative condition
-# SELECT * FROM movies WHERE genre = 'Sci-Fi' OR genre = 'Fantasy'
+#   SELECT *
+#   FROM movies
+#   WHERE genre = 'Sci-Fi'
+#      OR genre = 'Fantasy'
 Movie.query().where('genre', '=', 'Sci-Fi').orWhere('genre', '=', 'Fantasy')
 ```
-> **Note:** The first `where` call in a chain cannot be an `orWhere`. It must be a plain `where` or `andWhere`.
+> **Note:** The first `where` call in a chain cannot be an `orWhere` or `andWhere`. It must be a plain `where`.
 
 ## `whereIn` and `whereNotIn`
 
@@ -42,7 +48,10 @@ This generates a `WHERE col IN (...)` clause.
 Movie.query().whereIn('id', [10, 25, 30])
 
 # You can also use `andWhereIn` and `orWhereIn`
-# SELECT * FROM movies WHERE release_year = 1999 AND genre IN ('Action', 'Sci-Fi')
+#   SELECT *
+#   FROM movies
+#   WHERE release_year = 1999
+#     AND genre IN ('Action', 'Sci-Fi')
 Movie.query().where('release_year', '=', 1999).andWhereIn('genre', ['Action', 'Sci-Fi'])
 ```
 
@@ -62,8 +71,10 @@ For complex logical groupings, you can pass a callable (like a lambda function) 
 This is useful for creating conditions wrapped in parentheses, like `... AND (condition A OR condition B)`.
 
 ```python
-# SELECT * FROM movies
-# WHERE genre = 'Action' AND (release_year < 1990 OR rating > 9.0)
+# SELECT *
+# FROM movies
+# WHERE genre = 'Action'
+#   AND (release_year < 1990 OR rating > 9.0)
 
 query = Movie.query().where('genre', '=', 'Action').andWhere(lambda q: (
     q.where('release_year', '<', 1990).orWhere('rating', '>', 9.0)
@@ -75,12 +86,13 @@ query = Movie.query().where('genre', '=', 'Action').andWhere(lambda q: (
 You can nest these groups as deeply as you need.
 
 ```python
-# SELECT * FROM movies
+# SELECT *
+# FROM movies
 # WHERE status = 'available'
-# AND (
-#   (genre = 'Comedy' AND rating > 7) OR
-#   (genre = 'Drama' AND rating > 8)
-# )
+#   AND (
+#     (genre = 'Comedy' AND rating > 7) OR
+#     (genre = 'Drama' AND rating > 8)
+#   )
 
 query = Movie.query()
     .where('status', '=', 'available')

@@ -23,8 +23,6 @@ To install `sustained` from source for local development:
     python3 -m pip install -e .
     ```
 
-This will install the package in "editable" mode, meaning any changes you make to the source code will be reflected without needing to reinstall.
-
 ## Usage
 
 ```python
@@ -53,7 +51,10 @@ class Animal(Model):
 query = Animal.query().select('animals.name', 'persons.name').leftOuterJoinRelated('owner')
 
 print(query)
-# SELECT animals.name, persons.name FROM animals LEFT OUTER JOIN persons ON animals.ownerId = persons.id
+# SELECT animals.name, persons.name
+# FROM animals
+# LEFT OUTER JOIN persons
+#   ON animals.ownerId = persons.id
 
 
 # Build a more complex query with a CTE and a raw join
@@ -67,7 +68,15 @@ query = (
 )
 
 print(query)
-# WITH active_owners AS (SELECT id FROM persons WHERE status = 'active') SELECT animals.name FROM animals JOIN active_owners ON animals.ownerId = active_owners.id
+# WITH active_owners AS (
+#   SELECT id
+#   FROM persons
+#   WHERE status = 'active'
+# )
+# SELECT animals.name
+# FROM animals
+# JOIN active_owners
+#   ON animals.ownerId = active_owners.id
 ```
 
 ## Development
@@ -86,5 +95,3 @@ This project uses `pre-commit` to enforce code quality and run tests before comm
     ```bash
     pre-commit install
     ```
-
-Now, the pre-commit hooks (including `black`, `isort`, `mypy`, and unit tests) will run automatically on every commit.

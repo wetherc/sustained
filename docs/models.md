@@ -53,14 +53,15 @@ Vehicle = create_model('Vehicle', 'vehicles')
 query = Vehicle.query().select('id', 'license_plate')
 print(query)
 # SELECT id, license_plate FROM vehicles
+```
 
-
-# You can also define relations for dynamic models
+You can also define relations for dynamic models:
+```python
 Person = create_model('Person', 'persons')
 
 Animal = create_model(
-    'Animal',
-    'animals',
+    name='Animal',
+    table_name='animals',
     mappings={
         'owner': {
             'relation': RelationType.BelongsToOneRelation,
@@ -69,11 +70,16 @@ Animal = create_model(
         }
     }
 )
+```
 
-# This works just like a statically defined model
+This works just like a statically defined model
+```python
 query = Animal.query().innerJoinRelated('owner')
 print(query)
-# SELECT * FROM animals INNER JOIN persons ON animals.ownerId = persons.id
+# SELECT *
+# FROM animals
+# INNER JOIN persons
+#   ON animals.ownerId = persons.id
 ```
 
 ## Column Name Access
@@ -90,14 +96,15 @@ print(person.id)
 # Use it in a select statement
 query = Person.query().select(person.firstName, person.lastName)
 print(query)
-# SELECT persons.firstName, persons.lastName FROM persons
+
+# SELECT persons.firstName, persons.lastName
+# FROM persons
 ```
 
 If the model has a `database` or `tableSchema` defined, they will be included in the qualified name.
 
 ```python
-user = User() # The model with `database` and `tableSchema`
+user = User() # The model was instantiated with a `database` and `tableSchema`
 print(user.id)
 # "my_db.public.users.id"
 ```
-This feature is particularly useful for writing complex joins and where clauses while ensuring you're always referencing the correct column.
