@@ -26,7 +26,7 @@ repos:
       - id: mypy
         pass_filenames: false
         always_run: true
-        args: ["-p", "sustained"]
+        args: ["-p", "sustained", "--strict", "--check-untyped-defs"]
 
   - repo: local
     hooks:
