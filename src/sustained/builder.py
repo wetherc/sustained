@@ -14,7 +14,11 @@ from typing import (
     cast,
 )
 
-from .builders import JoinClauseBuilder, WhereClauseBuilder
+from .builders import (
+    HavingClauseBuilder,
+    JoinClauseBuilder,
+    WhereClauseBuilder,
+)
 
 if TYPE_CHECKING:
     from .model import Model
@@ -39,6 +43,7 @@ class QueryBuilder:
         self._selected_columns: List[str] = []
         self._join_builder = JoinClauseBuilder(model_class)
         self._where_builder = WhereClauseBuilder(model_class)
+        self._having_builder = HavingClauseBuilder(model_class)
         self._with_clauses: List[Tuple[str, str]] = []
 
     def select(self, *columns: str) -> "QueryBuilder":
@@ -103,6 +108,7 @@ class QueryBuilder:
 
         joins_str = str(self._join_builder)
         where_str = str(self._where_builder)
+        having_str = str(self._having_builder)
 
         query_parts.append(f"SELECT {cols} FROM {full_table_name}")
 
@@ -111,6 +117,9 @@ class QueryBuilder:
 
         if where_str:
             query_parts.append(where_str)
+
+        if having_str:
+            query_parts.append(having_str)
 
         return " ".join(query_parts)
 
@@ -145,6 +154,19 @@ class QueryBuilder:
 
             def dynamic_caller(*args: Any, **kwargs: Any) -> "QueryBuilder":
                 method_to_call = getattr(self._where_builder, name)
+                method_to_call(*args, **kwargs)
+                return self
+
+            return dynamic_caller
+
+        # Handle having methods by delegating to HavingClauseBuilder
+        having_match = re.match(
+            r"^(or|and)?(Having|HavingIn|HavingNotIn)$", name, re.IGNORECASE
+        )
+        if having_match:
+
+            def dynamic_caller(*args: Any, **kwargs: Any) -> "QueryBuilder":
+                method_to_call = getattr(self._having_builder, name)
                 method_to_call(*args, **kwargs)
                 return self
 
