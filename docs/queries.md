@@ -90,6 +90,39 @@ print(posts_query)
 #   ON posts.user_id = active_users.id
 ```
 
+## Combining Queries with UNION
+
+You can combine multiple queries into a single result set using `UNION` and `UNION ALL`.
+
+### `union()` and `unionAll()`
+
+Use the `union()` and `unionAll()` methods to combine a query with one or more other queries. These methods accept any number of `QueryBuilder` instances as arguments.
+
+-   `union()`: Combines the results and removes duplicate rows.
+-   `unionAll()`: Combines the results and includes all rows, including duplicates.
+
+```python
+# Assume User and Customer models exist and have compatible columns
+active_users = User.query().select('id', 'name').where('active', '=', True)
+pending_users = User.query().select('id', 'name').where('status', '=', 'pending')
+
+all_users = active_users.union(pending_users)
+
+print(all_users)
+# Builds:
+# (SELECT id, name FROM users WHERE active = True) UNION (SELECT id, name FROM users WHERE status = 'pending')
+```
+
+### Behavior with Other Clauses
+
+-   **`OFFSET`**: When used with a `UNION`, the `offset()` method applies to the entire result set of the combined queries.
+-   **`WITH` (CTEs)**: If any of the queries in a `UNION` chain have Common Table Expressions, they will all be "hoisted" to the top of the final query. Sustained handles this automatically.
+
+```python
+# This query will offset the result of the entire UNION
+final_query = active_users.union(pending_users).offset(50)
+```
+
 ## Retrieving the SQL
 
 The `QueryBuilder` does not execute the query. It only builds the SQL string. To get the final SQL, simply convert the builder instance to a string.

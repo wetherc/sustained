@@ -48,6 +48,7 @@ class QueryBuilder:
         self._having_builder = HavingClauseBuilder(model_class)
         self._with_clauses: List[Tuple[str, str]] = []
         self._offset_value: Optional[int] = None
+        self._union_clauses: List[Tuple[str, "QueryBuilder"]] = []
 
     def select(self, *columns: str) -> "QueryBuilder":
         """
@@ -107,23 +108,8 @@ class QueryBuilder:
         """
         return sql
 
-    def __str__(self) -> str:
-        """
-        Builds and returns the final SQL query string.
-
-        Returns:
-            str: The complete SQL query.
-        """
+    def _build_base_select_sql(self) -> str:
         query_parts = []
-
-        if self._with_clauses:
-            cte_strs = [
-                f"{alias} AS ({subquery_str})"
-                for alias, subquery_str in self._with_clauses
-            ]
-            with_str = "WITH " + ", ".join(cte_strs)
-            query_parts.append(with_str)
-
         cols = ", ".join(self._selected_columns) if self._selected_columns else "*"
         model_cls = self._model_class
         parts = []
@@ -157,10 +143,77 @@ class QueryBuilder:
         if having_str:
             query_parts.append(having_str)
 
+        return " ".join(query_parts)
+
+    def __str__(self) -> str:
+        """
+        Builds and returns the final SQL query string.
+        Returns:
+            str: The complete SQL query.
+        """
+        # Hoist all CTEs to the top level.
+        all_with_clauses = self._with_clauses[:]
+        if self._union_clauses:
+            for _, query in self._union_clauses:
+                # The subquery's __str__ will be called by the `with_` method,
+                # so we need to get the clauses from the builder instance directly.
+                all_with_clauses.extend(query._with_clauses)
+
+        query_parts = []
+        if all_with_clauses:
+            # Use a dictionary to handle potential duplicate CTE aliases,
+            # letting the last one win.
+            unique_ctes = {alias: subquery for alias, subquery in all_with_clauses}
+            cte_strs = [
+                f"{alias} AS ({subquery_str})"
+                for alias, subquery_str in unique_ctes.items()
+            ]
+            with_str = "WITH " + ", ".join(cte_strs)
+            query_parts.append(with_str)
+
+        # Build the main query part.
+        base_select = self._build_base_select_sql()
+
+        if self._union_clauses:
+            # If there are unions, wrap the SELECT statements in parentheses.
+            query_parts.append(f"({base_select})")
+            for union_type, query in self._union_clauses:
+                query_parts.append(union_type)
+                base_union_select = query._build_base_select_sql()
+                query_parts.append(f"({base_union_select})")
+        else:
+            # Otherwise, just add the base select statement.
+            query_parts.append(base_select)
+
+        # OFFSET applies to the entire query (including unions).
         if self._offset_value is not None:
             query_parts.append(f"OFFSET {self._offset_value}")
 
         return " ".join(query_parts)
+
+    def union(self, *queries: "QueryBuilder", all: bool = False) -> "QueryBuilder":
+        """
+        Adds one or more UNION clauses to the query.
+        Args:
+            *queries (QueryBuilder): The subqueries to be unioned.
+            all (bool): If True, performs a UNION ALL. Defaults to False.
+        Returns:
+            QueryBuilder: The current QueryBuilder instance for chaining.
+        """
+        union_type = "UNION ALL" if all else "UNION"
+        for q in queries:
+            self._union_clauses.append((union_type, q))
+        return self
+
+    def unionAll(self, *queries: "QueryBuilder") -> "QueryBuilder":
+        """
+        Adds one or more UNION ALL clauses to the query.
+        Args:
+            *queries (QueryBuilder): The subqueries to be unioned.
+        Returns:
+            QueryBuilder: The current QueryBuilder instance for chaining.
+        """
+        return self.union(*queries, all=True)
 
     def offset(self, value: int) -> "QueryBuilder":
         """
