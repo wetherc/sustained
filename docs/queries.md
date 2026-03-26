@@ -56,6 +56,37 @@ query = User.query().select('*').offset(10)
 
 The `offset()` method can only be called once per query and requires an integer value.
 
+## Limiting Results
+
+Sustained provides two ways to limit the number of rows returned by a query: `limit()` for most SQL databases and `top()` for SQL Server-style queries.
+
+### `limit()`
+
+The `limit()` method adds a `LIMIT` clause to the end of your query. This is the standard way to limit results in databases like PostgreSQL, MySQL, and SQLite.
+
+```python
+# Builds: SELECT * FROM users LIMIT 10
+query = User.query().select('*').limit(10)
+
+# You can also combine it with offset for pagination
+# Builds: SELECT * FROM users LIMIT 10 OFFSET 20
+paginated_query = User.query().select('*').limit(10).offset(20)
+```
+
+### `top()`
+
+The `top()` method uses SQL Server's `TOP N` syntax, which places the limiter at the beginning of the `SELECT` statement.
+
+```python
+# Builds: SELECT TOP 10 * FROM users
+query = User.query().select('*').top(10)
+```
+
+### Usage Notes
+
+-   The `limit()` and `top()` methods are mutually exclusive. Using both in the same query will result in a `ValueError`.
+-   Both methods can only be called once per query and require an integer value.
+
 ## Common Table Expressions (CTEs)
 
 You can add CTEs to your query using the `.with_()` method. Note the trailing underscore, which is necessary to avoid conflicting with Python's `with` keyword.

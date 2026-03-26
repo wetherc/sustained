@@ -49,6 +49,8 @@ class QueryBuilder:
         self._with_clauses: List[Tuple[str, str]] = []
         self._offset_value: Optional[int] = None
         self._union_clauses: List[Tuple[str, "QueryBuilder"]] = []
+        self._limit_value: Optional[int] = None
+        self._top_value: Optional[int] = None
 
     def select(self, *columns: str) -> "QueryBuilder":
         """
@@ -126,10 +128,17 @@ class QueryBuilder:
         group_by_str = str(self._group_by_builder)
         having_str = str(self._having_builder)
 
+        select_parts = ["SELECT"]
+        if self._top_value is not None:
+            select_parts.append(f"TOP {self._top_value}")
+
+        select_parts.append(cols)
+        select_clause = " ".join(select_parts)
+
         if full_table_name:
-            query_parts.append(f"SELECT {cols} FROM {full_table_name}")
+            query_parts.append(f"{select_clause} FROM {full_table_name}")
         else:
-            query_parts.append(f"SELECT {cols}")
+            query_parts.append(select_clause)
 
         if joins_str:
             query_parts.append(joins_str)
@@ -185,11 +194,48 @@ class QueryBuilder:
             # Otherwise, just add the base select statement.
             query_parts.append(base_select)
 
-        # OFFSET applies to the entire query (including unions).
+        # Append LIMIT and OFFSET clauses, which apply to the entire query.
+        if self._limit_value is not None:
+            query_parts.append(f"LIMIT {self._limit_value}")
+
         if self._offset_value is not None:
             query_parts.append(f"OFFSET {self._offset_value}")
 
         return " ".join(query_parts)
+
+    def limit(self, value: int) -> "QueryBuilder":
+        """
+        Specifies the maximum number of rows to return.
+        Args:
+            value (int): The maximum number of rows.
+        Returns:
+            QueryBuilder: The current QueryBuilder instance for chaining.
+        """
+        if not isinstance(value, int):
+            raise TypeError("LIMIT value must be an integer.")
+        if self._limit_value is not None:
+            raise ValueError("LIMIT can only be set once per query.")
+        if self._top_value is not None:
+            raise ValueError("Cannot use limit() with top().")
+        self._limit_value = value
+        return self
+
+    def top(self, value: int) -> "QueryBuilder":
+        """
+        Specifies the top N rows to return (SQL Server-style TOP syntax).
+        Args:
+            value (int): The number of rows to return.
+        Returns:
+            QueryBuilder: The current QueryBuilder instance for chaining.
+        """
+        if not isinstance(value, int):
+            raise TypeError("TOP value must be an integer.")
+        if self._top_value is not None:
+            raise ValueError("TOP can only be set once per query.")
+        if self._limit_value is not None:
+            raise ValueError("Cannot use top() with limit().")
+        self._top_value = value
+        return self
 
     def union(self, *queries: "QueryBuilder", all: bool = False) -> "QueryBuilder":
         """
