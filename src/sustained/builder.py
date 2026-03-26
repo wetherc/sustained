@@ -47,6 +47,7 @@ class QueryBuilder:
         self._group_by_builder = GroupByClauseBuilder(model_class)
         self._having_builder = HavingClauseBuilder(model_class)
         self._with_clauses: List[Tuple[str, str]] = []
+        self._offset_value: Optional[int] = None
 
     def select(self, *columns: str) -> "QueryBuilder":
         """
@@ -156,7 +157,27 @@ class QueryBuilder:
         if having_str:
             query_parts.append(having_str)
 
+        if self._offset_value is not None:
+            query_parts.append(f"OFFSET {self._offset_value}")
+
         return " ".join(query_parts)
+
+    def offset(self, value: int) -> "QueryBuilder":
+        """
+        Specifies the offset for the query.
+
+        Args:
+            value (int): The number of rows to skip.
+
+        Returns:
+            QueryBuilder: The current QueryBuilder instance for chaining.
+        """
+        if not isinstance(value, int):
+            raise TypeError("Offset value must be an integer.")
+        if self._offset_value is not None:
+            raise ValueError("Offset can only be set once per query.")
+        self._offset_value = value
+        return self
 
     def __getattr__(self, name: str) -> Callable[..., "QueryBuilder"]:
         """

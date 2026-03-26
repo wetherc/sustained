@@ -96,6 +96,35 @@ class TestQueryBuilder(unittest.TestCase):
             "WITH customer_orders AS (SELECT customer_id, COUNT(id) as total_orders FROM orders GROUP BY customer_id) SELECT customers.id, customers.name, (SELECT total_orders FROM customer_orders WHERE customer_orders.customer_id = customers.id) AS order_count FROM customers",
         )
 
+    def test_offset(self):
+        class User(Model):
+            tableName = "users"
+
+        query = User.query().select("*").offset(10)
+        self.assertEqual(str(query), "SELECT * FROM users OFFSET 10")
+
+    def test_multiple_offset_calls_raise_error(self):
+        class User(Model):
+            tableName = "users"
+
+        query = User.query().select("*")
+        query.offset(10)
+        with self.assertRaisesRegex(
+            ValueError, "Offset can only be set once per query."
+        ):
+            query.offset(20)
+
+    def test_offset_non_integer_value_raises_error(self):
+        class User(Model):
+            tableName = "users"
+
+        query = User.query().select("*")
+        with self.assertRaisesRegex(TypeError, "Offset value must be an integer."):
+            query.offset("abc")  # type: ignore # Intentionally passing wrong type for test
+
+        with self.assertRaisesRegex(TypeError, "Offset value must be an integer."):
+            query.offset(10.5)  # type: ignore # Intentionally passing wrong type for test
+
 
 if __name__ == "__main__":
     unittest.main()
