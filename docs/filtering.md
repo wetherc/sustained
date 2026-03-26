@@ -103,4 +103,91 @@ query = Movie.query()
             group2.where('genre', '=', 'Drama').andWhere('rating', '>', 8)
         ))
     ))
+
+
+## `whereBetween` and `whereNotBetween`
+
+To filter for values within a specific range, use the `whereBetween` and `whereNotBetween` methods.
+
+### `whereBetween`
+
+This generates a `WHERE col BETWEEN val1 AND val2` clause.
+
+```python
+# SELECT * FROM movies WHERE release_year BETWEEN 1990 AND 1999
+Movie.query().whereBetween('release_year', 1990, 1999)
+
+# You can also use `andWhereBetween` and `orWhereBetween`
+#   SELECT *
+#   FROM movies
+#   WHERE genre = 'Action'
+#     AND release_year BETWEEN 1990 AND 1999
+Movie.query().where('genre', '=', 'Action').andWhereBetween('release_year', 1990, 1999)
+```
+
+### `whereNotBetween`
+
+This generates a `WHERE col NOT BETWEEN val1 AND val2` clause.
+
+```python
+# SELECT * FROM movies WHERE release_year NOT BETWEEN 1990 AND 1999
+Movie.query().whereNotBetween('release_year', 1990, 1999)
+```
+
+## `whereExists` and `whereNotExists`
+
+To filter based on the existence of records in a subquery, use the `whereExists` and `whereNotExists` methods. These methods accept a `QueryBuilder` instance or a callable that receives a `QueryBuilder` instance, allowing you to construct the subquery.
+
+### `whereExists`
+
+This generates a `WHERE EXISTS (...)` clause.
+
+```python
+from my_project import User, Post
+
+# SELECT *
+# FROM users
+# WHERE EXISTS (
+#   SELECT 1
+#   FROM posts
+#   WHERE posts.user_id = users.id
+# )
+User.query().whereExists(
+    Post.query().select(QueryBuilder.raw('1')).where('posts.user_id', '=', QueryBuilder.raw('users.id'))
+)
+
+# Using a callable for the subquery
+# SELECT *
+# FROM users
+# WHERE EXISTS (
+#   SELECT 1
+#   FROM posts
+#   WHERE posts.user_id = users.id AND posts.status = 'published'
+# )
+User.query().whereExists(lambda q: (
+    q.from_(Post)
+     .select(QueryBuilder.raw('1'))
+     .where('posts.user_id', '=', QueryBuilder.raw('users.id'))
+     .andWhere('posts.status', '=', 'published')
+))
+```
+> **Note:** When referencing columns from the outer query within the subquery (e.g., `users.id`), use `QueryBuilder.raw()` to prevent the column name from being treated as a string literal.
+
+### `whereNotExists`
+
+This generates a `WHERE NOT EXISTS (...)` clause.
+
+```python
+from my_project import User, Post
+
+# SELECT *
+# FROM users
+# WHERE NOT EXISTS (
+#   SELECT 1
+#   FROM posts
+#   WHERE posts.user_id = users.id
+# )
+User.query().whereNotExists(
+    Post.query().select(QueryBuilder.raw('1')).where('posts.user_id', '=', QueryBuilder.raw('users.id'))
+)
 ```

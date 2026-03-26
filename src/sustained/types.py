@@ -72,3 +72,13 @@ class RelationMapping(TypedDict):
     relation: RelationType
     modelClass: Union[Type["Model"], str]
     join: Join
+
+
+class Expression:
+    """Represents a raw SQL expression that should not be quoted."""
+
+    def __init__(self, value: str):
+        self.value = value
+
+    def __str__(self) -> str:
+        return self.value

@@ -12,7 +12,10 @@ from typing import (
     Type,
 )
 
+from ..types import Expression
+
 if TYPE_CHECKING:
+    from ..builder import QueryBuilder
     from ..model import Model
 
 
@@ -35,8 +38,9 @@ class ConditionalClauseBuilder(ABC):
         """
         Dynamically handles method calls for clauses.
         """
+        suffixes = ["In", "NotIn", "Between", "NotBetween", "Exists", "NotExists"]
         match = re.match(
-            rf"^(or|and)?({self._clause_type}|{self._clause_type}In|{self._clause_type}NotIn)$",
+            rf"^(or|and)?({self._clause_type}(?:{'|'.join(suffixes)})?)$",
             name,
             re.IGNORECASE,
         )
@@ -63,12 +67,22 @@ class ConditionalClauseBuilder(ABC):
                         self._add_internal(conjunction, *args)
                     else:
                         raise ValueError(
-                            f"Invalid arguments for '{self._clause_keyword.lower()}' method. Use `{self._clause_keyword.lower()}(column, operator, value)` or `{self._clause_keyword.lower()}(lambda q: ...)`."
+                            f"Invalid arguments for '{self._clause_keyword.lower()}' "
+                            f"method. Use `{self._clause_keyword.lower()}(column, operator, value)` "
+                            f"or `{self._clause_keyword.lower()}(lambda q: ...)`."
                         )
                 elif type_lower == f"{base_type_lower}in":
                     self._add_in_internal(conjunction, "IN", *args)
                 elif type_lower == f"{base_type_lower}notin":
                     self._add_in_internal(conjunction, "NOT IN", *args)
+                elif type_lower == f"{base_type_lower}between":
+                    self._add_between_internal(conjunction, "BETWEEN", *args)
+                elif type_lower == f"{base_type_lower}notbetween":
+                    self._add_between_internal(conjunction, "NOT BETWEEN", *args)
+                elif type_lower == f"{base_type_lower}exists":
+                    self._add_exists_internal(conjunction, "EXISTS", *args)
+                elif type_lower == f"{base_type_lower}notexists":
+                    self._add_exists_internal(conjunction, "NOT EXISTS", *args)
                 return self
 
             return dynamic_caller
@@ -77,12 +91,47 @@ class ConditionalClauseBuilder(ABC):
             f"'{type(self).__name__}' object has no attribute '{name}'"
         )
 
+    def _add_between_internal(
+        self, conjunction: str, op: str, col: str, val1: Any, val2: Any
+    ) -> None:
+        """Internal handler for adding `BETWEEN` and `NOT BETWEEN` clauses."""
+        formatted_val1 = (
+            f"'{val1.replace("'", "''")}'" if isinstance(val1, str) else str(val1)
+        )
+        formatted_val2 = (
+            f"'{val2.replace("'", "''")}'" if isinstance(val2, str) else str(val2)
+        )
+        clause = f"{col} {op} {formatted_val1} AND {formatted_val2}"
+        self._clauses.append((conjunction, clause))
+
+    def _add_exists_internal(self, conjunction: str, op: str, query: Any) -> None:
+        """Internal handler for adding `EXISTS` and `NOT EXISTS` clauses."""
+        from ..builder import QueryBuilder
+
+        clause_str = ""
+        if callable(query):
+            sub_query = QueryBuilder(self._model_class)
+            query(sub_query)
+            clause_str = str(sub_query)
+        elif isinstance(query, (str, QueryBuilder)):
+            clause_str = str(query)
+        else:
+            raise ValueError(
+                "Argument for exists must be a callable, string, or QueryBuilder instance."
+            )
+
+        clause = f"{op} ({clause_str})"
+        self._clauses.append((conjunction, clause))
+
     def _build_clause(self, column: str, operator: str, value: Any) -> str:
         """Formats a single clause condition."""
-        formatted_value = value
-        if isinstance(value, str):
+        if isinstance(value, Expression):
+            formatted_value = str(value)
+        elif isinstance(value, str):
             escaped_value = value.replace("'", "''")
             formatted_value = f"'{escaped_value}'"
+        else:
+            formatted_value = value
         return f"{column} {operator} {formatted_value}"
 
     def _add_internal(

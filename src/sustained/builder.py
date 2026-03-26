@@ -21,6 +21,7 @@ from .builders import (
     OrderByClauseBuilder,
     WhereClauseBuilder,
 )
+from .types import Expression
 
 if TYPE_CHECKING:
     from .model import Model
@@ -100,21 +101,23 @@ class QueryBuilder:
         return self
 
     @staticmethod
-    def raw(sql: str) -> str:
+    def raw(sql: str) -> Expression:
         """
         Allows injecting raw SQL fragments into the query.
-
         Args:
             sql (str): The raw SQL string.
-
         Returns:
-            str: The raw SQL string itself.
+            Expression: An Expression object that will not be quoted.
         """
-        return sql
+        return Expression(sql)
 
     def _build_base_select_sql(self) -> str:
         query_parts = []
-        cols = ", ".join(self._selected_columns) if self._selected_columns else "*"
+        cols = (
+            ", ".join(map(str, self._selected_columns))
+            if self._selected_columns
+            else "*"
+        )
         model_cls = self._model_class
         parts = []
         if model_cls.database:
@@ -309,7 +312,9 @@ class QueryBuilder:
 
         # Handle where methods by delegating to WhereClauseBuilder
         where_match = re.match(
-            r"^(or|and)?(Where|WhereIn|WhereNotIn)$", name, re.IGNORECASE
+            r"^(or|and)?(Where|WhereIn|WhereNotIn|WhereBetween|WhereNotBetween|WhereExists|WhereNotExists)$",
+            name,
+            re.IGNORECASE,
         )
         if where_match:
 

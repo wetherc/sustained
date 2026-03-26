@@ -86,6 +86,56 @@ class TestWhereBuilder(unittest.TestCase):
         query = User.query().whereNotIn("id", [1, 2, 3])
         self.assertEqual(str(query), "SELECT * FROM users WHERE id NOT IN (1, 2, 3)")
 
+    def test_where_between(self):
+        class User(Model):
+            tableName = "users"
+
+        query = User.query().whereBetween("age", 18, 30)
+        self.assertEqual(str(query), "SELECT * FROM users WHERE age BETWEEN 18 AND 30")
+
+    def test_where_not_between(self):
+        class User(Model):
+            tableName = "users"
+
+        query = User.query().whereNotBetween("age", 18, 30)
+        self.assertEqual(
+            str(query), "SELECT * FROM users WHERE age NOT BETWEEN 18 AND 30"
+        )
+
+    def test_where_exists(self):
+        class User(Model):
+            tableName = "users"
+
+        class Post(Model):
+            tableName = "posts"
+
+        query = User.query().whereExists(
+            Post.query()
+            .select("id")
+            .where("posts.user_id", "=", QueryBuilder.raw("users.id"))
+        )
+        self.assertEqual(
+            str(query),
+            "SELECT * FROM users WHERE EXISTS (SELECT id FROM posts WHERE posts.user_id = users.id)",
+        )
+
+    def test_where_not_exists(self):
+        class User(Model):
+            tableName = "users"
+
+        class Post(Model):
+            tableName = "posts"
+
+        query = User.query().whereNotExists(
+            Post.query()
+            .select("id")
+            .where("posts.user_id", "=", QueryBuilder.raw("users.id"))
+        )
+        self.assertEqual(
+            str(query),
+            "SELECT * FROM users WHERE NOT EXISTS (SELECT id FROM posts WHERE posts.user_id = users.id)",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
