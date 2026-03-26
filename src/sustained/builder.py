@@ -15,6 +15,7 @@ from typing import (
 )
 
 from .builders import (
+    GroupByClauseBuilder,
     HavingClauseBuilder,
     JoinClauseBuilder,
     WhereClauseBuilder,
@@ -43,6 +44,7 @@ class QueryBuilder:
         self._selected_columns: List[str] = []
         self._join_builder = JoinClauseBuilder(model_class)
         self._where_builder = WhereClauseBuilder(model_class)
+        self._group_by_builder = GroupByClauseBuilder(model_class)
         self._having_builder = HavingClauseBuilder(model_class)
         self._with_clauses: List[Tuple[str, str]] = []
 
@@ -78,6 +80,19 @@ class QueryBuilder:
         self._with_clauses.append((table_alias, str(subquery)))
         return self
 
+    def group_by(self, *columns: str) -> "QueryBuilder":
+        """
+        Specifies the columns to group the query by.
+
+        Args:
+            *columns (str): A list of column names to group by.
+
+        Returns:
+            QueryBuilder: The current QueryBuilder instance for chaining.
+        """
+        self._group_by_builder.group_by(*columns)
+        return self
+
     def __str__(self) -> str:
         """
         Builds and returns the final SQL query string.
@@ -108,6 +123,7 @@ class QueryBuilder:
 
         joins_str = str(self._join_builder)
         where_str = str(self._where_builder)
+        group_by_str = str(self._group_by_builder)
         having_str = str(self._having_builder)
 
         query_parts.append(f"SELECT {cols} FROM {full_table_name}")
@@ -117,6 +133,9 @@ class QueryBuilder:
 
         if where_str:
             query_parts.append(where_str)
+
+        if group_by_str:
+            query_parts.append(group_by_str)
 
         if having_str:
             query_parts.append(having_str)

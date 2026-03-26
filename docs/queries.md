@@ -47,9 +47,9 @@ query = User.query().select(user.id, person.firstName)
 
 ## Common Table Expressions (CTEs)
 
-You can add CTEs to your query using the `.with()` method. Note the trailing underscore, which is necessary to avoid conflicting with Python's `with` keyword.
+You can add CTEs to your query using the `.with_()` method. Note the trailing underscore, which is necessary to avoid conflicting with Python's `with` keyword.
 
-The `.with()` method takes two arguments:
+The `.with_()` method takes two arguments:
 1.  An alias (string) for the CTE.
 2.  A `QueryBuilder` instance for the CTE's subquery.
 
@@ -61,7 +61,7 @@ active_users_cte = User.query().select('id').where('status', '=', 'active')
 # (Assumes a Post model exists)
 posts_query = (
     Post.query()
-    .with('active_users', active_users_cte)
+    .with_('active_users', active_users_cte)
     .join('active_users', 'posts.user_id', '=', 'active_users.id')
     .select('posts.title')
 )
