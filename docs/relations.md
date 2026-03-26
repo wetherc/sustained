@@ -3,7 +3,7 @@ layout: default
 title: Relations and Joins
 ---
 
-[<-- Back to Index](./index)
+
 
 ## Defining Relations
 

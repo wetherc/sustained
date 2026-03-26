@@ -3,7 +3,7 @@ layout: default
 title: Filtering Queries
 ---
 
-[<-- Back to Index](./index)
+
 
 ## Basic `where` Methods
 

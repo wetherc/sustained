@@ -3,7 +3,7 @@ layout: default
 title: Grouping and Having Clauses
 ---
 
-[<-- Back to Index](./index)
+
 
 ## Basic `groupBy` Methods
 

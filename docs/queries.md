@@ -5,7 +5,7 @@ title: Building Queries
 
 Once you have defined your models, you can start building queries using the `QueryBuilder`.
 
-[<-- Back to Index](./index)
+
 
 ## Starting a Query
 
