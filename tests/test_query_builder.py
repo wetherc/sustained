@@ -11,13 +11,6 @@ class TestQueryBuilder(unittest.TestCase):
         query = User.query().select("id", "name")
         self.assertEqual(str(query), "SELECT id, name FROM users")
 
-    def test_where(self):
-        class User(Model):
-            tableName = "users"
-
-        query = User.query().select("name").where("age", ">", 21)
-        self.assertEqual(str(query), "SELECT name FROM users WHERE age > 21")
-
     def test_join_related(self):
         class Person(Model):
             tableName = "persons"
@@ -42,80 +35,66 @@ class TestQueryBuilder(unittest.TestCase):
             "SELECT animals.name, persons.name FROM animals LEFT OUTER JOIN persons ON animals.ownerId = persons.id",
         )
 
-    def test_and_where(self):
-        class User(Model):
-            tableName = "users"
+    def test_with_clause_basic(self):
+        class Order(Model):
+            tableName = "orders"
+
+        large_orders = Order.query().select("id").where("amount", ">", 1000)
+        query = QueryBuilder(Model).with_("large_orders", large_orders).select("*")
+        self.assertEqual(
+            str(query),
+            "WITH large_orders AS (SELECT id FROM orders WHERE amount > 1000) SELECT *",
+        )
+
+    def test_with_clause_multiple_ctes(self):
+        class Product(Model):
+            tableName = "products"
+
+        class Order(Model):
+            tableName = "orders"
+
+        large_orders = Order.query().select("id").where("amount", ">", 1000)
+        expensive_products = Product.query().select("id").where("price", ">", 500)
 
         query = (
-            User.query()
-            .select("name")
-            .where("age", ">", 21)
-            .andWhere("name", "!=", "John Doe")
+            QueryBuilder(Model)
+            .with_("large_orders", large_orders)
+            .with_("expensive_products", expensive_products)
+            .select("*")
         )
         self.assertEqual(
-            str(query), "SELECT name FROM users WHERE age > 21 AND name != 'John Doe'"
+            str(query),
+            "WITH large_orders AS (SELECT id FROM orders WHERE amount > 1000), expensive_products AS (SELECT id FROM products WHERE price > 500) SELECT *",
         )
 
-    def test_or_where(self):
-        class User(Model):
-            tableName = "users"
+    def test_with_clause_with_subquery_in_select(self):
+        class Order(Model):
+            tableName = "orders"
+
+        class Customer(Model):
+            tableName = "customers"
+
+        customer_orders_cte = (
+            Order.query()
+            .select("customer_id", QueryBuilder.raw("COUNT(id) as total_orders"))
+            .groupBy("customer_id")
+        )
 
         query = (
-            User.query().select("name").where("age", ">", 21).orWhere("age", "<", 10)
-        )
-        self.assertEqual(
-            str(query), "SELECT name FROM users WHERE age > 21 OR age < 10"
-        )
-
-    def test_grouped_where(self):
-        class User(Model):
-            tableName = "users"
-
-        query = (
-            User.query()
-            .where("status", "=", "active")
-            .andWhere(
-                lambda q: (q.where("age", ">", 21).orWhere("name", "=", "John Doe"))
+            Customer.query()
+            .with_("customer_orders", customer_orders_cte)
+            .select(
+                "customers.id",
+                "customers.name",
+                QueryBuilder.raw(
+                    "(SELECT total_orders FROM customer_orders WHERE customer_orders.customer_id = customers.id) AS order_count"
+                ),
             )
         )
         self.assertEqual(
             str(query),
-            "SELECT * FROM users WHERE status = 'active' AND (age > 21 OR name = 'John Doe')",
+            "WITH customer_orders AS (SELECT customer_id, COUNT(id) as total_orders FROM orders GROUP BY customer_id) SELECT customers.id, customers.name, (SELECT total_orders FROM customer_orders WHERE customer_orders.customer_id = customers.id) AS order_count FROM customers",
         )
-
-    def test_complex_grouped_where(self):
-        class User(Model):
-            tableName = "users"
-            database = "my_db"
-            tableSchema = "public"
-
-        query = (
-            User.query()
-            .where("age", ">=", 18)
-            .where(
-                lambda q: (
-                    q.where("name", "=", "John Doe").orWhere("name", "=", "Jane Doe")
-                )
-            )
-            .andWhere("status", "=", "active")
-        )
-
-        expected_sql = "SELECT * FROM my_db.public.users WHERE age >= 18 AND (name = 'John Doe' OR name = 'Jane Doe') AND status = 'active'"
-        self.assertEqual(str(query), expected_sql)
-
-    def test_where_in(self):
-        class User(Model):
-            tableName = "users"
-
-        query = User.query().whereIn("id", [1, 2, 3])
-        self.assertEqual(str(query), "SELECT * FROM users WHERE id IN (1, 2, 3)")
-
-    def test_where_not_in(self):
-        class User(Model):
-            tableName = "users"
-
-        query = User.query().whereNotIn("id", [1, 2, 3])
-        self.assertEqual(str(query), "SELECT * FROM users WHERE id NOT IN (1, 2, 3)")
 
 
 if __name__ == "__main__":

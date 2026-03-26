@@ -80,7 +80,7 @@ class QueryBuilder:
         self._with_clauses.append((table_alias, str(subquery)))
         return self
 
-    def group_by(self, *columns: str) -> "QueryBuilder":
+    def groupBy(self, *columns: str) -> "QueryBuilder":
         """
         Specifies the columns to group the query by.
 
@@ -90,8 +90,21 @@ class QueryBuilder:
         Returns:
             QueryBuilder: The current QueryBuilder instance for chaining.
         """
-        self._group_by_builder.group_by(*columns)
+        self._group_by_builder.groupBy(*columns)
         return self
+
+    @staticmethod
+    def raw(sql: str) -> str:
+        """
+        Allows injecting raw SQL fragments into the query.
+
+        Args:
+            sql (str): The raw SQL string.
+
+        Returns:
+            str: The raw SQL string itself.
+        """
+        return sql
 
     def __str__(self) -> str:
         """
@@ -126,7 +139,10 @@ class QueryBuilder:
         group_by_str = str(self._group_by_builder)
         having_str = str(self._having_builder)
 
-        query_parts.append(f"SELECT {cols} FROM {full_table_name}")
+        if full_table_name:
+            query_parts.append(f"SELECT {cols} FROM {full_table_name}")
+        else:
+            query_parts.append(f"SELECT {cols}")
 
         if joins_str:
             query_parts.append(joins_str)
@@ -186,6 +202,17 @@ class QueryBuilder:
 
             def dynamic_caller(*args: Any, **kwargs: Any) -> "QueryBuilder":
                 method_to_call = getattr(self._having_builder, name)
+                method_to_call(*args, **kwargs)
+                return self
+
+            return dynamic_caller
+
+        # Handle group by methods by delegating to GroupByClauseBuilder
+        group_by_match = re.match(r"^groupBy$", name, re.IGNORECASE)
+        if group_by_match:
+
+            def dynamic_caller(*args: Any, **kwargs: Any) -> "QueryBuilder":
+                method_to_call = getattr(self._group_by_builder, name)
                 method_to_call(*args, **kwargs)
                 return self
 

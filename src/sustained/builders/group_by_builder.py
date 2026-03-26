@@ -17,7 +17,7 @@ class GroupByClauseBuilder:
         self._model_class = model_class
         self._group_by_columns: List[str] = []
 
-    def group_by(self, *columns: str) -> None:
+    def groupBy(self, *columns: str) -> None:
         """Adds columns to the GROUP BY clause."""
         self._group_by_columns.extend(columns)
 

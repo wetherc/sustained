@@ -1,6 +1,10 @@
 import unittest
+from typing import Any, Dict
 
 from src.sustained import Model, RelationType
+from src.sustained.builders.join_builder import (
+    JoinClauseBuilder,  # For direct testing where needed
+)
 
 
 class TestJoinBuilder(unittest.TestCase):
@@ -32,11 +36,33 @@ class TestJoinBuilder(unittest.TestCase):
                     "relation": RelationType.BelongsToOneRelation,
                     "modelClass": Person,
                     "join": {"from": "animals.ownerId", "to": "persons.id"},
+                },
+                "unknown_model": {
+                    "relation": RelationType.BelongsToOneRelation,
+                    "modelClass": "NonExistentModel",  # For testing model resolution
+                    "join": {"from": "animals.unknownId", "to": "unknown.id"},
+                },
+            }
+
+        class Car(Model):
+            tableName = "cars"
+            relationMappings = {
+                "engine": {
+                    "relation": RelationType.BelongsToOneRelation,
+                    "modelClass": "EngineModelWithNoneTableName",
+                    "join": {"from": "cars.engineId", "to": "engines.id"},
                 }
             }
 
+        # Define a model for testing missing tableName assertion
+        class EngineModelWithNoneTableName(Model):
+            tableName = None  # Explicitly set to None for the test
+
         self.Person = Person
         self.Animal = Animal
+        self.Movie = Movie
+        self.Car = Car
+        self.EngineModelWithNoneTableName = EngineModelWithNoneTableName
 
     def test_inner_join_related(self):
         query = self.Animal.query().innerJoinRelated("owner")
@@ -164,6 +190,98 @@ class TestJoinBuilder(unittest.TestCase):
             str(query),
             "WITH large_orders AS (SELECT id, customer_id FROM orders WHERE amount > 1000) SELECT * FROM customers JOIN large_orders ON customers.id = large_orders.customer_id",
         )
+
+    def test_join_related_missing_relation_raises_error(self):
+        with self.assertRaisesRegex(
+            ValueError, "Relation 'non_existent' not found in model 'Animal'"
+        ):
+            self.Animal.query().joinRelated("non_existent")
+
+    def test_add_basic_join_with_none_table_name_raises_assertion_error(self):
+        # Temporarily modify relationMappings for this test
+        original_mappings = self.Car.relationMappings
+        temp_mappings: Dict[str, Any] = {
+            "engine": {
+                "relation": RelationType.BelongsToOneRelation,
+                "modelClass": self.EngineModelWithNoneTableName,
+                "join": {"from": "cars.engineId", "to": "engine.id"},
+            }
+        }
+        self.Car.relationMappings = temp_mappings
+
+        with self.assertRaisesRegex(
+            AssertionError, "Model used in a relation must have a tableName"
+        ):
+            self.Car.query().joinRelated("engine")
+
+        # Restore original mappings
+        self.Car.relationMappings = original_mappings
+
+    def test_join_related_alias_to_col_mismatch(self):
+        class User(Model):
+            tableName = "users"
+            relationMappings = {
+                "profile": {
+                    "relation": RelationType.HasOneRelation,
+                    "modelClass": "UserProfile",
+                    "join": {
+                        "from": "users.profileId",
+                        "to": "external_profiles.id",
+                    },  # to_col points to external_profiles
+                }
+            }
+
+        class UserProfile(Model):
+            tableName = "user_profiles"  # The related model's actual table name
+
+        # Temporarily set UserProfile in the current module for _resolve_model_class
+        import sys
+
+        sys.modules[__name__].UserProfile = UserProfile
+
+        query = User.query().joinRelated("profile", alias="p")
+        # Expectation: The ON clause should not be aliased because 'external_profiles' != 'user_profiles'
+        # It should remain 'users.profileId = external_profiles.id'
+        self.assertEqual(
+            str(query),
+            "SELECT * FROM users JOIN user_profiles AS p ON users.profileId = external_profiles.id",
+        )
+        del sys.modules[__name__].UserProfile
+
+    def test_through_join_alias_to_col_mismatch(self):
+        class Tag(Model):
+            tableName = "tags"
+
+        class Post(Model):
+            tableName = "posts"
+            relationMappings = {
+                "tags": {
+                    "relation": RelationType.ManyToManyRelation,
+                    "modelClass": Tag,
+                    "join": {
+                        "from": "posts.id",
+                        "through": {
+                            "from": {"table": "post_tags", "key": "postId"},
+                            "to": {"table": "post_tags", "key": "tagId"},
+                        },
+                        "to": "another_tags_table.id",  # to_col points to another_tags_table
+                    },
+                }
+            }
+
+        # Temporarily set Tag in the current module for _resolve_model_class
+        import sys
+
+        sys.modules[__name__].Tag = Tag
+
+        query = Post.query().joinRelated("tags", alias="t")
+        # Expectation: The ON clause should not be aliased because 'another_tags_table' != 'tags'
+        # It should remain 'post_tags.tagId = another_tags_table.id'
+        self.assertEqual(
+            str(query),
+            "SELECT * FROM posts INNER JOIN post_tags ON posts.id = post_tags.postId JOIN tags AS t ON post_tags.tagId = another_tags_table.id",
+        )
+        del sys.modules[__name__].Tag
 
 
 if __name__ == "__main__":
