@@ -103,6 +103,17 @@ class TestQueryBuilder(unittest.TestCase):
         query = User.query().select("*").offset(10)
         self.assertEqual(str(query), "SELECT * FROM users OFFSET 10")
 
+    def test_from_with_subquery(self):
+        class Movie(Model):
+            tableName = "movies"
+
+        subquery = Movie.query().where("rating", ">", 8)
+        query = Movie.query().from_(subquery, "top_movies").select("*")
+        self.assertEqual(
+            str(query),
+            "SELECT * FROM (SELECT * FROM movies WHERE rating > 8) AS top_movies",
+        )
+
     def test_multiple_offset_calls_raise_error(self):
         class User(Model):
             tableName = "users"

@@ -54,6 +54,7 @@ class QueryBuilder:
         self._union_clauses: List[Tuple[str, "QueryBuilder"]] = []
         self._limit_value: Optional[int] = None
         self._top_value: Optional[int] = None
+        self._from_clause: Optional[str] = None
 
     def select(self, *columns: str) -> "QueryBuilder":
         """
@@ -66,6 +67,30 @@ class QueryBuilder:
             QueryBuilder: The current QueryBuilder instance for chaining.
         """
         self._selected_columns.extend(columns)
+        return self
+
+    def from_(
+        self, table: Union["QueryBuilder", str], alias: Optional[str] = None
+    ) -> "QueryBuilder":
+        """
+        Specifies a table or subquery for the FROM clause.
+        """
+        from_parts = []
+        if isinstance(table, QueryBuilder):
+            if not alias:
+                raise ValueError("Subqueries in FROM clause must have an alias.")
+            from_parts.append(f"({str(table)})")
+        elif isinstance(table, str):
+            from_parts.append(table)
+        else:
+            raise TypeError(
+                "`from_` method expects a QueryBuilder instance or a raw string."
+            )
+
+        if alias:
+            from_parts.append(f"AS {alias}")
+
+        self._from_clause = " ".join(from_parts)
         return self
 
     def with_(self, table_alias: str, subquery: "QueryBuilder") -> "QueryBuilder":
@@ -118,15 +143,19 @@ class QueryBuilder:
             if self._selected_columns
             else "*"
         )
-        model_cls = self._model_class
-        parts = []
-        if model_cls.database:
-            parts.append(model_cls.database)
-        if model_cls.tableSchema:
-            parts.append(model_cls.tableSchema)
-        if model_cls.tableName:
-            parts.append(model_cls.tableName)
-        full_table_name = ".".join(parts)
+
+        if self._from_clause:
+            full_table_name = self._from_clause
+        else:
+            model_cls = self._model_class
+            parts = []
+            if model_cls.database:
+                parts.append(model_cls.database)
+            if model_cls.tableSchema:
+                parts.append(model_cls.tableSchema)
+            if model_cls.tableName:
+                parts.append(model_cls.tableName)
+            full_table_name = ".".join(parts)
 
         joins_str = str(self._join_builder)
         where_str = str(self._where_builder)

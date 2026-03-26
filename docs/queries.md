@@ -18,6 +18,40 @@ from my_project import User
 query_builder = User.query()
 ```
 
+## FROM Clause
+
+The `from_()` method allows you to explicitly define the table or subquery that the query will operate on, overriding the default table name derived from the model.
+
+### Specifying a Raw Table Name
+
+You can pass a string to `from_()` to use a custom table name or to alias the model's default table.
+
+```python
+from my_project import User
+
+# SELECT * FROM custom_users_table AS cu
+query = User.query().from_('custom_users_table', 'cu')
+
+# Overriding the default table name
+# SELECT * FROM users_archive
+query = User.query().from_('users_archive')
+```
+
+### Using a Subquery in FROM
+
+You can also use a `QueryBuilder` instance as the source for your `FROM` clause. When using a subquery, an alias is required.
+
+```python
+from my_project import Movie
+
+# Subquery to find top-rated movies
+top_movies_subquery = Movie.query().where('rating', '>', 8).select('id', 'title')
+
+# Main query using the subquery as the FROM source
+# SELECT * FROM (SELECT id, title FROM movies WHERE rating > 8) AS top_rated_films
+query = Movie.query().from_(top_movies_subquery, 'top_rated_films').select('*')
+```
+
 ## Selecting Columns
 
 The `select()` method allows you to specify which columns your query should return.
