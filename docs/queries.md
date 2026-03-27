@@ -79,6 +79,15 @@ person = Person()
 query = User.query().select(user.id, person.firstName)
 ```
 
+### Distinct
+
+You can add a `DISTINCT` keyword to your query to retrieve only unique rows.
+
+```python
+# Builds: SELECT DISTINCT country FROM users
+query = User.query().distinct().select('country')
+```
+
 ### Advanced Selections
 
 The `select` method is not limited to simple column names. You can pass in various expression objects to perform more complex queries. The `QueryBuilder` also provides several fluent API methods to make this even easier.
@@ -89,7 +98,7 @@ You can perform aggregate calculations using the `AggregateExpression` class or 
 
 **Using Fluent Methods:**
 
-The easiest way is to use methods like `count()` and `sum()`.
+The easiest way is to use methods like `count()`, `sum()`, `avg()`, `min()`, and `max()`.
 
 ```python
 # SELECT COUNT(*) FROM users
@@ -100,17 +109,26 @@ query = User.query().count('id', alias='total')
 
 # SELECT SUM(amount) AS total_amount FROM orders
 query = Order.query().sum('amount', alias='total_amount')
+
+# SELECT AVG(price) AS average_price FROM products
+query = Product.query().avg('price', alias='average_price')
+
+# SELECT MIN(age) AS youngest FROM users
+query = User.query().min('age', alias='youngest')
+
+# SELECT MAX(age) AS oldest FROM users
+query = User.query().max('age', alias='oldest')
 ```
 
 **Using Expression Classes:**
 
-You can also construct `AggregateExpression` objects manually and pass them to `select()`.
+You can also construct `AggregateExpression` objects manually and pass them to `select()`. This is useful for aggregates that don't have a dedicated fluent method.
 
 ```python
 from sustained.expressions import AggregateExpression
 
-# SELECT AVG(price) FROM products
-query = Product.query().select(AggregateExpression('AVG', 'price'))
+# SELECT STRING_AGG(name, ', ') FROM users
+query = User.query().select(AggregateExpression('STRING_AGG', 'name, \', \''))
 ```
 
 #### Window Functions
@@ -168,6 +186,38 @@ query = User.query().select_case(
     when_clauses=[
         ('is_active = 1', Column('last_login_date')),
     ]
+)
+```
+
+#### Generic Functions
+
+For any other SQL function, you can use the `Func` expression class.
+
+```python
+from sustained import Func, Column
+
+# SELECT COALESCE(nickname, first_name) AS display_name FROM users
+query = User.query().select(
+    Func('COALESCE', Column('nickname'), Column('first_name'), alias='display_name')
+)
+```
+
+#### Subqueries in Select
+
+You can use a `Subquery` object to embed a subquery directly into your `SELECT` list.
+
+```python
+from sustained import Subquery
+
+# SELECT
+#   id,
+#   (SELECT COUNT(*) FROM posts WHERE posts.user_id = users.id) AS post_count
+# FROM users
+post_count_subquery = Post.query().count().where('user_id', '=', Column('users.id'))
+
+query = User.query().select(
+    'id',
+    Subquery(post_count_subquery, 'post_count')
 )
 ```
 
