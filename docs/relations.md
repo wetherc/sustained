@@ -126,11 +126,14 @@ Notice that the join from `persons` to `persons_movies` is an `INNER JOIN`, whil
 
 For simple joins where you don't have or need a pre-defined relation on your model, you can use the raw join methods. These methods are generated dynamically for each join type (`join`, `innerJoin`, `leftJoin`, `rightJoin`, etc.).
 
-They accept four arguments:
-1.  The table to join to.
-2.  The first column for the `ON` condition.
-3.  The operator for the `ON` condition.
-4.  The second column for the `ON` condition.
+They accept arguments in two main ways: by specifying `ON` conditions, or by using the `USING` clause.
+
+### Specifying `ON` Conditions
+
+You can provide three arguments after the table name:
+1.  The first column for the `ON` condition.
+2.  The operator for the `ON` condition.
+3.  The second column for the `ON` condition.
 
 ```python
 # SELECT persons.*, animals.name
@@ -140,14 +143,25 @@ They accept four arguments:
 query = Person.query().leftJoin('animals', 'persons.id', '=', 'animals.ownerId')
 ```
 
+### Using the `USING` Clause
+
+As an alternative to `ON` conditions, you can use the `using` keyword argument with a list of column names. This is suitable when the join columns have the same name in both tables.
+
+```python
+# SELECT users.*, profiles.*
+# FROM users
+# JOIN profiles USING (profile_id)
+query = User.query().join('profiles', using=['profile_id'])
+```
+
 ### Complex Joins with Lambdas
 
 For joins that require multiple or complex `ON` conditions, you can pass a lambda function as the second argument to any of the `join` methods. This lambda receives a `JoinBuilder` object that you can use to construct the join conditions.
 
 The `JoinBuilder` has the following methods:
-*   `on(col1, op, col2)`: Adds the initial `ON` condition.
-*   `andOn(col1, op, col2)`: Adds an `AND` condition to the join.
-*   `orOn(col1, op, col2)`: Adds an `OR` condition to the join.
+*   `on(col1, op, col2)`: Adds the initial `ON` condition. `col2` can be a column name string or a `QueryBuilder` instance (for subqueries).
+*   `andOn(col1, op, col2)`: Adds an `AND` condition to the join. `col2` can be a column name string or a `QueryBuilder` instance.
+*   `orOn(col1, op, col2)`: Adds an `OR` condition to the join. `col2` can be a column name string or a `QueryBuilder` instance.
 
 ```python
 # SELECT *
@@ -160,6 +174,28 @@ query = User.query().join(
     lambda j: j.on('accounts.id', '=', 'users.account_id')
     .orOn('accounts.owner_id', '=', 'users.id'),
 )
+```
+
+### Joins with Subqueries in `ON` Clause
+
+You can use a `QueryBuilder` instance as the right-hand side of an `ON` condition, allowing for powerful join criteria based on subquery results.
+
+```python
+# SELECT p.*, (SELECT COUNT(*) FROM pets WHERE pets.owner_id = p.id) AS pet_count
+# FROM persons AS p
+# JOIN (
+#   SELECT owner_id
+#   FROM pets
+#   GROUP BY owner_id
+#   HAVING COUNT(*) > 1
+# ) AS owners_with_multiple_pets
+#   ON owners_with_multiple_pets.owner_id = p.id
+multiple_pets_subquery = Pet.query().select('owner_id').groupBy('owner_id').having('COUNT(*)', '>', 1)
+
+query = Person.query().alias('p').join(
+    Subquery(multiple_pets_subquery, 'owners_with_multiple_pets'),
+    lambda j: j.on('owners_with_multiple_pets.owner_id', '=', Column('p.id'))
+).select(Column('p.*'))
 ```
 
 Note that more complex nested join criteria are not supported.
