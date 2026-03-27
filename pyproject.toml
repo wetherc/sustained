@@ -2,19 +2,19 @@
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
-[tool.hatch.build.hooks.custom]
-path = "hatch_build.py"
-
-
 [project]
 name = "sustained"
-version = "0.0.7"
+version = "1.0.0"
 description = "A Python query builder inspired by Objection.js"
 readme = "README.md"
 requires-python = ">=3.7"
-classifiers = [ "Programming Language :: Python :: 3", "Operating System :: OS Independent",]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+]
 license = "MIT"
-license-files = [ "LICENSE",]
+license-files = ["LICENSE"]
+
 [[project.authors]]
 name = "Christopher Wetherill"
 email = "git@tbmh.org"
@@ -31,10 +31,10 @@ mypy_path = "src"
 explicit_package_bases = true
 strict = true
 check_untyped_defs = true
-exclude = [ "build/", "venv/",]
+exclude = ["build/", "venv/"]
+
+[tool.hatch.build]
+dev-mode-dirs = ["src"]
 
 [tool.hatch.build.targets.wheel]
-include = [
-  "/src/sustained/**/*.pyi",
-  "/src/sustained/py.typed",
-]
+include = ["/sustained"]
