@@ -78,7 +78,7 @@ query = (
     Order
         .query()
         .groupBy("order_status")
-        .havingIn('order_status', ['completed', 'shipped']
+        .havingIn("order_status", ["completed", "shipped"]
 )
 print(query)
 
@@ -90,7 +90,7 @@ print(query)
 query = Order.query()
     .groupBy("product_category")
     .having("SUM(sales_count)", ">", 100)
-    .andHavingIn('product_category', ['Electronics', 'Books'])
+    .andHavingIn("product_category", ["Electronics", "Books"])
 print(query)
 ```
 
@@ -102,8 +102,52 @@ This generates a `HAVING col NOT IN (...)` clause, to exclude grouped results wh
 # SELECT ...
 # GROUP BY region
 # HAVING region NOT IN ('East', 'West')
-query = Order.query().groupBy("region").havingNotIn('region', ['East', 'West'])
+query = Order.query().groupBy("region").havingNotIn("region", ["East", "West"])
 print(query)
+```
+
+## `havingLike` and `havingILike`
+
+To filter groups using `LIKE` and case-insensitive `ILIKE`, you can use the `havingLike` and `havingILike` methods.
+
+### `havingLike`
+
+This generates a `HAVING col LIKE 'pattern'` clause.
+
+```python
+# SELECT ... GROUP BY category HAVING category LIKE 'Sci-%'
+Order.query().groupBy("category").havingLike("category", "Sci-%")
+```
+
+### `havingILike`
+
+This generates a `HAVING col ILIKE 'pattern'` clause (for case-insensitive matching).
+
+```python
+# SELECT ... GROUP BY category HAVING category ILIKE 'sci-%'
+Order.query().groupBy("category").havingILike("category", "sci-%")
+```
+
+## `havingNull` and `havingNotNull`
+
+To check for `NULL` or `NOT NULL` values in grouped data, use `havingNull` and `havingNotNull`.
+
+### `havingNull`
+
+This generates a `HAVING col IS NULL` clause.
+
+```python
+# SELECT ... GROUP BY manager HAVING manager IS NULL
+Order.query().groupBy("manager").havingNull("manager")
+```
+
+### `havingNotNull`
+
+This generates a `HAVING col IS NOT NULL` clause.
+
+```python
+# SELECT ... GROUP BY manager HAVING manager IS NOT NULL
+Order.query().groupBy("manager").havingNotNull("manager")
 ```
 
 ## Grouped `having` Clauses
@@ -146,11 +190,11 @@ query = Order.query()
     .having("total_revenue", ">", 10000)
     .andHaving(lambda q: (
         q.having(lambda group1: (
-            group1.having('average_rating', '>', 4.0)
-                  .andHaving('product_type', '=', 'premium')
+            group1.having("average_rating", ">", 4.0)
+                  .andHaving("product_type", "=", "premium")
         )).orHaving(lambda group2: (
-            group2.having('inventory_count', '<', 10)
-                  .andHaving('product_type', '=', 'clearance')
+            group2.having("inventory_count", "<", 10)
+                  .andHaving("product_type", "=", "clearance")
         ))
     ))
 print(query)

@@ -17,21 +17,21 @@ from my_project import Movie
 # SELECT *
 # FROM movies
 # WHERE director = 'Quentin Tarantino'
-Movie.query().where('director', '=', 'Quentin Tarantino')
+Movie.query().where("director", "=", "Quentin Tarantino")
 
 # Chain multiple `where` clauses
 #   SELECT *
 #   FROM movies
 #   WHERE release_year > 2000
 #     AND rating > 8.5
-Movie.query().where('release_year', '>', 2000).andWhere('rating', '>', 8.5)
+Movie.query().where("release_year", ">", 2000).andWhere("rating", ">", 8.5)
 
 # Use `orWhere` to add an alternative condition
 #   SELECT *
 #   FROM movies
 #   WHERE genre = 'Sci-Fi'
 #      OR genre = 'Fantasy'
-Movie.query().where('genre', '=', 'Sci-Fi').orWhere('genre', '=', 'Fantasy')
+Movie.query().where("genre", "=", "Sci-Fi").orWhere("genre", "=", "Fantasy")
 ```
 > **Note:** The first `where` call in a chain cannot be an `orWhere` or `andWhere`. It must be a plain `where`.
 
@@ -45,14 +45,14 @@ This generates a `WHERE col IN (...)` clause.
 
 ```python
 # SELECT * FROM movies WHERE id IN (10, 25, 30)
-Movie.query().whereIn('id', [10, 25, 30])
+Movie.query().whereIn("id", [10, 25, 30])
 
 # You can also use `andWhereIn` and `orWhereIn`
 #   SELECT *
 #   FROM movies
 #   WHERE release_year = 1999
 #     AND genre IN ('Action', 'Sci-Fi')
-Movie.query().where('release_year', '=', 1999).andWhereIn('genre', ['Action', 'Sci-Fi'])
+Movie.query().where("release_year", "=", 1999).andWhereIn("genre", ["Action", "Sci-Fi"])
 ```
 
 ### `whereNotIn`
@@ -61,7 +61,7 @@ This generates a `WHERE col NOT IN (...)` clause.
 
 ```python
 # SELECT * FROM movies WHERE rating NOT IN (1, 2, 3)
-Movie.query().whereNotIn('rating', [1, 2, 3])
+Movie.query().whereNotIn("rating", [1, 2, 3])
 ```
 
 ### Using Subqueries with `whereIn` and `whereNotIn`
@@ -78,8 +78,8 @@ from my_project import User, BannedUser
 #   FROM banned_users
 # )
 User.query().whereIn(
-    'id',
-    BannedUser.query().select('user_id')
+    "id",
+    BannedUser.query().select("user_id")
 )
 ```
 
@@ -95,8 +95,8 @@ This is useful for creating conditions wrapped in parentheses, like `... AND (co
 # WHERE genre = 'Action'
 #   AND (release_year < 1990 OR rating > 9.0)
 
-query = Movie.query().where('genre', '=', 'Action').andWhere(lambda q: (
-    q.where('release_year', '<', 1990).orWhere('rating', '>', 9.0)
+query = Movie.query().where("genre", "=", "Action").andWhere(lambda q: (
+    q.where("release_year", "<", 1990).orWhere("rating", ">", 9.0)
 ))
 ```
 
@@ -114,15 +114,59 @@ You can nest these groups as deeply as you need.
 #   )
 
 query = Movie.query()
-    .where('status', '=', 'available')
+    .where("status", "=", "available")
     .andWhere(lambda q: (
         q.where(lambda group1: (
-            group1.where('genre', '=', 'Comedy').andWhere('rating', '>', 7)
+            group1.where("genre", "=", "Comedy").andWhere("rating", ">", 7)
         )).orWhere(lambda group2: (
-            group2.where('genre', '=', 'Drama').andWhere('rating', '>', 8)
+            group2.where("genre", "=", "Drama").andWhere("rating", ">", 8)
         ))
     ))
 
+
+## `whereLike` and `whereILike`
+
+To filter using `LIKE` and case-insensitive `ILIKE`, you can use the `whereLike` and `whereILike` methods.
+
+### `whereLike`
+
+This generates a `WHERE col LIKE 'pattern'` clause.
+
+```python
+# SELECT * FROM movies WHERE title LIKE 'The %'
+Movie.query().whereLike("title", "The %")
+```
+
+### `whereILike`
+
+This generates a `WHERE col ILIKE 'pattern'` clause (for case-insensitive matching).
+
+```python
+# SELECT * FROM movies WHERE title ILIKE 'the %'
+Movie.query().whereILike("title", "the %")
+```
+
+## `whereNull` and `whereNotNull`
+
+To check for `NULL` or `NOT NULL` values, use `whereNull` and `whereNotNull`.
+
+### `whereNull`
+
+This generates a `WHERE col IS NULL` clause.
+
+```python
+# SELECT * FROM movies WHERE tagline IS NULL
+Movie.query().whereNull("tagline")
+```
+
+### `whereNotNull`
+
+This generates a `WHERE col IS NOT NULL` clause.
+
+```python
+# SELECT * FROM movies WHERE tagline IS NOT NULL
+Movie.query().whereNotNull("tagline")
+```
 
 ## `whereBetween` and `whereNotBetween`
 
@@ -134,14 +178,14 @@ This generates a `WHERE col BETWEEN val1 AND val2` clause.
 
 ```python
 # SELECT * FROM movies WHERE release_year BETWEEN 1990 AND 1999
-Movie.query().whereBetween('release_year', 1990, 1999)
+Movie.query().whereBetween("release_year", 1990, 1999)
 
 # You can also use `andWhereBetween` and `orWhereBetween`
 #   SELECT *
 #   FROM movies
 #   WHERE genre = 'Action'
 #     AND release_year BETWEEN 1990 AND 1999
-Movie.query().where('genre', '=', 'Action').andWhereBetween('release_year', 1990, 1999)
+Movie.query().where("genre", "=", "Action").andWhereBetween("release_year", 1990, 1999)
 ```
 
 ### `whereNotBetween`
@@ -150,7 +194,7 @@ This generates a `WHERE col NOT BETWEEN val1 AND val2` clause.
 
 ```python
 # SELECT * FROM movies WHERE release_year NOT BETWEEN 1990 AND 1999
-Movie.query().whereNotBetween('release_year', 1990, 1999)
+Movie.query().whereNotBetween("release_year", 1990, 1999)
 ```
 
 ## `whereExists` and `whereNotExists`
@@ -172,7 +216,7 @@ from my_project import User, Post
 #   WHERE posts.user_id = users.id
 # )
 User.query().whereExists(
-    Post.query().select(QueryBuilder.raw('1')).where('posts.user_id', '=', QueryBuilder.raw('users.id'))
+    Post.query().select(QueryBuilder.raw("1")).where("posts.user_id", "=", QueryBuilder.raw("users.id"))
 )
 
 # Using a callable for the subquery
@@ -185,9 +229,9 @@ User.query().whereExists(
 # )
 User.query().whereExists(lambda q: (
     q.from_(Post)
-     .select(QueryBuilder.raw('1'))
-     .where('posts.user_id', '=', QueryBuilder.raw('users.id'))
-     .andWhere('posts.status', '=', 'published')
+     .select(QueryBuilder.raw("1"))
+     .where("posts.user_id", "=", QueryBuilder.raw("users.id"))
+     .andWhere("posts.status", "=", "published")
 ))
 ```
 > **Note:** When referencing columns from the outer query within the subquery (e.g., `users.id`), use `QueryBuilder.raw()` to prevent the column name from being treated as a string literal.
@@ -207,6 +251,6 @@ from my_project import User, Post
 #   WHERE posts.user_id = users.id
 # )
 User.query().whereNotExists(
-    Post.query().select(QueryBuilder.raw('1')).where('posts.user_id', '=', QueryBuilder.raw('users.id'))
+    Post.query().select(QueryBuilder.raw("1")).where("posts.user_id", "=", QueryBuilder.raw("users.id"))
 )
 ```
