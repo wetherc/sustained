@@ -81,6 +81,82 @@ class QueryBuilder:
         self._select_clause_builder.select(*columns)
         return self
 
+    def count(self, column: str = "*", alias: Optional[str] = None) -> "QueryBuilder":
+        """
+        Adds a COUNT() aggregate to the select clause.
+
+        Args:
+            column: The column to count. Defaults to '*'.
+            alias: An optional alias for the count column.
+
+        Returns:
+            The current QueryBuilder instance for chaining.
+        """
+        agg = AggregateExpression("COUNT", column, alias)
+        self._select_clause_builder.select(agg)
+        return self
+
+    def sum(self, column: str, alias: Optional[str] = None) -> "QueryBuilder":
+        """
+        Adds a SUM() aggregate to the select clause.
+
+        Args:
+            column: The column to sum.
+            alias: An optional alias for the sum column.
+
+        Returns:
+            The current QueryBuilder instance for chaining.
+        """
+        agg = AggregateExpression("SUM", column, alias)
+        self._select_clause_builder.select(agg)
+        return self
+
+    def select_window(
+        self,
+        function_name: str,
+        alias: str,
+        partition_by: Optional[List[str]] = None,
+        order_by: Optional[List[str]] = None,
+    ) -> "QueryBuilder":
+        """
+        Adds a window function to the select clause.
+
+        Args:
+            function_name: The name of the window function (e.g., 'ROW_NUMBER').
+            alias: The alias for the resulting column.
+            partition_by: A list of columns to partition by.
+            order_by: A list of columns to order by.
+
+        Returns:
+            The current QueryBuilder instance for chaining.
+        """
+        window = WindowExpression(function_name, alias, partition_by, order_by)
+        self._select_clause_builder.select(window)
+        return self
+
+    def select_case(
+        self,
+        alias: str,
+        else_result: Any,
+        when_clauses: List[Tuple[str, Any]],
+    ) -> "QueryBuilder":
+        """
+        Adds a CASE expression to the select clause.
+
+        Args:
+            alias: The alias for the resulting column.
+            else_result: The result for the ELSE clause.
+            when_clauses: A list of (condition, result) tuples for the WHEN clauses.
+
+        Returns:
+            The current QueryBuilder instance for chaining.
+        """
+        case_expr = CaseExpression(alias, else_result)
+        for condition, result in when_clauses:
+            case_expr.when(condition, result)
+        self._select_clause_builder.select(case_expr)
+        return self
+
     def from_(
         self, table: Union["QueryBuilder", str], alias: Optional[str] = None
     ) -> "QueryBuilder":

@@ -1,6 +1,7 @@
 import unittest
 
 from src.sustained import Model, QueryBuilder, RelationType
+from src.sustained.expressions import Column
 
 
 class TestQueryBuilder(unittest.TestCase):
@@ -324,6 +325,76 @@ class TestQueryBuilder(unittest.TestCase):
         self.assertEqual(
             str(query),
             "(SELECT id, name FROM users WHERE status = 'active') UNION (SELECT id, name FROM customers WHERE status = 'active') ORDER BY name ASC LIMIT 10",
+        )
+
+
+class TestFluentSelects(unittest.TestCase):
+    def setUp(self):
+        class User(Model):
+            tableName = "users"
+
+        self.User = User
+
+    def test_count_simple(self):
+        query = self.User.query().count()
+        self.assertEqual(str(query), "SELECT COUNT(*) FROM users")
+
+    def test_count_with_alias(self):
+        query = self.User.query().count("id", alias="total_users")
+        self.assertEqual(str(query), "SELECT COUNT(id) AS total_users FROM users")
+
+    def test_sum_simple(self):
+        query = self.User.query().sum("karma")
+        self.assertEqual(str(query), "SELECT SUM(karma) FROM users")
+
+    def test_sum_with_alias(self):
+        query = self.User.query().sum("karma", alias="total_karma")
+        self.assertEqual(str(query), "SELECT SUM(karma) AS total_karma FROM users")
+
+    def test_select_window(self):
+        query = self.User.query().select_window(
+            "ROW_NUMBER", "row_num", partition_by=["department"], order_by=["age DESC"]
+        )
+        self.assertEqual(
+            str(query),
+            "SELECT ROW_NUMBER() OVER (PARTITION BY department ORDER BY age DESC) AS row_num FROM users",
+        )
+
+    def test_select_case(self):
+        query = self.User.query().select_case(
+            "level",
+            "Beginner",
+            when_clauses=[
+                ("karma > 1000", "Advanced"),
+                ("karma > 500", "Intermediate"),
+            ],
+        )
+        self.assertEqual(
+            str(query),
+            "SELECT CASE WHEN karma > 1000 THEN 'Advanced' WHEN karma > 500 THEN 'Intermediate' ELSE 'Beginner' END AS level FROM users",
+        )
+
+    def test_select_case_with_column(self):
+        query = self.User.query().select_case(
+            "status",
+            Column("default_status"),
+            when_clauses=[("is_active = 1", Column("active_status"))],
+        )
+        self.assertEqual(
+            str(query),
+            "SELECT CASE WHEN is_active = 1 THEN active_status ELSE default_status END AS status FROM users",
+        )
+
+    def test_mixed_fluent_and_regular_select(self):
+        query = (
+            self.User.query()
+            .select("id", "name")
+            .count("id", alias="id_count")
+            .sum("karma", alias="total_karma")
+        )
+        self.assertEqual(
+            str(query),
+            "SELECT id, name, COUNT(id) AS id_count, SUM(karma) AS total_karma FROM users",
         )
 
 
