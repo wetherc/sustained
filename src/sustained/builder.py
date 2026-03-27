@@ -19,12 +19,21 @@ from .builders import (
     HavingClauseBuilder,
     JoinClauseBuilder,
     OrderByClauseBuilder,
+    SelectClauseBuilder,
     WhereClauseBuilder,
+)
+from .expressions import (
+    AggregateExpression,
+    CaseExpression,
+    Column,
+    WindowExpression,
 )
 from .types import Expression
 
 if TYPE_CHECKING:
     from .model import Model
+
+Selectable = Union[str, AggregateExpression, WindowExpression, CaseExpression, Column]
 
 
 class QueryBuilder:
@@ -43,7 +52,7 @@ class QueryBuilder:
             model_class (Type[Model]): The `Model` subclass this query is based on.
         """
         self._model_class = model_class
-        self._selected_columns: List[str] = []
+        self._select_clause_builder = SelectClauseBuilder()
         self._join_builder = JoinClauseBuilder(model_class)
         self._where_builder = WhereClauseBuilder(model_class)
         self._group_by_builder = GroupByClauseBuilder(model_class)
@@ -56,17 +65,20 @@ class QueryBuilder:
         self._top_value: Optional[int] = None
         self._from_clause: Optional[str] = None
 
-    def select(self, *columns: str) -> "QueryBuilder":
+    def select(self, *columns: Selectable) -> "QueryBuilder":
         """
         Specifies the columns to be selected in the query.
 
+        Can accept strings for column names or expression objects for more
+        complex selections like aggregates or window functions.
+
         Args:
-            *columns (str): A list of column names to select.
+            *columns: A list of columns or expression objects to select.
 
         Returns:
-            QueryBuilder: The current QueryBuilder instance for chaining.
+            The current QueryBuilder instance for chaining.
         """
-        self._selected_columns.extend(columns)
+        self._select_clause_builder.select(*columns)
         return self
 
     def from_(
@@ -138,11 +150,7 @@ class QueryBuilder:
 
     def _build_base_select_sql(self) -> str:
         query_parts = []
-        cols = (
-            ", ".join(map(str, self._selected_columns))
-            if self._selected_columns
-            else "*"
-        )
+        cols = str(self._select_clause_builder)
 
         if self._from_clause:
             full_table_name = self._from_clause
