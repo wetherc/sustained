@@ -1,0 +1,3 @@
+from .conditional_clause_builder import ConditionalClauseBuilder
+
+class WhereClauseBuilder(ConditionalClauseBuilder): ...
