@@ -79,6 +79,98 @@ person = Person()
 query = User.query().select(user.id, person.firstName)
 ```
 
+### Advanced Selections
+
+The `select` method is not limited to simple column names. You can pass in various expression objects to perform more complex queries. The `QueryBuilder` also provides several fluent API methods to make this even easier.
+
+#### Aggregates: `count()`, `sum()`, etc.
+
+You can perform aggregate calculations using the `AggregateExpression` class or the corresponding fluent methods.
+
+**Using Fluent Methods:**
+
+The easiest way is to use methods like `count()` and `sum()`.
+
+```python
+# SELECT COUNT(*) FROM users
+query = User.query().count()
+
+# SELECT COUNT(id) AS total FROM users
+query = User.query().count('id', alias='total')
+
+# SELECT SUM(amount) AS total_amount FROM orders
+query = Order.query().sum('amount', alias='total_amount')
+```
+
+**Using Expression Classes:**
+
+You can also construct `AggregateExpression` objects manually and pass them to `select()`.
+
+```python
+from sustained.expressions import AggregateExpression
+
+# SELECT AVG(price) FROM products
+query = Product.query().select(AggregateExpression('AVG', 'price'))
+```
+
+#### Window Functions
+
+Window functions can be created using the `select_window()` method or by constructing a `WindowExpression`.
+
+```python
+# SELECT
+#   ROW_NUMBER() OVER (
+#     PARTITION BY department
+#     ORDER BY hire_date
+#   ) AS seniority
+# FROM employees
+query = Employee.query().select_window(
+    'ROW_NUMBER',
+    'seniority',
+    partition_by=['department'],
+    order_by=['hire_date']
+)
+```
+
+#### CASE Expressions
+
+You can build `CASE` statements using the `select_case()` method. To distinguish between string literals and column names in the results, wrap column names in the `Column` object.
+
+```python
+from sustained.expressions import Column
+
+# SELECT
+#   CASE
+#     WHEN score > 90 THEN 'Expert'
+#     WHEN score > 50 THEN 'Intermediate'
+#     ELSE 'Beginner'
+#   END AS level
+# FROM users
+query = User.query().select_case(
+    'level',
+    'Beginner',
+    when_clauses=[
+        ('score > 90', 'Expert'),
+        ('score > 50', 'Intermediate'),
+    ]
+)
+
+# Use Column() for non-literal results
+# SELECT
+#   CASE
+#     WHEN is_active = 1 THEN last_login_date
+#     ELSE account_deactivated_date
+#   END AS last_account_activity
+# FROM users
+query = User.query().select_case(
+    'last_account_activity',
+    Column('account_deactivated_date'),
+    when_clauses=[
+        ('is_active = 1', Column('last_login_date')),
+    ]
+)
+```
+
 ## Offsetting Results
 
 The `offset()` method allows you to skip a specified number of rows in the query result. This is useful for pagination.
