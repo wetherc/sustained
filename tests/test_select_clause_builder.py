@@ -1,44 +1,55 @@
+"""
+Tests for the select-clause builder.
+"""
+
 import unittest
-from unittest.mock import MagicMock
 
 from sustained.builders.select_clause_builder import SelectClauseBuilder
-from sustained.expressions import SelectExpression
 
 
-class MockSelectExpression(SelectExpression):
-    def __init__(self, sql):
+class MockExpression:
+    def __init__(self, sql: str):
         self._sql = sql
 
-    def __str__(self):
+    def __str__(self) -> str:
         return self._sql
 
 
 class TestSelectClauseBuilder(unittest.TestCase):
-    def setUp(self):
-        self.model_class = MagicMock()
-        self.builder = SelectClauseBuilder(self.model_class)
+    def test_default_select(self) -> None:
+        """
+        Tests that the builder defaults to '*' when no columns are selected.
+        """
+        builder = SelectClauseBuilder()
+        self.assertEqual(str(builder), "*")
 
-    def test_default_select(self):
-        self.assertEqual(str(self.builder), "*")
+    def test_simple_string_columns(self) -> None:
+        """
+        Tests selecting a list of simple string columns.
+        """
+        builder = SelectClauseBuilder()
+        builder.select("id", "name", "email")
+        self.assertEqual(str(builder), "id, name, email")
 
-    def test_select_single_column(self):
-        self.builder.select("id")
-        self.assertEqual(str(self.builder), "id")
+    def test_mixed_columns_and_expressions(self) -> None:
+        """
+        Tests selecting a mix of strings and complex expression objects.
+        """
+        builder = SelectClauseBuilder()
+        builder.select(
+            "id",
+            MockExpression("COUNT(*)"),
+            "name",
+            MockExpression("SUM(price) AS total_price"),
+        )
+        self.assertEqual(str(builder), "id, COUNT(*), name, SUM(price) AS total_price")
 
-    def test_select_multiple_columns(self):
-        self.builder.select("id", "name")
-        self.assertEqual(str(self.builder), "id, name")
-
-    def test_select_mixed_strings_and_expressions(self):
-        expr = MockSelectExpression("COUNT(*)")
-        self.builder.select("id", expr)
-        self.assertEqual(str(self.builder), "id, COUNT(*)")
-
-    def test_select_multiple_calls(self):
-        self.builder.select("id")
-        self.builder.select("name")
-        self.assertEqual(str(self.builder), "id, name")
-
-
-if __name__ == "__main__":
-    unittest.main()
+    def test_adding_columns_incrementally(self) -> None:
+        """
+        Tests adding columns in multiple calls to select().
+        """
+        builder = SelectClauseBuilder()
+        builder.select("id")
+        builder.select("name", "email")
+        builder.select(MockExpression("COUNT(*)"))
+        self.assertEqual(str(builder), "id, name, email, COUNT(*)")
