@@ -115,24 +115,36 @@ class JoinClauseBuilder:
             else:
                 # This is a raw ...join() call
                 def dynamic_raw_join_caller(
-                    table: str, *args: Any
+                    table: str, *args: Any, **kwargs: Any
                 ) -> "JoinClauseBuilder":
-                    if len(args) == 3:
+                    using = kwargs.get("using")
+
+                    if using:
+                        if args:
+                            raise ValueError(
+                                "Cannot use both an ON clause and a USING clause in the same join."
+                            )
+                        if not isinstance(using, list):
+                            raise TypeError(
+                                "The 'using' argument must be a list of column names."
+                            )
+                        join_condition = f"USING ({', '.join(using)})"
+                    elif len(args) == 3:
                         # Static syntax: .join('table', 'col1', '=', 'col2')
                         col1, op, col2 = args
-                        on_clause = f"{col1} {op} {col2}"
+                        join_condition = f"ON {col1} {op} {col2}"
                     elif len(args) == 1 and callable(args[0]):
                         # Composable syntax: .join('table', lambda j: ...)
                         join_builder_fn = args[0]
                         on_clause_builder = OnClauseBuilder()
                         join_builder_fn(on_clause_builder)
-                        on_clause = str(on_clause_builder)
+                        join_condition = f"ON {on_clause_builder}"
                     else:
                         raise ValueError(
-                            "Invalid arguments for join method. Use `join(table, col1, op, col2)` or `join(table, lambda j: ...)`."
+                            "Invalid arguments for join method. Use `join(table, col1, op, col2)`, `join(table, lambda j: ...)`, or `join(table, using=['col1', 'col2'])`."
                         )
 
-                    join_clause = f"{sql_join_type} {table} ON {on_clause}"
+                    join_clause = f"{sql_join_type} {table} {join_condition}"
                     self._joins.append(join_clause)
                     return self
 

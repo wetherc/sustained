@@ -160,6 +160,13 @@ class TestJoinBuilder(unittest.TestCase):
             "SELECT * FROM animals LEFT JOIN persons ON animals.ownerId = persons.id",
         )
 
+    def test_raw_join_with_using(self):
+        query = self.Animal.query().join("persons", using=["ownerId", "personId"])
+        self.assertEqual(
+            str(query),
+            "SELECT * FROM animals JOIN persons USING (ownerId, personId)",
+        )
+
     def test_with_clause(self):
         class Order(Model):
             tableName = "orders"
