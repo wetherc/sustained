@@ -28,12 +28,10 @@ from .expressions import (
     Column,
     WindowExpression,
 )
-from .types import Expression
+from .types import CaseResult, Expression, Selectable
 
 if TYPE_CHECKING:
     from .model import Model
-
-Selectable = Union[str, AggregateExpression, WindowExpression, CaseExpression, Column]
 
 
 class QueryBuilder:
@@ -137,8 +135,8 @@ class QueryBuilder:
     def select_case(
         self,
         alias: str,
-        else_result: Any,
-        when_clauses: List[Tuple[str, Any]],
+        else_result: "CaseResult",
+        when_clauses: List[Tuple[str, "CaseResult"]],
     ) -> "QueryBuilder":
         """
         Adds a CASE expression to the select clause.

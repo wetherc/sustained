@@ -2,7 +2,10 @@
 SQL expression classes.
 """
 
-from typing import Any, List, Optional, Tuple
+from typing import TYPE_CHECKING, List, Optional, Tuple
+
+if TYPE_CHECKING:
+    from .types import CaseResult
 
 
 class Column:
@@ -100,7 +103,7 @@ class CaseExpression:
     Represents a SQL CASE expression.
     """
 
-    def __init__(self, alias: str, else_result: Any):
+    def __init__(self, alias: str, else_result: "CaseResult"):
         """
         Initializes the CASE expression.
 
@@ -110,9 +113,9 @@ class CaseExpression:
         """
         self.alias = alias
         self.else_result = else_result
-        self._whens: List[Tuple[str, Any]] = []
+        self._whens: List[Tuple[str, "CaseResult"]] = []
 
-    def when(self, condition: str, result: Any) -> "CaseExpression":
+    def when(self, condition: str, result: "CaseResult") -> "CaseExpression":
         """
         Adds a WHEN/THEN clause to the CASE expression.
 
@@ -140,7 +143,7 @@ class CaseExpression:
         sql += f" ELSE {self._format_result(self.else_result)} END AS {self.alias}"
         return sql
 
-    def _format_result(self, result: Any) -> str:
+    def _format_result(self, result: "CaseResult") -> str:
         """
         Formats a result value for inclusion in the SQL string.
         """

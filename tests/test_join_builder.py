@@ -1,10 +1,11 @@
 import unittest
-from typing import Any, Dict
+from typing import Dict
 
 from src.sustained import Model, RelationType
 from src.sustained.builders.join_builder import (
     JoinClauseBuilder,  # For direct testing where needed
 )
+from src.sustained.types import RelationMapping
 
 
 class TestJoinBuilder(unittest.TestCase):
@@ -200,7 +201,7 @@ class TestJoinBuilder(unittest.TestCase):
     def test_add_basic_join_with_none_table_name_raises_assertion_error(self):
         # Temporarily modify relationMappings for this test
         original_mappings = self.Car.relationMappings
-        temp_mappings: Dict[str, Any] = {
+        temp_mappings: Dict[str, RelationMapping] = {
             "engine": {
                 "relation": RelationType.BelongsToOneRelation,
                 "modelClass": self.EngineModelWithNoneTableName,

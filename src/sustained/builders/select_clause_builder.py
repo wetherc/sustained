@@ -2,7 +2,10 @@
 Select-clause builder.
 """
 
-from typing import Any, List
+from typing import TYPE_CHECKING, List
+
+if TYPE_CHECKING:
+    from ..types import Selectable
 
 
 class SelectClauseBuilder:
@@ -11,7 +14,7 @@ class SelectClauseBuilder:
     """
 
     def __init__(self) -> None:
-        self._selected_columns: List[Any] = []
+        self._selected_columns: List["Selectable"] = []
 
     def __str__(self) -> str:
         """
@@ -28,7 +31,7 @@ class SelectClauseBuilder:
             return "*"
         return ", ".join(str(c) for c in self._selected_columns)
 
-    def select(self, *columns: Any) -> None:
+    def select(self, *columns: "Selectable") -> None:
         """
         Adds one or more columns or expressions to the select list.
 

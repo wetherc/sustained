@@ -10,9 +10,10 @@ from typing import (
     Optional,
     Tuple,
     Type,
+    Union,
 )
 
-from ..types import Expression
+from ..types import DbReturnValue, Expression, QueryResolvable
 
 if TYPE_CHECKING:
     from ..builder import QueryBuilder
@@ -92,7 +93,12 @@ class ConditionalClauseBuilder(ABC):
         )
 
     def _add_between_internal(
-        self, conjunction: str, op: str, col: str, val1: Any, val2: Any
+        self,
+        conjunction: str,
+        op: str,
+        col: str,
+        val1: DbReturnValue,
+        val2: DbReturnValue,
     ) -> None:
         """Internal handler for adding `BETWEEN` and `NOT BETWEEN` clauses."""
         formatted_val1 = (
@@ -104,7 +110,9 @@ class ConditionalClauseBuilder(ABC):
         clause = f"{col} {op} {formatted_val1} AND {formatted_val2}"
         self._clauses.append((conjunction, clause))
 
-    def _add_exists_internal(self, conjunction: str, op: str, query: Any) -> None:
+    def _add_exists_internal(
+        self, conjunction: str, op: str, query: QueryResolvable
+    ) -> None:
         """Internal handler for adding `EXISTS` and `NOT EXISTS` clauses."""
         from ..builder import QueryBuilder
 
@@ -123,7 +131,9 @@ class ConditionalClauseBuilder(ABC):
         clause = f"{op} ({clause_str})"
         self._clauses.append((conjunction, clause))
 
-    def _build_clause(self, column: str, operator: str, value: Any) -> str:
+    def _build_clause(
+        self, column: str, operator: str, value: Union[Expression, DbReturnValue]
+    ) -> str:
         """Formats a single clause condition."""
         if isinstance(value, Expression):
             formatted_value = str(value)
@@ -131,15 +141,15 @@ class ConditionalClauseBuilder(ABC):
             escaped_value = value.replace("'", "''")
             formatted_value = f"'{escaped_value}'"
         else:
-            formatted_value = value
+            formatted_value = str(value)
         return f"{column} {operator} {formatted_value}"
 
     def _add_internal(
         self,
         conjunction: str,
-        column_or_callable: Any,
+        column_or_callable: Union[str, Callable[["ConditionalClauseBuilder"], None]],
         op: Optional[str] = None,
-        val: Optional[Any] = None,
+        val: Optional[Union[Expression, DbReturnValue]] = None,
     ) -> None:
         """Internal handler for adding clauses."""
         if callable(column_or_callable):
@@ -154,10 +164,20 @@ class ConditionalClauseBuilder(ABC):
                 raise ValueError(
                     f"Operator must be provided for non-callable {self._clause_keyword.lower()} clause."
                 )
+            if val is None:
+                raise ValueError(
+                    f"Value must be provided for non-callable {self._clause_keyword.lower()} clause."
+                )
             clause = self._build_clause(column_or_callable, op, val)
             self._clauses.append((conjunction, clause))
 
-    def _add_in_internal(self, conjunction: str, op: str, col: str, vals: Any) -> None:
+    def _add_in_internal(
+        self,
+        conjunction: str,
+        op: str,
+        col: str,
+        vals: Union[List[DbReturnValue], QueryResolvable],
+    ) -> None:
         """Internal handler for adding `IN` and `NOT IN` clauses."""
         from ..builder import QueryBuilder
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Dict, Optional, Type
 
-from .types import RelationMapping
+from .types import CaseResult, RelationMapping
 
 if TYPE_CHECKING:
     from .builder import QueryBuilder

@@ -1,10 +1,25 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import TYPE_CHECKING, Dict, Type, TypedDict, Union
+from typing import TYPE_CHECKING, Callable, Dict, Type, TypedDict, Union
 
 if TYPE_CHECKING:
+    from .builder import QueryBuilder
+    from .expressions import (
+        AggregateExpression,
+        CaseExpression,
+        Column,
+        WindowExpression,
+    )
     from .model import Model
+
+
+DbReturnValue = Union[str, int, float, bool]
+Selectable = Union[
+    str, "AggregateExpression", "WindowExpression", "CaseExpression", "Column"
+]
+CaseResult = Union[DbReturnValue, "Column"]
+QueryResolvable = Union[Callable[..., "QueryBuilder"], str, "QueryBuilder"]
 
 
 class RelationType(Enum):
