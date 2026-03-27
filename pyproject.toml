@@ -33,4 +33,4 @@ exclude = [ "build/", "venv/",]
 dev-mode-dirs = [ "src",]
 
 [tool.hatch.build.targets.wheel]
-include = [ "/sustained",]
+include = [ "/src/sustained",]
