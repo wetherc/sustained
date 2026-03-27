@@ -5,6 +5,7 @@ SQL expression classes.
 from typing import TYPE_CHECKING, Any, List, Optional, Tuple
 
 if TYPE_CHECKING:
+    from .builder import QueryBuilder
     from .types import CaseResult
 
 
@@ -53,12 +54,43 @@ class Func:
         Formats an argument for inclusion in the SQL string.
         """
         if isinstance(
-            arg, (Column, Func, AggregateExpression, WindowExpression, CaseExpression)
+            arg,
+            (
+                Column,
+                Func,
+                AggregateExpression,
+                WindowExpression,
+                CaseExpression,
+                Subquery,
+            ),
         ):
             return str(arg)
         if isinstance(arg, str):
             return f"'{arg}'"
         return str(arg)
+
+
+class Subquery:
+    """
+    Represents a subquery in a SELECT clause.
+    """
+
+    def __init__(self, query: "QueryBuilder", alias: str):
+        """
+        Initializes the subquery expression.
+
+        Args:
+            query: The QueryBuilder instance for the subquery.
+            alias: The alias for the subquery result.
+        """
+        self.query = query
+        self.alias = alias
+
+    def __str__(self) -> str:
+        """
+        Renders the subquery expression as a SQL string.
+        """
+        return f"({self.query}) AS {self.alias}"
 
 
 class AggregateExpression:

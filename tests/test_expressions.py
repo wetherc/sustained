@@ -4,13 +4,16 @@ Tests for the SQL expression classes.
 
 import unittest
 
+from sustained.builder import QueryBuilder
 from sustained.expressions import (
     AggregateExpression,
     CaseExpression,
     Column,
     Func,
+    Subquery,
     WindowExpression,
 )
+from sustained.model import Model
 
 
 class TestAggregateExpression(unittest.TestCase):
@@ -172,3 +175,20 @@ class TestFuncExpression(unittest.TestCase):
         agg = AggregateExpression("COUNT", "*")
         func = Func("FORMAT", "User count: %s", agg)
         self.assertEqual(str(func), "FORMAT('User count: %s', COUNT(*))")
+
+
+class TestSubqueryExpression(unittest.TestCase):
+    def test_simple_subquery(self) -> None:
+        """
+        Tests a simple subquery expression.
+        """
+
+        class Tmp(Model): ...
+
+        subquery_builder = (
+            QueryBuilder(Tmp).select("id").from_("other_table").where("x", "=", 1)
+        )
+        subquery = Subquery(subquery_builder, "sub")
+        self.assertEqual(
+            str(subquery), "(SELECT id FROM other_table WHERE x = 1) AS sub"
+        )
