@@ -92,8 +92,44 @@ def main():
             with open(pyproject_path, "w") as f:
                 toml.dump(pyproject_data, f)
             print(f"Upload failed. Version rolled back to {current_version}.")
+            print("Rolling back git commit and tag...")
+            subprocess.run(
+                ["git", "reset", "--hard", "HEAD~1"], cwd=project_root, check=True
+            )
+            subprocess.run(["git", "tag", "-d", tag_name], cwd=project_root, check=True)
             sys.exit(1)
         print(upload_result.stdout)
+
+        # Commit the version change
+        print("Committing version change...")
+        subprocess.run(
+            ["git", "add", str(pyproject_path)],
+            cwd=project_root,
+            check=True,
+            capture_output=True,
+        )
+        commit_message = f"chore(release): v{new_version}"
+        subprocess.run(
+            ["git", "commit", "-m", commit_message],
+            cwd=project_root,
+            check=True,
+            capture_output=True,
+        )
+
+        # Tag the release
+        print(f"Tagging version {new_version}...")
+        tag_name = f"v{new_version}"
+        tag_message = f"Sustained v{new_version}"
+        subprocess.run(
+            ["git", "tag", "-a", tag_name, "-m", tag_message],
+            cwd=project_root,
+            check=True,
+            capture_output=True,
+        )
+
+        # Push tags
+        print("Pushing tags to remote...")
+        subprocess.run(["git", "push", "--tags"], cwd=project_root, check=True)
     else:
         print("Aborting. Rolling back version change.")
         pyproject_data["project"]["version"] = current_version
