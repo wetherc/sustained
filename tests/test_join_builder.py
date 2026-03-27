@@ -167,6 +167,14 @@ class TestJoinBuilder(unittest.TestCase):
             "SELECT * FROM animals JOIN persons USING (ownerId, personId)",
         )
 
+    def test_raw_join_with_subquery_in_on(self):
+        subquery = self.Person.query().select("id").where("age", ">", 40)
+        query = self.Animal.query().join("persons", "persons.id", "=", subquery)
+        self.assertEqual(
+            str(query),
+            "SELECT * FROM animals JOIN persons ON persons.id = (SELECT id FROM persons WHERE age > 40)",
+        )
+
     def test_with_clause(self):
         class Order(Model):
             tableName = "orders"

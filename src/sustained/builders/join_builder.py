@@ -16,6 +16,7 @@ from typing import (
 from ..types import BasicJoinMapping, JoinMappingWithThrough
 
 if TYPE_CHECKING:
+    from ..builder import QueryBuilder
     from ..model import Model
 
 
@@ -28,13 +29,17 @@ class OnClauseBuilder:
     def __init__(self) -> None:
         self._conditions: List[Tuple[str, str]] = []
 
-    def on(self, col1: str, op: str, col2: str) -> "OnClauseBuilder":
+    def on(
+        self, col1: str, op: str, col2: Union[str, "QueryBuilder"]
+    ) -> "OnClauseBuilder":
         """Adds an ON condition. If this is not the first condition, it's treated as AND ON."""
         conjunction = "AND" if self._conditions else ""
         self._add_condition(conjunction, col1, op, col2)
         return self
 
-    def andOn(self, col1: str, op: str, col2: str) -> "OnClauseBuilder":
+    def andOn(
+        self, col1: str, op: str, col2: Union[str, "QueryBuilder"]
+    ) -> "OnClauseBuilder":
         """Adds an AND ON condition."""
         if not self._conditions:
             raise RuntimeError(
@@ -43,7 +48,9 @@ class OnClauseBuilder:
         self._add_condition("AND", col1, op, col2)
         return self
 
-    def orOn(self, col1: str, op: str, col2: str) -> "OnClauseBuilder":
+    def orOn(
+        self, col1: str, op: str, col2: Union[str, "QueryBuilder"]
+    ) -> "OnClauseBuilder":
         """Adds an OR ON condition."""
         if not self._conditions:
             raise RuntimeError(
@@ -52,8 +59,17 @@ class OnClauseBuilder:
         self._add_condition("OR", col1, op, col2)
         return self
 
-    def _add_condition(self, conjunction: str, col1: str, op: str, col2: str) -> None:
-        condition_str = f"{col1} {op} {col2}"
+    def _add_condition(
+        self, conjunction: str, col1: str, op: str, col2: Union[str, "QueryBuilder"]
+    ) -> None:
+        # Late import to avoid circular dependency
+        from ..builder import QueryBuilder
+
+        if isinstance(col2, QueryBuilder):
+            formatted_col2 = f"({col2})"
+        else:
+            formatted_col2 = col2
+        condition_str = f"{col1} {op} {formatted_col2}"
         self._conditions.append((conjunction, condition_str))
 
     def __str__(self) -> str:
@@ -132,7 +148,9 @@ class JoinClauseBuilder:
                     elif len(args) == 3:
                         # Static syntax: .join('table', 'col1', '=', 'col2')
                         col1, op, col2 = args
-                        join_condition = f"ON {col1} {op} {col2}"
+                        on_clause_builder = OnClauseBuilder()
+                        on_clause_builder.on(col1, op, col2)
+                        join_condition = f"ON {on_clause_builder}"
                     elif len(args) == 1 and callable(args[0]):
                         # Composable syntax: .join('table', lambda j: ...)
                         join_builder_fn = args[0]
