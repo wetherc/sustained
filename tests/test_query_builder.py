@@ -358,6 +358,30 @@ class TestFluentSelects(unittest.TestCase):
         query = self.User.query().sum("karma", alias="total_karma")
         self.assertEqual(str(query), "SELECT SUM(karma) AS total_karma FROM users")
 
+    def test_avg_simple(self):
+        query = self.User.query().avg("age")
+        self.assertEqual(str(query), "SELECT AVG(age) FROM users")
+
+    def test_avg_with_alias(self):
+        query = self.User.query().avg("age", alias="average_age")
+        self.assertEqual(str(query), "SELECT AVG(age) AS average_age FROM users")
+
+    def test_min_simple(self):
+        query = self.User.query().min("karma")
+        self.assertEqual(str(query), "SELECT MIN(karma) FROM users")
+
+    def test_min_with_alias(self):
+        query = self.User.query().min("karma", alias="lowest_karma")
+        self.assertEqual(str(query), "SELECT MIN(karma) AS lowest_karma FROM users")
+
+    def test_max_simple(self):
+        query = self.User.query().max("karma")
+        self.assertEqual(str(query), "SELECT MAX(karma) FROM users")
+
+    def test_max_with_alias(self):
+        query = self.User.query().max("karma", alias="highest_karma")
+        self.assertEqual(str(query), "SELECT MAX(karma) AS highest_karma FROM users")
+
     def test_select_window(self):
         query = self.User.query().select_window(
             "ROW_NUMBER", "row_num", partition_by=["department"], order_by=["age DESC"]

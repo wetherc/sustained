@@ -117,6 +117,51 @@ class QueryBuilder:
         self._select_clause_builder.select(agg)
         return self
 
+    def avg(self, column: str, alias: Optional[str] = None) -> "QueryBuilder":
+        """
+        Adds an AVG() aggregate to the select clause.
+
+        Args:
+            column: The column to average.
+            alias: An optional alias for the average column.
+
+        Returns:
+            The current QueryBuilder instance for chaining.
+        """
+        agg = AggregateExpression("AVG", column, alias)
+        self._select_clause_builder.select(agg)
+        return self
+
+    def min(self, column: str, alias: Optional[str] = None) -> "QueryBuilder":
+        """
+        Adds a MIN() aggregate to the select clause.
+
+        Args:
+            column: The column to find the minimum of.
+            alias: An optional alias for the min column.
+
+        Returns:
+            The current QueryBuilder instance for chaining.
+        """
+        agg = AggregateExpression("MIN", column, alias)
+        self._select_clause_builder.select(agg)
+        return self
+
+    def max(self, column: str, alias: Optional[str] = None) -> "QueryBuilder":
+        """
+        Adds a MAX() aggregate to the select clause.
+
+        Args:
+            column: The column to find the maximum of.
+            alias: An optional alias for the max column.
+
+        Returns:
+            The current QueryBuilder instance for chaining.
+        """
+        agg = AggregateExpression("MAX", column, alias)
+        self._select_clause_builder.select(agg)
+        return self
+
     def select_window(
         self,
         function_name: str,
