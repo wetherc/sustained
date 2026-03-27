@@ -477,8 +477,11 @@ class QueryBuilder:
             return dynamic_caller
 
         # Handle where methods by delegating to WhereClauseBuilder
+        where_suffixes = "|".join(
+            k for k in self._where_builder._WHERE_METHOD_MAP.keys()
+        )
         where_match = re.match(
-            r"^(or|and)?(Where|WhereIn|WhereNotIn|WhereBetween|WhereNotBetween|WhereExists|WhereNotExists)$",
+            rf"^(or|and)?({where_suffixes})$",
             name,
             re.IGNORECASE,
         )
@@ -492,9 +495,11 @@ class QueryBuilder:
             return dynamic_caller
 
         # Handle having methods by delegating to HavingClauseBuilder
-        having_match = re.match(
-            r"^(or|and)?(Having|HavingIn|HavingNotIn)$", name, re.IGNORECASE
+        having_suffixes = "|".join(
+            k.replace("where", "having")
+            for k in self._where_builder._WHERE_METHOD_MAP.keys()
         )
+        having_match = re.match(rf"^(or|and)?({having_suffixes})$", name, re.IGNORECASE)
         if having_match:
 
             def dynamic_caller(*args: Any, **kwargs: Any) -> "QueryBuilder":

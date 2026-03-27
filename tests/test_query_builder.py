@@ -1,4 +1,5 @@
 import unittest
+from typing import Dict
 
 from src.sustained import Model, QueryBuilder, RelationType
 from src.sustained.expressions import Column
@@ -332,6 +333,54 @@ class TestQueryBuilder(unittest.TestCase):
         self.assertEqual(
             str(query),
             "(SELECT id, name FROM users WHERE status = 'active') UNION (SELECT id, name FROM customers WHERE status = 'active') ORDER BY name ASC LIMIT 10",
+        )
+
+
+class TestWhereClauseOperators(unittest.TestCase):
+    def setUp(self):
+        class User(Model):
+            tableName = "users"
+
+        self.User = User
+
+    def test_where_like(self):
+        query = self.User.query().whereLike("name", "John%")
+        self.assertEqual(str(query), "SELECT * FROM users WHERE name LIKE 'John%'")
+
+    def test_where_ilike(self):
+        query = self.User.query().whereILike("name", "john%")
+        self.assertEqual(str(query), "SELECT * FROM users WHERE name ILIKE 'john%'")
+
+    def test_where_like_and_or(self):
+        query = (
+            self.User.query()
+            .where("age", ">", 18)
+            .andWhereLike("email", "%@example.com")
+            .orWhereILike("name", "jane%")
+        )
+        self.assertEqual(
+            str(query),
+            "SELECT * FROM users WHERE age > 18 AND email LIKE '%@example.com' OR name ILIKE 'jane%'",
+        )
+
+    def test_where_null(self):
+        query = self.User.query().whereNull("deleted_at")
+        self.assertEqual(str(query), "SELECT * FROM users WHERE deleted_at IS NULL")
+
+    def test_where_not_null(self):
+        query = self.User.query().whereNotNull("deleted_at")
+        self.assertEqual(str(query), "SELECT * FROM users WHERE deleted_at IS NOT NULL")
+
+    def test_where_null_and_or(self):
+        query = (
+            self.User.query()
+            .where("status", "=", "active")
+            .andWhereNull("avatar_url")
+            .orWhereNotNull("updated_at")
+        )
+        self.assertEqual(
+            str(query),
+            "SELECT * FROM users WHERE status = 'active' AND avatar_url IS NULL OR updated_at IS NOT NULL",
         )
 
 
