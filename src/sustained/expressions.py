@@ -2,7 +2,7 @@
 SQL expression classes.
 """
 
-from typing import TYPE_CHECKING, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, List, Optional, Tuple
 
 if TYPE_CHECKING:
     from .types import CaseResult
@@ -18,6 +18,47 @@ class Column:
 
     def __str__(self) -> str:
         return self.name
+
+
+class Func:
+    """
+    Represents a generic SQL function call.
+    """
+
+    def __init__(self, function_name: str, *args: Any, alias: Optional[str] = None):
+        """
+        Initializes the function expression.
+
+        Args:
+            function_name: The name of the SQL function (e.g., 'COALESCE').
+            *args: The arguments to the function.
+            alias: An optional alias for the function expression.
+        """
+        self.function_name = function_name
+        self.args = args
+        self.alias = alias
+
+    def __str__(self) -> str:
+        """
+        Renders the function expression as a SQL string.
+        """
+        formatted_args = ", ".join(self._format_arg(arg) for arg in self.args)
+        sql = f"{self.function_name}({formatted_args})"
+        if self.alias:
+            sql += f" AS {self.alias}"
+        return sql
+
+    def _format_arg(self, arg: Any) -> str:
+        """
+        Formats an argument for inclusion in the SQL string.
+        """
+        if isinstance(
+            arg, (Column, Func, AggregateExpression, WindowExpression, CaseExpression)
+        ):
+            return str(arg)
+        if isinstance(arg, str):
+            return f"'{arg}'"
+        return str(arg)
 
 
 class AggregateExpression:

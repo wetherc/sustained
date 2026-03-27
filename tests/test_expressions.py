@@ -8,6 +8,7 @@ from sustained.expressions import (
     AggregateExpression,
     CaseExpression,
     Column,
+    Func,
     WindowExpression,
 )
 
@@ -137,3 +138,37 @@ class TestCaseExpression(unittest.TestCase):
             str(case),
             "CASE WHEN promotion_active = TRUE THEN discounted_price ELSE price END AS final_price",
         )
+
+
+class TestFuncExpression(unittest.TestCase):
+    def test_simple_func(self) -> None:
+        """
+        Tests a simple function call with string and numeric arguments.
+        """
+        func = Func("COALESCE", Column("name"), "Unknown")
+        self.assertEqual(str(func), "COALESCE(name, 'Unknown')")
+
+    def test_func_with_alias(self) -> None:
+        """
+        Tests a function call with an alias.
+        """
+        func = Func("LOWER", Column("username"), alias="lower_username")
+        self.assertEqual(str(func), "LOWER(username) AS lower_username")
+
+    def test_nested_func(self) -> None:
+        """
+        Tests a nested function call.
+        """
+        inner_func = Func("CONCAT", Column("first_name"), " ", Column("last_name"))
+        outer_func = Func("UPPER", inner_func, alias="full_name")
+        self.assertEqual(
+            str(outer_func), "UPPER(CONCAT(first_name, ' ', last_name)) AS full_name"
+        )
+
+    def test_func_with_mixed_args(self) -> None:
+        """
+        Tests a function with a mix of column names, literals, and other expressions.
+        """
+        agg = AggregateExpression("COUNT", "*")
+        func = Func("FORMAT", "User count: %s", agg)
+        self.assertEqual(str(func), "FORMAT('User count: %s', COUNT(*))")

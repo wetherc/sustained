@@ -9,6 +9,7 @@ if TYPE_CHECKING:
         AggregateExpression,
         CaseExpression,
         Column,
+        Func,
         WindowExpression,
     )
     from .model import Model
@@ -16,7 +17,7 @@ if TYPE_CHECKING:
 
 DbReturnValue = Union[str, int, float, bool]
 Selectable = Union[
-    str, "AggregateExpression", "WindowExpression", "CaseExpression", "Column"
+    str, "AggregateExpression", "WindowExpression", "CaseExpression", "Column", "Func"
 ]
 CaseResult = Union[DbReturnValue, "Column"]
 QueryResolvable = Union[Callable[..., "QueryBuilder"], str, "QueryBuilder"]
