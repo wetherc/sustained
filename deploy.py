@@ -92,11 +92,6 @@ def main():
             with open(pyproject_path, "w") as f:
                 toml.dump(pyproject_data, f)
             print(f"Upload failed. Version rolled back to {current_version}.")
-            print("Rolling back git commit and tag...")
-            subprocess.run(
-                ["git", "reset", "--hard", "HEAD~1"], cwd=project_root, check=True
-            )
-            subprocess.run(["git", "tag", "-d", tag_name], cwd=project_root, check=True)
             sys.exit(1)
         print(upload_result.stdout)
 
