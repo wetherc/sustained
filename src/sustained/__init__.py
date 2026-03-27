@@ -11,6 +11,12 @@ in a more programmatic and reusable way. The main components are:
 """
 
 from .builder import QueryBuilder
+from .expressions import (
+    AggregateExpression,
+    CaseExpression,
+    Column,
+    WindowExpression,
+)
 from .model import Model, create_model
 from .types import (
     BasicJoinMapping,
@@ -23,6 +29,11 @@ from .types import (
 )
 
 __all__ = [
+    # from expressions
+    "Column",
+    "AggregateExpression",
+    "WindowExpression",
+    "CaseExpression",
     # from types
     "RelationType",
     "BasicJoinMapping",
