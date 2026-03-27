@@ -12,6 +12,13 @@ class TestQueryBuilder(unittest.TestCase):
         query = User.query().select("id", "name")
         self.assertEqual(str(query), "SELECT id, name FROM users")
 
+    def test_distinct(self):
+        class User(Model):
+            tableName = "users"
+
+        query = User.query().distinct().select("country")
+        self.assertEqual(str(query), "SELECT DISTINCT country FROM users")
+
     def test_join_related(self):
         class Person(Model):
             tableName = "persons"

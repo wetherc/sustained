@@ -62,6 +62,14 @@ class QueryBuilder:
         self._limit_value: Optional[int] = None
         self._top_value: Optional[int] = None
         self._from_clause: Optional[str] = None
+        self._distinct = False
+
+    def distinct(self) -> "QueryBuilder":
+        """
+        Adds a DISTINCT keyword to the SELECT statement.
+        """
+        self._distinct = True
+        return self
 
     def select(self, *columns: Selectable) -> "QueryBuilder":
         """
@@ -245,6 +253,8 @@ class QueryBuilder:
         having_str = str(self._having_builder)
 
         select_parts = ["SELECT"]
+        if self._distinct:
+            select_parts.append("DISTINCT")
         if self._top_value is not None:
             select_parts.append(f"TOP {self._top_value}")
 
