@@ -295,7 +295,7 @@ class TestJoinBuilder(unittest.TestCase):
         # It should remain 'post_tags.tagId = another_tags_table.id'
         self.assertEqual(
             str(query),
-            "SELECT * FROM posts INNER JOIN post_tags ON posts.id = post_tags.postId JOIN tags AS t ON post_tags.tagId = another_tags_table.id",
+            "SELECT * FROM posts INNER JOIN post_tags ON posts.id = post_tags.postId INNER JOIN tags AS t ON post_tags.tagId = another_tags_table.id",
         )
         del sys.modules[__name__].Tag
 

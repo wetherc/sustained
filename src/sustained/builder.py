@@ -22,6 +22,7 @@ from .builders import (
     SelectClauseBuilder,
     WhereClauseBuilder,
 )
+from .dialects import Dialects
 from .expressions import (
     AggregateExpression,
     CaseExpression,
@@ -42,20 +43,27 @@ class QueryBuilder:
     the `query()` class method on a `Model` subclass.
     """
 
-    def __init__(self, model_class: Type["Model"]):
+    def __init__(self, model_class: Type["Model"], dialect: Optional[Dialects] = None):
         """
         Initializes the QueryBuilder.
 
         Args:
             model_class (Type[Model]): The `Model` subclass this query is based on.
+            dialect (Optional[Dialects]): The SQL dialect to use. Defaults to Dialects.DEFAULT.
         """
         self._model_class = model_class
-        self._select_clause_builder = SelectClauseBuilder()
-        self._join_builder = JoinClauseBuilder(model_class)
-        self._where_builder = WhereClauseBuilder(model_class)
-        self._group_by_builder = GroupByClauseBuilder(model_class)
-        self._having_builder = HavingClauseBuilder(model_class)
-        self._order_by_builder = OrderByClauseBuilder(model_class)
+        self._dialect = dialect if dialect else Dialects.DEFAULT
+        self._compiler = Dialects.get_compiler(self._dialect)
+        self._select_clause_builder = SelectClauseBuilder(compiler=self._compiler)
+        self._join_builder = JoinClauseBuilder(model_class, compiler=self._compiler)
+        self._where_builder = WhereClauseBuilder(model_class, compiler=self._compiler)
+        self._group_by_builder = GroupByClauseBuilder(
+            model_class, compiler=self._compiler
+        )
+        self._having_builder = HavingClauseBuilder(model_class, compiler=self._compiler)
+        self._order_by_builder = OrderByClauseBuilder(
+            model_class, compiler=self._compiler
+        )
         self._with_clauses: List[Tuple[str, str]] = []
         self._offset_value: Optional[int] = None
         self._union_clauses: List[Tuple[str, "QueryBuilder"]] = []
@@ -220,14 +228,14 @@ class QueryBuilder:
                 raise ValueError("Subqueries in FROM clause must have an alias.")
             from_parts.append(f"({str(table)})")
         elif isinstance(table, str):
-            from_parts.append(table)
+            from_parts.append(self._compiler.quote_fully_qualified_identifier(table))
         else:
             raise TypeError(
                 "`from_` method expects a QueryBuilder instance or a raw string."
             )
 
         if alias:
-            from_parts.append(f"AS {alias}")
+            from_parts.append(f"AS {self._compiler.quote_identifier(alias)}")
 
         self._from_clause = " ".join(from_parts)
         return self
@@ -285,11 +293,11 @@ class QueryBuilder:
             model_cls = self._model_class
             parts = []
             if model_cls.database:
-                parts.append(model_cls.database)
+                parts.append(self._compiler.quote_identifier(model_cls.database))
             if model_cls.tableSchema:
-                parts.append(model_cls.tableSchema)
+                parts.append(self._compiler.quote_identifier(model_cls.tableSchema))
             if model_cls.tableName:
-                parts.append(model_cls.tableName)
+                parts.append(self._compiler.quote_identifier(model_cls.tableName))
             full_table_name = ".".join(parts)
 
         joins_str = str(self._join_builder)

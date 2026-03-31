@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Dict, Optional, Type
 
+from .dialects import Dialects
 from .types import CaseResult, RelationMapping
 
 if TYPE_CHECKING:
@@ -28,6 +29,7 @@ class Model:
     tableName: Optional[str] = None
     tableSchema: Optional[str] = None
     relationMappings: Dict[str, RelationMapping] = {}
+    _dialect: Dialects = Dialects.DEFAULT
 
     def __init__(self, **kwargs: Any) -> None:
         """
@@ -77,6 +79,16 @@ class Model:
         raise AttributeError(f"'{cls.__name__}' object has no attribute '{name}'")
 
     @classmethod
+    def set_dialect(cls, dialect: Dialects) -> None:
+        """
+        Sets the SQL dialect for all queries made with this model.
+
+        Args:
+            dialect: The dialect to use.
+        """
+        cls._dialect = dialect
+
+    @classmethod
     def query(cls) -> "QueryBuilder":
         """
         Starts a new query for this model.
@@ -86,7 +98,7 @@ class Model:
         """
         from .builder import QueryBuilder
 
-        return QueryBuilder(cls)
+        return QueryBuilder(cls, dialect=cls._dialect)
 
 
 def create_model(

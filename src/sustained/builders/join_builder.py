@@ -17,6 +17,8 @@ from ..types import BasicJoinMapping, JoinMappingWithThrough
 
 if TYPE_CHECKING:
     from ..builder import QueryBuilder
+    from ..compilers import Compiler
+    from ..dialects import Dialects
     from ..model import Model
 
 
@@ -26,7 +28,12 @@ class OnClauseBuilder:
     An instance of this is passed to the lambda in `...join(..., lambda j: ...)` calls.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, compiler: Optional["Compiler"] = None) -> None:
+        from ..dialects import Dialects  # Imported here to prevent circular dependency
+
+        self._compiler = (
+            compiler if compiler else Dialects.get_compiler(Dialects.DEFAULT)
+        )
         self._conditions: List[Tuple[str, str]] = []
 
     def on(
@@ -65,11 +72,12 @@ class OnClauseBuilder:
         # Late import to avoid circular dependency
         from ..builder import QueryBuilder
 
+        formatted_col1 = self._compiler.quote_fully_qualified_identifier(col1)
         if isinstance(col2, QueryBuilder):
             formatted_col2 = f"({col2})"
         else:
-            formatted_col2 = col2
-        condition_str = f"{col1} {op} {formatted_col2}"
+            formatted_col2 = self._compiler.quote_fully_qualified_identifier(col2)
+        condition_str = f"{formatted_col1} {op} {formatted_col2}"
         self._conditions.append((conjunction, condition_str))
 
     def __str__(self) -> str:
@@ -99,8 +107,15 @@ class JoinClauseBuilder:
         "cross": "CROSS JOIN",
     }
 
-    def __init__(self, model_class: Type["Model"]):
+    def __init__(
+        self, model_class: Type["Model"], compiler: Optional["Compiler"] = None
+    ):
         self._model_class = model_class
+        from ..dialects import Dialects  # Imported here to prevent circular dependency
+
+        self._compiler = (
+            compiler if compiler else Dialects.get_compiler(Dialects.DEFAULT)
+        )
         self._joins: List[str] = []
 
     def __str__(self) -> str:
@@ -134,6 +149,9 @@ class JoinClauseBuilder:
                     table: str, *args: Any, **kwargs: Any
                 ) -> "JoinClauseBuilder":
                     using = kwargs.get("using")
+                    quoted_table = self._compiler.quote_fully_qualified_identifier(
+                        table
+                    )
 
                     if using:
                         if args:
@@ -144,17 +162,20 @@ class JoinClauseBuilder:
                             raise TypeError(
                                 "The 'using' argument must be a list of column names."
                             )
-                        join_condition = f"USING ({', '.join(using)})"
+                        quoted_using = ", ".join(
+                            self._compiler.quote_identifier(u) for u in using
+                        )
+                        join_condition = f"USING ({quoted_using})"
                     elif len(args) == 3:
                         # Static syntax: .join('table', 'col1', '=', 'col2')
                         col1, op, col2 = args
-                        on_clause_builder = OnClauseBuilder()
+                        on_clause_builder = OnClauseBuilder(self._compiler)
                         on_clause_builder.on(col1, op, col2)
                         join_condition = f"ON {on_clause_builder}"
                     elif len(args) == 1 and callable(args[0]):
                         # Composable syntax: .join('table', lambda j: ...)
                         join_builder_fn = args[0]
-                        on_clause_builder = OnClauseBuilder()
+                        on_clause_builder = OnClauseBuilder(self._compiler)
                         join_builder_fn(on_clause_builder)
                         join_condition = f"ON {on_clause_builder}"
                     else:
@@ -162,7 +183,7 @@ class JoinClauseBuilder:
                             "Invalid arguments for join method. Use `join(table, col1, op, col2)`, `join(table, lambda j: ...)`, or `join(table, using=['col1', 'col2'])`."
                         )
 
-                    join_clause = f"{sql_join_type} {table} {join_condition}"
+                    join_clause = f"{sql_join_type} {quoted_table} {join_condition}"
                     self._joins.append(join_clause)
                     return self
 
@@ -220,18 +241,23 @@ class JoinClauseBuilder:
         assert (
             final_related_table_name is not None
         ), "Model used in a relation must have a tableName"
+        quoted_related_table = self._compiler.quote_fully_qualified_identifier(
+            final_related_table_name
+        )
 
-        from_col = join_info["from"]
-        to_col = join_info["to"]
+        from_col = self._compiler.quote_fully_qualified_identifier(join_info["from"])
+        to_col = self._compiler.quote_fully_qualified_identifier(join_info["to"])
         on_clause = f"{from_col} = {to_col}"
 
-        join_table_part = final_related_table_name
+        join_table_part = quoted_related_table
         if alias:
-            join_table_part = f"{final_related_table_name} AS {alias}"
+            quoted_alias = self._compiler.quote_identifier(alias)
+            join_table_part = f"{quoted_related_table} AS {quoted_alias}"
             # If an alias is used, update the `ON` clause to reference it.
-            to_table, to_column = to_col.split(".")
+            to_table, to_column = join_info["to"].split(".", 1)
             if to_table == final_related_table_name:
-                on_clause = f"{from_col} = {alias}.{to_column}"
+                quoted_to_column = self._compiler.quote_identifier(to_column)
+                on_clause = f"{from_col} = {quoted_alias}.{quoted_to_column}"
 
         join_clause = f"{join_type} {join_table_part} ON {on_clause}"
         self._joins.append(join_clause)
@@ -248,9 +274,12 @@ class JoinClauseBuilder:
         assert (
             related_table_name_from_model is not None
         ), "Model used in a relation must have a tableName"
+        quoted_related_table = self._compiler.quote_fully_qualified_identifier(
+            related_table_name_from_model
+        )
 
         # First join: from the base model's table to the 'through' table.
-        from_col = join_info["from"]
+        from_col = self._compiler.quote_fully_qualified_identifier(join_info["from"])
         through_from_mapping = join_info["through"]["from"]
 
         through_table_ref = through_from_mapping["table"]
@@ -263,30 +292,33 @@ class JoinClauseBuilder:
                 table_name is not None
             ), "Model used as a through table must have a tableName"
             through_table_name = table_name
+        quoted_through_table = self._compiler.quote_fully_qualified_identifier(
+            through_table_name
+        )
+        through_from_key = self._compiler.quote_identifier(through_from_mapping["key"])
 
-        through_from_key = through_from_mapping["key"]
-
-        on_clause1 = f"{from_col} = {through_table_name}.{through_from_key}"
+        on_clause1 = f"{from_col} = {quoted_through_table}.{through_from_key}"
         # The join to the through table is always an INNER JOIN.
-        join_clause1 = f"INNER JOIN {through_table_name} ON {on_clause1}"
+        join_clause1 = f"INNER JOIN {quoted_through_table} ON {on_clause1}"
         self._joins.append(join_clause1)
 
         # Second join: from the 'through' table to the final related model's table.
         through_to_mapping = join_info["through"]["to"]
-        through_to_key = through_to_mapping["key"]
-        to_col = join_info["to"]
+        through_to_key = self._compiler.quote_identifier(through_to_mapping["key"])
+        to_col = self._compiler.quote_fully_qualified_identifier(join_info["to"])
 
-        on_clause2 = f"{through_table_name}.{through_to_key} = {to_col}"
+        on_clause2 = f"{quoted_through_table}.{through_to_key} = {to_col}"
 
-        join_table_part = related_table_name_from_model
+        join_table_part = quoted_related_table
         if alias:
-            join_table_part = f"{related_table_name_from_model} AS {alias}"
+            quoted_alias = self._compiler.quote_identifier(alias)
+            join_table_part = f"{quoted_related_table} AS {quoted_alias}"
             # If an alias is used, update the `ON` clause to reference it.
-            to_table, to_column = to_col.split(".")
+            to_table, to_column = join_info["to"].split(".", 1)
             if to_table == related_table_name_from_model:
-                on_clause2 = (
-                    f"{through_table_name}.{through_to_key} = {alias}.{to_column}"
-                )
+                quoted_to_column = self._compiler.quote_identifier(to_column)
+                on_clause2 = f"{quoted_through_table}.{through_to_key} = {quoted_alias}.{quoted_to_column}"
 
-        join_clause2 = f"{join_type} {join_table_part} ON {on_clause2}"
+        second_join_type = "INNER JOIN" if join_type == "JOIN" else join_type
+        join_clause2 = f"{second_join_type} {join_table_part} ON {on_clause2}"
         self._joins.append(join_clause2)

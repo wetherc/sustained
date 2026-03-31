@@ -13,10 +13,12 @@ from typing import (
     Union,
 )
 
+from ..dialects import Dialects
 from ..types import DbReturnValue, Expression, QueryResolvable
 
 if TYPE_CHECKING:
     from ..builder import QueryBuilder
+    from ..compilers import Compiler
     from ..model import Model
 
 
@@ -37,8 +39,13 @@ class ConditionalClauseBuilder(ABC):
         "whereNotNull": "_add_null_internal",
     }
 
-    def __init__(self, model_class: Type["Model"]):
+    def __init__(
+        self, model_class: Type["Model"], compiler: Optional["Compiler"] = None
+    ):
         self._model_class = model_class
+        self._compiler = (
+            compiler if compiler else Dialects.get_compiler(Dialects.DEFAULT)
+        )
         self._clauses: List[Tuple[str, str]] = []
 
     @property
@@ -115,12 +122,8 @@ class ConditionalClauseBuilder(ABC):
         op_like_override: Optional[str] = None,
     ) -> None:
         """Internal handler for adding `BETWEEN` and `NOT BETWEEN` clauses."""
-        formatted_val1 = (
-            f"'{val1.replace("'", "''")}'" if isinstance(val1, str) else str(val1)
-        )
-        formatted_val2 = (
-            f"'{val2.replace("'", "''")}'" if isinstance(val2, str) else str(val2)
-        )
+        formatted_val1 = self._compiler.format_value(val1)
+        formatted_val2 = self._compiler.format_value(val2)
         actual_op = "NOT BETWEEN" if op_override else "BETWEEN"
         clause = f"{col} {actual_op} {formatted_val1} AND {formatted_val2}"
         self._clauses.append((conjunction, clause))
@@ -140,7 +143,7 @@ class ConditionalClauseBuilder(ABC):
 
         clause_str = ""
         if callable(query):
-            sub_query = QueryBuilder(self._model_class)
+            sub_query = QueryBuilder(self._model_class, dialect=self._compiler._dialect)
             query(sub_query)
             clause_str = str(sub_query)
         elif isinstance(query, (str, QueryBuilder)):
@@ -165,8 +168,8 @@ class ConditionalClauseBuilder(ABC):
         """Internal handler for adding `LIKE` and `ILIKE` clauses."""
         actual_op = op_like_override if op_like_override else "LIKE"
         # Escape single quotes in the pattern for SQL literal
-        escaped_pattern = pattern.replace("'", "''")
-        clause = f"{col} {actual_op} '{escaped_pattern}'"
+        formatted_pattern = self._compiler.format_value(pattern)
+        clause = f"{col} {actual_op} {formatted_pattern}"
         self._clauses.append((conjunction, clause))
 
     def _add_null_internal(
@@ -186,13 +189,7 @@ class ConditionalClauseBuilder(ABC):
         self, column: str, operator: str, value: Union[Expression, DbReturnValue]
     ) -> str:
         """Formats a single clause condition."""
-        if isinstance(value, Expression):
-            formatted_value = str(value)
-        elif isinstance(value, str):
-            escaped_value = value.replace("'", "''")
-            formatted_value = f"'{escaped_value}'"
-        else:
-            formatted_value = str(value)
+        formatted_value = self._compiler.format_value(value)
         return f"{column} {operator} {formatted_value}"
 
     def _add_internal(
@@ -208,7 +205,7 @@ class ConditionalClauseBuilder(ABC):
         """Internal handler for adding clauses."""
         if callable(column_or_callable):
             # Create a new instance of the concrete subclass for nesting
-            temp_builder = type(self)(self._model_class)
+            temp_builder = type(self)(self._model_class, self._compiler)
             column_or_callable(temp_builder)
             if temp_builder.has_clauses():
                 grouped_clause_str = temp_builder._build_clause_list_string()
@@ -240,17 +237,12 @@ class ConditionalClauseBuilder(ABC):
         actual_op = "NOT IN" if op_override else "IN"
 
         if isinstance(vals, list):
-            formatted_values = []
-            for v in vals:
-                if isinstance(v, str):
-                    formatted_values.append(f"'{v.replace("'", "''")}'")
-                else:
-                    formatted_values.append(str(v))
+            formatted_values = [self._compiler.format_value(v) for v in vals]
             values_str = ", ".join(formatted_values)
         elif isinstance(vals, (str, QueryBuilder)):
             values_str = str(vals)
         elif callable(vals):
-            sub_query = QueryBuilder(self._model_class)
+            sub_query = QueryBuilder(self._model_class, dialect=self._compiler._dialect)
             vals(sub_query)
             values_str = str(sub_query)
         else:

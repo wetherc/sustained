@@ -20,6 +20,7 @@ from .builders import (
     SelectClauseBuilder,
     WhereClauseBuilder,
 )
+from .dialects import Dialects
 from .expressions import (
     AggregateExpression,
     CaseExpression,
@@ -30,7 +31,9 @@ from .model import Model
 from .types import CaseResult, DbReturnValue, Expression, QueryResolvable, Selectable
 
 class QueryBuilder:
-    def __init__(self, model_class: Type[Model]) -> None: ...
+    def __init__(
+        self, model_class: Type[Model], dialect: Optional[Dialects] = None
+    ) -> None: ...
     def distinct(self) -> QueryBuilder: ...
     def select(self, *columns: Selectable) -> QueryBuilder: ...
     def count(self, column: str = "*", alias: Optional[str] = None) -> QueryBuilder: ...

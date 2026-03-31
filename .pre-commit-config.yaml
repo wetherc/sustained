@@ -32,7 +32,7 @@ repos:
     hooks:
       - id: unit-tests
         name: Run unit tests
-        entry: python3 -m unittest discover -s tests
+        entry: bash -c "PYTHONPATH=src python3 -m unittest discover -s tests"
         language: system
         types: [python]
         pass_filenames: false

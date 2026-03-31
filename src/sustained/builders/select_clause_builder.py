@@ -2,9 +2,13 @@
 Select-clause builder.
 """
 
-from typing import TYPE_CHECKING, List
+from typing import TYPE_CHECKING, List, Optional
+
+from ..types import Expression
 
 if TYPE_CHECKING:
+    from ..compilers import Compiler
+    from ..dialects import Dialects
     from ..types import Selectable
 
 
@@ -13,7 +17,12 @@ class SelectClauseBuilder:
     Manages the list of selected items for a SQL query.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, compiler: Optional["Compiler"] = None) -> None:
+        from ..dialects import Dialects  # Imported here to prevent circular dependency
+
+        self._compiler = (
+            compiler if compiler else Dialects.get_compiler(Dialects.DEFAULT)
+        )
         self._selected_columns: List["Selectable"] = []
 
     def __str__(self) -> str:
@@ -29,7 +38,24 @@ class SelectClauseBuilder:
         """
         if not self._selected_columns:
             return "*"
-        return ", ".join(str(c) for c in self._selected_columns)
+
+        formatted_columns = []
+        for c in self._selected_columns:
+            if isinstance(c, str):
+                if c == "*":
+                    formatted_columns.append(c)
+                else:
+                    formatted_columns.append(
+                        self._compiler.quote_fully_qualified_identifier(c)
+                    )
+            elif isinstance(c, Expression):
+                # Expressions are responsible for their own formatting.
+                formatted_columns.append(str(c))
+            else:
+                # Should not happen with current type hints, but as a safeguard:
+                formatted_columns.append(str(c))
+
+        return ", ".join(formatted_columns)
 
     def select(self, *columns: "Selectable") -> None:
         """
