@@ -226,6 +226,22 @@ with self.assertRaises(DialectError):
 query = User.query().select_func('SOME_MSSQL_ONLY_FUNCTION', 'column')
 ```
 
+##### Registered Common Functions
+
+While `.select_func()` can be used for any function, the `FunctionRegistry` includes a set of common scalar functions that are validated across all supported dialects:
+- `LOWER`
+- `UPPER`
+- `COALESCE`
+- `CONCAT`
+- `SUBSTRING`
+- `TRIM`
+- `LENGTH`
+- `ROUND`
+- `ABS`
+- `CEILING`
+- `FLOOR`
+- `MOD`
+
 #### Subqueries in Select
 
 You can use a `Subquery` object to embed a subquery directly into your `SELECT` list.

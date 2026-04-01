@@ -52,7 +52,7 @@ class Compiler:
         Renders a Func expression as a SQL string.
         """
         formatted_args = ", ".join(self._format_arg(arg) for arg in func.args)
-        sql = f"{func.function_name}({formatted_args})"
+        sql = f"{func.function_name.upper()}({formatted_args})"
         if func.alias:
             sql += f" AS {self.quote_identifier(func.alias)}"
         return sql

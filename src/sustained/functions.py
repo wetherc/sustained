@@ -29,26 +29,48 @@ class _FunctionRegistry:
 
     def _register_default_functions(self) -> None:
         """Pre-populates the registry with common SQL functions."""
+        all_dialects = [
+            Dialects.DEFAULT,
+            Dialects.PRESTO,
+            Dialects.MSSQL,
+            Dialects.POSTGRES,
+        ]
+
         # Common aggregates supported by all dialects
         common_aggregates = ["COUNT", "SUM", "AVG", "MIN", "MAX"]
         for func_name in common_aggregates:
-            self.register(
-                func_name,
-                FunctionMetadata(
-                    supported_dialects=[
-                        Dialects.DEFAULT,
-                        Dialects.PRESTO,
-                        Dialects.MSSQL,
-                        Dialects.POSTGRES,
-                    ]
-                ),
-            )
+            self.register(func_name, FunctionMetadata(supported_dialects=all_dialects))
+
+        # Common scalar functions supported by all dialects
+        common_scalars = [
+            "LOWER",
+            "UPPER",
+            "COALESCE",
+            "CONCAT",
+            "SUBSTRING",
+            "TRIM",
+            "LENGTH",
+            "ROUND",
+            "ABS",
+            "CEILING",
+            "FLOOR",
+        ]
+        for func_name in common_scalars:
+            self.register(func_name, FunctionMetadata(supported_dialects=all_dialects))
 
         # Dialect-specific functions
         self.register(
             "STRING_AGG",
             FunctionMetadata(supported_dialects=[Dialects.PRESTO, Dialects.POSTGRES]),
         )
+        self.register("GETDATE", FunctionMetadata(supported_dialects=[Dialects.MSSQL]))
+        self.register(
+            "NOW",
+            FunctionMetadata(supported_dialects=[Dialects.PRESTO, Dialects.POSTGRES]),
+        )
+        # The MOD function has different syntax across dialects, but we register the name
+        # to allow for future custom renderers.
+        self.register("MOD", FunctionMetadata(supported_dialects=all_dialects))
 
     def register(self, name: str, metadata: FunctionMetadata) -> None:
         """

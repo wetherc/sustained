@@ -31,4 +31,4 @@ class TestFunctionValidation(unittest.TestCase):
 
         query = User.query().select_func("my_awesome_func", Column("name"))
 
-        self.assertIn("my_awesome_func(name)", str(query))
+        self.assertIn("MY_AWESOME_FUNC(name)", str(query))

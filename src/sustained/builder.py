@@ -518,10 +518,7 @@ class QueryBuilder:
 
     def __getattr__(self, name: str) -> Callable[..., "QueryBuilder"]:
         """
-        Dynamically handles method calls for joins and where clauses.
-
-        This allows for methods like `where('id', '=', 1)`, `orWhere(...)`,
-        `innerJoinRelated('owner')`, etc., to be called on the query builder.
+        Dynamically handles method calls for joins, where clauses, and registered functions.
         """
         # Handle join methods by delegating to JoinClauseBuilder
         join_prefixes = "|".join(
@@ -593,6 +590,20 @@ class QueryBuilder:
                 return self
 
             return dynamic_caller
+
+        # Handle registered functions dynamically
+        try:
+            # Use a case-insensitive check against the registry
+            FunctionRegistry.get_metadata(name)
+
+            def dynamic_func_caller(*args: Any, **kwargs: Any) -> "QueryBuilder":
+                self.select_func(name, *args, **kwargs)
+                return self
+
+            return dynamic_func_caller
+        except KeyError:
+            # It's not a registered function, so continue to the final AttributeError
+            pass
 
         raise AttributeError(
             f"'{type(self).__name__}' object has no attribute '{name}'"
