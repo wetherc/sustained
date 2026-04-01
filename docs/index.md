@@ -13,9 +13,10 @@ If you are new to Sustained, it's recommended to read the guides in the followin
 
 1.  **[Models](./models):** Learn how to define models that map to your database tables.
 2.  **[Queries](./queries):** Understand how to start queries and select data.
-3.  **[Grouping](./grouping):** Group your query results and filter on groupings with the `HAVING` keyword.
-4.  **[Filtering](./filtering):** Dive into the various `where` methods for filtering your results.
-5.  **[Relations and Joins](./relations):** Learn how to define relationships between models and join them in your queries.
+3.  **[SQL Dialects](./queries#sql-dialects):** Learn how to generate SQL for different database engines.
+4.  **[Grouping](./grouping):** Group your query results and filter on groupings with the `HAVING` keyword.
+5.  **[Filtering](./filtering):** Dive into the various `where` methods for filtering your results.
+6.  **[Relations and Joins](./relations):** Learn how to define relationships between models and join them in your queries.
 
 ## API Reference
 

@@ -360,6 +360,43 @@ print(all_users)
 final_query = active_users.union(pending_users).offset(50)
 ```
 
+## SQL Dialects
+
+Sustained supports generating SQL for different database dialects. This allows you to take advantage of dialect-specific features and syntax. By default, Sustained generates standard ANSI SQL.
+
+Currently, the following dialects are supported:
+
+*   **`Dialects.DEFAULT`**: Standard ANSI SQL (Default)
+*   **`Dialects.PRESTO`**: SQL dialect for the Presto query engine.
+*   **`Dialects.MSSQL`**: SQL dialect for Microsoft SQL Server.
+*   **`Dialects.POSTGRES`**: SQL dialect for PostgreSQL.
+
+### Setting the Dialect
+
+You can set the dialect on a model class using the `set_dialect()` class method. All queries built from that model will then use the specified dialect for SQL generation.
+
+```python
+from sustained import Model
+from sustained.dialects import Dialects
+
+class User(Model):
+    tableName = "users"
+
+# Set the dialect for the User model to Presto
+User.set_dialect(Dialects.PRESTO)
+
+# This query will now be compiled using the Presto dialect
+query = User.query().select("name").where("id", "=", 1)
+
+# The resulting SQL will use Presto-specific syntax if applicable
+# e.g., SELECT "name" FROM "users" WHERE "id" = 1
+sql_string = str(query)
+
+print(sql_string)
+```
+
+This is useful if your entire application targets a single database type. You can set the dialect for each of your models once, during application startup.
+
 ## Retrieving the SQL
 
 The `QueryBuilder` does not execute the query. It only builds the SQL string. To get the final SQL, simply convert the builder instance to a string.

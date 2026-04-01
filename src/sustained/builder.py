@@ -308,8 +308,13 @@ class QueryBuilder:
         select_parts = ["SELECT"]
         if self._distinct:
             select_parts.append("DISTINCT")
+
+        compiled_top = ""
         if self._top_value is not None:
-            select_parts.append(f"TOP {self._top_value}")
+            compiled_top = self._compiler.compile_top(self._top_value)
+
+        if compiled_top:
+            select_parts.append(compiled_top)
 
         select_parts.append(cols)
         select_clause = " ".join(select_parts)
@@ -378,11 +383,11 @@ class QueryBuilder:
         if order_by_str:
             query_parts.append(order_by_str)
 
-        if self._limit_value is not None:
-            query_parts.append(f"LIMIT {self._limit_value}")
-
-        if self._offset_value is not None:
-            query_parts.append(f"OFFSET {self._offset_value}")
+        limit_offset_str = self._compiler.compile_limit_offset(
+            self._limit_value, self._offset_value
+        )
+        if limit_offset_str:
+            query_parts.append(limit_offset_str)
 
         return " ".join(query_parts)
 

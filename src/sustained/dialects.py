@@ -1,11 +1,15 @@
 from enum import Enum
 
 from .compilers.base import Compiler
+from .compilers.mssql import MssqlCompiler
+from .compilers.postgres import PostgresCompiler
 from .compilers.presto import PrestoCompiler
 
 
 class Dialects(Enum):
     PRESTO = PrestoCompiler
+    MSSQL = MssqlCompiler
+    POSTGRES = PostgresCompiler
     DEFAULT = Compiler
 
     @staticmethod

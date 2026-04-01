@@ -1,4 +1,4 @@
-from typing import TYPE_CHECKING, Any, Union
+from typing import TYPE_CHECKING, Any, Optional, Union
 
 from ..types import DbReturnValue, Expression
 
@@ -27,3 +27,14 @@ class Compiler:
             return f"'{escaped_value}'"
         else:
             return str(value)
+
+    def compile_top(self, value: int) -> str:
+        return ""
+
+    def compile_limit_offset(self, limit: Optional[int], offset: Optional[int]) -> str:
+        parts = []
+        if limit is not None:
+            parts.append(f"LIMIT {limit}")
+        if offset is not None:
+            parts.append(f"OFFSET {offset}")
+        return " ".join(parts)

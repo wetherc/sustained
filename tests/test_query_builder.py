@@ -289,14 +289,14 @@ class TestQueryBuilder(unittest.TestCase):
             tableName = "users"
 
         query = User.query().select("*").top(10)
-        self.assertEqual(str(query), "SELECT TOP 10 * FROM users")
+        self.assertEqual(str(query), "SELECT * FROM users")
 
     def test_top_with_offset(self):
         class User(Model):
             tableName = "users"
 
         query = User.query().select("*").top(10).offset(20)
-        self.assertEqual(str(query), "SELECT TOP 10 * FROM users OFFSET 20")
+        self.assertEqual(str(query), "SELECT * FROM users OFFSET 20")
 
     def test_top_and_limit_raise_error(self):
         class User(Model):
