@@ -39,36 +39,6 @@ class Func:
         self.args = args
         self.alias = alias
 
-    def __str__(self) -> str:
-        """
-        Renders the function expression as a SQL string.
-        """
-        formatted_args = ", ".join(self._format_arg(arg) for arg in self.args)
-        sql = f"{self.function_name}({formatted_args})"
-        if self.alias:
-            sql += f" AS {self.alias}"
-        return sql
-
-    def _format_arg(self, arg: Any) -> str:
-        """
-        Formats an argument for inclusion in the SQL string.
-        """
-        if isinstance(
-            arg,
-            (
-                Column,
-                Func,
-                AggregateExpression,
-                WindowExpression,
-                CaseExpression,
-                Subquery,
-            ),
-        ):
-            return str(arg)
-        if isinstance(arg, str):
-            return f"'{arg}'"
-        return str(arg)
-
 
 class Subquery:
     """

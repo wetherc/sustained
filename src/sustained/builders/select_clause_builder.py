@@ -4,12 +4,13 @@ Select-clause builder.
 
 from typing import TYPE_CHECKING, List, Optional
 
-from ..types import Expression
+from sustained.expressions import Func
+from sustained.types import Expression
 
 if TYPE_CHECKING:
-    from ..compilers import Compiler
-    from ..dialects import Dialects
-    from ..types import Selectable
+    from sustained.compilers import Compiler
+    from sustained.dialects import Dialects
+    from sustained.types import Selectable
 
 
 class SelectClauseBuilder:
@@ -18,7 +19,9 @@ class SelectClauseBuilder:
     """
 
     def __init__(self, compiler: Optional["Compiler"] = None) -> None:
-        from ..dialects import Dialects  # Imported here to prevent circular dependency
+        from sustained.dialects import (
+            Dialects,  # Imported here to prevent circular dependency
+        )
 
         self._compiler = (
             compiler if compiler else Dialects.get_compiler(Dialects.DEFAULT)
@@ -48,8 +51,9 @@ class SelectClauseBuilder:
                     formatted_columns.append(
                         self._compiler.quote_fully_qualified_identifier(c)
                     )
+            elif isinstance(c, Func):
+                formatted_columns.append(self._compiler.compile_function(c))
             elif isinstance(c, Expression):
-                # Expressions are responsible for their own formatting.
                 formatted_columns.append(str(c))
             else:
                 # Should not happen with current type hints, but as a safeguard:

@@ -480,3 +480,42 @@ class TestFluentSelects(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestFuncRendering(unittest.TestCase):
+    def setUp(self):
+        class User(Model):
+            tableName = "users"
+
+        self.User = User
+
+    def test_simple_func(self):
+        query = self.User.query().select_func("COALESCE", Column("name"), "Unknown")
+        self.assertEqual(str(query), "SELECT COALESCE(name, 'Unknown') FROM users")
+
+    def test_func_with_alias(self):
+        query = self.User.query().select_func(
+            "LOWER", Column("username"), alias="lower_username"
+        )
+        self.assertEqual(
+            str(query), "SELECT LOWER(username) AS lower_username FROM users"
+        )
+
+    def test_nested_func(self):
+        from sustained.expressions import Func
+
+        inner_func = Func("CONCAT", Column("first_name"), " ", Column("last_name"))
+        query = self.User.query().select_func("UPPER", inner_func, alias="full_name")
+        self.assertEqual(
+            str(query),
+            "SELECT UPPER(CONCAT(first_name, ' ', last_name)) AS full_name FROM users",
+        )
+
+    def test_func_with_mixed_args(self):
+        from sustained.expressions import AggregateExpression
+
+        agg = AggregateExpression("COUNT", "*")
+        query = self.User.query().select_func("FORMAT", "User count: %s", agg)
+        self.assertEqual(
+            str(query), "SELECT FORMAT('User count: %s', COUNT(*)) FROM users"
+        )

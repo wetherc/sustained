@@ -10,17 +10,17 @@ in a more programmatic and reusable way. The main components are:
 - create_model: A factory function for dynamically creating Model classes.
 """
 
-from .builder import QueryBuilder
-from .exceptions import DialectError
-from .expressions import (
+from sustained.builder import QueryBuilder
+from sustained.exceptions import DialectError
+from sustained.expressions import (
     AggregateExpression,
     CaseExpression,
     Column,
     Func,
     WindowExpression,
 )
-from .model import Model, create_model
-from .types import (
+from sustained.model import Model, create_model
+from sustained.types import (
     BasicJoinMapping,
     Join,
     JoinMappingWithThrough,

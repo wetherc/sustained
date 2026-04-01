@@ -14,7 +14,7 @@ from typing import (
     cast,
 )
 
-from .builders import (
+from sustained.builders import (
     GroupByClauseBuilder,
     HavingClauseBuilder,
     JoinClauseBuilder,
@@ -22,20 +22,20 @@ from .builders import (
     SelectClauseBuilder,
     WhereClauseBuilder,
 )
-from .dialects import Dialects
-from .exceptions import DialectError
-from .expressions import (
+from sustained.dialects import Dialects
+from sustained.exceptions import DialectError
+from sustained.expressions import (
     AggregateExpression,
     CaseExpression,
     Column,
     Func,
     WindowExpression,
 )
-from .functions import FunctionRegistry
-from .types import CaseResult, Expression, Selectable
+from sustained.functions import FunctionRegistry
+from sustained.types import CaseResult, Expression, Selectable
 
 if TYPE_CHECKING:
-    from .model import Model
+    from sustained.model import Model
 
 
 class QueryBuilder:
@@ -215,8 +215,6 @@ class QueryBuilder:
         Returns:
             The current QueryBuilder instance for chaining.
         """
-        from .expressions import Func
-
         self._validate_function(function_name)
         func = Func(function_name, *args, alias=alias)
         self._select_clause_builder.select(func)

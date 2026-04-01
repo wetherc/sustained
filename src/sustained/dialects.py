@@ -1,9 +1,9 @@
 from enum import Enum
 
-from .compilers.base import Compiler
-from .compilers.mssql import MssqlCompiler
-from .compilers.postgres import PostgresCompiler
-from .compilers.presto import PrestoCompiler
+from sustained.compilers.base import Compiler
+from sustained.compilers.mssql import MssqlCompiler
+from sustained.compilers.postgres import PostgresCompiler
+from sustained.compilers.presto import PrestoCompiler
 
 
 class Dialects(Enum):

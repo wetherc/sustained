@@ -1,9 +1,17 @@
 from typing import TYPE_CHECKING, Any, Optional, Union
 
-from ..types import DbReturnValue, Expression
+from sustained.expressions import (
+    AggregateExpression,
+    CaseExpression,
+    Column,
+    Func,
+    Subquery,
+    WindowExpression,
+)
+from sustained.types import DbReturnValue, Expression
 
 if TYPE_CHECKING:
-    from ..dialects import Dialects
+    from sustained.dialects import Dialects
 
 
 class Compiler:
@@ -38,3 +46,35 @@ class Compiler:
         if offset is not None:
             parts.append(f"OFFSET {offset}")
         return " ".join(parts)
+
+    def compile_function(self, func: Func) -> str:
+        """
+        Renders a Func expression as a SQL string.
+        """
+        formatted_args = ", ".join(self._format_arg(arg) for arg in func.args)
+        sql = f"{func.function_name}({formatted_args})"
+        if func.alias:
+            sql += f" AS {self.quote_identifier(func.alias)}"
+        return sql
+
+    def _format_arg(self, arg: Any) -> str:
+        """
+        Formats an argument for inclusion in the SQL string.
+        """
+        if isinstance(arg, Func):
+            return self.compile_function(arg)
+        if isinstance(
+            arg,
+            (
+                Column,
+                Expression,
+                AggregateExpression,
+                WindowExpression,
+                CaseExpression,
+                Subquery,
+            ),
+        ):
+            return str(arg)
+        if isinstance(arg, str):
+            return f"'{arg}'"
+        return str(arg)

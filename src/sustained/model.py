@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Dict, Optional, Type
 
-from .dialects import Dialects
-from .types import CaseResult, RelationMapping
+from sustained.builder import QueryBuilder
+from sustained.dialects import Dialects
+from sustained.types import CaseResult, RelationMapping
 
 if TYPE_CHECKING:
-    from .builder import QueryBuilder
+    pass
 
 
 class Model:
@@ -96,8 +97,6 @@ class Model:
         Returns:
             QueryBuilder: A new QueryBuilder instance for this model.
         """
-        from .builder import QueryBuilder
-
         return QueryBuilder(cls, dialect=cls._dialect)
 
 

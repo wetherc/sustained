@@ -4,7 +4,7 @@ Central registry for SQL functions and their dialect-specific support.
 
 from typing import Dict, List, NamedTuple
 
-from .dialects import Dialects
+from sustained.dialects import Dialects
 
 
 class FunctionMetadata(NamedTuple):
