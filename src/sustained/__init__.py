@@ -11,10 +11,12 @@ in a more programmatic and reusable way. The main components are:
 """
 
 from .builder import QueryBuilder
+from .exceptions import DialectError
 from .expressions import (
     AggregateExpression,
     CaseExpression,
     Column,
+    Func,
     WindowExpression,
 )
 from .model import Model, create_model
@@ -29,8 +31,11 @@ from .types import (
 )
 
 __all__ = [
+    # from exceptions
+    "DialectError",
     # from expressions
     "Column",
+    "Func",
     "AggregateExpression",
     "WindowExpression",
     "CaseExpression",

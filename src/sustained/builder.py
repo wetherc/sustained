@@ -23,12 +23,15 @@ from .builders import (
     WhereClauseBuilder,
 )
 from .dialects import Dialects
+from .exceptions import DialectError
 from .expressions import (
     AggregateExpression,
     CaseExpression,
     Column,
+    Func,
     WindowExpression,
 )
+from .functions import FunctionRegistry
 from .types import CaseResult, Expression, Selectable
 
 if TYPE_CHECKING:
@@ -79,6 +82,29 @@ class QueryBuilder:
         self._distinct = True
         return self
 
+    def _validate_function(self, function_name: str) -> None:
+        """
+        Checks if a function is supported by the current dialect.
+
+        If the function is not in the registry, it is allowed to pass through
+        without validation.
+
+        Args:
+            function_name: The name of the function.
+
+        Raises:
+            DialectError: If the function is registered but not supported by the dialect.
+        """
+        try:
+            metadata = FunctionRegistry.get_metadata(function_name)
+            if self._dialect not in metadata.supported_dialects:
+                raise DialectError(
+                    f"Function '{function_name.upper()}' is not supported by the '{self._dialect.name}' dialect."
+                )
+        except KeyError:
+            # Function is not registered, allow it to pass through.
+            pass
+
     def select(self, *columns: Selectable) -> "QueryBuilder":
         """
         Specifies the columns to be selected in the query.
@@ -106,6 +132,7 @@ class QueryBuilder:
         Returns:
             The current QueryBuilder instance for chaining.
         """
+        self._validate_function("COUNT")
         agg = AggregateExpression("COUNT", column, alias)
         self._select_clause_builder.select(agg)
         return self
@@ -121,6 +148,7 @@ class QueryBuilder:
         Returns:
             The current QueryBuilder instance for chaining.
         """
+        self._validate_function("SUM")
         agg = AggregateExpression("SUM", column, alias)
         self._select_clause_builder.select(agg)
         return self
@@ -136,6 +164,7 @@ class QueryBuilder:
         Returns:
             The current QueryBuilder instance for chaining.
         """
+        self._validate_function("AVG")
         agg = AggregateExpression("AVG", column, alias)
         self._select_clause_builder.select(agg)
         return self
@@ -151,6 +180,7 @@ class QueryBuilder:
         Returns:
             The current QueryBuilder instance for chaining.
         """
+        self._validate_function("MIN")
         agg = AggregateExpression("MIN", column, alias)
         self._select_clause_builder.select(agg)
         return self
@@ -166,8 +196,30 @@ class QueryBuilder:
         Returns:
             The current QueryBuilder instance for chaining.
         """
+        self._validate_function("MAX")
         agg = AggregateExpression("MAX", column, alias)
         self._select_clause_builder.select(agg)
+        return self
+
+    def select_func(
+        self, function_name: str, *args: Any, alias: Optional[str] = None
+    ) -> "QueryBuilder":
+        """
+        Adds a generic function call to the select clause.
+
+        Args:
+            function_name: The name of the SQL function.
+            *args: The arguments for the function.
+            alias: An optional alias for the function expression.
+
+        Returns:
+            The current QueryBuilder instance for chaining.
+        """
+        from .expressions import Func
+
+        self._validate_function(function_name)
+        func = Func(function_name, *args, alias=alias)
+        self._select_clause_builder.select(func)
         return self
 
     def select_window(
