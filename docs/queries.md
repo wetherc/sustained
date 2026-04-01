@@ -189,17 +189,41 @@ query = User.query().select_case(
 )
 ```
 
-#### Generic Functions
+#### Generic Functions with `select_func()`
 
-For any other SQL function, you can use the `Func` expression class.
+For any SQL function that doesn't have a dedicated fluent method, you can use the generic `.select_func()` method. This is the most flexible way to add function calls to your query.
 
 ```python
-from sustained import Func, Column
+from sustained import Column
 
 # SELECT COALESCE(nickname, first_name) AS display_name FROM users
-query = User.query().select(
-    Func('COALESCE', Column('nickname'), Column('first_name'), alias='display_name')
+query = User.query().select_func(
+    'COALESCE',
+    Column('nickname'),
+    Column('first_name'),
+    alias='display_name'
 )
+```
+
+##### Dialect Validation
+
+A key feature of `.select_func()` is its runtime dialect validation. The method checks the function name against an internal `FunctionRegistry`.
+
+*   **If a function is registered:** The query builder will check if it is supported by the currently configured dialect. If it is not, a `DialectError` will be raised immediately. This prevents you from sending an invalid query to your database.
+*   **If a function is not registered:** The query builder will allow it to pass through without validation. This provides the flexibility to use any custom or obscure database-specific functions at your own risk.
+
+```python
+# Assume the dialect for the User model is set to MSSQL
+User.set_dialect(Dialects.MSSQL)
+
+# This will raise a DialectError, because 'STRING_AGG' is registered
+# but not supported by the MSSQL dialect.
+with self.assertRaises(DialectError):
+    User.query().select_func('STRING_AGG', 'name')
+
+# This will succeed, because 'SOME_MSSQL_ONLY_FUNCTION' is not
+# in the registry and is allowed to pass through.
+query = User.query().select_func('SOME_MSSQL_ONLY_FUNCTION', 'column')
 ```
 
 #### Subqueries in Select
