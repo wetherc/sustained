@@ -1198,6 +1198,47 @@ class QueryBuilder:
                 conn.commit()
             return result
 
+    async def arun(self, adapter: Optional[Any] = None) -> Any:
+        """
+        Executes the query on an async adapter. Behaves like run(): SELECT
+        statements return hydrated model instances with eager relations
+        attached; writes return the row count or RETURNING rows as dicts.
+
+        Args:
+            adapter: An AsyncAdapter. Falls back to the adapter pinned by
+                an open async_transaction(), then to Model.bind_async().
+        """
+        from sustained.aio import run_async
+
+        return await run_async(self, adapter)
+
+    async def afirst(self, adapter: Optional[Any] = None) -> Optional["Model"]:
+        """
+        Async first(): executes with LIMIT 1 and returns one instance or
+        None. The query itself is left unmodified.
+        """
+        query = self.clone()
+        if query._limit_value is None and query._top_value is None:
+            query.limit(1)
+        results = await query.arun(adapter)
+        return results[0] if results else None
+
+    async def ato_dicts(self, adapter: Optional[Any] = None) -> List[Dict[str, Any]]:
+        """Async to_dicts(): rows as plain dicts keyed by column name."""
+        import time
+
+        from sustained.aio import resolve_adapter
+        from sustained.execution import notify_statement
+
+        if self._stmt_type != "select":
+            raise ValueError("Only SELECT queries return result sets.")
+        resolved = resolve_adapter(adapter, self._model_class)
+        sql, params = self.to_sql()
+        started = time.perf_counter()
+        columns, rows = await resolved.fetch(sql, params)
+        notify_statement(sql, params, time.perf_counter() - started)
+        return [dict(zip(columns, row)) for row in rows]
+
     def first(self, connection: Optional[Any] = None) -> Optional["Model"]:
         """
         Executes the query with LIMIT 1 and returns the first hydrated model

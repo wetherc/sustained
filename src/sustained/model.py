@@ -145,6 +145,7 @@ class Model(metaclass=ModelMeta):
     tableColumns: Optional[Dict[str, Any]] = None
     _dialect: Dialects = Dialects.DEFAULT
     _connection: Optional[Any] = None
+    _async_adapter: Optional[Any] = None
 
     def __init__(self, **kwargs: Any) -> None:
         """
@@ -213,6 +214,37 @@ class Model(metaclass=ModelMeta):
     def unbind(cls) -> None:
         """Removes the connection bound to this class, if any."""
         cls._connection = None
+
+    @classmethod
+    def bind_async(cls, adapter: Any) -> None:
+        """
+        Binds an AsyncAdapter for async queries made with this model. See
+        sustained.aio for the shipped adapters.
+        """
+        cls._async_adapter = adapter
+
+    @classmethod
+    def unbind_async(cls) -> None:
+        """Removes the async adapter bound to this class, if any."""
+        cls._async_adapter = None
+
+    @classmethod
+    def async_transaction(cls, adapter: Optional[Any] = None) -> Any:
+        """
+        Opens an async transaction context on the bound adapter, or the one
+        passed in. Statements inside the block share one transaction that
+        commits on success and rolls back on an exception. Nesting is not
+        supported.
+        """
+        from sustained.aio import async_transaction
+
+        resolved = adapter if adapter is not None else cls._async_adapter
+        if resolved is None:
+            raise RuntimeError(
+                "No async adapter. Bind one with Model.bind_async(adapter) "
+                "or pass it to async_transaction()."
+            )
+        return async_transaction(resolved)
 
     @classmethod
     def _qualified_table_sql(cls) -> str:
