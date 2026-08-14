@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Dict, Optional, Type
+from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple, Type
 
 from sustained.builder import QueryBuilder
 from sustained.dialects import Dialects
@@ -10,7 +10,60 @@ if TYPE_CHECKING:
     pass
 
 
-class Model:
+_MODEL_REGISTRY: Dict[str, Type["Model"]] = {}
+
+
+def get_registered_model(name: str) -> Optional[Type["Model"]]:
+    """Returns a previously defined Model subclass by class name, if any."""
+    return _MODEL_REGISTRY.get(name)
+
+
+def _qualified_column(cls: Type["Model"], name: str) -> str:
+    """Builds the fully qualified column string for a model class."""
+    parts = []
+    if cls.database:
+        parts.append(cls.database)
+    if cls.tableSchema:
+        parts.append(cls.tableSchema)
+    assert cls.tableName is not None
+    parts.append(cls.tableName)
+    parts.append(name)
+    return ".".join(parts)
+
+
+def _check_declared_columns(cls: Type["Model"], name: str) -> None:
+    """Raises if the model declares its columns and this name is not one."""
+    if cls.columns is not None and name not in cls.columns:
+        raise AttributeError(
+            f"'{cls.__name__}' does not declare a column named '{name}'. "
+            f"Declared columns: {', '.join(cls.columns)}."
+        )
+
+
+class ModelMeta(type):
+    """
+    Metaclass that registers Model subclasses by class name and provides
+    column access on the class itself, so `User.id` works without
+    instantiating the model.
+    """
+
+    def __init__(cls, name: str, bases: Tuple[type, ...], namespace: Dict[str, Any]):
+        super().__init__(name, bases, namespace)
+        if getattr(cls, "tableName", None):
+            _MODEL_REGISTRY[name] = cls  # type: ignore[assignment]
+
+    def __getattr__(cls, name: str) -> str:
+        if name.startswith("_"):
+            raise AttributeError(
+                f"type object '{cls.__name__}' has no attribute '{name}'"
+            )
+        if getattr(cls, "tableName", None):
+            _check_declared_columns(cls, name)  # type: ignore[arg-type]
+            return _qualified_column(cls, name)  # type: ignore[arg-type]
+        raise AttributeError(f"type object '{cls.__name__}' has no attribute '{name}'")
+
+
+class Model(metaclass=ModelMeta):
     """
     A base model class that mimics Objection.js models for defining database tables
     and their relationships.
@@ -30,6 +83,7 @@ class Model:
     tableName: Optional[str] = None
     tableSchema: Optional[str] = None
     relationMappings: Dict[str, RelationMapping] = {}
+    columns: Optional[Tuple[str, ...]] = None
     _dialect: Dialects = Dialects.DEFAULT
 
     def __init__(self, **kwargs: Any) -> None:
@@ -65,20 +119,10 @@ class Model:
         if name.startswith("_"):
             raise AttributeError(f"'{cls.__name__}' object has no attribute '{name}'")
 
-        database = getattr(cls, "database", None)
-        table_schema = getattr(cls, "tableSchema", None)
-        table_name = getattr(cls, "tableName", None)
-
         # We must have a table name to provide a column reference.
-        if table_name:
-            parts = []
-            if database:
-                parts.append(database)
-            if table_schema:
-                parts.append(table_schema)
-            parts.append(table_name)
-            parts.append(name)
-            return ".".join(parts)
+        if cls.tableName:
+            _check_declared_columns(cls, name)
+            return _qualified_column(cls, name)
 
         raise AttributeError(f"'{cls.__name__}' object has no attribute '{name}'")
 
@@ -109,6 +153,7 @@ def create_model(
     mappings: Optional[Dict[str, RelationMapping]] = None,
     table_schema: Optional[str] = None,
     database: Optional[str] = None,
+    columns: Optional[Tuple[str, ...]] = None,
 ) -> Type[Model]:
     """
     Dynamically creates a `Model` subclass.
@@ -149,11 +194,16 @@ def create_model(
     if mappings is None:
         mappings = {}
 
-    model_attrs = {"tableName": table_name, "relationMappings": mappings}
+    model_attrs: Dict[str, Any] = {
+        "tableName": table_name,
+        "relationMappings": mappings,
+    }
 
     if table_schema:
         model_attrs["tableSchema"] = table_schema
     if database:
         model_attrs["database"] = database
+    if columns is not None:
+        model_attrs["columns"] = tuple(columns)
 
     return type(name, (Model,), model_attrs)

@@ -208,9 +208,19 @@ class JoinClauseBuilder:
             raise ValueError(
                 f"Relation '{relation_name}' not found in model '{self._model_class.__name__}'"
             )
+        if "modelClass" not in relation or "join" not in relation:
+            raise ValueError(
+                f"Relation '{relation_name}' on model '{self._model_class.__name__}' "
+                "must define 'modelClass' and 'join'."
+            )
 
         related_model_class = self._resolve_model_class(relation["modelClass"])
         join_info = relation["join"]
+        if "from" not in join_info or "to" not in join_info:
+            raise ValueError(
+                f"Relation '{relation_name}' on model '{self._model_class.__name__}' "
+                "must define 'from' and 'to' in its join mapping."
+            )
 
         if "through" in join_info:
             # Cast to the more specific TypedDict to satisfy mypy
@@ -227,12 +237,23 @@ class JoinClauseBuilder:
     ) -> Type["Model"]:
         """Resolves a model class reference (string or class) to a class type."""
         if isinstance(model_class_ref, str):
-            # This is a simple mechanism for resolving string references. It may not be robust
-            # enough for all use cases, e.g. circular dependencies between modules.
-            # A better implementation might involve a centralized model registry.
+            from ..model import get_registered_model
+
+            registered = get_registered_model(model_class_ref)
+            if registered is not None:
+                return registered
+            # Fall back to the defining module for models that were never
+            # registered, such as classes without a tableName.
             module = self._model_class.__module__
-            models = __import__(module, fromlist=[model_class_ref])
-            return cast(Type["Model"], getattr(models, model_class_ref))
+            try:
+                models = __import__(module, fromlist=[model_class_ref])
+                return cast(Type["Model"], getattr(models, model_class_ref))
+            except AttributeError:
+                raise ValueError(
+                    f"Cannot resolve model reference '{model_class_ref}'. "
+                    "Define the model class before building the query, or pass "
+                    "the class itself instead of its name."
+                ) from None
         return model_class_ref
 
     def _add_basic_join(
@@ -260,10 +281,12 @@ class JoinClauseBuilder:
             quoted_alias = self._compiler.quote_identifier(alias)
             join_table_part = f"{quoted_related_table} AS {quoted_alias}"
             # If an alias is used, update the `ON` clause to reference it.
-            to_table, to_column = join_info["to"].split(".", 1)
-            if to_table == final_related_table_name:
-                quoted_to_column = self._compiler.quote_identifier(to_column)
-                on_clause = f"{from_col} = {quoted_alias}.{quoted_to_column}"
+            to_ref = join_info["to"]
+            if "." in to_ref:
+                to_table, to_column = to_ref.split(".", 1)
+                if to_table == final_related_table_name:
+                    quoted_to_column = self._compiler.quote_identifier(to_column)
+                    on_clause = f"{from_col} = {quoted_alias}.{quoted_to_column}"
 
         join_clause = f"{join_type} {join_table_part} ON {on_clause}"
         self._joins.append(join_clause)
@@ -320,10 +343,12 @@ class JoinClauseBuilder:
             quoted_alias = self._compiler.quote_identifier(alias)
             join_table_part = f"{quoted_related_table} AS {quoted_alias}"
             # If an alias is used, update the `ON` clause to reference it.
-            to_table, to_column = join_info["to"].split(".", 1)
-            if to_table == related_table_name_from_model:
-                quoted_to_column = self._compiler.quote_identifier(to_column)
-                on_clause2 = f"{quoted_through_table}.{through_to_key} = {quoted_alias}.{quoted_to_column}"
+            to_ref = join_info["to"]
+            if "." in to_ref:
+                to_table, to_column = to_ref.split(".", 1)
+                if to_table == related_table_name_from_model:
+                    quoted_to_column = self._compiler.quote_identifier(to_column)
+                    on_clause2 = f"{quoted_through_table}.{through_to_key} = {quoted_alias}.{quoted_to_column}"
 
         second_join_type = "INNER JOIN" if join_type == "JOIN" else join_type
         join_clause2 = f"{second_join_type} {join_table_part} ON {on_clause2}"
