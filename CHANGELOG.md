@@ -1,5 +1,21 @@
 # Changelog
 
+## 2.6.0 (2026-08-14)
+
+### Added
+
+- The migration tracking table now records a monotonic sequence number, a SHA-256 checksum of the up statements, the execution time in milliseconds, and a success flag. Apply order reads from the sequence number instead of timestamp ties. Tables written by earlier versions upgrade in place on first use; on Athena the upgrade needs an Iceberg tracking table, the same requirement `down()` already has.
+- `Migrator.validate()` and `AsyncMigrator.validate()`: check the tracking table against the registered migrations and raise `MigrationError` on failed attempts, applied ids the migrator does not know, checksum mismatches from edited migrations, and pending migrations ordered before applied ones.
+- `repair()`: deletes rows left by failed attempts and rewrites stored checksums that drifted, including null checksums on rows written before checksums existed.
+- On engines without transactions, a failing step writes a row with the success flag off, so the interrupted run is visible and blocks the next `up()` until repaired.
+- Migration runs hold an exclusive advisory lock named after the tracking table, so concurrent migrators queue instead of racing: `pg_advisory_lock` on Postgres, `sp_getapplock` on MSSQL. SQLite and DuckDB serialize writers on their own; Athena has nothing to lock with.
+- `Migration` accepts an explicit `checksum` for callable steps, and `migration_checksum()` exposes the value validation compares.
+- `applied_records()` returns the tracking rows with sequence, checksum, and success flag.
+
+### Changed
+
+- `up()` validates before running. Pass `validate=False` to skip the checks or `allow_out_of_order=True` to accept a pending migration ordered before an applied one; earlier versions applied out-of-order migrations silently.
+
 ## 2.5.0 (2026-08-14)
 
 ### Added

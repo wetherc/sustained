@@ -162,9 +162,13 @@ Guide: [Schema and Migrations](./schema)
 
 | Name | What it does |
 | --- | --- |
-| `Migration(id, up, down=None)` | One schema change. Steps are a SQL string, a list of statements, or a callable receiving the connection. |
-| `Migrator(connection, migrations, table='sustained_migrations', dialect=..., tracking_table_options=None)` | Applies and reverts migrations with a tracking table, one transaction per migration. Engines without transactions (Athena) run steps bare; `tracking_table_options` supplies the tracking table's storage clauses there. |
-| `migrator.up(target=None)` | Applies pending migrations, optionally stopping after a target id. |
+| `Migration(id, up, down=None, checksum=None)` | One schema change. Steps are a SQL string, a list of statements, or a callable receiving the connection. `checksum` pins a checksum for callable steps. |
+| `Migrator(connection, migrations, table='sustained_migrations', dialect=..., tracking_table_options=None)` | Applies and reverts migrations with a tracking table, one transaction per migration, and an advisory lock held for the run on Postgres and MSSQL. Engines without transactions (Athena) run steps bare; `tracking_table_options` supplies the tracking table's storage clauses there. |
+| `migrator.up(target=None, validate=True, allow_out_of_order=False)` | Validates the history, then applies pending migrations, optionally stopping after a target id. |
+| `migrator.validate(raise_on_problems=True)` | Checks the tracking table against the registry: failed attempts, unknown applied ids, checksum mismatches, out-of-order pending migrations. Raises `MigrationError` or returns the problem list. |
+| `migrator.repair()` | Deletes failed-attempt rows and rewrites drifted or missing checksums. Returns the actions taken. |
+| `migrator.applied_records()` | The tracking table rows: id, sequence, checksum, success. |
+| `migration_checksum(migration)` | The SHA-256 checksum validation compares, or `None` for callable steps without one. |
 | `migrator.down(steps=1)` / `migrator.down_to(id)` | Reverts newest-first. |
 | `migrator.sync(models, ...)` | Diffs the database against the models, generates a migration, applies it. Accepts `allow_drops`, `ignore_changed_columns`, `renames`, `table_renames`, `type_casts`, `migration_id`. |
 | `migrator.status()` / `applied()` / `pending()` | What has and has not run. |
@@ -196,6 +200,7 @@ All in `sustained.expressions`; the common ones re-export from `sustained`.
 | Exception | When |
 | --- | --- |
 | `DialectError` | A feature the active dialect does not support, raised at build time. |
+| `MigrationError` | Migration validation found problems; `.problems` lists them. |
 | `ValueError` | Invalid input the builder can detect: unknown operators, empty IN lists, unfiltered writes, duplicate CTE aliases, bad migration targets. |
 | `PoolTimeout` (`sustained.pool`) | The pool stayed exhausted past its timeout. |
 | `AttributeError` | Access to a column not in a model's declared `columns`. |

@@ -47,7 +47,7 @@ Upserts render `ON CONFLICT`, RETURNING works, and `whereILike()` compiles to `L
 
 ## PostgreSQL
 
-Postgres gets the largest feature surface: native `ILIKE`, `DISTINCT ON`, `RETURNING`, `ON CONFLICT` upserts, `for_update()` row locking, identity columns for `autoincrement`, `JSONB` for the `Json` type, and in-place `ALTER COLUMN` migrations with `USING` cast hints. Placeholders are `%s`, matching psycopg.
+Postgres gets the largest feature surface: native `ILIKE`, `DISTINCT ON`, `RETURNING`, `ON CONFLICT` upserts, `for_update()` row locking, identity columns for `autoincrement`, `JSONB` for the `Json` type, and in-place `ALTER COLUMN` migrations with `USING` cast hints. Migration runs hold a `pg_advisory_lock`, so concurrent deploys queue. Placeholders are `%s`, matching psycopg.
 
 ```python
 import psycopg
@@ -81,7 +81,7 @@ User.bind(pyodbc.connect('DRIVER={ODBC Driver 18 for SQL Server};SERVER=...;DATA
 newest = User.query().orderBy('created_at', 'desc').limit(10).run()
 ```
 
-RETURNING, CTAS, and `explain()` raise `DialectError`; use `OUTPUT`, `SELECT INTO`, and SSMS plans through raw SQL instead. Migrations rename with `sp_rename` and alter columns by restating the full definition.
+RETURNING, CTAS, and `explain()` raise `DialectError`; use `OUTPUT`, `SELECT INTO`, and SSMS plans through raw SQL instead. Migrations rename with `sp_rename`, alter columns by restating the full definition, and hold an `sp_getapplock` session lock while they run.
 
 ## Presto and Trino
 

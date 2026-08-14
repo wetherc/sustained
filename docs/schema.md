@@ -40,6 +40,40 @@ migrator.down_to('auto_20260814...')  # revert until this id is newest
 
 Every applied migration is recorded in a tracking table, each runs inside a transaction, and a failing step rolls itself back and leaves earlier migrations applied.
 
+## Validation and Repair
+
+The tracking table records more than the id: a sequence number fixes the apply order, a SHA-256 checksum of the up statements pins the migration's contents, and each row carries the apply timestamp, the execution time in milliseconds, and a success flag. Tracking tables written by earlier versions upgrade in place on first use.
+
+`up()` validates before it runs and raises `MigrationError` when the history and the registry disagree:
+
+- An applied migration was edited after it ran (its checksum changed).
+- An applied id is not registered with this migrator.
+- A pending migration is ordered before an applied one.
+- A failed attempt is on record.
+
+```python
+migrator.validate()                     # same checks, on demand
+migrator.validate(raise_on_problems=False)  # -> list of problem strings
+migrator.up(allow_out_of_order=True)    # accept a late-arriving migration
+migrator.up(validate=False)             # skip the checks entirely
+```
+
+`repair()` brings the tracking table back in line: it deletes rows left by failed attempts and rewrites stored checksums after an intentional edit, including null checksums on rows written before checksums existed. Repair only fixes bookkeeping; schema changes a failed attempt left behind need manual cleanup first.
+
+```python
+migrator.repair()
+# ["removed the failed attempt of 'add_flag'",
+#  "updated the stored checksum of 'create_users'"]
+```
+
+Checksums cover the exact SQL text, so reformatting a migration counts as an edit; run `repair()` to accept it. Callable steps have no SQL to hash and record a null checksum, which validation skips; pass `Migration(..., checksum='...')` to pin one yourself.
+
+On engines without transactions, a failing step writes a row with the success flag off, so the interrupted run is visible. Validation then blocks `up()` until you clean up and run `repair()`.
+
+## Concurrency
+
+While a run is in progress, the migrator holds an exclusive advisory lock named after the tracking table, so two application instances deploying at once queue instead of racing each other's DDL. Postgres uses `pg_advisory_lock`, MSSQL uses `sp_getapplock`; both are session-scoped and release on disconnect. SQLite and DuckDB serialize writers on their own. Athena has no lock to take, so run one migrator at a time there.
+
 ## Inspecting Drift Before Applying
 
 `diff_schema()` reports every difference without touching anything. `autogenerate()` builds the migration so you can review its statements before it runs.
@@ -181,4 +215,4 @@ migrator.status()                    # [(id, applied), ...]
 
 ## Offline Review and Async
 
-`migrator.script('up')` renders every statement a run would execute, including tracking bookkeeping, without touching the database, for review or DBA handoff; `script('down')` renders the rollback. For async services, `AsyncMigrator` in `sustained.aio_migrations` runs the same `Migration` objects on an `AsyncAdapter` with the same `up`, `down`, `down_to`, and `status` surface; callable steps receive the adapter and are awaited.
+`migrator.script('up')` renders every statement a run would execute, including tracking bookkeeping, without touching the database, for review or DBA handoff; `script('down')` renders the rollback. For async services, `AsyncMigrator` in `sustained.aio_migrations` runs the same `Migration` objects on an `AsyncAdapter` with the same `up`, `down`, `down_to`, `status`, `validate`, and `repair` surface; callable steps receive the adapter and are awaited.
