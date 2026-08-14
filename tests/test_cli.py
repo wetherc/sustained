@@ -26,7 +26,7 @@ migrations_dir = os.path.join(os.path.dirname(__file__), "migrations")
 """
 
 
-class CliTestCase(unittest.TestCase):
+class CliBase(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.TemporaryDirectory()
         self.addCleanup(self.dir.cleanup)
@@ -63,6 +63,10 @@ class CliTestCase(unittest.TestCase):
                 "SELECT name FROM sqlite_master WHERE type = 'table'"
             ).fetchall()
         return {r[0] for r in rows}
+
+
+class CliTestCase(CliBase):
+    """The commands that run, revert, and inspect migrations."""
 
     def test_migrate_then_status(self):
         code, out, _ = self.run_cli("migrate")
@@ -271,6 +275,136 @@ class CliTestCase(unittest.TestCase):
             code = main(["status", "--config", name])
         self.assertEqual(code, 1)
         self.assertIn("Unknown dialect", stderr.getvalue())
+
+
+class PlanCliTestCase(CliBase):
+    """The plan command: pending work, problems, and model drift."""
+
+    def _config(self, suffix, extra):
+        name = f"plan_config_{suffix}_{id(self)}"
+        with open(os.path.join(self.dir.name, f"{name}.py"), "w") as f:
+            f.write(CONFIG_TEMPLATE + extra)
+        self.addCleanup(sys.modules.pop, name, None)
+        return name
+
+    def _run(self, name, *argv):
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            code = main([*argv, "--config", name])
+        return code, stdout.getvalue(), stderr.getvalue()
+
+    def test_pending_work_exits_two(self):
+        code, out, _ = self.run_cli("plan")
+        self.assertEqual(code, 2)
+        self.assertIn("pending", out)
+        self.assertIn("001_users", out)
+        self.assertIn("1 statement", out)
+        self.assertIn("2 pending migrations", out)
+        self.assertIn("run: sustained migrate", out)
+
+    def test_nothing_to_do_exits_zero(self):
+        self.run_cli("migrate")
+        code, out, _ = self.run_cli("plan")
+        self.assertEqual(code, 0)
+        self.assertIn("Nothing pending, no problems.", out)
+        self.assertIn("names no models", out)
+
+    def test_destructive_statements_are_labelled(self):
+        self._write(
+            os.path.join(self.dir.name, "migrations"),
+            "003_cleanup.up.sql",
+            "DROP TABLE flags;",
+        )
+        code, out, _ = self.run_cli("plan")
+        self.assertEqual(code, 2)
+        self.assertIn("destructive  DROP TABLE flags", out)
+
+    def test_problems_win_over_pending(self):
+        self.run_cli("migrate")
+        self._write(
+            os.path.join(self.dir.name, "migrations"),
+            "001_users.up.sql",
+            "CREATE TABLE users (id BIGINT);",
+        )
+        code, out, _ = self.run_cli("plan")
+        self.assertEqual(code, 1)
+        self.assertIn("problems", out)
+        self.assertIn("checksum mismatch", out)
+        self.assertNotIn("run: sustained migrate", out)
+
+    def test_changed_repeatable_is_marked(self):
+        migrations = os.path.join(self.dir.name, "migrations")
+        self._write(
+            migrations, "active.repeat.sql", "CREATE VIEW IF NOT EXISTS v AS SELECT 1;"
+        )
+        self.run_cli("migrate")
+        self._write(
+            migrations, "active.repeat.sql", "CREATE VIEW IF NOT EXISTS v AS SELECT 2;"
+        )
+        code, out, _ = self.run_cli("plan")
+        self.assertEqual(code, 2)
+        self.assertIn("active", out)
+        self.assertIn("repeat changed", out)
+
+    def test_new_repeatable_is_marked(self):
+        self._write(
+            os.path.join(self.dir.name, "migrations"),
+            "active.repeat.sql",
+            "CREATE VIEW IF NOT EXISTS v AS SELECT 1;",
+        )
+        code, out, _ = self.run_cli("plan")
+        self.assertEqual(code, 2)
+        self.assertIn("1 statement  repeat", out)
+
+    def test_callable_step_counts_nothing(self):
+        name = self._config(
+            "callable",
+            "\nfrom sustained.migrations import Migration\n"
+            "def _backfill(connection):\n    connection.execute('SELECT 1')\n"
+            "migrations = [Migration('000_backfill', up=_backfill, "
+            "checksum='fixed')]\n",
+        )
+        code, out, _ = self._run(name, "plan")
+        self.assertEqual(code, 2)
+        self.assertIn("000_backfill  callable step", out)
+
+    def test_drift_reported_when_models_configured(self):
+        name = self._config(
+            "models",
+            "\nfrom sustained import create_model\n"
+            "from sustained.schema import Integer, Text\n"
+            "Drifted = create_model('Drifted', 'users')\n"
+            "Drifted.tableColumns = {'id': Integer(primary_key=True), "
+            "'bio': Text()}\n"
+            "Drifted.columns = ('id', 'bio')\n"
+            "models = [Drifted]\n",
+        )
+        self._run(name, "migrate")
+        code, out, _ = self._run(name, "plan")
+        self.assertEqual(code, 2)
+        self.assertIn("drift", out)
+        self.assertIn("ADD COLUMN bio", out)
+        self.assertIn("DROP TABLE flags", out)
+        self.assertIn("2 drift statements", out)
+        self.assertNotIn("run: sustained migrate", out)
+
+    def test_no_drift_when_models_match(self):
+        name = self._config(
+            "matching",
+            "\nfrom sustained import create_model\n"
+            "from sustained.schema import Integer\n"
+            "Users = create_model('Users', 'users')\n"
+            "Users.tableColumns = {'id': Integer()}\n"
+            "Users.columns = ('id',)\n"
+            "Flags = create_model('Flags', 'flags')\n"
+            "Flags.tableColumns = {'id': Integer()}\n"
+            "Flags.columns = ('id',)\n"
+            "models = [Users, Flags]\n",
+        )
+        self._run(name, "migrate")
+        code, out, _ = self._run(name, "plan")
+        self.assertEqual(code, 0)
+        self.assertIn("Nothing pending, no problems, no drift.", out)
 
 
 if __name__ == "__main__":

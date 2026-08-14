@@ -10,12 +10,15 @@ The config module names the pieces the migrator needs:
   loaded after the list
 - `placeholders`: a dict filling `${key}` markers in the SQL files
   (optional)
+- `models`: a list of Model classes, which lets `plan` report drift
+  between the models and the database (optional)
 - `dialect`: a Dialects member or its name, such as 'postgres' (optional)
 - `table`: the tracking table name (optional)
 - `tracking_table_options`: TableOptions for the tracking table (optional)
 
-Commands: status, migrate, down, validate, repair, script, baseline.
-Every command exits 0 on success and 1 on failure.
+Commands: status, plan, migrate, down, validate, repair, script,
+baseline. Every command exits 0 on success and 1 on failure. `plan`
+exits 2 when work is waiting.
 """
 
 from __future__ import annotations
@@ -26,10 +29,11 @@ import os
 import sys
 from typing import Any, List, Optional, Sequence, Tuple
 
+from sustained.analysis import PendingSummary, summarize
 from sustained.dialects import Dialects
 from sustained.exceptions import MigrationError
 from sustained.migration_files import load_migrations
-from sustained.migrations import Migration, Migrator
+from sustained.migrations import Migration, Migrator, migration_sql
 
 
 def _resolve_dialect(value: Any) -> Dialects:
@@ -94,13 +98,95 @@ def _build_migrator(config: Any) -> Tuple[Migrator, Any]:
     return migrator, connection
 
 
-def _cmd_status(migrator: Migrator, args: argparse.Namespace) -> int:
+def _cmd_status(migrator: Migrator, args: argparse.Namespace, config: Any) -> int:
     for migration_id, state in migrator.statuses():
         print(f"{state:8} {migration_id}")
     return 0
 
 
-def _cmd_migrate(migrator: Migrator, args: argparse.Namespace) -> int:
+def _count(number: int, noun: str) -> str:
+    return f"{number} {noun}" if number == 1 else f"{number} {noun}s"
+
+
+def _drift_statements(migrator: Migrator, config: Any) -> Optional[List[str]]:
+    """
+    The statements that would close the gap between the config module's
+    models and the database, or None when the module names no models.
+
+    Drops are included: a preview reports every difference, including
+    tables and columns the models no longer declare, which sync() would
+    refuse to generate. The statements print in full, so a drop reads as
+    a drop without a separate label.
+    """
+    models = getattr(config, "models", None)
+    if not models:
+        return None
+    migration = migrator.plan(list(models), allow_drops=True)
+    if migration is None:
+        return []
+    return migration_sql(migration, "up")
+
+
+def _print_pending(summaries: List[PendingSummary]) -> None:
+    print("pending")
+    width = max(len(s.id) for s in summaries)
+    for summary in summaries:
+        if summary.statements is None:
+            size = "callable step"
+        else:
+            size = _count(summary.statements, "statement")
+        marker = ""
+        if summary.repeatable:
+            marker = "  repeat" + (" changed" if summary.state == "changed" else "")
+        print(f"  {summary.id:<{width}}  {size}{marker}")
+        for statement in summary.destructive:
+            print(f"    destructive  {statement}")
+
+
+def _cmd_plan(migrator: Migrator, args: argparse.Namespace, config: Any) -> int:
+    states = dict(migrator.statuses())
+    summaries = [summarize(m, states.get(m.id, "pending")) for m in migrator.pending()]
+    problems = migrator.validate(raise_on_problems=False)
+    drift = _drift_statements(migrator, config)
+
+    sections: List[str] = []
+    if summaries:
+        _print_pending(summaries)
+        sections.append(_count(len(summaries), "pending migration"))
+    if problems:
+        if sections:
+            print()
+        print("problems")
+        for problem in problems:
+            print(f"  {problem}")
+        sections.append(_count(len(problems), "problem"))
+    if drift:
+        if sections:
+            print()
+        print("drift")
+        for statement in drift:
+            print(f"  {statement}")
+        sections.append(_count(len(drift), "drift statement"))
+
+    if not sections:
+        if drift is None:
+            print(
+                "Nothing pending, no problems. Drift unchecked: the config "
+                "module names no models."
+            )
+        else:
+            print("Nothing pending, no problems, no drift.")
+        return 0
+    print()
+    print(", ".join(sections))
+    if problems:
+        return 1
+    if summaries:
+        print("run: sustained migrate")
+    return 2
+
+
+def _cmd_migrate(migrator: Migrator, args: argparse.Namespace, config: Any) -> int:
     applied = migrator.up(
         target=args.target,
         validate=not args.no_validate,
@@ -113,7 +199,7 @@ def _cmd_migrate(migrator: Migrator, args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_down(migrator: Migrator, args: argparse.Namespace) -> int:
+def _cmd_down(migrator: Migrator, args: argparse.Namespace, config: Any) -> int:
     if args.to is not None:
         reverted = migrator.down_to(args.to)
     else:
@@ -125,7 +211,7 @@ def _cmd_down(migrator: Migrator, args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_validate(migrator: Migrator, args: argparse.Namespace) -> int:
+def _cmd_validate(migrator: Migrator, args: argparse.Namespace, config: Any) -> int:
     problems = migrator.validate(raise_on_problems=False)
     if not problems:
         print("OK")
@@ -135,7 +221,7 @@ def _cmd_validate(migrator: Migrator, args: argparse.Namespace) -> int:
     return 1
 
 
-def _cmd_repair(migrator: Migrator, args: argparse.Namespace) -> int:
+def _cmd_repair(migrator: Migrator, args: argparse.Namespace, config: Any) -> int:
     actions = migrator.repair()
     if not actions:
         print("Nothing to repair.")
@@ -144,12 +230,12 @@ def _cmd_repair(migrator: Migrator, args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_script(migrator: Migrator, args: argparse.Namespace) -> int:
+def _cmd_script(migrator: Migrator, args: argparse.Namespace, config: Any) -> int:
     print(migrator.script(args.direction))
     return 0
 
 
-def _cmd_baseline(migrator: Migrator, args: argparse.Namespace) -> int:
+def _cmd_baseline(migrator: Migrator, args: argparse.Namespace, config: Any) -> int:
     recorded = migrator.baseline(args.target)
     if not recorded:
         print("Nothing to baseline.")
@@ -174,6 +260,10 @@ def _build_parser() -> argparse.ArgumentParser:
         return sub
 
     command("status", "Show every migration's state: applied, pending, or changed.")
+    command(
+        "plan",
+        "Show the pending migrations, the problems, and the model drift.",
+    )
 
     migrate = command("migrate", "Apply pending migrations in order.")
     migrate.add_argument("--target", help="Stop after this migration id.")
@@ -207,6 +297,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 _COMMANDS = {
     "status": _cmd_status,
+    "plan": _cmd_plan,
     "migrate": _cmd_migrate,
     "down": _cmd_down,
     "validate": _cmd_validate,
@@ -225,7 +316,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print(f"error: {error}", file=sys.stderr)
         return 1
     try:
-        return _COMMANDS[args.command](migrator, args)
+        return _COMMANDS[args.command](migrator, args, config)
     except MigrationError as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
