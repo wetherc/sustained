@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, List, Optional
 from sustained.expressions import (
     AggregateExpression,
     CaseExpression,
+    ColumnExpr,
     Func,
     WindowExpression,
 )
@@ -56,6 +57,8 @@ class SelectClauseBuilder:
         for c in self._selected_columns:
             if isinstance(c, str):
                 formatted_columns.append(self._format_string_column(c))
+            elif isinstance(c, ColumnExpr):
+                formatted_columns.append(self._compiler.quote_column_reference(c.name))
             elif isinstance(c, Func):
                 formatted_columns.append(self._compiler.compile_function(c))
             elif isinstance(c, AggregateExpression):

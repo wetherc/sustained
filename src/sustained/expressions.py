@@ -2,11 +2,176 @@
 SQL expression classes.
 """
 
-from typing import TYPE_CHECKING, Any, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Callable, List, Optional, Tuple, Union
 
 if TYPE_CHECKING:
     from .builder import QueryBuilder
+    from .rendering import RenderContext
     from .types import CaseResult
+
+
+class Predicate:
+    """
+    A composable SQL condition. Build predicates from ColumnExpr comparisons
+    and combine them with & (AND), | (OR), and ~ (NOT). Pass the result to
+    where() or having().
+    """
+
+    def __init__(self, render: "Callable[[RenderContext], str]") -> None:
+        self._render = render
+
+    def render(self, ctx: "RenderContext") -> str:
+        return self._render(ctx)
+
+    def __and__(self, other: "Predicate") -> "Predicate":
+        if not isinstance(other, Predicate):
+            return NotImplemented
+        return Predicate(lambda ctx: f"({self.render(ctx)} AND {other.render(ctx)})")
+
+    def __or__(self, other: "Predicate") -> "Predicate":
+        if not isinstance(other, Predicate):
+            return NotImplemented
+        return Predicate(lambda ctx: f"({self.render(ctx)} OR {other.render(ctx)})")
+
+    def __invert__(self) -> "Predicate":
+        return Predicate(lambda ctx: f"NOT ({self.render(ctx)})")
+
+    def __bool__(self) -> bool:
+        raise TypeError(
+            "A Predicate has no truth value. Combine predicates with & and | "
+            "instead of 'and' and 'or'."
+        )
+
+
+class ColumnExpr:
+    """
+    A typed column reference that builds Predicate objects from Python
+    comparison operators.
+
+    Create one with col('users.age') or through a model's column namespace,
+    Model.c.age. Comparing against None with == or != renders IS NULL or
+    IS NOT NULL.
+    """
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+    def __str__(self) -> str:
+        return self.name
+
+    def __repr__(self) -> str:
+        return f"ColumnExpr({self.name!r})"
+
+    def __hash__(self) -> int:
+        return hash(self.name)
+
+    def _quoted(self, ctx: "RenderContext") -> str:
+        return ctx.compiler.quote_column_reference(self.name)
+
+    def _compare(self, operator: str, value: Any) -> Predicate:
+        if value is None:
+            if operator == "=":
+                return self.is_null()
+            if operator in ("!=", "<>"):
+                return self.not_null()
+            raise ValueError(
+                f"Cannot compare a column to None with the '{operator}' operator."
+            )
+
+        def render(ctx: "RenderContext") -> str:
+            if isinstance(value, ColumnExpr):
+                return f"{self._quoted(ctx)} {operator} {value._quoted(ctx)}"
+            return f"{self._quoted(ctx)} {operator} {ctx.value(value)}"
+
+        return Predicate(render)
+
+    def __eq__(self, value: object) -> Predicate:  # type: ignore[override]
+        return self._compare("=", value)
+
+    def __ne__(self, value: object) -> Predicate:  # type: ignore[override]
+        return self._compare("!=", value)
+
+    def __gt__(self, value: Any) -> Predicate:
+        return self._compare(">", value)
+
+    def __ge__(self, value: Any) -> Predicate:
+        return self._compare(">=", value)
+
+    def __lt__(self, value: Any) -> Predicate:
+        return self._compare("<", value)
+
+    def __le__(self, value: Any) -> Predicate:
+        return self._compare("<=", value)
+
+    def like(self, pattern: str) -> Predicate:
+        return Predicate(
+            lambda ctx: ctx.compiler.compile_like(
+                self._quoted(ctx), ctx.value(pattern), "LIKE"
+            )
+        )
+
+    def not_like(self, pattern: str) -> Predicate:
+        return Predicate(
+            lambda ctx: ctx.compiler.compile_like(
+                self._quoted(ctx), ctx.value(pattern), "NOT LIKE"
+            )
+        )
+
+    def ilike(self, pattern: str) -> Predicate:
+        return Predicate(
+            lambda ctx: ctx.compiler.compile_like(
+                self._quoted(ctx), ctx.value(pattern), "ILIKE"
+            )
+        )
+
+    def in_(self, values: "Union[List[Any], QueryBuilder]") -> Predicate:
+        return self._in("IN", values)
+
+    def not_in(self, values: "Union[List[Any], QueryBuilder]") -> Predicate:
+        return self._in("NOT IN", values)
+
+    def _in(self, operator: str, values: "Union[List[Any], QueryBuilder]") -> Predicate:
+        if isinstance(values, list):
+            if not values:
+                raise ValueError("IN/NOT IN requires a non-empty list of values.")
+            items = list(values)
+
+            def render(ctx: "RenderContext") -> str:
+                rendered = ", ".join(ctx.value(v) for v in items)
+                return f"{self._quoted(ctx)} {operator} ({rendered})"
+
+            return Predicate(render)
+
+        def render_sub(ctx: "RenderContext") -> str:
+            return f"{self._quoted(ctx)} {operator} ({values._render_sql(ctx)})"
+
+        return Predicate(render_sub)
+
+    def between(self, low: Any, high: Any) -> Predicate:
+        return Predicate(
+            lambda ctx: (
+                f"{self._quoted(ctx)} BETWEEN {ctx.value(low)} AND {ctx.value(high)}"
+            )
+        )
+
+    def not_between(self, low: Any, high: Any) -> Predicate:
+        return Predicate(
+            lambda ctx: (
+                f"{self._quoted(ctx)} NOT BETWEEN "
+                f"{ctx.value(low)} AND {ctx.value(high)}"
+            )
+        )
+
+    def is_null(self) -> Predicate:
+        return Predicate(lambda ctx: f"{self._quoted(ctx)} IS NULL")
+
+    def not_null(self) -> Predicate:
+        return Predicate(lambda ctx: f"{self._quoted(ctx)} IS NOT NULL")
+
+
+def col(name: str) -> ColumnExpr:
+    """Creates a typed column reference, e.g. col('users.age') > 21."""
+    return ColumnExpr(name)
 
 
 class Column:

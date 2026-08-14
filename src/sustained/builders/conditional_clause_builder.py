@@ -223,6 +223,17 @@ class ConditionalClauseBuilder(ABC):
         op_like_override: Optional[str] = None,
     ) -> None:
         """Internal handler for adding clauses."""
+        from ..expressions import Predicate
+
+        if isinstance(column_or_callable, Predicate):
+            if op is not None or val is not None:
+                raise ValueError(
+                    "A Predicate carries its own operator and value; pass it "
+                    "as the only argument."
+                )
+            predicate = column_or_callable
+            self._clauses.append((conjunction, predicate.render))
+            return
         if callable(column_or_callable):
             # Create a new instance of the concrete subclass for nesting
             temp_builder = type(self)(self._model_class, self._compiler)

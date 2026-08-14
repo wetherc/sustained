@@ -16,9 +16,12 @@ from sustained.expressions import (
     AggregateExpression,
     CaseExpression,
     Column,
+    ColumnExpr,
     Func,
     Literal,
+    Predicate,
     WindowExpression,
+    col,
 )
 from sustained.model import Model, create_model
 from sustained.types import (
@@ -36,6 +39,9 @@ __all__ = [
     "DialectError",
     # from expressions
     "Column",
+    "ColumnExpr",
+    "Predicate",
+    "col",
     "Func",
     "Literal",
     "AggregateExpression",

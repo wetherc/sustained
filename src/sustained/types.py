@@ -9,6 +9,7 @@ if TYPE_CHECKING:
         AggregateExpression,
         CaseExpression,
         Column,
+        ColumnExpr,
         Func,
         Subquery,
         WindowExpression,
@@ -23,6 +24,7 @@ Selectable = Union[
     "WindowExpression",
     "CaseExpression",
     "Column",
+    "ColumnExpr",
     "Func",
     "Subquery",
 ]

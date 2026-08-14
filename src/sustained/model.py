@@ -7,7 +7,7 @@ from sustained.dialects import Dialects
 from sustained.types import CaseResult, RelationMapping
 
 if TYPE_CHECKING:
-    pass
+    from sustained.expressions import ColumnExpr
 
 
 _MODEL_REGISTRY: Dict[str, Type["Model"]] = {}
@@ -70,12 +70,36 @@ def _check_declared_columns(cls: Type["Model"], name: str) -> None:
         )
 
 
+class ColumnNamespace:
+    """
+    Provides typed column access on a model class: Model.c.age returns a
+    ColumnExpr that builds Predicate objects from comparison operators.
+    """
+
+    def __init__(self, model_class: Type["Model"]) -> None:
+        self._model_class = model_class
+
+    def __getattr__(self, name: str) -> "ColumnExpr":
+        from sustained.expressions import ColumnExpr
+
+        cls = self._model_class
+        if name.startswith("_") or not cls.tableName:
+            raise AttributeError(f"'{cls.__name__}.c' has no column named '{name}'")
+        _check_declared_columns(cls, name)
+        return ColumnExpr(_qualified_column(cls, name))
+
+
 class ModelMeta(type):
     """
     Metaclass that registers Model subclasses by class name and provides
     column access on the class itself, so `User.id` works without
     instantiating the model.
     """
+
+    @property
+    def c(cls) -> ColumnNamespace:
+        """Typed column namespace: Model.c.age is a ColumnExpr."""
+        return ColumnNamespace(cls)  # type: ignore[arg-type]
 
     def __init__(cls, name: str, bases: Tuple[type, ...], namespace: Dict[str, Any]):
         super().__init__(name, bases, namespace)

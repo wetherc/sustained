@@ -25,9 +25,11 @@ from .expressions import (
     AggregateExpression,
     CaseExpression,
     Column,
+    Predicate,
     WindowExpression,
 )
 from .model import Model
+from .rendering import RenderContext
 from .types import CaseResult, DbReturnValue, Expression, QueryResolvable, Selectable
 
 class QueryBuilder:
@@ -91,6 +93,7 @@ class QueryBuilder:
     @staticmethod
     def raw(sql: str) -> Expression: ...
     def __str__(self) -> str: ...
+    def _render_sql(self, ctx: RenderContext, include_ctes: bool = True) -> str: ...
     def to_sql(self) -> Tuple[str, Tuple[DbReturnValue, ...]]: ...
     def limit(self, value: int) -> QueryBuilder: ...
     def top(self, value: int) -> QueryBuilder: ...
@@ -152,7 +155,8 @@ class QueryBuilder:
     # Where methods
     @overload
     def where(
-        self, column_or_callable: Callable[[WhereClauseBuilder], None]
+        self,
+        column_or_callable: Union[Callable[[WhereClauseBuilder], None], Predicate],
     ) -> QueryBuilder: ...
     @overload
     def where(
@@ -163,7 +167,8 @@ class QueryBuilder:
     ) -> QueryBuilder: ...
     @overload
     def andWhere(
-        self, column_or_callable: Callable[[WhereClauseBuilder], None]
+        self,
+        column_or_callable: Union[Callable[[WhereClauseBuilder], None], Predicate],
     ) -> QueryBuilder: ...
     @overload
     def andWhere(
@@ -174,7 +179,8 @@ class QueryBuilder:
     ) -> QueryBuilder: ...
     @overload
     def orWhere(
-        self, column_or_callable: Callable[[WhereClauseBuilder], None]
+        self,
+        column_or_callable: Union[Callable[[WhereClauseBuilder], None], Predicate],
     ) -> QueryBuilder: ...
     @overload
     def orWhere(
@@ -241,7 +247,8 @@ class QueryBuilder:
     # Having methods
     @overload
     def having(
-        self, column_or_callable: Callable[[HavingClauseBuilder], None]
+        self,
+        column_or_callable: Union[Callable[[HavingClauseBuilder], None], Predicate],
     ) -> QueryBuilder: ...
     @overload
     def having(
@@ -252,7 +259,8 @@ class QueryBuilder:
     ) -> QueryBuilder: ...
     @overload
     def andHaving(
-        self, column_or_callable: Callable[[HavingClauseBuilder], None]
+        self,
+        column_or_callable: Union[Callable[[HavingClauseBuilder], None], Predicate],
     ) -> QueryBuilder: ...
     @overload
     def andHaving(
@@ -263,7 +271,8 @@ class QueryBuilder:
     ) -> QueryBuilder: ...
     @overload
     def orHaving(
-        self, column_or_callable: Callable[[HavingClauseBuilder], None]
+        self,
+        column_or_callable: Union[Callable[[HavingClauseBuilder], None], Predicate],
     ) -> QueryBuilder: ...
     @overload
     def orHaving(
