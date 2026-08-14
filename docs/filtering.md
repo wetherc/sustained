@@ -52,6 +52,32 @@ Movie.query().where("tagline", "=", None)
 
 Column names quote per dialect when they are plain identifier paths. Values render as SQL literals in `str(query)` and as placeholders in `to_sql()`. See [Executing Queries](./executing).
 
+## Typed Predicates
+
+Every model exposes a typed column namespace at `Model.c`, and the `col()` helper wraps any dotted path. Python comparison operators build `Predicate` objects, which combine with `&` (AND), `|` (OR), and `~` (NOT). Pass the result to `where()` or `having()`.
+
+```python
+from sustained import col
+
+# SELECT * FROM movies WHERE ((rating > 8 AND genre = 'Sci-Fi') OR NOT (archived = TRUE))
+Movie.query().where(
+    (Movie.c.rating > 8) & (Movie.c.genre == "Sci-Fi") | ~(Movie.c.archived == True)
+)
+```
+
+Column methods cover the rest of the operators: `.like()`, `.not_like()`, `.ilike()`, `.in_()`, `.not_in()`, `.between()`, `.not_between()`, `.is_null()`, `.not_null()`. Values parameterize in `to_sql()` and columns quote per dialect. Comparing with `== None` or `!= None` renders `IS NULL` / `IS NOT NULL`. A `Predicate` raises `TypeError` in a boolean context, which catches accidental use of the `and`/`or` keywords.
+
+## Raw Predicates with Bound Values: `whereRaw`
+
+For a predicate the builder cannot express, use `whereRaw(sql, params)`. Mark each value with `?`; the values travel as parameters, never as text in the SQL. `havingRaw` works the same way for HAVING.
+
+```python
+# SELECT * FROM movies WHERE (release_year % ? = ?)
+Movie.query().whereRaw("release_year % ? = ?", [2, 0])
+```
+
+The marker count must match the parameter count, and the fragment renders wrapped in parentheses.
+
 ## `whereIn` and `whereNotIn`
 
 To filter against a list of values, use the `whereIn` and `whereNotIn` methods.

@@ -2,7 +2,7 @@
 
 A Python query builder and lightweight ORM inspired by [Objection.js](https://vincit.github.io/objection.js/).
 
-Sustained builds parameterized SQL for the default (ANSI), Postgres, MSSQL, and Presto dialects. It can also execute queries against any DB-API 2.0 connection, hydrate rows into model instances, write data with `insert()`, `update()`, and `delete()`, and eager load relations.
+Sustained builds parameterized SQL for the default (ANSI), Postgres, MSSQL, Presto, and DuckDB dialects. It executes queries against any DB-API 2.0 connection with transactions, hydrates rows into model instances or DataFrames, writes data with `insert()`, `update()`, `delete()`, upserts, and `INSERT ... SELECT`, and eager loads relations. Filters compose as typed predicates: `User.query().where((User.c.age > 21) & User.c.name.like('A%'))`.
 
 ## Installation
 

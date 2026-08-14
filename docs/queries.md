@@ -388,6 +388,15 @@ print(posts_query)
 #   ON posts.user_id = active_users.id
 ```
 
+### Recursive CTEs
+
+Pass `recursive=True` for a self-referencing CTE. The WITH clause renders as `WITH RECURSIVE`, except on MSSQL, where T-SQL spells recursive CTEs with plain `WITH`.
+
+```python
+tree = Employee.query().select('id', 'manager_id')  # anchor plus recursion via raw()
+query = Employee.query().with_('tree', tree, recursive=True).from_('tree')
+```
+
 ## Combining Queries with UNION
 
 You can combine multiple queries into a single result set using `UNION` and `UNION ALL`.
@@ -422,6 +431,30 @@ print(all_users)
 final_query = active_users.union(pending_users).offset(50)
 ```
 
+### INTERSECT and EXCEPT
+
+`intersect()` keeps only rows present in every query. `except_()` removes rows that appear in the given queries. The trailing underscore avoids the Python `except` keyword. Both work like `union()`.
+
+## Analyst Clauses
+
+*   **`distinctOn(*columns)`**: Postgres/DuckDB `SELECT DISTINCT ON (...)`, which keeps the first row per group; pair it with `orderBy()` on the same leading columns. Other dialects raise `DialectError`.
+*   **`groupByRollup(*columns)` / `groupByCube(*columns)` / `groupByGroupingSets(*tuples)`**: subtotal and multi-grain aggregation forms of GROUP BY.
+*   **`qualify(condition)`**: filters on window function results without a wrapping subquery. Takes a `Predicate` or a raw string. Supported on DuckDB.
+*   **`for_update(skip_locked=False, nowait=False)`**: row locking on Postgres; rejected with unions and on dialects without it.
+
+## Counting and Keyset Pagination
+
+`total()` runs `SELECT COUNT(*)` over the query with ORDER BY, LIMIT, and OFFSET stripped, and returns the count without changing the query. `cursor_page(column, page_size, after=None)` applies keyset pagination: it orders by the column, filters rows greater than the last seen value, and limits to the page size. On large tables this avoids the scan cost that grows with OFFSET.
+
+```python
+first_page = User.query().cursor_page('id', 100).run()
+second_page = User.query().cursor_page('id', 100, after=first_page[-1].id).run()
+```
+
+## Inspecting Plans
+
+`explain()` runs the dialect's EXPLAIN on the query and returns the plan rows. `explain(analyze=True)` uses EXPLAIN ANALYZE, which actually executes the statement. MSSQL raises because T-SQL has no EXPLAIN.
+
 ## SQL Dialects
 
 Sustained supports generating SQL for different database dialects. This allows you to take advantage of dialect-specific features and syntax. By default, Sustained generates standard ANSI SQL.
@@ -432,6 +465,7 @@ Currently, the following dialects are supported:
 *   **`Dialects.PRESTO`**: SQL dialect for the Presto query engine.
 *   **`Dialects.MSSQL`**: SQL dialect for Microsoft SQL Server.
 *   **`Dialects.POSTGRES`**: SQL dialect for PostgreSQL.
+*   **`Dialects.DUCKDB`**: SQL dialect for DuckDB.
 
 ### Setting the Dialect
 

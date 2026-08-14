@@ -1,5 +1,27 @@
 # Changelog
 
+## 2.1.0 (2026-08-14)
+
+### Added
+
+- Typed predicates: `Model.c.age > 21` and `col()` build composable `Predicate` objects combinable with `&`, `|`, `~`; accepted by `where()` and `having()`.
+- `whereRaw()` / `havingRaw()`: raw predicates with `?` value markers that parameterize like every other clause.
+- `Model.transaction()` context manager with savepoint nesting; `run()` defers commits inside a transaction.
+- `set_statement_listener()` observer with SQL, parameters, and duration for every executed statement.
+- Upserts: `insert().onConflict(cols).merge()` / `.ignore()`. ON CONFLICT on Postgres/SQLite/DuckDB, MERGE on MSSQL, DialectError on Presto.
+- `insert_from()` (INSERT ... SELECT) and `create_table_as()` (CTAS; MSSQL raises).
+- Multi-row inserts execute through the driver's `executemany()` when there is no RETURNING clause.
+- Result formats: `to_dicts()`, `to_df()` (pandas optional), `to_arrow()` (pyarrow optional).
+- DuckDB dialect: quoting, native ILIKE, qmark placeholders, upserts, RETURNING, CTAS, QUALIFY.
+- Recursive CTEs via `with_(..., recursive=True)`; MSSQL renders plain WITH.
+- Set operations: `intersect()` and `except_()`.
+- Analyst clauses: `distinctOn()`, `groupByRollup()`, `groupByCube()`, `groupByGroupingSets()`, `qualify()`.
+- `for_update(skip_locked, nowait)` row locking on Postgres.
+- `total()` count helper and `cursor_page()` keyset pagination.
+- `explain(analyze=False)` plan inspection.
+- Through-relation (`ManyToManyRelation`) eager loading in `withGraphFetched()`.
+- Per-dialect function name translation: `NOW()` renders as `GETDATE()` on MSSQL and the reverse; `LENGTH()` renders as `LEN()` on MSSQL.
+
 ## 2.0.0 (2026-08-14)
 
 ### Breaking changes

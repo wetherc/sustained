@@ -62,7 +62,39 @@ User.query().update({'active': False}).where('id', '=', 1).run()
 User.query().delete().where('active', '=', False).run()
 ```
 
-Write statements commit after they run and return the affected row count.
+Write statements commit after they run and return the affected row count. Multi-row inserts without a RETURNING clause execute through the driver's `executemany()` with a single-row template, which is the fast path for bulk loads.
+
+### Transactions
+
+`Model.transaction()` opens a context that commits when the block finishes and rolls back when it raises. Statements inside the block share one transaction; `run()` stops committing per statement. Nested blocks use savepoints, so an inner failure rolls back only the inner block.
+
+```python
+with User.transaction():
+    Account.query().update({'balance': 0}).where('id', '=', 1).run()
+    AuditLog.query().insert({'event': 'reset', 'account_id': 1}).run()
+```
+
+### Upserts
+
+Chain `onConflict(columns)` after `insert()`, then choose `merge()` to update the existing row or `ignore()` to skip it. `merge()` updates every inserted column except the conflict columns, or an explicit list.
+
+```python
+User.query().insert({'email': 'a@x.com', 'name': 'Ada'}) \
+    .onConflict('email').merge().run()
+```
+
+Postgres, SQLite, and DuckDB render `ON CONFLICT`; MSSQL renders a `MERGE` statement; Presto raises.
+
+### INSERT ... SELECT and CREATE TABLE AS
+
+`insert_from(columns, query)` inserts the result of another query. `create_table_as(name, temporary=False)` turns a SELECT into a CTAS statement. MSSQL raises for CTAS; use `SELECT INTO` through raw SQL there.
+
+```python
+inactive = User.query().select('id', 'name').where('active', '=', False)
+Archive.query().insert_from(['id', 'name'], inactive).run()
+
+User.query().select('id').where('active', '=', True).create_table_as('active_ids').run()
+```
 
 ### Safety Rule for UPDATE and DELETE
 
@@ -93,4 +125,18 @@ for owner in owners:
         print(owner.name, pet.name)
 ```
 
-Eager loading needs the join key columns in both result sets, so keep them in your `select()` or select all columns. Through relations (`ManyToManyRelation`) are not supported yet and raise `NotImplementedError`.
+Eager loading needs the join key columns in both result sets, so keep them in your `select()` or select all columns. Through relations (`ManyToManyRelation`) load with one query that joins the related table to the through table.
+
+## Result Formats
+
+`run()` returns model instances. For other shapes:
+
+*   **`to_dicts()`**: rows as plain dicts keyed by column name.
+*   **`to_df()`**: a pandas DataFrame, keeping the query's column names even when empty. Requires pandas.
+*   **`to_arrow()`**: a pyarrow Table. Requires pyarrow.
+
+pandas and pyarrow are optional; the methods raise a clear error when the library is missing.
+
+## Statement Logging
+
+`sustained.execution.set_statement_listener(fn)` registers an observer called after every executed statement with the SQL text, the parameter tuple, and the duration in seconds. Pass `None` to remove it.
