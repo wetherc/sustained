@@ -162,18 +162,25 @@ class AsyncMigrator:
             await self._adapter.execute(statement, ())
             added.append(name)
         await self._adapter.commit()
-        if "seq" not in added and "success" not in added:
-            return
-        _, rows = await self._adapter.fetch(
-            f"SELECT id FROM {self._table_sql()} ORDER BY applied_at, id", ()
-        )
         placeholder = self._compiler.placeholder()
-        for position, row in enumerate(rows, start=1):
+        # Backfill only the columns this run added, and only where they are
+        # still null, so values a partial earlier upgrade wrote survive.
+        if "success" in added:
             await self._adapter.execute(
-                f"UPDATE {self._table_sql()} SET seq = {placeholder}, "
-                f"success = {placeholder} WHERE id = {placeholder}",
-                (position, True, row[0]),
+                f"UPDATE {self._table_sql()} SET success = {placeholder} "
+                "WHERE success IS NULL",
+                (True,),
             )
+        if "seq" in added:
+            _, rows = await self._adapter.fetch(
+                f"SELECT id FROM {self._table_sql()} ORDER BY applied_at, id", ()
+            )
+            for position, row in enumerate(rows, start=1):
+                await self._adapter.execute(
+                    f"UPDATE {self._table_sql()} SET seq = {placeholder} "
+                    f"WHERE id = {placeholder} AND seq IS NULL",
+                    (position, row[0]),
+                )
         await self._adapter.commit()
 
     async def applied_records(self) -> List[AppliedRecord]:

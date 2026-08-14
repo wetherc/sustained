@@ -226,6 +226,25 @@ class TestTrackingTable(MigrationTestCase):
         )
         self.assertEqual(migrator.up(), [])
 
+    def test_partial_upgrade_keeps_existing_success_values(self):
+        self.conn.execute(
+            "CREATE TABLE sustained_migrations "
+            "(id VARCHAR(255) PRIMARY KEY, applied_at TEXT NOT NULL, "
+            "success BOOLEAN)"
+        )
+        self.conn.execute(
+            "INSERT INTO sustained_migrations VALUES "
+            "('good', '2024-01-01T00:00:00', 1), "
+            "('bad', '2024-02-01T00:00:00', 0)"
+        )
+        self.conn.commit()
+        migrator = Migrator(self.conn, [Migration("good", up="SELECT 1")])
+        self.assertEqual(migrator.applied(), ["good"])
+        stored = dict(
+            self.conn.execute("SELECT id, success FROM sustained_migrations").fetchall()
+        )
+        self.assertEqual(stored, {"good": 1, "bad": 0})
+
     def test_script_up_renders_full_bookkeeping_row(self):
         migration = Migration("one", up="CREATE TABLE t1 (id INTEGER)")
         script = Migrator(self.conn, [migration]).script("up")

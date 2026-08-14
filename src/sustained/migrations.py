@@ -385,18 +385,27 @@ class Migrator:
             self._connection.cursor().execute(statement)
             added.append(name)
         self._commit_quietly()
-        if "seq" not in added and "success" not in added:
-            return
-        cursor = self._connection.cursor()
-        cursor.execute(f"SELECT id FROM {self._table_sql()} ORDER BY applied_at, id")
-        ids = [row[0] for row in cursor.fetchall()]
         placeholder = self._compiler.placeholder()
-        for position, migration_id in enumerate(ids, start=1):
+        cursor = self._connection.cursor()
+        # Backfill only the columns this run added, and only where they are
+        # still null, so values a partial earlier upgrade wrote survive.
+        if "success" in added:
             cursor.execute(
-                f"UPDATE {self._table_sql()} SET seq = {placeholder}, "
-                f"success = {placeholder} WHERE id = {placeholder}",
-                (position, True, migration_id),
+                f"UPDATE {self._table_sql()} SET success = {placeholder} "
+                "WHERE success IS NULL",
+                (True,),
             )
+        if "seq" in added:
+            cursor.execute(
+                f"SELECT id FROM {self._table_sql()} ORDER BY applied_at, id"
+            )
+            ids = [row[0] for row in cursor.fetchall()]
+            for position, migration_id in enumerate(ids, start=1):
+                cursor.execute(
+                    f"UPDATE {self._table_sql()} SET seq = {placeholder} "
+                    f"WHERE id = {placeholder} AND seq IS NULL",
+                    (position, migration_id),
+                )
         self._commit_quietly()
 
     def applied_records(self) -> List[AppliedRecord]:

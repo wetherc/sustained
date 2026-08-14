@@ -16,6 +16,10 @@
 
 - `up()` validates before running. Pass `validate=False` to skip the checks or `allow_out_of_order=True` to accept a pending migration ordered before an applied one; earlier versions applied out-of-order migrations silently.
 
+### Fixed
+
+- The tracking table upgrade backfill no longer overwrites values that already exist: it touches only the columns the current run added and only rows where they are still null, so a recorded failed attempt survives an interrupted earlier upgrade.
+
 ## 2.5.0 (2026-08-14)
 
 ### Added
