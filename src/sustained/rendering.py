@@ -45,6 +45,25 @@ Renderable = Union[str, Callable[[RenderContext], str]]
 """A clause fragment: either a fixed string or a deferred render function."""
 
 
+def bind_raw(sql: str, params: List[Any], ctx: RenderContext) -> str:
+    """
+    Renders a raw SQL fragment with ? value markers. Each marker becomes the
+    dialect placeholder in parameterized mode or an inlined literal in
+    inline mode. The marker count must match the parameter count.
+    """
+    pieces = sql.split("?")
+    if len(pieces) - 1 != len(params):
+        raise ValueError(
+            f"Raw SQL fragment has {len(pieces) - 1} value markers "
+            f"but {len(params)} parameters were given."
+        )
+    out = [pieces[0]]
+    for piece, param in zip(pieces[1:], params):
+        out.append(ctx.value(param))
+        out.append(piece)
+    return "".join(out)
+
+
 def render_part(part: Renderable, ctx: RenderContext) -> str:
     """Renders a Renderable with the given context."""
     if callable(part):

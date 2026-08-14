@@ -38,6 +38,7 @@ class ConditionalClauseBuilder(ABC):
         "whereILike": "_add_like_internal",
         "whereNull": "_add_null_internal",
         "whereNotNull": "_add_null_internal",
+        "whereRaw": "_add_raw_internal",
     }
 
     def __init__(
@@ -196,6 +197,35 @@ class ConditionalClauseBuilder(ABC):
 
         def render(ctx: RenderContext) -> str:
             return ctx.compiler.compile_like(quoted_col, ctx.value(pattern), actual_op)
+
+        self._clauses.append((conjunction, render))
+
+    def _add_raw_internal(
+        self,
+        conjunction: str,
+        sql: str,
+        params: Optional[List[Any]] = None,
+        *,
+        op_override: bool = False,
+        op_like_override: Optional[str] = None,
+    ) -> None:
+        """
+        Internal handler for raw predicates with bound values. Values are
+        marked with ? in the fragment and supplied separately, so they
+        parameterize like every other clause.
+        """
+        from ..rendering import bind_raw
+
+        bound_params = list(params) if params else []
+        # Validate the marker count at build time so mistakes surface early.
+        if sql.count("?") != len(bound_params):
+            raise ValueError(
+                f"Raw SQL fragment has {sql.count('?')} value markers "
+                f"but {len(bound_params)} parameters were given."
+            )
+
+        def render(ctx: RenderContext) -> str:
+            return f"({bind_raw(sql, bound_params, ctx)})"
 
         self._clauses.append((conjunction, render))
 
