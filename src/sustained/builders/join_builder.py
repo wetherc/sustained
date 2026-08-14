@@ -125,6 +125,12 @@ class JoinClauseBuilder:
         """
         Dynamically handles method calls for joins.
         """
+        # Private names are never join methods; see QueryBuilder.__getattr__.
+        if name.startswith("_"):
+            raise AttributeError(
+                f"'{type(self).__name__}' object has no attribute '{name}'"
+            )
+
         join_prefixes = "|".join(k for k in self._JOIN_METHOD_MAP.keys() if k)
         join_match = re.match(
             rf"^({join_prefixes})?(Join)(Related)?$", name, re.IGNORECASE

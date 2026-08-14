@@ -38,6 +38,18 @@ if TYPE_CHECKING:
     from sustained.model import Model
 
 
+def _validate_row_count(value: int, keyword: str) -> None:
+    """Rejects values that are not non-negative integers.
+
+    bool is checked explicitly because it is a subclass of int and would
+    otherwise render as the words True or False in the SQL output.
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{keyword} value must be an integer.")
+    if value < 0:
+        raise ValueError(f"{keyword} value must not be negative.")
+
+
 class QueryBuilder:
     """
     A builder for creating and executing SQL queries in a programmatic way.
@@ -449,8 +461,7 @@ class QueryBuilder:
         Returns:
             QueryBuilder: The current QueryBuilder instance for chaining.
         """
-        if not isinstance(value, int):
-            raise TypeError("LIMIT value must be an integer.")
+        _validate_row_count(value, "LIMIT")
         if self._limit_value is not None:
             raise ValueError("LIMIT can only be set once per query.")
         if self._top_value is not None:
@@ -466,8 +477,7 @@ class QueryBuilder:
         Returns:
             QueryBuilder: The current QueryBuilder instance for chaining.
         """
-        if not isinstance(value, int):
-            raise TypeError("TOP value must be an integer.")
+        _validate_row_count(value, "TOP")
         if self._top_value is not None:
             raise ValueError("TOP can only be set once per query.")
         if self._limit_value is not None:
@@ -509,8 +519,7 @@ class QueryBuilder:
         Returns:
             QueryBuilder: The current QueryBuilder instance for chaining.
         """
-        if not isinstance(value, int):
-            raise TypeError("Offset value must be an integer.")
+        _validate_row_count(value, "OFFSET")
         if self._offset_value is not None:
             raise ValueError("Offset can only be set once per query.")
         self._offset_value = value
@@ -520,6 +529,15 @@ class QueryBuilder:
         """
         Dynamically handles method calls for joins, where clauses, and registered functions.
         """
+        # Never resolve private or dunder names dynamically. Protocols such as
+        # copy and pickle probe for these before __init__ has populated the
+        # instance, and treating them as query methods causes infinite
+        # recursion.
+        if name.startswith("_"):
+            raise AttributeError(
+                f"'{type(self).__name__}' object has no attribute '{name}'"
+            )
+
         # Handle join methods by delegating to JoinClauseBuilder
         join_prefixes = "|".join(
             k for k in self._join_builder._JOIN_METHOD_MAP.keys() if k

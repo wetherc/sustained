@@ -139,10 +139,10 @@ class TestQueryBuilder(unittest.TestCase):
             tableName = "users"
 
         query = User.query().select("*")
-        with self.assertRaisesRegex(TypeError, "Offset value must be an integer."):
+        with self.assertRaisesRegex(TypeError, "OFFSET value must be an integer."):
             query.offset("abc")  # type: ignore # Intentionally passing wrong type for test
 
-        with self.assertRaisesRegex(TypeError, "Offset value must be an integer."):
+        with self.assertRaisesRegex(TypeError, "OFFSET value must be an integer."):
             query.offset(10.5)  # type: ignore # Intentionally passing wrong type for test
 
     def test_simple_union(self):

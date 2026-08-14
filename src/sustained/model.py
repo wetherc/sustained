@@ -59,7 +59,10 @@ class Model:
                             is not defined on the model.
         """
         cls = self.__class__
-        if name.startswith("__") and name.endswith("__"):
+        # Private and dunder names are never table columns. Refusing them here
+        # keeps copy, pickle, and typo'd internals from resolving to bogus
+        # column strings.
+        if name.startswith("_"):
             raise AttributeError(f"'{cls.__name__}' object has no attribute '{name}'")
 
         database = getattr(cls, "database", None)

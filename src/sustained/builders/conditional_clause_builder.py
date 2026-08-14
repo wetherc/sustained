@@ -60,6 +60,12 @@ class ConditionalClauseBuilder(ABC):
         """
         Dynamically handles method calls for clauses.
         """
+        # Private names are never clause methods; see QueryBuilder.__getattr__.
+        if name.startswith("_"):
+            raise AttributeError(
+                f"'{type(self).__name__}' object has no attribute '{name}'"
+            )
+
         base_name = re.sub(r"^(or|and)", "", name, flags=re.IGNORECASE)
         if not base_name:
             raise AttributeError(
