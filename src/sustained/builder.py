@@ -239,6 +239,8 @@ class QueryBuilder:
         alias: str,
         partition_by: Optional[List[str]] = None,
         order_by: Optional[List[str]] = None,
+        args: Optional[List[Any]] = None,
+        frame: Optional[str] = None,
     ) -> "QueryBuilder":
         """
         Adds a window function to the select clause.
@@ -247,12 +249,20 @@ class QueryBuilder:
             function_name: The name of the window function (e.g., 'ROW_NUMBER').
             alias: The alias for the resulting column.
             partition_by: A list of columns to partition by.
-            order_by: A list of columns to order by.
+            order_by: A list of columns to order by. Entries may carry a
+                direction suffix, e.g. 'created_at DESC'.
+            args: Arguments for the function itself, e.g. the column for LAG.
+                Strings are column references; wrap literals in Literal().
+            frame: An optional frame clause such as
+                'ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW'.
 
         Returns:
             The current QueryBuilder instance for chaining.
         """
-        window = WindowExpression(function_name, alias, partition_by, order_by)
+        self._validate_function(function_name)
+        window = WindowExpression(
+            function_name, alias, partition_by, order_by, args=args, frame=frame
+        )
         self._select_clause_builder.select(window)
         return self
 
@@ -576,6 +586,34 @@ class QueryBuilder:
         self._offset_value = value
         return self
 
+    def clone(self) -> "QueryBuilder":
+        """
+        Returns an independent deep copy of this query. Later changes to the
+        copy do not affect the original, which makes shared base queries
+        practical.
+        """
+        import copy
+
+        return copy.deepcopy(self)
+
+    def page(self, page: int, page_size: int) -> "QueryBuilder":
+        """
+        Applies pagination as LIMIT and OFFSET. Pages are zero-based, so
+        page(0, 25) returns the first 25 rows.
+
+        Args:
+            page: The zero-based page number.
+            page_size: The number of rows per page.
+
+        Returns:
+            The current QueryBuilder instance for chaining.
+        """
+        _validate_row_count(page, "PAGE")
+        _validate_row_count(page_size, "PAGE SIZE")
+        self.limit(page_size)
+        self.offset(page * page_size)
+        return self
+
     def __getattr__(self, name: str) -> Callable[..., "QueryBuilder"]:
         """
         Dynamically handles method calls for joins, where clauses, and registered functions.
@@ -588,6 +626,21 @@ class QueryBuilder:
             raise AttributeError(
                 f"'{type(self).__name__}' object has no attribute '{name}'"
             )
+
+        # Accept snake_case spellings of the camelCase query methods, e.g.
+        # where_in -> whereIn and order_by -> orderBy. Real methods such as
+        # select_func never reach __getattr__, so they are unaffected.
+        if "_" in name:
+            camel_name = re.sub(r"_([a-z])", lambda m: m.group(1).upper(), name)
+            if camel_name != name:
+                try:
+                    return cast(
+                        Callable[..., "QueryBuilder"], getattr(self, camel_name)
+                    )
+                except AttributeError:
+                    raise AttributeError(
+                        f"'{type(self).__name__}' object has no attribute '{name}'"
+                    ) from None
 
         # Handle join methods by delegating to JoinClauseBuilder
         join_prefixes = "|".join(

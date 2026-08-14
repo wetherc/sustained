@@ -178,13 +178,21 @@ class Compiler:
             )
             over_clauses.append(f"PARTITION BY {partition_cols}")
         if window.order_by:
-            order_cols = ", ".join(
-                self.quote_column_reference(c) for c in window.order_by
-            )
+            order_cols = ", ".join(self._quote_order_entry(c) for c in window.order_by)
             over_clauses.append(f"ORDER BY {order_cols}")
+        if window.frame:
+            over_clauses.append(window.frame)
         over_sql = " ".join(over_clauses)
+        args_sql = ", ".join(self._format_arg(arg) for arg in window.args)
         alias_sql = self.quote_identifier(window.alias)
-        return f"{window.function_name}() OVER ({over_sql}) AS {alias_sql}"
+        return f"{window.function_name}({args_sql}) OVER ({over_sql}) AS {alias_sql}"
+
+    def _quote_order_entry(self, entry: str) -> str:
+        """Quotes an ORDER BY entry that may carry an ASC or DESC suffix."""
+        parts = entry.rsplit(" ", 1)
+        if len(parts) == 2 and parts[1].upper() in ("ASC", "DESC"):
+            return f"{self.quote_column_reference(parts[0])} {parts[1].upper()}"
+        return self.quote_column_reference(entry)
 
     def compile_case(self, case: CaseExpression) -> str:
         """

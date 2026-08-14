@@ -118,6 +118,8 @@ class WindowExpression:
         alias: str,
         partition_by: Optional[List[str]] = None,
         order_by: Optional[List[str]] = None,
+        args: Optional[List[Any]] = None,
+        frame: Optional[str] = None,
     ):
         """
         Initializes the window function expression.
@@ -126,12 +128,20 @@ class WindowExpression:
             function_name: The name of the window function (e.g., 'ROW_NUMBER').
             alias: The alias for the resulting column.
             partition_by: A list of columns to partition the window by.
-            order_by: A list of columns to order the window by.
+            order_by: A list of columns to order the window by. Entries may
+                carry a direction suffix, e.g. 'created_at DESC'.
+            args: Arguments for the window function itself, e.g. the column
+                for LAG or SUM. Strings are column references; wrap literal
+                values in Literal().
+            frame: An optional frame clause, e.g.
+                'ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW'.
         """
         self.function_name = function_name
         self.alias = alias
         self.partition_by = partition_by
         self.order_by = order_by
+        self.args = args or []
+        self.frame = frame
 
     def __str__(self) -> str:
         """
