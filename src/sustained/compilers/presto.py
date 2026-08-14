@@ -20,6 +20,11 @@ class PrestoCompiler(Compiler):
 
         raise DialectError("Presto does not support upserts.")
 
+    def compile_identity(self) -> str:
+        from sustained.exceptions import DialectError
+
+        raise DialectError("Presto has no identity columns.")
+
     def compile_returning(self, columns_sql: str) -> str:
         from sustained.exceptions import DialectError
 

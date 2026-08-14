@@ -61,6 +61,19 @@ class MssqlCompiler(Compiler):
             "MSSQL does not support CREATE TABLE AS. Use SELECT ... INTO via raw SQL."
         )
 
+    _TYPE_MAP = {
+        **Compiler._TYPE_MAP,
+        "VARCHAR": "NVARCHAR",
+        "TEXT": "NVARCHAR(MAX)",
+        "BOOLEAN": "BIT",
+        "FLOAT": "FLOAT",
+        "TIMESTAMP": "DATETIME2",
+        "JSON": "NVARCHAR(MAX)",
+    }
+
+    def compile_identity(self) -> str:
+        return "IDENTITY(1,1)"
+
     def compile_with_keyword(self, recursive: bool) -> str:
         # T-SQL uses plain WITH for recursive CTEs.
         return "WITH"

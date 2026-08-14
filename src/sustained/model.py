@@ -105,6 +105,10 @@ class ModelMeta(type):
         super().__init__(name, bases, namespace)
         if getattr(cls, "tableName", None):
             _MODEL_REGISTRY[name] = cls  # type: ignore[assignment]
+        # A typed schema also declares the column names, so strict column
+        # access comes along unless the class opts out explicitly.
+        if namespace.get("tableColumns") and "columns" not in namespace:
+            cls.columns = tuple(namespace["tableColumns"])
 
     def __getattr__(cls, name: str) -> str:
         if name.startswith("_"):
@@ -138,6 +142,7 @@ class Model(metaclass=ModelMeta):
     tableSchema: Optional[str] = None
     relationMappings: Dict[str, RelationMapping] = {}
     columns: Optional[Tuple[str, ...]] = None
+    tableColumns: Optional[Dict[str, Any]] = None
     _dialect: Dialects = Dialects.DEFAULT
     _connection: Optional[Any] = None
 
@@ -208,6 +213,71 @@ class Model(metaclass=ModelMeta):
     def unbind(cls) -> None:
         """Removes the connection bound to this class, if any."""
         cls._connection = None
+
+    @classmethod
+    def _qualified_table_sql(cls) -> str:
+        from sustained.dialects import Dialects
+
+        compiler = Dialects.get_compiler(cls._dialect)
+        parts = []
+        if cls.database:
+            parts.append(compiler.quote_identifier(cls.database))
+        if cls.tableSchema:
+            parts.append(compiler.quote_identifier(cls.tableSchema))
+        if not cls.tableName:
+            raise ValueError(f"Model '{cls.__name__}' must define a tableName.")
+        parts.append(compiler.quote_identifier(cls.tableName))
+        return ".".join(parts)
+
+    @classmethod
+    def create_table_sql(cls, if_not_exists: bool = False) -> str:
+        """
+        Renders the CREATE TABLE statement for this model's tableColumns
+        using the model's dialect.
+        """
+        from sustained.dialects import Dialects
+        from sustained.schema import build_create_table_sql
+
+        if not cls.tableColumns:
+            raise ValueError(
+                f"Model '{cls.__name__}' has no tableColumns to create a table from."
+            )
+        compiler = Dialects.get_compiler(cls._dialect)
+        return build_create_table_sql(
+            compiler, cls._qualified_table_sql(), cls.tableColumns, if_not_exists
+        )
+
+    @classmethod
+    def create_table(
+        cls, connection: Optional[Any] = None, if_not_exists: bool = False
+    ) -> None:
+        """Executes CREATE TABLE for this model on the connection."""
+        conn = connection if connection is not None else cls._connection
+        if conn is None:
+            raise RuntimeError(
+                "No database connection. Bind one with Model.bind(connection) "
+                "or pass it to create_table()."
+            )
+        conn.cursor().execute(cls.create_table_sql(if_not_exists=if_not_exists))
+
+    @classmethod
+    def drop_table_sql(cls, if_exists: bool = True) -> str:
+        """Renders the DROP TABLE statement for this model."""
+        exists_sql = "IF EXISTS " if if_exists else ""
+        return f"DROP TABLE {exists_sql}{cls._qualified_table_sql()}"
+
+    @classmethod
+    def drop_table(
+        cls, connection: Optional[Any] = None, if_exists: bool = True
+    ) -> None:
+        """Executes DROP TABLE for this model on the connection."""
+        conn = connection if connection is not None else cls._connection
+        if conn is None:
+            raise RuntimeError(
+                "No database connection. Bind one with Model.bind(connection) "
+                "or pass it to drop_table()."
+            )
+        conn.cursor().execute(cls.drop_table_sql(if_exists=if_exists))
 
     @classmethod
     def transaction(cls, connection: Optional[Any] = None) -> Any:

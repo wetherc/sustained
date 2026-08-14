@@ -187,6 +187,43 @@ class Compiler:
         )
         return f"{sql} ON CONFLICT ({conflict_sql}) DO UPDATE SET {assignments}"
 
+    # Logical column types mapped to this dialect's SQL types. Dialects
+    # override entries as needed.
+    _TYPE_MAP = {
+        "INTEGER": "INTEGER",
+        "BIGINT": "BIGINT",
+        "VARCHAR": "VARCHAR",
+        "TEXT": "TEXT",
+        "BOOLEAN": "BOOLEAN",
+        "FLOAT": "DOUBLE PRECISION",
+        "NUMERIC": "NUMERIC",
+        "DATE": "DATE",
+        "TIMESTAMP": "TIMESTAMP",
+        "JSON": "JSON",
+    }
+
+    def compile_column_type(self, column: Any) -> str:
+        """
+        Renders a ColumnDef's logical type as this dialect's SQL type.
+        """
+        base = self._TYPE_MAP.get(column.type_name)
+        if base is None:
+            raise ValueError(f"Unknown column type: {column.type_name!r}.")
+        if column.type_name == "VARCHAR" and column.length is not None:
+            return f"{base}({column.length})"
+        if column.type_name == "NUMERIC" and column.precision is not None:
+            return f"{base}({column.precision}, {column.scale})"
+        return base
+
+    def compile_identity(self) -> str:
+        """
+        Renders the identity modifier for an autoincrement column. An empty
+        string means the engine generates values without a modifier, as
+        SQLite does for INTEGER PRIMARY KEY. Dialects without identity
+        columns raise.
+        """
+        return ""
+
     def compile_returning(self, columns_sql: str) -> str:
         """
         Renders a RETURNING clause for DML statements. Dialects without

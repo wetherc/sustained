@@ -21,3 +21,11 @@ class DuckDbCompiler(Compiler):
 
     def compile_distinct_on(self, columns_sql: "list[str]") -> str:
         return f"DISTINCT ON ({', '.join(columns_sql)})"
+
+    def compile_identity(self) -> str:
+        from sustained.exceptions import DialectError
+
+        raise DialectError(
+            "DuckDB has no identity columns. Use a sequence with a DEFAULT "
+            "expression instead."
+        )
