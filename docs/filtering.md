@@ -35,6 +35,23 @@ Movie.query().where("genre", "=", "Sci-Fi").orWhere("genre", "=", "Fantasy")
 ```
 > **Note:** The first `where` call in a chain cannot be an `orWhere` or `andWhere`. It must be a plain `where`.
 
+### Operators
+
+The operator must be one of the recognized comparison operators: `=`, `!=`, `<>`, `<`, `<=`, `>`, `>=`, `LIKE`, `NOT LIKE`, `ILIKE`, `NOT ILIKE`, `IS`, `IS NOT`. Anything else raises a `ValueError`. For a raw predicate, use `QueryBuilder.raw()`.
+
+### Comparing with None
+
+Comparing a column to `None` with `=` or `!=` renders `IS NULL` or `IS NOT NULL`.
+
+```python
+# SELECT * FROM movies WHERE tagline IS NULL
+Movie.query().where("tagline", "=", None)
+```
+
+### Values and Parameterization
+
+Column names quote per dialect when they are plain identifier paths. Values render as SQL literals in `str(query)` and as placeholders in `to_sql()`. See [Executing Queries](./executing).
+
 ## `whereIn` and `whereNotIn`
 
 To filter against a list of values, use the `whereIn` and `whereNotIn` methods.
@@ -139,10 +156,11 @@ Movie.query().whereLike("title", "The %")
 
 ### `whereILike`
 
-This generates a `WHERE col ILIKE 'pattern'` clause (for case-insensitive matching).
+This filters with case-insensitive matching. On Postgres it renders native `ILIKE`. On every other dialect it compiles to `LOWER(col) LIKE LOWER(pattern)`.
 
 ```python
-# SELECT * FROM movies WHERE title ILIKE 'the %'
+# Postgres: SELECT * FROM "movies" WHERE "title" ILIKE 'the %'
+# Others:   SELECT * FROM movies WHERE LOWER(title) LIKE LOWER('the %')
 Movie.query().whereILike("title", "the %")
 ```
 

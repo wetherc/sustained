@@ -84,17 +84,15 @@ print(query)
 
 ## Column Name Access
 
-Model instances provide a convenient way to get fully-qualified column names for use in queries, which helps avoid ambiguity.
+Models provide a convenient way to get fully-qualified column names for use in queries, which helps avoid ambiguity. Access a column as an attribute on the model class itself. Instances work the same way.
 
 ```python
-person = Person()
-
-# Accessing an attribute on a model instance returns the qualified column name
-print(person.id)
+# Accessing an attribute on the model class returns the qualified column name
+print(Person.id)
 # "persons.id"
 
 # Use it in a select statement
-query = Person.query().select(person.firstName, person.lastName)
+query = Person.query().select(Person.firstName, Person.lastName)
 print(query)
 
 # SELECT persons.firstName, persons.lastName
@@ -104,7 +102,29 @@ print(query)
 If the model has a `database` or `tableSchema` defined, they will be included in the qualified name.
 
 ```python
-user = User() # The model was instantiated with a `database` and `tableSchema`
-print(user.id)
+print(User.id)
 # "my_db.public.users.id"
 ```
+
+## Declared Columns
+
+By default, any attribute name resolves to a column string, so a typo becomes a bad column name in your SQL. To catch typos early, declare the model's columns. Access to an undeclared column then raises an `AttributeError` that lists the declared set.
+
+```python
+class Person(Model):
+    tableName = 'persons'
+    columns = ('id', 'firstName', 'lastName')
+
+Person.id          # "persons.id"
+Person.firstNam    # AttributeError
+```
+
+The `create_model` function accepts the same declaration through its `columns` argument.
+
+## The Model Registry
+
+Every model subclass with a `tableName` registers itself under its class name. Relation mappings can therefore reference a related model by name, even when the two models live in different modules. See [Relations and Joins](./relations).
+
+## Binding a Connection
+
+Models can execute their queries when you bind a DB-API connection with `Model.bind()`. See [Executing Queries](./executing).

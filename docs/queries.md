@@ -69,14 +69,18 @@ If `select()` is never called, the query will default to selecting all columns (
 
 ### Using Column Name Access
 
-For clarity and to avoid ambiguity in joins, it's often a good idea to use the model's column access feature to get fully-qualified column names.
+For clarity and to avoid ambiguity in joins, it's often a good idea to use the model's column access feature to get fully-qualified column names. Column access works directly on the model class.
 
 ```python
-user = User()
-person = Person()
-
 # Builds: SELECT users.id, persons.firstName FROM users...
-query = User.query().select(user.id, person.firstName)
+query = User.query().select(User.id, Person.firstName)
+```
+
+You can also alias a column with the `'column AS alias'` shorthand. Both halves are quoted correctly for the active dialect.
+
+```python
+# Builds: SELECT name AS display_name FROM users
+query = User.query().select('name AS display_name')
 ```
 
 ### Distinct
@@ -193,17 +197,22 @@ query = User.query().select_case(
 
 For any SQL function that doesn't have a dedicated fluent method, you can use the generic `.select_func()` method. This is the most flexible way to add function calls to your query.
 
-```python
-from sustained import Column
+String arguments are column references. To pass a string literal, wrap it in `Literal`. To pass a raw SQL fragment, use `Column`.
 
-# SELECT COALESCE(nickname, first_name) AS display_name FROM users
+```python
+from sustained import Literal
+
+# SELECT COALESCE(nickname, first_name, 'N/A') AS display_name FROM users
 query = User.query().select_func(
     'COALESCE',
-    Column('nickname'),
-    Column('first_name'),
+    'nickname',
+    'first_name',
+    Literal('N/A'),
     alias='display_name'
 )
 ```
+
+A string argument that is not a plain column name raises a `ValueError` when the query renders. This protects you from a literal that silently becomes a column, or the reverse.
 
 ##### Dialect Validation
 
@@ -301,7 +310,19 @@ query = User.query().select('*').top(10)
 ### Usage Notes
 
 -   The `limit()` and `top()` methods are mutually exclusive. Using both in the same query will result in a `ValueError`.
--   Both methods can only be called once per query and require an integer value.
+-   Both methods can only be called once per query and require a non-negative integer value.
+-   `top()` raises a `DialectError` on dialects other than MSSQL. Use `limit()` there instead.
+-   On MSSQL, `limit()` and `offset()` compile to `OFFSET ... FETCH`, which T-SQL only allows after an `ORDER BY`. The query raises a `DialectError` if you use them without `orderBy()`.
+-   On Presto, `OFFSET` renders before `LIMIT`, as the engine requires.
+
+### Pagination with `page()`
+
+The `page()` method applies `LIMIT` and `OFFSET` from a zero-based page number and a page size.
+
+```python
+# Builds: SELECT * FROM users LIMIT 25 OFFSET 50
+query = User.query().select('*').page(2, 25)
+```
 
 ## Ordering Results
 
@@ -387,13 +408,14 @@ all_users = active_users.union(pending_users)
 
 print(all_users)
 # Builds:
-# (SELECT id, name FROM users WHERE active = True) UNION (SELECT id, name FROM users WHERE status = 'pending')
+# (SELECT id, name FROM users WHERE active = TRUE) UNION (SELECT id, name FROM users WHERE status = 'pending')
 ```
 
 ### Behavior with Other Clauses
 
--   **`OFFSET`**: When used with a `UNION`, the `offset()` method applies to the entire result set of the combined queries.
--   **`WITH` (CTEs)**: If any of the queries in a `UNION` chain have Common Table Expressions, they will all be "hoisted" to the top of the final query. Sustained handles this automatically.
+-   **`ORDER BY`, `LIMIT`, `OFFSET` on the outer query**: These apply to the entire result set of the combined queries.
+-   **`ORDER BY` and `LIMIT` on a member query**: These render inside that member's parentheses, so each member keeps its own row cap and ordering.
+-   **`WITH` (CTEs)**: If any of the queries in a `UNION` chain have Common Table Expressions, they will all be "hoisted" to the top of the final query. Sustained handles this automatically. Two different CTEs with the same alias raise a `ValueError`.
 
 ```python
 # This query will offset the result of the entire UNION
@@ -437,18 +459,42 @@ print(sql_string)
 
 This is useful if your entire application targets a single database type. You can set the dialect for each of your models once, during application startup.
 
+## Reusing Queries with `clone()`
+
+Builders change in place: each chained call adds to the same query. Use `clone()` to branch from a shared base query without changing the original.
+
+```python
+base = User.query().where('active', '=', True)
+
+admins = base.clone().where('role', '=', 'admin')
+guests = base.clone().where('role', '=', 'guest')
+```
+
+## Method Naming
+
+The canonical method names use camelCase, which matches Objection.js: `orderBy`, `groupBy`, `whereIn`, `unionAll`, `leftJoin`, and so on. Every camelCase method also accepts its snake_case spelling: `order_by`, `group_by`, `where_in`, `union_all`, `left_join`.
+
 ## Retrieving the SQL
 
-The `QueryBuilder` does not execute the query. It only builds the SQL string. To get the final SQL, simply convert the builder instance to a string.
+To debug or log a query, convert the builder to a string. Values render inline as SQL literals.
 
 ```python
 query = User.query().select('name').where('id', '=', 1)
 
-# Get the SQL string
-sql_string = str(query)
-
-print(sql_string)
+print(str(query))
 # "SELECT name FROM users WHERE id = 1"
 ```
 
-This design allows you to use Sustained with any database driver. You build the query with Sustained, and then execute the resulting SQL string with your preferred library (e.g., `psycopg2`, `pyodbc`, etc.).
+To execute a query, use `to_sql()` instead. It returns the SQL with placeholders and the parameters as a separate tuple, in the order they appear in the SQL. Pass both to any DB-API cursor. This keeps user values out of the SQL text.
+
+```python
+sql, params = User.query().select('name').where('id', '=', 1).to_sql()
+
+# sql:    "SELECT name FROM users WHERE id = ?"
+# params: (1,)
+cursor.execute(sql, params)
+```
+
+The placeholder style follows the dialect: `?` by default and for MSSQL, `%s` for Postgres.
+
+Sustained can also execute queries for you and hydrate the results into model instances. See [Executing Queries](./executing) for `Model.bind()`, `run()`, `first()`, and eager loading, and for the `insert()`, `update()`, and `delete()` statement builders.

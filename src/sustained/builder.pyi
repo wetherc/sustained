@@ -159,7 +159,7 @@ class QueryBuilder:
         self,
         column_or_callable: str,
         op: str,
-        val: Union[Expression, DbReturnValue],
+        val: Optional[Union[Expression, DbReturnValue]],
     ) -> QueryBuilder: ...
     @overload
     def andWhere(
@@ -170,7 +170,7 @@ class QueryBuilder:
         self,
         column_or_callable: str,
         op: str,
-        val: Union[Expression, DbReturnValue],
+        val: Optional[Union[Expression, DbReturnValue]],
     ) -> QueryBuilder: ...
     @overload
     def orWhere(
@@ -181,7 +181,7 @@ class QueryBuilder:
         self,
         column_or_callable: str,
         op: str,
-        val: Union[Expression, DbReturnValue],
+        val: Optional[Union[Expression, DbReturnValue]],
     ) -> QueryBuilder: ...
     def whereIn(
         self, col: str, vals: Union[List[DbReturnValue], QueryResolvable]
@@ -248,7 +248,7 @@ class QueryBuilder:
         self,
         column_or_callable: str,
         op: str,
-        val: Union[Expression, DbReturnValue],
+        val: Optional[Union[Expression, DbReturnValue]],
     ) -> QueryBuilder: ...
     @overload
     def andHaving(
@@ -259,7 +259,7 @@ class QueryBuilder:
         self,
         column_or_callable: str,
         op: str,
-        val: Union[Expression, DbReturnValue],
+        val: Optional[Union[Expression, DbReturnValue]],
     ) -> QueryBuilder: ...
     @overload
     def orHaving(
@@ -270,7 +270,7 @@ class QueryBuilder:
         self,
         column_or_callable: str,
         op: str,
-        val: Union[Expression, DbReturnValue],
+        val: Optional[Union[Expression, DbReturnValue]],
     ) -> QueryBuilder: ...
     def havingIn(
         self, col: str, vals: Union[List[DbReturnValue], QueryResolvable]

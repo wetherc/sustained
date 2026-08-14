@@ -72,6 +72,12 @@ class Person(Model):
     }
 ```
 
+String names resolve through the model registry. Every model with a `tableName` registers itself under its class name when the class is defined, so the referenced model can live in any module. It only needs to be defined before the query is built. An unresolvable name raises a `ValueError`.
+
+## Eager Loading
+
+When a connection is bound, `withGraphFetched()` loads relations alongside the query results instead of joining them into one statement. See [Executing Queries](./executing#eager-loading-relations).
+
 ## Joining Relations
 
 Once relations are defined, you can use a family of `...JoinRelated` methods to add `JOIN` clauses to your query. The method name determines the type of `JOIN` performed.

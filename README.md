@@ -1,6 +1,8 @@
 # Sustained.py
 
-A Python query builder inspired by [Objection.js](https://vincit.github.io/objection.js/).
+A Python query builder and lightweight ORM inspired by [Objection.js](https://vincit.github.io/objection.js/).
+
+Sustained builds parameterized SQL for the default (ANSI), Postgres, MSSQL, and Presto dialects. It can also execute queries against any DB-API 2.0 connection, hydrate rows into model instances, write data with `insert()`, `update()`, and `delete()`, and eager load relations.
 
 ## Installation
 
@@ -77,7 +79,24 @@ print(query)
 # FROM animals
 # JOIN active_owners
 #   ON animals.ownerId = active_owners.id
+
+
+# Execute against any DB-API 2.0 connection
+import sqlite3
+
+conn = sqlite3.connect('app.db')
+Animal.bind(conn)
+
+# Parameterized execution with model hydration
+animals = Animal.query().where('species', '=', 'dog').orderBy('name').run()
+
+# Or take the SQL and parameters and execute them yourself
+sql, params = Animal.query().where('species', '=', 'dog').to_sql()
+# sql:    "SELECT * FROM animals WHERE species = ?"
+# params: ('dog',)
 ```
+
+See the [documentation](https://github.com/wetherc/sustained/tree/main/docs) for models, filtering, grouping, relations, and execution guides.
 
 ## Development
 

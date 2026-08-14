@@ -17,6 +17,7 @@ If you are new to Sustained, it's recommended to read the guides in the followin
 4.  **[Grouping](./grouping):** Group your query results and filter on groupings with the `HAVING` keyword.
 5.  **[Filtering](./filtering):** Dive into the various `where` methods for filtering your results.
 6.  **[Relations and Joins](./relations):** Learn how to define relationships between models and join them in your queries.
+7.  **[Executing Queries](./executing):** Run queries against a database, hydrate results into models, write data, and eager load relations.
 
 ## API Reference
 
