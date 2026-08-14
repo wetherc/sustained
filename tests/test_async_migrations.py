@@ -167,5 +167,76 @@ class TestAsyncMigrator(unittest.IsolatedAsyncioTestCase):
             await migrator.baseline("nope")
 
 
+class TestAsyncRepeatableMigrations(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.conn = sqlite3.connect(":memory:", check_same_thread=False)
+        self.adapter = DbApiAsyncAdapter(self.conn)
+
+    def tearDown(self):
+        self.conn.close()
+
+    def migrations(self, view_sql="SELECT id FROM t"):
+        return [
+            Migration("001_t", up="CREATE TABLE t (id INTEGER)", down="DROP TABLE t"),
+            Migration(
+                "active_view",
+                up=f"CREATE VIEW IF NOT EXISTS v AS {view_sql}",
+                repeatable=True,
+            ),
+        ]
+
+    async def test_runs_after_versioned_and_records_once(self):
+        migrator = AsyncMigrator(self.adapter, self.migrations())
+        self.assertEqual(await migrator.up(), ["001_t", "active_view"])
+        self.assertEqual(await migrator.up(), [])
+        records = {r.id: r for r in await migrator.applied_records()}
+        self.assertEqual(records["active_view"].seq, 2)
+
+    async def test_changed_checksum_reruns_and_updates_in_place(self):
+        migrator = AsyncMigrator(self.adapter, self.migrations())
+        await migrator.up()
+        self.conn.execute("DROP VIEW v")
+        changed = AsyncMigrator(
+            self.adapter, self.migrations("SELECT id, id AS b FROM t")
+        )
+        self.assertEqual(await changed.up(), ["active_view"])
+        records = await changed.applied_records()
+        self.assertEqual(len(records), 2)
+        self.assertEqual(await changed.validate(), [])
+
+    async def test_statuses_reports_changed(self):
+        migrator = AsyncMigrator(self.adapter, self.migrations())
+        await migrator.up()
+        changed = AsyncMigrator(
+            self.adapter, self.migrations("SELECT id, id AS b FROM t")
+        )
+        self.assertEqual(
+            await changed.statuses(),
+            [("001_t", "applied"), ("active_view", "changed")],
+        )
+        self.assertEqual([m.id for m in await changed.pending()], ["active_view"])
+
+    async def test_down_skips_repeatables(self):
+        migrator = AsyncMigrator(self.adapter, self.migrations())
+        await migrator.up()
+        self.assertEqual(await migrator.down_to("001_t"), [])
+        self.assertEqual(await migrator.down(), ["001_t"])
+
+    async def test_repeatable_target_rejected(self):
+        migrator = AsyncMigrator(self.adapter, self.migrations())
+        with self.assertRaisesRegex(ValueError, "repeatable"):
+            await migrator.up(target="active_view")
+        with self.assertRaisesRegex(ValueError, "repeatable"):
+            await migrator.baseline("active_view")
+
+    async def test_baseline_records_repeatables_at_current_checksum(self):
+        self.conn.execute("CREATE TABLE t (id INTEGER)")
+        self.conn.execute("CREATE VIEW v AS SELECT id FROM t")
+        self.conn.commit()
+        migrator = AsyncMigrator(self.adapter, self.migrations())
+        self.assertEqual(await migrator.baseline("001_t"), ["001_t", "active_view"])
+        self.assertEqual(await migrator.up(), [])
+
+
 if __name__ == "__main__":
     unittest.main()

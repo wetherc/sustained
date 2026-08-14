@@ -24,6 +24,8 @@ from sustained.migrations import (
     AppliedRecord,
     Migration,
     MigrationStep,
+    _is_current,
+    _migration_state,
     _next_seq,
     _tracking_column_defs,
     _upgrade_column_def,
@@ -196,15 +198,46 @@ class AsyncMigrator:
         """Returns the applied migration ids in application order."""
         return [r.id for r in await self.applied_records() if r.success]
 
+    def _versioned(self) -> List[Migration]:
+        return [m for m in self._migrations if not m.repeatable]
+
+    def _repeatables(self) -> List[Migration]:
+        return [m for m in self._migrations if m.repeatable]
+
     async def pending(self) -> List[Migration]:
-        """Returns the registered migrations that have not been applied."""
-        applied = set(await self.applied())
-        return [m for m in self._migrations if m.id not in applied]
+        """
+        Returns the registered migrations the next up() would run:
+        versioned migrations without a successful row, then repeatables
+        without one or whose checksum changed since the last run.
+        """
+        records = {r.id: r for r in await self.applied_records()}
+        result = [
+            m
+            for m in self._versioned()
+            if not _is_current(records.get(m.id), migration_checksum(m), False)
+        ]
+        result.extend(
+            m
+            for m in self._repeatables()
+            if not _is_current(records.get(m.id), migration_checksum(m), True)
+        )
+        return result
 
     async def status(self) -> List[Tuple[str, bool]]:
         """Returns (id, applied) pairs for every registered migration."""
         applied = set(await self.applied())
         return [(m.id, m.id in applied) for m in self._migrations]
+
+    async def statuses(self) -> List[Tuple[str, str]]:
+        """
+        Returns (id, state) pairs for every registered migration. The
+        state is 'applied', 'pending', or, for a repeatable whose
+        contents changed since its last run, 'changed'.
+        """
+        records = {r.id: r for r in await self.applied_records()}
+        return [
+            (m.id, _migration_state(records.get(m.id), m)) for m in self._migrations
+        ]
 
     def _insert_sql(self) -> str:
         placeholder = self._compiler.placeholder()
@@ -213,6 +246,15 @@ class AsyncMigrator:
             f"INSERT INTO {self._table_sql()} "
             f"(id, seq, checksum, applied_at, execution_ms, success) "
             f"VALUES ({values})"
+        )
+
+    def _update_sql(self) -> str:
+        placeholder = self._compiler.placeholder()
+        return (
+            f"UPDATE {self._table_sql()} "
+            f"SET checksum = {placeholder}, applied_at = {placeholder}, "
+            f"execution_ms = {placeholder}, success = {placeholder} "
+            f"WHERE id = {placeholder}"
         )
 
     async def validate(self, raise_on_problems: bool = True) -> List[str]:
@@ -274,16 +316,26 @@ class AsyncMigrator:
         already matches. Rows are written with real checksums and a null
         execution time; already-applied migrations are skipped. Returns the
         ids that were recorded.
+
+        The target must name a versioned migration. Every repeatable is
+        recorded at its current checksum, so the first migrate after
+        adoption does not re-run objects the schema already holds.
         """
-        ids = [m.id for m in self._migrations]
+        versioned = self._versioned()
+        ids = [m.id for m in versioned]
         if target not in ids:
+            if any(m.id == target for m in self._repeatables()):
+                raise ValueError(
+                    f"Migration target {target!r} is repeatable; a target "
+                    "must name a versioned migration."
+                )
             raise ValueError(f"Unknown migration target: {target!r}.")
         async with self._lock_scope():
             records = await self.applied_records()
             already_applied = {r.id for r in records if r.success}
             next_seq = _next_seq(records)
             recorded: List[str] = []
-            for migration in self._migrations[: ids.index(target) + 1]:
+            for migration in versioned[: ids.index(target) + 1] + self._repeatables():
                 if migration.id in already_applied:
                     continue
                 timestamp = datetime.now(timezone.utc).isoformat()
@@ -303,27 +355,30 @@ class AsyncMigrator:
             await self._adapter.commit()
             return recorded
 
-    async def _record_failure(self, migration: Migration, seq: int) -> None:
+    async def _record_failure(
+        self, migration: Migration, seq: int, update: bool = False
+    ) -> None:
         """
         Writes a failed-attempt row after a migration step raised on an
         engine without transactions, where partial changes may remain. A
-        failure to write the row never masks the original error.
+        repeatable that already has a row updates it in place. A failure
+        to write the row never masks the original error.
         """
         if self._compiler.supports_transactions():
             return
         try:
             timestamp = datetime.now(timezone.utc).isoformat()
-            await self._adapter.execute(
-                self._insert_sql(),
-                (
-                    migration.id,
-                    seq,
-                    migration_checksum(migration),
-                    timestamp,
-                    None,
-                    False,
-                ),
-            )
+            checksum = migration_checksum(migration)
+            if update:
+                await self._adapter.execute(
+                    self._update_sql(),
+                    (checksum, timestamp, None, False, migration.id),
+                )
+            else:
+                await self._adapter.execute(
+                    self._insert_sql(),
+                    (migration.id, seq, checksum, timestamp, None, False),
+                )
             await self._adapter.commit()
         except Exception:
             pass
@@ -343,13 +398,22 @@ class AsyncMigrator:
         it. Pass validate=False to skip the checks, or
         allow_out_of_order=True to accept a pending migration that is
         ordered before an applied one.
+
+        Repeatables run after the versioned migrations, on every call
+        including targeted ones, whenever their checksum is new or
+        changed. The target must name a versioned migration.
         """
         from sustained.exceptions import MigrationError
 
-        migrations = self._migrations
+        migrations = self._versioned()
         if target is not None:
             ids = [m.id for m in migrations]
             if target not in ids:
+                if any(m.id == target for m in self._repeatables()):
+                    raise ValueError(
+                        f"Migration target {target!r} is repeatable; a "
+                        "target must name a versioned migration."
+                    )
                 raise ValueError(f"Unknown migration target: {target!r}.")
             migrations = migrations[: ids.index(target) + 1]
 
@@ -361,44 +425,67 @@ class AsyncMigrator:
                 )
                 if problems:
                     raise MigrationError(problems)
+            records_by_id = {r.id: r for r in records}
             already_applied = {r.id for r in records if r.success}
             next_seq = _next_seq(records)
             applied_now: List[str] = []
             for migration in migrations:
                 if migration.id in already_applied:
                     continue
-                try:
-                    async with self._migration_scope():
-                        started = time.perf_counter()
-                        await self._run_step(migration.up)
-                        elapsed_ms = int((time.perf_counter() - started) * 1000)
-                        timestamp = datetime.now(timezone.utc).isoformat()
-                        await self._adapter.execute(
-                            self._insert_sql(),
-                            (
-                                migration.id,
-                                next_seq,
-                                migration_checksum(migration),
-                                timestamp,
-                                elapsed_ms,
-                                True,
-                            ),
-                        )
-                except Exception:
-                    await self._record_failure(migration, next_seq)
-                    raise
+                await self._apply(migration, next_seq, update=False)
                 next_seq += 1
                 applied_now.append(migration.id)
+            for migration in self._repeatables():
+                record = records_by_id.get(migration.id)
+                if _is_current(record, migration_checksum(migration), True):
+                    continue
+                await self._apply(migration, next_seq, update=record is not None)
+                if record is None:
+                    next_seq += 1
+                applied_now.append(migration.id)
             return applied_now
+
+    async def _apply(self, migration: Migration, seq: int, update: bool) -> None:
+        """
+        Runs one migration's up step and records it: an INSERT for a
+        first run, an UPDATE in place when a repeatable re-runs, keeping
+        its original seq.
+        """
+        try:
+            async with self._migration_scope():
+                started = time.perf_counter()
+                await self._run_step(migration.up)
+                elapsed_ms = int((time.perf_counter() - started) * 1000)
+                timestamp = datetime.now(timezone.utc).isoformat()
+                checksum = migration_checksum(migration)
+                if update:
+                    await self._adapter.execute(
+                        self._update_sql(),
+                        (checksum, timestamp, elapsed_ms, True, migration.id),
+                    )
+                else:
+                    await self._adapter.execute(
+                        self._insert_sql(),
+                        (migration.id, seq, checksum, timestamp, elapsed_ms, True),
+                    )
+        except Exception:
+            await self._record_failure(migration, seq, update=update)
+            raise
+
+    async def _applied_versioned(self) -> List[str]:
+        """Applied ids with the repeatables left out; down() skips them."""
+        repeatable_ids = {m.id for m in self._repeatables()}
+        return [i for i in await self.applied() if i not in repeatable_ids]
 
     async def down(self, steps: int = 1) -> List[str]:
         """
         Reverts the most recently applied migrations, newest first. Every
         reverted migration must define a down step and be registered with
-        this migrator. Returns the ids that were reverted.
+        this migrator. Repeatables are never reverted. Returns the ids
+        that were reverted.
         """
         async with self._lock_scope():
-            applied = await self.applied()
+            applied = await self._applied_versioned()
             by_id = {m.id: m for m in self._migrations}
             placeholder = self._compiler.placeholder()
             reverted: List[str] = []
@@ -424,8 +511,9 @@ class AsyncMigrator:
         """
         Reverts applied migrations newest-first until the target is the
         most recent applied migration. The target itself stays applied.
+        Repeatables are never reverted.
         """
-        applied = await self.applied()
+        applied = await self._applied_versioned()
         if target not in applied:
             raise ValueError(f"Migration '{target}' is not applied.")
         steps = len(applied) - applied.index(target) - 1
