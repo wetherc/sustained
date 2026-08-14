@@ -119,7 +119,17 @@ Person.id          # "persons.id"
 Person.firstNam    # AttributeError
 ```
 
-The `create_model` function accepts the same declaration through its `columns` argument.
+The `create_model` function accepts the same declaration through its `columns` argument. Models that declare typed columns in `tableColumns` (see [Schema and Migrations](./schema)) get the strict column set derived automatically.
+
+## Typed Column References
+
+Beyond plain name strings, every model exposes a typed column namespace at `Model.c`. Python comparison operators on these references build `Predicate` objects for `where()` and `having()`:
+
+```python
+User.query().where((User.c.age > 21) & User.c.name.like('A%'))
+```
+
+See [Filtering](./filtering#typed-predicates) for the full operator set.
 
 ## The Model Registry
 

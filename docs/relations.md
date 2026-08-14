@@ -182,26 +182,22 @@ query = User.query().join(
 )
 ```
 
-### Joins with Subqueries in `ON` Clause
+### Joins with Subqueries in the `ON` Clause
 
-You can use a `QueryBuilder` instance as the right-hand side of an `ON` condition, allowing for powerful join criteria based on subquery results.
+The right-hand side of an `ON` condition can be a `QueryBuilder`. It renders as a parenthesized subquery. This example joins each person to their newest pet:
 
 ```python
-# SELECT p.*, (SELECT COUNT(*) FROM pets WHERE pets.owner_id = p.id) AS pet_count
-# FROM persons AS p
-# JOIN (
-#   SELECT owner_id
-#   FROM pets
-#   GROUP BY owner_id
-#   HAVING COUNT(*) > 1
-# ) AS owners_with_multiple_pets
-#   ON owners_with_multiple_pets.owner_id = p.id
-multiple_pets_subquery = Pet.query().select('owner_id').groupBy('owner_id').having('COUNT(*)', '>', 1)
+# SELECT persons.name, pets.name
+# FROM persons
+# JOIN pets
+#   ON pets.owner_id = persons.id
+#   AND pets.id = (SELECT MAX(id) FROM pets WHERE (pets.owner_id = persons.id))
+newest = Pet.query().select('MAX(id)').whereRaw('pets.owner_id = persons.id', [])
 
-query = Person.query().alias('p').join(
-    Subquery(multiple_pets_subquery, 'owners_with_multiple_pets'),
-    lambda j: j.on('owners_with_multiple_pets.owner_id', '=', Column('p.id'))
-).select(Column('p.*'))
+query = Person.query().join(
+    'pets',
+    lambda j: j.on('pets.owner_id', '=', 'persons.id').andOn('pets.id', '=', newest)
+).select('persons.name', 'pets.name')
 ```
 
-Note that more complex nested join criteria are not supported.
+The table argument to a raw join must be a table name. To join against a derived result set, put the subquery in a CTE with `with_()` and join the CTE by its alias, as shown in [Queries](./queries#common-table-expressions-ctes). More complex nested join criteria are not supported.

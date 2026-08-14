@@ -156,7 +156,8 @@ You can nest these groups as deeply as you need.
 #     (genre = 'Drama' AND rating > 8)
 #   )
 
-query = Movie.query()
+query = (
+    Movie.query()
     .where("status", "=", "available")
     .andWhere(lambda q: (
         q.where(lambda group1: (
@@ -165,7 +166,8 @@ query = Movie.query()
             group2.where("genre", "=", "Drama").andWhere("rating", ">", 8)
         ))
     ))
-
+)
+```
 
 ## `whereLike` and `whereILike`
 

@@ -43,10 +43,12 @@ print(query)
 #   GROUP BY customer_id
 #   HAVING COUNT(id) > 5
 #      AND SUM(total_amount) > 100
-query = Order.query()
+query = (
+    Order.query()
     .groupBy("customer_id")
     .having("COUNT(id)", ">", 5)
     .andHaving("SUM(total_amount)", ">", 100)
+)
 print(query)
 
 # Use `orHaving` to add an alternative condition
@@ -54,10 +56,12 @@ print(query)
 #   GROUP BY customer_id
 #   HAVING AVG(item_price) < 50
 #       OR MAX(quantity) > 10
-query = Order.query()
+query = (
+    Order.query()
     .groupBy("customer_id")
     .having("AVG(item_price)", "<", 50)
     .orHaving("MAX(quantity)", ">", 10)
+)
 print(query)
 ```
 > **Note:** The first `having` call in a chain cannot be an `orHaving` or `andHaving`. It must be a plain `having`.
@@ -75,10 +79,9 @@ This generates a `HAVING col IN (...)` clause, useful for checking if an aggrega
 # GROUP BY order_status
 # HAVING order_status IN ('completed', 'shipped')
 query = (
-    Order
-        .query()
-        .groupBy("order_status")
-        .havingIn("order_status", ["completed", "shipped"]
+    Order.query()
+    .groupBy("order_status")
+    .havingIn("order_status", ["completed", "shipped"])
 )
 print(query)
 
@@ -87,10 +90,12 @@ print(query)
 #   GROUP BY product_category
 #   HAVING SUM(sales_count) > 100
 #     AND product_category IN ('Electronics', 'Books')
-query = Order.query()
+query = (
+    Order.query()
     .groupBy("product_category")
     .having("SUM(sales_count)", ">", 100)
     .andHavingIn("product_category", ["Electronics", "Books"])
+)
 print(query)
 ```
 
@@ -162,13 +167,15 @@ This is useful for creating conditions like `... AND (condition A OR condition B
 # HAVING COUNT(id) > 5
 #    AND (SUM(total_amount) < 100 OR MAX(quantity) <= 2)
 
-query = Order.query()
+query = (
+    Order.query()
     .groupBy("customer_id")
     .having("COUNT(id)", ">", 5)
     .andHaving(lambda q: (
         q.having("SUM(total_amount)", "<", 100)
          .orHaving("MAX(quantity)", "<=", 2)
     ))
+)
 print(query)
 ```
 
@@ -185,7 +192,8 @@ You can nest these groups as deeply as needed to construct intricate `HAVING` lo
 #     (inventory_count < 10 AND product_type = 'clearance')
 #   )
 
-query = Order.query()
+query = (
+    Order.query()
     .groupBy("product_type")
     .having("total_revenue", ">", 10000)
     .andHaving(lambda q: (
@@ -197,5 +205,6 @@ query = Order.query()
                   .andHaving("product_type", "=", "clearance")
         ))
     ))
+)
 print(query)
 ```

@@ -214,6 +214,17 @@ query = User.query().select_func(
 
 A string argument that is not a plain column name raises a `ValueError` when the query renders. This protects you from a literal that silently becomes a column, or the reverse.
 
+Every registered function is also available as a method of its own name, so these two lines build the same query:
+
+```python
+User.query().select_func('COALESCE', 'nickname', 'first_name', alias='d')
+User.query().coalesce('nickname', 'first_name', alias='d')
+```
+
+The shortcuts include `lower()`, `upper()`, `coalesce()`, `concat()`, `substring()`, `trim()`, `length()`, `round()`, `abs()`, `ceiling()`, `floor()`, `mod()`, `now()`, and `getdate()`.
+
+Some functions translate per dialect: `now()` renders as `GETDATE()` on MSSQL, `getdate()` renders as `NOW()` on Postgres, and `length()` renders as `LEN()` on MSSQL. You write the name you know, and the dialect gets the spelling it needs. A registered function raises `DialectError` on a dialect that has no spelling for it, so `now()` fails on the default dialect at build time instead of in the database.
+
 ##### Dialect Validation
 
 A key feature of `.select_func()` is its runtime dialect validation. The method checks the function name against an internal `FunctionRegistry`.
@@ -256,7 +267,7 @@ While `.select_func()` can be used for any function, the `FunctionRegistry` incl
 You can use a `Subquery` object to embed a subquery directly into your `SELECT` list.
 
 ```python
-from sustained import Subquery
+from sustained.expressions import Subquery
 
 # SELECT
 #   id,
