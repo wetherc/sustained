@@ -1,5 +1,18 @@
 # Changelog
 
+## 2.8.0 (2026-08-14)
+
+### Added
+
+- Repeatable migrations: a `<id>.repeat.sql` file, or `Migration(id, up, repeatable=True)`, re-runs whenever its checksum is new or changed, for views, functions, and seed data. Repeatables run after every versioned migration on every `up()` call, including targeted ones. A re-run updates the tracking row in place and keeps its original sequence number. `down()` and `down_to()` never revert them, the out-of-order check ignores them, and `baseline()` records them at their current checksum so adoption does not re-run objects the schema already holds. Validation treats a changed repeatable checksum as the re-run signal, not a problem. A repeatable cannot have a down step, cannot share an id with a versioned migration, and needs an explicit `checksum` when its step is callable.
+- `statuses()` on `Migrator` and `AsyncMigrator`: (id, state) pairs with the states `applied`, `pending`, and `changed`. The CLI `status` command prints these states. `status()` keeps its (id, applied) shape.
+- Placeholders in SQL migration files: `${key}` markers fill from `load_migrations(directory, placeholders=...)` or the config module's `placeholders` dict. A key with no value raises `ValueError` naming the file and the key; `$${` escapes to a literal `${`. Substitution runs before checksums compute, so changing a value after a migration applied flags a checksum mismatch.
+
+### Changed
+
+- `pending()` also returns repeatables whose checksum changed, since the next `up()` will run them.
+- `load_migrations()` now rejects a `.sql` file only when it matches none of the three suffixes; the error message names all of them.
+
 ## 2.7.0 (2026-08-14)
 
 ### Added

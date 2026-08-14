@@ -250,6 +250,20 @@ migrator.up()
 
 Empty up or down files, a down file without its up file, and `.sql` files that fit neither naming pattern raise `ValueError`. Files without a `.sql` extension are ignored, so a README can live alongside the migrations.
 
+## Repeatable Migrations
+
+Views, functions, and seed data are replaced rather than evolved, so they fit badly in versioned migrations. A `<id>.repeat.sql` file is a repeatable migration: it runs whenever its checksum is new or changed, after every versioned migration, on every `migrate` including targeted ones.
+
+```sql
+-- active_users.repeat.sql
+DROP VIEW IF EXISTS active_users;
+CREATE VIEW active_users AS SELECT * FROM users WHERE active = 1;
+```
+
+Edit the file and the next `migrate` re-runs it; keep the SQL replace-safe (`CREATE OR REPLACE`, or a drop first). The tracking table holds one row per repeatable, updated in place on re-runs with its original sequence number. Repeatables have no down file, and `down` never touches them. `baseline` records every repeatable at its current checksum, so adopting an existing schema does not re-run objects it already holds.
+
+`status` (and `Migrator.statuses()`) reports each migration as `applied`, `pending`, or `changed`; `changed` marks a repeatable whose contents differ from its last run. In Python, pass `Migration(id, up=..., repeatable=True)`; a repeatable with a callable step needs an explicit `checksum` so re-runs can be detected. An id may not have both an up file and a repeat file.
+
 ## Placeholders
 
 SQL files may hold `${key}` placeholders, filled from a mapping at load time:
@@ -279,8 +293,9 @@ def get_connection():
     return sqlite3.connect('app.db')
 
 migrations_dir = 'migrations'
-# optional: migrations = [...], dialect = 'postgres',
-# table = '...', tracking_table_options = TableOptions(...)
+# optional: migrations = [...], placeholders = {...},
+# dialect = 'postgres', table = '...',
+# tracking_table_options = TableOptions(...)
 ```
 
 ```console
@@ -297,4 +312,4 @@ Commands exit 0 on success and 1 on failure, with errors on stderr, so they slot
 
 ## Offline Review and Async
 
-`migrator.script('up')` renders every statement a run would execute, including tracking bookkeeping, without touching the database, for review or DBA handoff; `script('down')` renders the rollback. For async services, `AsyncMigrator` in `sustained.aio_migrations` runs the same `Migration` objects on an `AsyncAdapter` with the same `up`, `down`, `down_to`, `status`, `validate`, `repair`, and `baseline` surface; callable steps receive the adapter and are awaited.
+`migrator.script('up')` renders every statement a run would execute, including tracking bookkeeping, without touching the database, for review or DBA handoff; `script('down')` renders the rollback. For async services, `AsyncMigrator` in `sustained.aio_migrations` runs the same `Migration` objects on an `AsyncAdapter` with the same `up`, `down`, `down_to`, `status`, `statuses`, `validate`, `repair`, and `baseline` surface; callable steps receive the adapter and are awaited.

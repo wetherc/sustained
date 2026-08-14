@@ -208,6 +208,53 @@ class CliTestCase(unittest.TestCase):
             code = main(["status", "--config", name])
         self.assertEqual(code, 0)
 
+    def test_repeatable_runs_and_status_reports_changed(self):
+        migrations = os.path.join(self.dir.name, "migrations")
+        self._write(
+            migrations, "active.repeat.sql", "CREATE VIEW IF NOT EXISTS v AS SELECT 1;"
+        )
+        code, out, _ = self.run_cli("migrate")
+        self.assertEqual(code, 0)
+        self.assertIn("applied  active", out)
+        self._write(
+            migrations, "active.repeat.sql", "CREATE VIEW IF NOT EXISTS v AS SELECT 2;"
+        )
+        code, out, _ = self.run_cli("status")
+        self.assertEqual(code, 0)
+        self.assertIn("changed  active", out)
+        with contextlib.closing(self.db()) as conn:
+            conn.execute("DROP VIEW v")
+            conn.commit()
+        code, out, _ = self.run_cli("migrate")
+        self.assertEqual(code, 0)
+        self.assertIn("applied  active", out)
+        code, out, _ = self.run_cli("status")
+        self.assertIn("applied  active", out)
+
+    def test_placeholders_from_config(self):
+        migrations = os.path.join(self.dir.name, "migrations")
+        self._write(
+            migrations, "003_extra.up.sql", "CREATE TABLE ${extra} (id INTEGER);"
+        )
+        name = f"ph_config_{id(self)}"
+        with open(os.path.join(self.dir.name, f"{name}.py"), "w") as f:
+            f.write(CONFIG_TEMPLATE + "\nplaceholders = {'extra': 'extras'}\n")
+        self.addCleanup(sys.modules.pop, name, None)
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            code = main(["migrate", "--config", name])
+        self.assertEqual(code, 0)
+        self.assertIn("extras", self.table_names())
+
+    def test_missing_placeholder_exits_one(self):
+        migrations = os.path.join(self.dir.name, "migrations")
+        self._write(
+            migrations, "003_extra.up.sql", "CREATE TABLE ${extra} (id INTEGER);"
+        )
+        code, _, err = self.run_cli("status")
+        self.assertEqual(code, 1)
+        self.assertIn("placeholder", err)
+
     def test_unknown_dialect_exits_one(self):
         name = f"bad_dialect_{id(self)}"
         with open(os.path.join(self.dir.name, f"{name}.py"), "w") as f:

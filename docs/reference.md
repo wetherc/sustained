@@ -162,7 +162,7 @@ Guide: [Schema and Migrations](./schema)
 
 | Name | What it does |
 | --- | --- |
-| `Migration(id, up, down=None, checksum=None)` | One schema change. Steps are a SQL string, a list of statements, or a callable receiving the connection. `checksum` pins a checksum for callable steps. |
+| `Migration(id, up, down=None, checksum=None, repeatable=False)` | One schema change. Steps are a SQL string, a list of statements, or a callable receiving the connection. `checksum` pins a checksum for callable steps. A repeatable migration re-runs whenever its checksum changes and has no down step. |
 | `Migrator(connection, migrations, table='sustained_migrations', dialect=..., tracking_table_options=None)` | Applies and reverts migrations with a tracking table, one transaction per migration, and an advisory lock held for the run on Postgres and MSSQL. Engines without transactions (Athena) run steps bare; `tracking_table_options` supplies the tracking table's storage clauses there. |
 | `migrator.up(target=None, validate=True, allow_out_of_order=False)` | Validates the history, then applies pending migrations, optionally stopping after a target id. |
 | `migrator.validate(raise_on_problems=True)` | Checks the tracking table against the registry: failed attempts, unknown applied ids, checksum mismatches, out-of-order pending migrations. Raises `MigrationError` or returns the problem list. |
@@ -173,9 +173,10 @@ Guide: [Schema and Migrations](./schema)
 | `migrator.sync(models, ...)` | Diffs the database against the models, generates a migration, applies it. Accepts `allow_drops`, `ignore_changed_columns`, `renames`, `table_renames`, `type_casts`, `migration_id`. |
 | `migrator.plan(models, ...)` | The migration `sync()` would generate, without registering or applying it; `None` when the schema is current. Same options as `sync()`. |
 | `migrator.baseline(target)` | Records migrations up to and including the target as applied without running them, for adopting a database whose schema already matches. |
-| `load_migrations(directory, placeholders=None)` | Builds `Migration` objects from `<id>.up.sql` / `<id>.down.sql` files, ordered by id. `placeholders` fills `${key}` markers in the files. In `sustained.migration_files`. |
+| `load_migrations(directory, placeholders=None)` | Builds `Migration` objects from `<id>.up.sql` / `<id>.down.sql` files, ordered by id, then `<id>.repeat.sql` repeatables in id order. `placeholders` fills `${key}` markers in the files. In `sustained.migration_files`. |
 | `substitute_placeholders(text, placeholders, source)` | Fills `${key}` markers in SQL text; `$${` escapes to a literal `${`. Unknown keys raise `ValueError`. |
-| `migrator.status()` / `applied()` / `pending()` | What has and has not run. |
+| `migrator.status()` / `applied()` / `pending()` | What has and has not run. `pending()` includes repeatables whose checksum changed. |
+| `migrator.statuses()` | (id, state) pairs: `applied`, `pending`, or `changed` for a repeatable whose contents differ from its last run. |
 | `migrator.script(direction)` | Renders the SQL a run would execute, including tracking bookkeeping, without executing. |
 | `create_table_migration(model)` | A create/drop migration pair derived from a model. |
 | `migration_sql(migration, direction)` | One migration's statements for offline review. |

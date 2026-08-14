@@ -6,7 +6,10 @@ The config module names the pieces the migrator needs:
 
 - `connection` (a DB-API connection) or `get_connection()` returning one
 - `migrations`: a list of Migration objects, and/or `migrations_dir`: a
-  directory of `<id>.up.sql` / `<id>.down.sql` files loaded after the list
+  directory of `<id>.up.sql` / `<id>.down.sql` / `<id>.repeat.sql` files
+  loaded after the list
+- `placeholders`: a dict filling `${key}` markers in the SQL files
+  (optional)
 - `dialect`: a Dialects member or its name, such as 'postgres' (optional)
 - `table`: the tracking table name (optional)
 - `tracking_table_options`: TableOptions for the tracking table (optional)
@@ -71,7 +74,11 @@ def _build_migrator(config: Any) -> Tuple[Migrator, Any]:
         migrations: List[Migration] = list(getattr(config, "migrations", []))
         directory = getattr(config, "migrations_dir", None)
         if directory is not None:
-            migrations.extend(load_migrations(directory))
+            migrations.extend(
+                load_migrations(
+                    directory, placeholders=getattr(config, "placeholders", None)
+                )
+            )
         migrator = Migrator(
             connection,
             migrations,
@@ -88,9 +95,8 @@ def _build_migrator(config: Any) -> Tuple[Migrator, Any]:
 
 
 def _cmd_status(migrator: Migrator, args: argparse.Namespace) -> int:
-    for migration_id, applied in migrator.status():
-        marker = "applied" if applied else "pending"
-        print(f"{marker:8} {migration_id}")
+    for migration_id, state in migrator.statuses():
+        print(f"{state:8} {migration_id}")
     return 0
 
 
@@ -167,7 +173,7 @@ def _build_parser() -> argparse.ArgumentParser:
         )
         return sub
 
-    command("status", "Show every migration and whether it is applied.")
+    command("status", "Show every migration's state: applied, pending, or changed.")
 
     migrate = command("migrate", "Apply pending migrations in order.")
     migrate.add_argument("--target", help="Stop after this migration id.")
