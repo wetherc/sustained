@@ -121,15 +121,10 @@ class QueryBuilder:
         Raises:
             DialectError: If the function is registered but not supported by the dialect.
         """
-        try:
-            metadata = FunctionRegistry.get_metadata(function_name)
-            if self._dialect not in metadata.supported_dialects:
-                raise DialectError(
-                    f"Function '{function_name.upper()}' is not supported by the '{self._dialect.name}' dialect."
-                )
-        except KeyError:
-            # Function is not registered, allow it to pass through.
-            pass
+        if not FunctionRegistry.is_supported(function_name, self._dialect):
+            raise DialectError(
+                f"Function '{function_name.upper()}' is not supported by the '{self._dialect.name}' dialect."
+            )
 
     def select(self, *columns: Selectable) -> "QueryBuilder":
         """

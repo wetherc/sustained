@@ -19,25 +19,20 @@ class TestDialectFunctions(unittest.TestCase):
         query = User.query().getdate(alias="current_time")
         self.assertEqual(str(query), "SELECT GETDATE() AS [current_time] FROM [users]")
 
-    def test_getdate_fails_with_postgres(self):
+    def test_getdate_translates_to_now_on_postgres(self):
         User.set_dialect(Dialects.POSTGRES)
-        with self.assertRaisesRegex(
-            DialectError,
-            "Function 'GETDATE' is not supported by the 'POSTGRES' dialect.",
-        ):
-            User.query().getdate()
+        query = User.query().getdate(alias="current_time")
+        self.assertEqual(str(query), 'SELECT NOW() AS "current_time" FROM "users"')
 
     def test_now_succeeds_with_postgres(self):
         User.set_dialect(Dialects.POSTGRES)
         query = User.query().now(alias="current_time")
         self.assertEqual(str(query), 'SELECT NOW() AS "current_time" FROM "users"')
 
-    def test_now_fails_with_mssql(self):
+    def test_now_translates_to_getdate_on_mssql(self):
         User.set_dialect(Dialects.MSSQL)
-        with self.assertRaisesRegex(
-            DialectError, "Function 'NOW' is not supported by the 'MSSQL' dialect."
-        ):
-            User.query().now()
+        query = User.query().now(alias="current_time")
+        self.assertEqual(str(query), "SELECT GETDATE() AS [current_time] FROM [users]")
 
     def test_coalesce_succeeds_with_all_dialects(self):
         from sustained.expressions import Column, Literal
@@ -107,6 +102,9 @@ class TestDialectFunctions(unittest.TestCase):
                     else:
                         query = getattr(User.query(), func_name.lower())(Column("name"))
 
-                    # We only need to check that this does not raise a DialectError.
-                    # The rendering itself is tested elsewhere.
-                    self.assertIn(func_name, str(query).upper())  # Basic check
+                    # We only need to check that this does not raise a
+                    # DialectError. LENGTH renders as LEN on MSSQL.
+                    expected = func_name
+                    if func_name == "LENGTH" and dialect == Dialects.MSSQL:
+                        expected = "LEN"
+                    self.assertIn(expected, str(query).upper())

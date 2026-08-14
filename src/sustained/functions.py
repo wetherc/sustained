@@ -12,10 +12,15 @@ class FunctionMetadata(NamedTuple):
     Metadata for a registered SQL function.
 
     Attributes:
-        supported_dialects: A list of dialects that support this function.
+        supported_dialects: A list of dialects that support this function
+            under its registered name.
+        dialect_names: Alternate spellings per dialect. A dialect listed
+            here passes validation and the function renders under the
+            alternate name, e.g. NOW() becomes GETDATE() on MSSQL.
     """
 
     supported_dialects: List[Dialects]
+    dialect_names: Dict[Dialects, str] = {}
 
 
 class _FunctionRegistry:
@@ -70,7 +75,17 @@ class _FunctionRegistry:
                 ]
             ),
         )
-        self.register("GETDATE", FunctionMetadata(supported_dialects=[Dialects.MSSQL]))
+        self.register(
+            "GETDATE",
+            FunctionMetadata(
+                supported_dialects=[Dialects.MSSQL],
+                dialect_names={
+                    Dialects.PRESTO: "NOW",
+                    Dialects.POSTGRES: "NOW",
+                    Dialects.DUCKDB: "NOW",
+                },
+            ),
+        )
         self.register(
             "NOW",
             FunctionMetadata(
@@ -78,7 +93,21 @@ class _FunctionRegistry:
                     Dialects.PRESTO,
                     Dialects.POSTGRES,
                     Dialects.DUCKDB,
-                ]
+                ],
+                dialect_names={Dialects.MSSQL: "GETDATE"},
+            ),
+        )
+        # LENGTH is spelled LEN in T-SQL.
+        self.register(
+            "LENGTH",
+            FunctionMetadata(
+                supported_dialects=[
+                    Dialects.DEFAULT,
+                    Dialects.PRESTO,
+                    Dialects.POSTGRES,
+                    Dialects.DUCKDB,
+                ],
+                dialect_names={Dialects.MSSQL: "LEN"},
             ),
         )
         # The MOD function has different syntax across dialects, but we register the name
@@ -105,6 +134,31 @@ class _FunctionRegistry:
             KeyError: If the function is not registered.
         """
         return self._functions[name.upper()]
+
+    def resolve_name(self, name: str, dialect: Dialects) -> str:
+        """
+        Returns the dialect's spelling of a function name. Unregistered
+        names and dialects without an alternate spelling return the name
+        uppercased.
+        """
+        upper = name.upper()
+        metadata = self._functions.get(upper)
+        if metadata is None:
+            return upper
+        return metadata.dialect_names.get(dialect, upper)
+
+    def is_supported(self, name: str, dialect: Dialects) -> bool:
+        """
+        Reports whether a registered function is usable on the dialect,
+        either natively or through an alternate spelling. Unregistered
+        functions are always considered usable.
+        """
+        metadata = self._functions.get(name.upper())
+        if metadata is None:
+            return True
+        return (
+            dialect in metadata.supported_dialects or dialect in metadata.dialect_names
+        )
 
 
 # Create a singleton instance of the registry

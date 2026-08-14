@@ -224,10 +224,16 @@ class Compiler:
 
     def compile_function(self, func: Func) -> str:
         """
-        Renders a Func expression as a SQL string.
+        Renders a Func expression as a SQL string, translating the function
+        name to the dialect's spelling when the registry defines one.
         """
+        # Imported here because the dialects module imports the compilers
+        # at module load time.
+        from sustained.functions import FunctionRegistry
+
+        function_name = FunctionRegistry.resolve_name(func.function_name, self._dialect)
         formatted_args = ", ".join(self._format_arg(arg) for arg in func.args)
-        sql = f"{func.function_name.upper()}({formatted_args})"
+        sql = f"{function_name}({formatted_args})"
         if func.alias:
             sql += f" AS {self.quote_identifier(func.alias)}"
         return sql

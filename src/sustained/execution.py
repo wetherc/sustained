@@ -142,11 +142,6 @@ def eager_load_relation(
             f"Relation '{relation_name}' not found in model '{model_class.__name__}'"
         )
     join_info = relation["join"]
-    if "through" in join_info:
-        raise NotImplementedError(
-            "Eager loading of through relations is not supported yet. "
-            "Fetch the through rows with an explicit joinRelated query."
-        )
 
     from sustained.model import resolve_model_reference
 
@@ -157,23 +152,26 @@ def eager_load_relation(
     from_table, from_col = _split_column_ref(join_info["from"], relation_name)
     to_table, to_col = _split_column_ref(join_info["to"], relation_name)
 
+    if "through" in join_info:
+        _eager_load_through(
+            model_class,
+            related_cls,
+            connection,
+            parents,
+            relation_name,
+            relation,
+            from_col,
+            to_col,
+        )
+        return
+
     # The side whose table matches the parent model holds the parent key.
     if from_table == model_class.tableName:
         parent_col, child_col = from_col, to_col
     else:
         parent_col, child_col = to_col, from_col
 
-    # Read hydrated values from __dict__ so a missing column is an error
-    # instead of silently resolving to a qualified column string.
-    parent_keys = []
-    for parent in parents:
-        if parent_col not in parent.__dict__:
-            raise ValueError(
-                f"Cannot eager load '{relation_name}': parent rows were not "
-                f"fetched with the '{parent_col}' column."
-            )
-        parent_keys.append(parent.__dict__[parent_col])
-
+    parent_keys = _collect_parent_keys(parents, parent_col, relation_name)
     unique_keys = [k for k in dict.fromkeys(parent_keys) if k is not None]
 
     is_many = relation["relation"] == RelationType.HasManyRelation
@@ -199,3 +197,89 @@ def eager_load_relation(
             setattr(parent, relation_name, matches)
         else:
             setattr(parent, relation_name, matches[0] if matches else None)
+
+
+def _collect_parent_keys(
+    parents: List["Model"], parent_col: str, relation_name: str
+) -> List[Any]:
+    """
+    Reads the join key from each parent's hydrated data. Values come from
+    __dict__ so a missing column is an error instead of silently resolving
+    to a qualified column string.
+    """
+    parent_keys = []
+    for parent in parents:
+        if parent_col not in parent.__dict__:
+            raise ValueError(
+                f"Cannot eager load '{relation_name}': parent rows were not "
+                f"fetched with the '{parent_col}' column."
+            )
+        parent_keys.append(parent.__dict__[parent_col])
+    return parent_keys
+
+
+# Reserved alias for the parent join key in through-relation queries.
+_PARENT_KEY_ALIAS = "sustained_parent_key"
+
+
+def _eager_load_through(
+    model_class: Type["Model"],
+    related_cls: Type["Model"],
+    connection: Any,
+    parents: List["Model"],
+    relation_name: str,
+    relation: Any,
+    parent_col: str,
+    related_col: str,
+) -> None:
+    """
+    Loads a many-to-many relation with one query that joins the related
+    table to the through table and exposes the parent key under a reserved
+    alias for grouping.
+    """
+    join_info = relation["join"]
+    through = join_info["through"]
+
+    def through_table_name(ref: Any) -> str:
+        if isinstance(ref, str):
+            return ref
+        name = ref.tableName
+        assert name is not None, "Through table model must have a tableName"
+        return str(name)
+
+    through_table = through_table_name(through["from"]["table"])
+    through_from_key = through["from"]["key"]
+    through_to_key = through["to"]["key"]
+    related_table = related_cls.tableName
+    assert related_table is not None
+
+    parent_keys = _collect_parent_keys(parents, parent_col, relation_name)
+    unique_keys = [k for k in dict.fromkeys(parent_keys) if k is not None]
+    if not unique_keys:
+        for parent in parents:
+            setattr(parent, relation_name, [])
+        return
+
+    children = (
+        related_cls.query()
+        .select(
+            f"{related_table}.*",
+            f"{through_table}.{through_from_key} AS {_PARENT_KEY_ALIAS}",
+        )
+        .join(
+            through_table,
+            f"{through_table}.{through_to_key}",
+            "=",
+            f"{related_table}.{related_col}",
+        )
+        .whereIn(f"{through_table}.{through_from_key}", unique_keys)
+        .run(connection)
+    )
+
+    grouped: Dict[Any, List["Model"]] = {}
+    for child in children:
+        key = child.__dict__.pop(_PARENT_KEY_ALIAS, None)
+        grouped.setdefault(key, []).append(child)
+
+    for parent, key in zip(parents, parent_keys):
+        setattr(parent, relation_name, grouped.get(key, []))

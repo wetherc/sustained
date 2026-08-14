@@ -155,7 +155,7 @@ class TestEagerLoadEdgeCases(unittest.TestCase):
         with self.assertRaises(ValueError):
             query.run()
 
-    def test_eager_load_through_relation_not_supported(self):
+    def test_eager_load_through_relation(self):
         from sustained import RelationType, create_model
 
         Tag = create_model("ExecTag", "tags")
@@ -177,11 +177,21 @@ class TestEagerLoadEdgeCases(unittest.TestCase):
                 }
             },
         )
+        self.conn.executescript("""
+            CREATE TABLE tags (id INTEGER PRIMARY KEY, label TEXT);
+            CREATE TABLE owners_tags (ownerId INTEGER, tagId INTEGER);
+            INSERT INTO owners (id, name) VALUES (1, 'Ada'), (2, 'Bob');
+            INSERT INTO tags (id, label) VALUES (10, 'vip'), (11, 'new');
+            INSERT INTO owners_tags VALUES (1, 10), (1, 11);
+            """)
         Tagged.bind(self.conn)
-        self.conn.execute("INSERT INTO owners (id, name) VALUES (1, 'Ada')")
-        with self.assertRaises(NotImplementedError):
-            Tagged.query().withGraphFetched("tags").run()
-        Tagged.unbind()
+        try:
+            owners = Tagged.query().orderBy("id").withGraphFetched("tags").run()
+            self.assertEqual([t.label for t in owners[0].tags], ["vip", "new"])
+            self.assertEqual(owners[1].tags, [])
+            self.assertNotIn("sustained_parent_key", owners[0].tags[0].__dict__)
+        finally:
+            Tagged.unbind()
 
     def test_eager_load_unqualified_join_ref_raises(self):
         from sustained import RelationType, create_model
