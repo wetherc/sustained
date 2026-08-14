@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.3.0 (2026-08-14)
+
+### Added
+
+- Schema autogeneration: `diff_schema()` introspects the live database (SQLite PRAGMA on the default dialect, `information_schema.columns` elsewhere) and reports missing tables, new columns, extra objects, and changed columns with a readable `summary()`. Type comparison round-trips through each dialect's own type mapping, so tables created from models diff clean.
+- `autogenerate()`: builds a `Migration` from the diff. Additive steps are reversible (CREATE/DROP TABLE, ADD/DROP COLUMN pairs). Drops require `allow_drops=True` and carry no down step; changed column types block generation unless explicitly ignored; NOT NULL adds without defaults and primary key or autoincrement adds are rejected.
+- `Migrator.sync(models)`: diff, generate, register, and apply in one call, idempotent when the schema is current. `Migrator.down_to(id)` reverts newest-first until the target is the most recent applied migration.
+- Compilers render `ADD COLUMN` and `DROP COLUMN` statements, with the T-SQL `ADD` spelling on MSSQL.
+
 ## 2.2.0 (2026-08-14)
 
 ### Added
