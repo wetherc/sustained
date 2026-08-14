@@ -21,7 +21,8 @@ The `QueryBuilder` (`sustained/builder.py`) is the central component of the libr
 
 -   **State Management:** It does not manage the complex state of the query directly. Instead, it holds instances of several specialized `*ClauseBuilder` objects.
 -   **Composition:** When a method like `.where()` or `.select()` is called on the `QueryBuilder`, it delegates that call to the appropriate internal builder (e.g., `self._where_builder` or `self._select_clause_builder`).
--   **Assembly:** When `str(query)` is finally called, the `QueryBuilder` is responsible for assembling the final SQL string by calling `str()` on each of its internal builders in the correct order and passing the result through the `Compiler`.
+-   **Assembly:** Rendering happens through a `RenderContext` (`sustained/rendering.py`) that carries the compiler and the value-handling mode. `str(query)` renders with values inlined as SQL literals. `to_sql()` renders with dialect placeholders and returns the collected parameters. Clauses that hold user values store deferred render functions instead of finished strings, so both modes share one code path.
+-   **Execution:** `run()` and `first()` (`sustained/execution.py`) execute the parameterized statement on a DB-API 2.0 connection and hydrate result rows into model instances.
 
 ### The `*ClauseBuilder`s
 
@@ -47,9 +48,25 @@ Understanding the lifecycle of a query is key to understanding the architecture.
 1.  **Instantiation:** A user calls `MyModel.query()`. The `Model` creates a `QueryBuilder` instance, passing it the currently configured `Dialect`.
 2.  **Construction:** The user chains methods like `.select()`, `.where()`, and `.orderBy()`. Each of these calls is delegated to the corresponding internal `*ClauseBuilder`, which updates its internal state.
 3.  **Compilation:** The user calls `str(query_builder)` to get the final SQL string.
-4.  **Assembly:** The `QueryBuilder.__str__()` method is invoked. It calls `str()` on each of its internal builders (`_select_clause_builder`, `_where_builder`, etc.) to get their rendered SQL fragments.
-5.  **Dialect-Specific Rendering:** For parts of the query that are dialect-dependent (like `LIMIT`/`OFFSET`), the `QueryBuilder` calls methods on its configured `Compiler` instance (e.g., `self._compiler.compile_limit_offset(...)`).
-6.  **Final String:** The `QueryBuilder` joins all the rendered fragments together into the final, complete SQL string.
+4.  **Assembly:** `QueryBuilder._render_sql(ctx)` walks the statement in SQL order. It hoists CTEs, renders each internal builder, and threads the `RenderContext` into every clause that holds user values. `__str__()` calls it with an inline-literal context; `to_sql()` calls it with a parameterizing context and returns `(sql, params)`.
+5.  **Dialect-Specific Rendering:** For parts of the query that are dialect-dependent (like `LIMIT`/`OFFSET`, identifier quoting, booleans, and ILIKE), the builders call methods on the configured `Compiler` instance.
+6.  **Final String:** The `QueryBuilder` joins all the rendered fragments together into the final, complete SQL statement.
+
+## Development Setup
+
+Tests, linting, formatting, and type checking are enforced locally through pre-commit hooks. Install the tools and the hooks once:
+
+```bash
+pip install pre-commit coverage
+pre-commit install
+```
+
+The unit-test hook runs the suite under coverage and fails the commit when total branch coverage drops below 90 percent. Run it manually with:
+
+```bash
+PYTHONPATH=src python3 -m coverage run --branch --source=src/sustained -m unittest discover -s tests
+python3 -m coverage report
+```
 
 ## Extending the ORM
 

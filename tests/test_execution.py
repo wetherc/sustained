@@ -125,5 +125,85 @@ class TestExecution(unittest.TestCase):
         other.close()
 
 
+class TestEagerLoadEdgeCases(unittest.TestCase):
+    def setUp(self):
+        self.conn = sqlite3.connect(":memory:")
+        self.conn.execute("CREATE TABLE owners (id INTEGER PRIMARY KEY, name TEXT)")
+        self.conn.execute(
+            "CREATE TABLE pets (id INTEGER PRIMARY KEY, owner_id INTEGER, name TEXT)"
+        )
+        ExecOwner.bind(self.conn)
+        ExecPet.bind(self.conn)
+
+    def tearDown(self):
+        ExecOwner.unbind()
+        ExecPet.unbind()
+        self.conn.close()
+
+    def test_eager_load_with_no_parents(self):
+        owners = ExecOwner.query().withGraphFetched("pets").run()
+        self.assertEqual(owners, [])
+
+    def test_eager_load_with_null_keys(self):
+        ExecPet.query().insert([{"id": 1, "owner_id": None, "name": "Stray"}]).run()
+        pets = ExecPet.query().withGraphFetched("owner").run()
+        self.assertIsNone(pets[0].owner)
+
+    def test_eager_load_requires_parent_key_column(self):
+        ExecOwner.query().insert([{"id": 1, "name": "Ada"}]).run()
+        query = ExecOwner.query().select("name").withGraphFetched("pets")
+        with self.assertRaises(ValueError):
+            query.run()
+
+    def test_eager_load_through_relation_not_supported(self):
+        from sustained import RelationType, create_model
+
+        Tag = create_model("ExecTag", "tags")
+        Tagged = create_model(
+            "ExecTagged",
+            "owners",
+            mappings={
+                "tags": {
+                    "relation": RelationType.ManyToManyRelation,
+                    "modelClass": Tag,
+                    "join": {
+                        "from": "owners.id",
+                        "through": {
+                            "from": {"table": "owners_tags", "key": "ownerId"},
+                            "to": {"table": "owners_tags", "key": "tagId"},
+                        },
+                        "to": "tags.id",
+                    },
+                }
+            },
+        )
+        Tagged.bind(self.conn)
+        self.conn.execute("INSERT INTO owners (id, name) VALUES (1, 'Ada')")
+        with self.assertRaises(NotImplementedError):
+            Tagged.query().withGraphFetched("tags").run()
+        Tagged.unbind()
+
+    def test_eager_load_unqualified_join_ref_raises(self):
+        from sustained import RelationType, create_model
+
+        Pet2 = create_model("ExecPet2", "pets")
+        Bad = create_model(
+            "ExecBadOwner",
+            "owners",
+            mappings={
+                "pets": {
+                    "relation": RelationType.HasManyRelation,
+                    "modelClass": Pet2,
+                    "join": {"from": "id", "to": "pets.owner_id"},
+                }
+            },
+        )
+        Bad.bind(self.conn)
+        self.conn.execute("INSERT INTO owners (id, name) VALUES (1, 'Ada')")
+        with self.assertRaises(ValueError):
+            Bad.query().withGraphFetched("pets").run()
+        Bad.unbind()
+
+
 if __name__ == "__main__":
     unittest.main()

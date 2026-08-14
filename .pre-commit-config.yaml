@@ -31,8 +31,11 @@ repos:
   - repo: local
     hooks:
       - id: unit-tests
-        name: Run unit tests
-        entry: bash -c "PYTHONPATH=src python3 -m unittest discover -s tests"
+        name: Run unit tests with coverage
+        entry: >
+          bash -c "PYTHONPATH=src python3 -m coverage run --branch
+          --source=src/sustained -m unittest discover -s tests
+          && python3 -m coverage report --fail-under=90 > /dev/null"
         language: system
         types: [python]
         pass_filenames: false
