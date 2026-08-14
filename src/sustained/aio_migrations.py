@@ -267,6 +267,42 @@ class AsyncMigrator:
         await self._adapter.commit()
         return actions
 
+    async def baseline(self, target: str) -> List[str]:
+        """
+        Marks registered migrations up to and including the target as
+        applied without running them, for adopting a database whose schema
+        already matches. Rows are written with real checksums and a null
+        execution time; already-applied migrations are skipped. Returns the
+        ids that were recorded.
+        """
+        ids = [m.id for m in self._migrations]
+        if target not in ids:
+            raise ValueError(f"Unknown migration target: {target!r}.")
+        async with self._lock_scope():
+            records = await self.applied_records()
+            already_applied = {r.id for r in records if r.success}
+            next_seq = _next_seq(records)
+            recorded: List[str] = []
+            for migration in self._migrations[: ids.index(target) + 1]:
+                if migration.id in already_applied:
+                    continue
+                timestamp = datetime.now(timezone.utc).isoformat()
+                await self._adapter.execute(
+                    self._insert_sql(),
+                    (
+                        migration.id,
+                        next_seq,
+                        migration_checksum(migration),
+                        timestamp,
+                        None,
+                        True,
+                    ),
+                )
+                next_seq += 1
+                recorded.append(migration.id)
+            await self._adapter.commit()
+            return recorded
+
     async def _record_failure(self, migration: Migration, seq: int) -> None:
         """
         Writes a failed-attempt row after a migration step raised on an

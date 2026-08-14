@@ -379,5 +379,71 @@ class TestFailureTracking(MigrationTestCase):
         self.assertEqual(count, 0)
 
 
+class TestBaseline(MigrationTestCase):
+    def migrations(self):
+        return [
+            create_table_migration(MigUser),
+            Migration(
+                "add_flag",
+                up="ALTER TABLE mig_users ADD COLUMN flag INTEGER DEFAULT 0",
+                down="ALTER TABLE mig_users DROP COLUMN flag",
+            ),
+        ]
+
+    def test_baseline_records_without_running(self):
+        migrations = self.migrations()
+        migrator = Migrator(self.conn, migrations)
+        recorded = migrator.baseline("create_mig_users")
+        self.assertEqual(recorded, ["create_mig_users"])
+        self.assertNotIn("mig_users", table_names(self.conn))
+        row = self.conn.execute(
+            "SELECT id, seq, checksum, execution_ms, success "
+            "FROM sustained_migrations"
+        ).fetchone()
+        self.assertEqual(row[0], "create_mig_users")
+        self.assertEqual(row[1], 1)
+        self.assertEqual(row[2], migration_checksum(migrations[0]))
+        self.assertIsNone(row[3])
+        self.assertEqual(row[4], 1)
+
+    def test_baseline_then_up_applies_only_the_rest(self):
+        self.conn.executescript(
+            "CREATE TABLE mig_users (id INTEGER PRIMARY KEY, "
+            "email VARCHAR(120) NOT NULL)"
+        )
+        migrator = Migrator(self.conn, self.migrations())
+        migrator.baseline("create_mig_users")
+        self.assertEqual(migrator.validate(), [])
+        self.assertEqual(migrator.up(), ["add_flag"])
+        self.assertEqual(migrator.applied(), ["create_mig_users", "add_flag"])
+
+    def test_baseline_skips_already_applied(self):
+        migrator = Migrator(self.conn, self.migrations())
+        migrator.up(target="create_mig_users")
+        self.assertEqual(migrator.baseline("add_flag"), ["add_flag"])
+        seqs = [r.seq for r in migrator.applied_records()]
+        self.assertEqual(seqs, [1, 2])
+
+    def test_baseline_unknown_target_raises(self):
+        migrator = Migrator(self.conn, self.migrations())
+        with self.assertRaises(ValueError):
+            migrator.baseline("nope")
+
+
+class TestPlan(MigrationTestCase):
+    def test_plan_returns_migration_without_touching_anything(self):
+        migrator = Migrator(self.conn, [])
+        migration = migrator.plan([MigUser], migration_id="planned")
+        self.assertEqual(migration.id, "planned")
+        self.assertTrue(any("CREATE TABLE" in s for s in migration.up))
+        self.assertNotIn("mig_users", table_names(self.conn))
+        self.assertEqual(migrator.status(), [])
+
+    def test_plan_returns_none_when_schema_is_current(self):
+        migrator = Migrator(self.conn, [])
+        migrator.sync([MigUser])
+        self.assertIsNone(migrator.plan([MigUser]))
+
+
 if __name__ == "__main__":
     unittest.main()

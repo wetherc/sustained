@@ -150,6 +150,22 @@ class TestAsyncMigrator(unittest.IsolatedAsyncioTestCase):
             await edited.up()
         self.assertEqual(await edited.up(validate=False), ["b"])
 
+    async def test_baseline_records_without_running(self):
+        migrator = AsyncMigrator(self.adapter, self.migrations())
+        recorded = await migrator.baseline("a")
+        self.assertEqual(recorded, ["a"])
+        self.assertNotIn("ta", table_names(self.conn))
+        row = self.conn.execute(
+            "SELECT id, seq, execution_ms, success FROM sustained_migrations"
+        ).fetchone()
+        self.assertEqual(row, ("a", 1, None, 1))
+        self.assertEqual(await migrator.up(), ["b"])
+
+    async def test_baseline_unknown_target_raises(self):
+        migrator = AsyncMigrator(self.adapter, self.migrations())
+        with self.assertRaises(ValueError):
+            await migrator.baseline("nope")
+
 
 if __name__ == "__main__":
     unittest.main()

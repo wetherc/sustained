@@ -584,6 +584,77 @@ class Migrator:
                 applied_now.append(migration.id)
             return applied_now
 
+    def baseline(self, target: str) -> List[str]:
+        """
+        Marks registered migrations up to and including the target as
+        applied without running them, for adopting a database whose schema
+        already matches. Rows are written with real checksums and a null
+        execution time; already-applied migrations are skipped. Returns the
+        ids that were recorded.
+        """
+        ids = [m.id for m in self._migrations]
+        if target not in ids:
+            raise ValueError(f"Unknown migration target: {target!r}.")
+        with self._lock_scope():
+            records = self.applied_records()
+            already_applied = {r.id for r in records if r.success}
+            next_seq = _next_seq(records)
+            cursor = self._connection.cursor()
+            recorded: List[str] = []
+            for migration in self._migrations[: ids.index(target) + 1]:
+                if migration.id in already_applied:
+                    continue
+                timestamp = datetime.now(timezone.utc).isoformat()
+                cursor.execute(
+                    self._insert_sql(),
+                    (
+                        migration.id,
+                        next_seq,
+                        migration_checksum(migration),
+                        timestamp,
+                        None,
+                        True,
+                    ),
+                )
+                next_seq += 1
+                recorded.append(migration.id)
+            self._commit_quietly()
+            return recorded
+
+    def plan(
+        self,
+        models: List[Type["Model"]],
+        allow_drops: bool = False,
+        ignore_changed_columns: bool = False,
+        migration_id: Optional[str] = None,
+        renames: Optional[dict[str, str]] = None,
+        table_renames: Optional[dict[str, str]] = None,
+        type_casts: Optional[dict[str, str]] = None,
+    ) -> Optional[Migration]:
+        """
+        Diffs the database against the models and returns the migration
+        sync() would generate, without registering or applying it. Returns
+        None when the schema is already up to date. The tracking table is
+        excluded from the diff.
+        """
+        from sustained.autogenerate import autogenerate
+
+        generated_id = migration_id or datetime.now(timezone.utc).strftime(
+            "auto_%Y%m%d%H%M%S_%f"
+        )
+        return autogenerate(
+            self._connection,
+            models,
+            id=generated_id,
+            dialect=self._dialect,
+            allow_drops=allow_drops,
+            ignore_changed_columns=ignore_changed_columns,
+            exclude_tables=(self._table,),
+            renames=renames,
+            table_renames=table_renames,
+            type_casts=type_casts,
+        )
+
     def sync(
         self,
         models: List[Type["Model"]],
