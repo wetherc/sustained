@@ -74,9 +74,26 @@ On engines without transactions, a failing step writes a row with the success fl
 
 While a run is in progress, the migrator holds an exclusive advisory lock named after the tracking table, so two application instances deploying at once queue instead of racing each other's DDL. Postgres uses `pg_advisory_lock`, MSSQL uses `sp_getapplock`; both are session-scoped and release on disconnect. SQLite and DuckDB serialize writers on their own. Athena has no lock to take, so run one migrator at a time there.
 
+## Adopting an Existing Database
+
+`baseline()` records migrations as applied without running them, for a database whose schema already matches. Rows carry real checksums, so validation still catches later edits, and a null execution time marks them as never having run. Later `up()` calls apply only what comes after.
+
+```python
+migrator.baseline('create_users')   # record up to and including this id
+migrator.up()                       # apply only the rest
+```
+
 ## Inspecting Drift Before Applying
 
-`diff_schema()` reports every difference without touching anything. `autogenerate()` builds the migration so you can review its statements before it runs.
+`migrator.plan()` returns the migration `sync()` would generate, without registering or applying it, so its statements can be reviewed first. It returns `None` when the schema is current and takes the same options as `sync()`.
+
+```python
+migration = migrator.plan([User])
+if migration is not None:
+    print(migration.up)
+```
+
+At a lower level, `diff_schema()` reports every difference without touching anything, and `autogenerate()` builds the migration directly.
 
 ```python
 from sustained.autogenerate import autogenerate, diff_schema
@@ -213,6 +230,54 @@ migrator.up(target='create_users')   # stop after a target
 migrator.status()                    # [(id, applied), ...]
 ```
 
+## Migrations as SQL Files
+
+Migrations can live as plain SQL files instead of Python objects. `load_migrations()` reads a directory of `<id>.up.sql` files, each optionally paired with a `<id>.down.sql`, and returns `Migration` objects ordered by id, so file naming fixes the apply order. Statements split at line-ending semicolons; semicolons inside string literals stay intact.
+
+```
+migrations/
+  001_create_users.up.sql
+  001_create_users.down.sql
+  002_add_flag.up.sql
+```
+
+```python
+from sustained.migration_files import load_migrations
+
+migrator = Migrator(conn, load_migrations('migrations'))
+migrator.up()
+```
+
+Empty up or down files, a down file without its up file, and `.sql` files that fit neither naming pattern raise `ValueError`. Files without a `.sql` extension are ignored, so a README can live alongside the migrations.
+
+## Command Line
+
+The `sustained` console script (also `python -m sustained`) runs migrations from the shell. It imports a config module, `sustained_config` by default or `--config mymodule`, from the current directory:
+
+```python
+# sustained_config.py
+import sqlite3
+
+def get_connection():
+    return sqlite3.connect('app.db')
+
+migrations_dir = 'migrations'
+# optional: migrations = [...], dialect = 'postgres',
+# table = '...', tracking_table_options = TableOptions(...)
+```
+
+```console
+$ sustained status
+$ sustained migrate                 # --target ID, --no-validate, --allow-out-of-order
+$ sustained down                    # --steps N or --to ID
+$ sustained validate                # exits 1 when problems exist
+$ sustained repair
+$ sustained script down             # print the SQL without running it
+$ sustained baseline 001_create_users
+```
+
+Commands exit 0 on success and 1 on failure, with errors on stderr, so they slot into deploy pipelines.
+
 ## Offline Review and Async
 
-`migrator.script('up')` renders every statement a run would execute, including tracking bookkeeping, without touching the database, for review or DBA handoff; `script('down')` renders the rollback. For async services, `AsyncMigrator` in `sustained.aio_migrations` runs the same `Migration` objects on an `AsyncAdapter` with the same `up`, `down`, `down_to`, `status`, `validate`, and `repair` surface; callable steps receive the adapter and are awaited.
+`migrator.script('up')` renders every statement a run would execute, including tracking bookkeeping, without touching the database, for review or DBA handoff; `script('down')` renders the rollback. For async services, `AsyncMigrator` in `sustained.aio_migrations` runs the same `Migration` objects on an `AsyncAdapter` with the same `up`, `down`, `down_to`, `status`, `validate`, `repair`, and `baseline` surface; callable steps receive the adapter and are awaited.

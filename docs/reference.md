@@ -171,11 +171,15 @@ Guide: [Schema and Migrations](./schema)
 | `migration_checksum(migration)` | The SHA-256 checksum validation compares, or `None` for callable steps without one. |
 | `migrator.down(steps=1)` / `migrator.down_to(id)` | Reverts newest-first. |
 | `migrator.sync(models, ...)` | Diffs the database against the models, generates a migration, applies it. Accepts `allow_drops`, `ignore_changed_columns`, `renames`, `table_renames`, `type_casts`, `migration_id`. |
+| `migrator.plan(models, ...)` | The migration `sync()` would generate, without registering or applying it; `None` when the schema is current. Same options as `sync()`. |
+| `migrator.baseline(target)` | Records migrations up to and including the target as applied without running them, for adopting a database whose schema already matches. |
+| `load_migrations(directory)` | Builds `Migration` objects from `<id>.up.sql` / `<id>.down.sql` files, ordered by id. In `sustained.migration_files`. |
 | `migrator.status()` / `applied()` / `pending()` | What has and has not run. |
 | `migrator.script(direction)` | Renders the SQL a run would execute, including tracking bookkeeping, without executing. |
 | `create_table_migration(model)` | A create/drop migration pair derived from a model. |
 | `migration_sql(migration, direction)` | One migration's statements for offline review. |
-| `AsyncMigrator` | The same runner on an `AsyncAdapter`, in `sustained.aio_migrations`. |
+| `AsyncMigrator` | The same runner on an `AsyncAdapter`, in `sustained.aio_migrations`. Includes `baseline()`. |
+| `sustained <command> --config module` | The CLI: `status`, `migrate`, `down`, `validate`, `repair`, `script`, `baseline`. Also runs as `python -m sustained`. |
 | `diff_schema(connection, models, ...)` | The schema difference as a `SchemaDiff` with a readable `summary()`. Touches nothing. |
 | `autogenerate(connection, models, id, ...)` | Builds a `Migration` from the diff, or `None` when the schema is current. |
 

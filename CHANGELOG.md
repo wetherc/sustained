@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.7.0 (2026-08-14)
+
+### Added
+
+- Migrations as SQL files: `load_migrations(directory)` pairs `<id>.up.sql` files with optional `<id>.down.sql` files and returns `Migration` objects ordered by id. Statements split at line-ending semicolons, so semicolons inside string literals stay intact. Empty files, orphaned down files, and misnamed `.sql` files raise `ValueError`.
+- `baseline(target)` on `Migrator` and `AsyncMigrator`: records migrations up to and including the target as applied without running them, for adopting a database whose schema already matches. Rows carry real checksums and a null execution time.
+- `Migrator.plan(models, ...)`: the migration `sync()` would generate, returned without registering or applying it, or `None` when the schema is current.
+- A command-line runner: the `sustained` console script and `python -m sustained` drive a `Migrator` from a config module. Commands: `status`, `migrate`, `down`, `validate`, `repair`, `script`, `baseline`. Exits 0 on success, 1 on failure.
+
 ## 2.6.0 (2026-08-14)
 
 ### Added
