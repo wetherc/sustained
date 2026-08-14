@@ -85,6 +85,7 @@ class Migrator:
         self._connection = connection
         self._migrations = list(migrations)
         self._table = table
+        self._dialect = dialect
         self._compiler = Dialects.get_compiler(dialect)
 
     def _table_sql(self) -> str:
@@ -151,6 +152,51 @@ class Migrator:
                 )
             applied_now.append(migration.id)
         return applied_now
+
+    def sync(
+        self,
+        models: List[Type["Model"]],
+        allow_drops: bool = False,
+        ignore_changed_columns: bool = False,
+        migration_id: Optional[str] = None,
+    ) -> List[str]:
+        """
+        Diffs the database against the models, registers the generated
+        migration, and applies everything pending. Returns the applied ids;
+        an empty list means the schema was already up to date.
+
+        Additive changes generate reversible steps, so down() rolls the
+        sync back. Drops require allow_drops=True and are not reversible.
+        """
+        from sustained.autogenerate import autogenerate
+
+        self._ensure_tracking_table()
+        generated_id = migration_id or datetime.now(timezone.utc).strftime(
+            "auto_%Y%m%d%H%M%S_%f"
+        )
+        migration = autogenerate(
+            self._connection,
+            models,
+            id=generated_id,
+            dialect=self._dialect,
+            allow_drops=allow_drops,
+            ignore_changed_columns=ignore_changed_columns,
+            exclude_tables=(self._table,),
+        )
+        if migration is not None:
+            self._migrations.append(migration)
+        return self.up()
+
+    def down_to(self, target: str) -> List[str]:
+        """
+        Reverts applied migrations newest-first until the target is the
+        most recent applied migration. The target itself stays applied.
+        """
+        applied = self.applied()
+        if target not in applied:
+            raise ValueError(f"Migration '{target}' is not applied.")
+        steps = len(applied) - applied.index(target) - 1
+        return self.down(steps) if steps else []
 
     def down(self, steps: int = 1) -> List[str]:
         """

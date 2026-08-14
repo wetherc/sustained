@@ -224,6 +224,15 @@ class Compiler:
         """
         return ""
 
+    def compile_add_column(self, table_sql: str, column_sql: str) -> str:
+        """Renders an ALTER TABLE statement that adds one column."""
+        return f"ALTER TABLE {table_sql} ADD COLUMN {column_sql}"
+
+    def compile_drop_column(self, table_sql: str, column_name: str) -> str:
+        """Renders an ALTER TABLE statement that drops one column."""
+        quoted = self.quote_identifier(column_name)
+        return f"ALTER TABLE {table_sql} DROP COLUMN {quoted}"
+
     def compile_returning(self, columns_sql: str) -> str:
         """
         Renders a RETURNING clause for DML statements. Dialects without

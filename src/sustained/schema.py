@@ -119,6 +119,34 @@ def Json(**kwargs: Any) -> ColumnDef:
     return ColumnDef("JSON", **kwargs)
 
 
+def render_column_sql(
+    compiler: "Compiler",
+    name: str,
+    col: ColumnDef,
+    inline_pk: bool,
+) -> str:
+    """Renders one column definition for CREATE TABLE or ADD COLUMN."""
+    parts = [compiler.quote_identifier(name), compiler.compile_column_type(col)]
+    if col.autoincrement:
+        identity = compiler.compile_identity()
+        if identity:
+            parts.append(identity)
+    if col.primary_key and inline_pk:
+        parts.append("PRIMARY KEY")
+    elif not col.nullable:
+        parts.append("NOT NULL")
+    if col.unique and not col.primary_key:
+        parts.append("UNIQUE")
+    if col.default is not None:
+        parts.append(f"DEFAULT {compiler.format_value(col.default)}")
+    if col.references is not None:
+        ref_table, ref_column = col.references.rsplit(".", 1)
+        quoted_table = compiler.quote_fully_qualified_identifier(ref_table)
+        quoted_column = compiler.quote_identifier(ref_column)
+        parts.append(f"REFERENCES {quoted_table} ({quoted_column})")
+    return " ".join(parts)
+
+
 def build_create_table_sql(
     compiler: "Compiler",
     table_sql: str,
@@ -144,25 +172,7 @@ def build_create_table_sql(
     inline_pk = len(primary_keys) == 1
 
     for name, col in columns.items():
-        parts = [compiler.quote_identifier(name), compiler.compile_column_type(col)]
-        if col.autoincrement:
-            identity = compiler.compile_identity()
-            if identity:
-                parts.append(identity)
-        if col.primary_key and inline_pk:
-            parts.append("PRIMARY KEY")
-        elif not col.nullable:
-            parts.append("NOT NULL")
-        if col.unique and not col.primary_key:
-            parts.append("UNIQUE")
-        if col.default is not None:
-            parts.append(f"DEFAULT {compiler.format_value(col.default)}")
-        if col.references is not None:
-            ref_table, ref_column = col.references.rsplit(".", 1)
-            quoted_table = compiler.quote_fully_qualified_identifier(ref_table)
-            quoted_column = compiler.quote_identifier(ref_column)
-            parts.append(f"REFERENCES {quoted_table} ({quoted_column})")
-        column_parts.append(" ".join(parts))
+        column_parts.append(render_column_sql(compiler, name, col, inline_pk))
 
     if len(primary_keys) > 1:
         pk_sql = ", ".join(compiler.quote_identifier(c) for c in primary_keys)

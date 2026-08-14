@@ -74,6 +74,10 @@ class MssqlCompiler(Compiler):
     def compile_identity(self) -> str:
         return "IDENTITY(1,1)"
 
+    def compile_add_column(self, table_sql: str, column_sql: str) -> str:
+        # T-SQL spells it ADD without the COLUMN keyword.
+        return f"ALTER TABLE {table_sql} ADD {column_sql}"
+
     def compile_with_keyword(self, recursive: bool) -> str:
         # T-SQL uses plain WITH for recursive CTEs.
         return "WITH"
