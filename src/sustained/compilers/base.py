@@ -90,6 +90,40 @@ class Compiler:
             )
         return normalized
 
+    def supports_qualify(self) -> bool:
+        """Reports whether the dialect supports the QUALIFY clause."""
+        return False
+
+    def compile_with_keyword(self, recursive: bool) -> str:
+        """Renders the WITH keyword, adding RECURSIVE where required."""
+        return "WITH RECURSIVE" if recursive else "WITH"
+
+    def compile_distinct_on(self, columns_sql: "list[str]") -> str:
+        """
+        Renders DISTINCT ON. A Postgres extension also supported by DuckDB;
+        other dialects raise.
+        """
+        from sustained.exceptions import DialectError
+
+        raise DialectError(
+            f"DISTINCT ON is not supported by the '{self._dialect.name}' dialect. "
+            "Use a window function with a row filter instead."
+        )
+
+    def compile_locking(self, skip_locked: bool, nowait: bool) -> str:
+        """
+        Renders a FOR UPDATE locking clause. Dialects without it raise.
+        """
+        from sustained.exceptions import DialectError
+
+        raise DialectError(
+            f"FOR UPDATE is not supported by the '{self._dialect.name}' dialect."
+        )
+
+    def compile_explain(self, analyze: bool) -> str:
+        """Renders the EXPLAIN prefix. Dialects without EXPLAIN raise."""
+        return "EXPLAIN ANALYZE" if analyze else "EXPLAIN"
+
     def compile_like(self, column_sql: str, pattern_sql: str, operator: str) -> str:
         """
         Renders a LIKE or ILIKE predicate. ILIKE is a Postgres extension, so

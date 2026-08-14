@@ -29,6 +29,7 @@ from sustained.expressions import (
     CaseExpression,
     Column,
     Func,
+    Predicate,
     WindowExpression,
 )
 from sustained.functions import FunctionRegistry
@@ -80,7 +81,7 @@ class QueryBuilder:
         self._order_by_builder = OrderByClauseBuilder(
             model_class, compiler=self._compiler
         )
-        self._with_clauses: List[Tuple[str, "QueryBuilder"]] = []
+        self._with_clauses: List[Tuple[str, "QueryBuilder", bool]] = []
         self._offset_value: Optional[int] = None
         self._union_clauses: List[Tuple[str, "QueryBuilder"]] = []
         self._limit_value: Optional[int] = None
@@ -96,6 +97,9 @@ class QueryBuilder:
         self._conflict_action: Optional[Tuple[str, Optional[List[str]]]] = None
         self._insert_from: Optional[Tuple[Optional[List[str]], "QueryBuilder"]] = None
         self._ctas_target: Tuple[str, bool] = ("", False)
+        self._distinct_on_columns: List[str] = []
+        self._qualify_condition: Optional[Union[str, "Predicate"]] = None
+        self._locking_clause: Optional[Tuple[bool, bool]] = None
 
     def distinct(self) -> "QueryBuilder":
         """
@@ -322,9 +326,13 @@ class QueryBuilder:
             )
         return self
 
-    def with_(self, table_alias: str, subquery: "QueryBuilder") -> "QueryBuilder":
+    def with_(
+        self, table_alias: str, subquery: "QueryBuilder", recursive: bool = False
+    ) -> "QueryBuilder":
         """
-        Adds a Common Table Expression (CTE) to the query.
+        Adds a Common Table Expression (CTE) to the query. Pass
+        recursive=True for a self-referencing CTE; the WITH clause then
+        renders as WITH RECURSIVE on dialects that require the keyword.
         NOTE: This method is named `with_` to avoid conflict with the Python `with` keyword.
 
         Example:
@@ -340,7 +348,7 @@ class QueryBuilder:
         """
         if not isinstance(subquery, QueryBuilder):
             raise TypeError("CTE subquery must be a QueryBuilder instance.")
-        self._with_clauses.append((table_alias, subquery))
+        self._with_clauses.append((table_alias, subquery, recursive))
         return self
 
     def groupBy(self, *columns: str) -> "QueryBuilder":
@@ -394,6 +402,15 @@ class QueryBuilder:
         select_parts = ["SELECT"]
         if self._distinct:
             select_parts.append("DISTINCT")
+        if self._distinct_on_columns:
+            select_parts.append(
+                self._compiler.compile_distinct_on(
+                    [
+                        self._compiler.quote_column_reference(c)
+                        for c in self._distinct_on_columns
+                    ]
+                )
+            )
 
         compiled_top = ""
         if self._top_value is not None:
@@ -422,21 +439,33 @@ class QueryBuilder:
         if having_str:
             query_parts.append(having_str)
 
+        if self._qualify_condition is not None:
+            if not self._compiler.supports_qualify():
+                raise DialectError(
+                    f"QUALIFY is not supported by the '{self._dialect.name}' dialect. "
+                    "Wrap the window function in a subquery instead."
+                )
+            if isinstance(self._qualify_condition, Predicate):
+                condition_sql = self._qualify_condition.render(ctx)
+            else:
+                condition_sql = str(self._qualify_condition)
+            query_parts.append(f"QUALIFY {condition_sql}")
+
         return " ".join(query_parts)
 
-    def _collect_ctes(self) -> List[Tuple[str, "QueryBuilder"]]:
+    def _collect_ctes(self) -> List[Tuple[str, "QueryBuilder", bool]]:
         """
         Gathers CTEs from this query, its FROM subquery chain, its own CTE
         subqueries, and its union members, in dependency order. All of them
         are rendered in a single top-level WITH clause because WITH cannot
         appear inside a parenthesized subquery in every dialect.
         """
-        ctes: List[Tuple[str, "QueryBuilder"]] = []
+        ctes: List[Tuple[str, "QueryBuilder", bool]] = []
         if isinstance(self._from_source, tuple):
             ctes.extend(self._from_source[0]._collect_ctes())
-        for alias, subquery in self._with_clauses:
+        for alias, subquery, recursive in self._with_clauses:
             ctes.extend(subquery._collect_ctes())
-            ctes.append((alias, subquery))
+            ctes.append((alias, subquery, recursive))
         for _, query in self._union_clauses:
             ctes.extend(query._collect_ctes())
         return ctes
@@ -460,7 +489,9 @@ class QueryBuilder:
             collected = self._collect_ctes()
             if collected:
                 unique_ctes: Dict[str, "QueryBuilder"] = {}
-                for alias, subquery in collected:
+                any_recursive = False
+                for alias, subquery, recursive in collected:
+                    any_recursive = any_recursive or recursive
                     existing = unique_ctes.get(alias)
                     if existing is not None:
                         if existing is subquery or str(existing) == str(subquery):
@@ -473,7 +504,8 @@ class QueryBuilder:
                     f"{alias} AS ({subquery._render_sql(ctx, include_ctes=False)})"
                     for alias, subquery in unique_ctes.items()
                 ]
-                query_parts.append("WITH " + ", ".join(cte_strs))
+                with_keyword = self._compiler.compile_with_keyword(any_recursive)
+                query_parts.append(f"{with_keyword} " + ", ".join(cte_strs))
 
         # Build the main query part.
         base_select = self._build_base_select_sql(ctx)
@@ -500,6 +532,12 @@ class QueryBuilder:
         )
         if limit_offset_str:
             query_parts.append(limit_offset_str)
+
+        if self._locking_clause is not None:
+            if self._union_clauses:
+                raise ValueError("FOR UPDATE cannot be combined with union queries.")
+            skip_locked, nowait = self._locking_clause
+            query_parts.append(self._compiler.compile_locking(skip_locked, nowait))
 
         return " ".join(query_parts)
 
@@ -585,6 +623,139 @@ class QueryBuilder:
             QueryBuilder: The current QueryBuilder instance for chaining.
         """
         return self.union(*queries, all=True)
+
+    def intersect(self, *queries: "QueryBuilder") -> "QueryBuilder":
+        """
+        Adds one or more INTERSECT clauses to the query, keeping only rows
+        present in every query.
+        """
+        for q in queries:
+            self._union_clauses.append(("INTERSECT", q))
+        return self
+
+    def except_(self, *queries: "QueryBuilder") -> "QueryBuilder":
+        """
+        Adds one or more EXCEPT clauses to the query, removing rows that
+        appear in the given queries. Named except_ because except is a
+        Python keyword.
+        """
+        for q in queries:
+            self._union_clauses.append(("EXCEPT", q))
+        return self
+
+    def distinctOn(self, *columns: str) -> "QueryBuilder":
+        """
+        Adds a Postgres-style DISTINCT ON clause, keeping the first row of
+        each group defined by the columns. Combine with orderBy() starting
+        with the same columns. Supported on Postgres and DuckDB.
+        """
+        if not columns:
+            raise ValueError("distinctOn() requires at least one column.")
+        if self._distinct:
+            raise ValueError("Cannot combine distinct() with distinctOn().")
+        self._distinct_on_columns = list(columns)
+        return self
+
+    def groupByRollup(self, *columns: str) -> "QueryBuilder":
+        """Groups by ROLLUP of the columns, adding subtotal rows."""
+        self._group_by_builder.set_mode("ROLLUP", list(columns))
+        return self
+
+    def groupByCube(self, *columns: str) -> "QueryBuilder":
+        """Groups by CUBE of the columns, adding every subtotal combination."""
+        self._group_by_builder.set_mode("CUBE", list(columns))
+        return self
+
+    def groupByGroupingSets(self, *sets: Tuple[str, ...]) -> "QueryBuilder":
+        """
+        Groups by explicit GROUPING SETS. Each argument is a tuple of
+        columns; an empty tuple is the grand total row.
+        """
+        self._group_by_builder.set_grouping_sets([tuple(s) for s in sets])
+        return self
+
+    def qualify(self, condition: Union[str, Predicate]) -> "QueryBuilder":
+        """
+        Adds a QUALIFY clause, which filters on window function results
+        without a wrapping subquery. Supported on DuckDB.
+
+        Args:
+            condition: A Predicate or a raw SQL string.
+        """
+        self._qualify_condition = condition
+        return self
+
+    def for_update(
+        self, skip_locked: bool = False, nowait: bool = False
+    ) -> "QueryBuilder":
+        """
+        Appends FOR UPDATE row locking, optionally with SKIP LOCKED or
+        NOWAIT. Supported on Postgres; not valid with union queries.
+        """
+        if skip_locked and nowait:
+            raise ValueError("SKIP LOCKED and NOWAIT are mutually exclusive.")
+        self._locking_clause = (skip_locked, nowait)
+        return self
+
+    def total(self, connection: Optional[Any] = None) -> int:
+        """
+        Executes SELECT COUNT(*) over this query with ORDER BY, LIMIT, and
+        OFFSET stripped, and returns the row count. The query itself is
+        left unmodified.
+        """
+        inner = self.clone()
+        inner._order_by_builder = OrderByClauseBuilder(
+            self._model_class, compiler=self._compiler
+        )
+        inner._limit_value = None
+        inner._offset_value = None
+        inner._top_value = None
+        wrapper = QueryBuilder(self._model_class, dialect=self._dialect)
+        wrapper.from_(inner, alias="sustained_count")
+        wrapper.count("*", alias="total")
+        return int(wrapper.to_dicts(connection)[0]["total"])
+
+    def cursor_page(
+        self, column: str, page_size: int, after: Optional[Any] = None
+    ) -> "QueryBuilder":
+        """
+        Applies keyset pagination on a single column: orders by the column,
+        filters rows greater than the last seen value, and limits to the
+        page size. Scales better than OFFSET pagination on large tables.
+
+        Args:
+            column: The unique, ordered column to paginate on.
+            page_size: Rows per page.
+            after: The last value from the previous page, or None for the
+                first page.
+        """
+        _validate_row_count(page_size, "PAGE SIZE")
+        self.orderBy(column)
+        if after is not None:
+            self.where(column, ">", after)
+        self.limit(page_size)
+        return self
+
+    def explain(
+        self, connection: Optional[Any] = None, analyze: bool = False
+    ) -> List[Tuple[Any, ...]]:
+        """
+        Runs the dialect's EXPLAIN on this query and returns the plan rows.
+        With analyze=True the statement actually executes, so do not use it
+        on writes you do not want applied.
+        """
+        import time
+
+        from sustained.execution import notify_statement
+
+        conn = self._resolve_connection(connection)
+        sql, params = self.to_sql()
+        prefix = self._compiler.compile_explain(analyze)
+        cursor = conn.cursor()
+        started = time.perf_counter()
+        cursor.execute(f"{prefix} {sql}", params)
+        notify_statement(f"{prefix} {sql}", params, time.perf_counter() - started)
+        return list(cursor.fetchall())
 
     def offset(self, value: int) -> "QueryBuilder":
         """

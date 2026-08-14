@@ -1,6 +1,7 @@
 from enum import Enum
 
 from sustained.compilers.base import Compiler
+from sustained.compilers.duckdb import DuckDbCompiler
 from sustained.compilers.mssql import MssqlCompiler
 from sustained.compilers.postgres import PostgresCompiler
 from sustained.compilers.presto import PrestoCompiler
@@ -10,6 +11,7 @@ class Dialects(Enum):
     PRESTO = PrestoCompiler
     MSSQL = MssqlCompiler
     POSTGRES = PostgresCompiler
+    DUCKDB = DuckDbCompiler
     DEFAULT = Compiler
 
     @staticmethod

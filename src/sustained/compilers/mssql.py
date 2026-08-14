@@ -61,6 +61,15 @@ class MssqlCompiler(Compiler):
             "MSSQL does not support CREATE TABLE AS. Use SELECT ... INTO via raw SQL."
         )
 
+    def compile_with_keyword(self, recursive: bool) -> str:
+        # T-SQL uses plain WITH for recursive CTEs.
+        return "WITH"
+
+    def compile_explain(self, analyze: bool) -> str:
+        raise DialectError(
+            "MSSQL has no EXPLAIN statement. Use SET SHOWPLAN_XML via raw SQL."
+        )
+
     def compile_boolean(self, value: bool) -> str:
         # T-SQL has no boolean literals; BIT columns compare against 1 and 0.
         return "1" if value else "0"

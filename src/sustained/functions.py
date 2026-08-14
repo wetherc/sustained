@@ -34,6 +34,7 @@ class _FunctionRegistry:
             Dialects.PRESTO,
             Dialects.MSSQL,
             Dialects.POSTGRES,
+            Dialects.DUCKDB,
         ]
 
         # Common aggregates supported by all dialects
@@ -61,12 +62,24 @@ class _FunctionRegistry:
         # Dialect-specific functions
         self.register(
             "STRING_AGG",
-            FunctionMetadata(supported_dialects=[Dialects.PRESTO, Dialects.POSTGRES]),
+            FunctionMetadata(
+                supported_dialects=[
+                    Dialects.PRESTO,
+                    Dialects.POSTGRES,
+                    Dialects.DUCKDB,
+                ]
+            ),
         )
         self.register("GETDATE", FunctionMetadata(supported_dialects=[Dialects.MSSQL]))
         self.register(
             "NOW",
-            FunctionMetadata(supported_dialects=[Dialects.PRESTO, Dialects.POSTGRES]),
+            FunctionMetadata(
+                supported_dialects=[
+                    Dialects.PRESTO,
+                    Dialects.POSTGRES,
+                    Dialects.DUCKDB,
+                ]
+            ),
         )
         # The MOD function has different syntax across dialects, but we register the name
         # to allow for future custom renderers.

@@ -13,5 +13,16 @@ class PostgresCompiler(Compiler):
         # Postgres supports ILIKE natively.
         return f"{column_sql} {operator} {pattern_sql}"
 
+    def compile_distinct_on(self, columns_sql: "list[str]") -> str:
+        return f"DISTINCT ON ({', '.join(columns_sql)})"
+
+    def compile_locking(self, skip_locked: bool, nowait: bool) -> str:
+        clause = "FOR UPDATE"
+        if skip_locked:
+            clause += " SKIP LOCKED"
+        elif nowait:
+            clause += " NOWAIT"
+        return clause
+
     def quote_fully_qualified_identifier(self, identifier: str) -> str:
         return ".".join([self.quote_identifier(part) for part in identifier.split(".")])
