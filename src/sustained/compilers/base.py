@@ -1,3 +1,4 @@
+import re
 from typing import TYPE_CHECKING, Any, Optional, Union
 
 from sustained.expressions import (
@@ -14,6 +15,32 @@ if TYPE_CHECKING:
     from sustained.dialects import Dialects
 
 
+# A plain identifier path such as "users", "users.id", or "db.dbo.users.id".
+_IDENTIFIER_PATH_RE = re.compile(
+    r"^[A-Za-z_][A-Za-z0-9_$]*(\.[A-Za-z_][A-Za-z0-9_$]*)*$"
+)
+
+# Comparison operators accepted by the conditional clause builders. Anything
+# else must be expressed with QueryBuilder.raw() so that intent is explicit.
+_VALID_OPERATORS = frozenset(
+    {
+        "=",
+        "!=",
+        "<>",
+        "<",
+        "<=",
+        ">",
+        ">=",
+        "LIKE",
+        "NOT LIKE",
+        "ILIKE",
+        "NOT ILIKE",
+        "IS",
+        "IS NOT",
+    }
+)
+
+
 class Compiler:
     def __init__(self, dialect: "Dialects") -> None:
         self._dialect = dialect
@@ -22,7 +49,52 @@ class Compiler:
         return identifier
 
     def quote_fully_qualified_identifier(self, identifier: str) -> str:
-        return identifier
+        return ".".join(self.quote_identifier(part) for part in identifier.split("."))
+
+    def quote_column_reference(self, column: Union[str, Expression]) -> str:
+        """
+        Quotes a column reference for use inside a clause.
+
+        Plain identifier paths are quoted per dialect. The star selector and
+        anything more complex, such as a function call in a HAVING clause, is
+        passed through unchanged. Expression objects are raw SQL.
+        """
+        if isinstance(column, Expression):
+            return str(column)
+        if not isinstance(column, str):
+            raise TypeError(
+                f"Column reference must be a string or Expression, got {type(column).__name__}."
+            )
+        if column == "*":
+            return column
+        if _IDENTIFIER_PATH_RE.match(column):
+            return self.quote_fully_qualified_identifier(column)
+        return column
+
+    def validate_operator(self, operator: str) -> str:
+        """
+        Normalizes and validates a comparison operator.
+
+        Raises:
+            ValueError: If the operator is not a recognized SQL comparison
+                operator. Raw predicates should use QueryBuilder.raw().
+        """
+        if not isinstance(operator, str):
+            raise TypeError("Operator must be a string.")
+        normalized = " ".join(operator.strip().upper().split())
+        if normalized not in _VALID_OPERATORS:
+            raise ValueError(
+                f"Unsupported SQL operator: {operator!r}. "
+                "Use QueryBuilder.raw() for raw SQL predicates."
+            )
+        return normalized
+
+    def compile_like(self, column_sql: str, pattern_sql: str, operator: str) -> str:
+        """
+        Renders a LIKE or ILIKE predicate. Dialects without native ILIKE
+        override this to emulate case-insensitive matching.
+        """
+        return f"{column_sql} {operator} {pattern_sql}"
 
     def placeholder(self) -> str:
         return "?"

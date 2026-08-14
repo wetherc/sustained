@@ -7,6 +7,9 @@ class MssqlCompiler(Compiler):
     def quote_identifier(self, identifier: str) -> str:
         return f"[{identifier}]"
 
+    def quote_fully_qualified_identifier(self, identifier: str) -> str:
+        return ".".join(f"[{part}]" for part in identifier.split("."))
+
     def compile_top(self, value: int) -> str:
         return f"TOP {value}"
 

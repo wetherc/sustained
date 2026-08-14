@@ -32,7 +32,8 @@ from sustained.expressions import (
     WindowExpression,
 )
 from sustained.functions import FunctionRegistry
-from sustained.types import CaseResult, Expression, Selectable
+from sustained.rendering import RenderContext
+from sustained.types import CaseResult, DbReturnValue, Expression, Selectable
 
 if TYPE_CHECKING:
     from sustained.model import Model
@@ -79,12 +80,12 @@ class QueryBuilder:
         self._order_by_builder = OrderByClauseBuilder(
             model_class, compiler=self._compiler
         )
-        self._with_clauses: List[Tuple[str, str]] = []
+        self._with_clauses: List[Tuple[str, "QueryBuilder"]] = []
         self._offset_value: Optional[int] = None
         self._union_clauses: List[Tuple[str, "QueryBuilder"]] = []
         self._limit_value: Optional[int] = None
         self._top_value: Optional[int] = None
-        self._from_clause: Optional[str] = None
+        self._from_source: Optional[Union[str, Tuple["QueryBuilder", str]]] = None
         self._distinct = False
 
     def distinct(self) -> "QueryBuilder":
@@ -283,23 +284,23 @@ class QueryBuilder:
     ) -> "QueryBuilder":
         """
         Specifies a table or subquery for the FROM clause.
+
+        Subqueries are rendered when the outer query is rendered, so any
+        CTEs they carry are hoisted to the top-level WITH clause.
         """
-        from_parts = []
         if isinstance(table, QueryBuilder):
             if not alias:
                 raise ValueError("Subqueries in FROM clause must have an alias.")
-            from_parts.append(f"({str(table)})")
+            self._from_source = (table, alias)
         elif isinstance(table, str):
-            from_parts.append(self._compiler.quote_fully_qualified_identifier(table))
+            quoted = self._compiler.quote_column_reference(table)
+            if alias:
+                quoted += f" AS {self._compiler.quote_identifier(alias)}"
+            self._from_source = quoted
         else:
             raise TypeError(
                 "`from_` method expects a QueryBuilder instance or a raw string."
             )
-
-        if alias:
-            from_parts.append(f"AS {self._compiler.quote_identifier(alias)}")
-
-        self._from_clause = " ".join(from_parts)
         return self
 
     def with_(self, table_alias: str, subquery: "QueryBuilder") -> "QueryBuilder":
@@ -318,7 +319,9 @@ class QueryBuilder:
         Returns:
             QueryBuilder: The current QueryBuilder instance for chaining.
         """
-        self._with_clauses.append((table_alias, str(subquery)))
+        if not isinstance(subquery, QueryBuilder):
+            raise TypeError("CTE subquery must be a QueryBuilder instance.")
+        self._with_clauses.append((table_alias, subquery))
         return self
 
     def groupBy(self, *columns: str) -> "QueryBuilder":
@@ -345,12 +348,18 @@ class QueryBuilder:
         """
         return Expression(sql)
 
-    def _build_base_select_sql(self) -> str:
+    def _build_base_select_sql(self, ctx: RenderContext) -> str:
         query_parts = []
         cols = str(self._select_clause_builder)
 
-        if self._from_clause:
-            full_table_name = self._from_clause
+        full_table_name: str
+        if isinstance(self._from_source, tuple):
+            sub_query, sub_alias = self._from_source
+            rendered_sub = sub_query._render_sql(ctx, include_ctes=False)
+            quoted_alias = self._compiler.quote_identifier(sub_alias)
+            full_table_name = f"({rendered_sub}) AS {quoted_alias}"
+        elif isinstance(self._from_source, str):
+            full_table_name = self._from_source
         else:
             model_cls = self._model_class
             parts = []
@@ -363,9 +372,9 @@ class QueryBuilder:
             full_table_name = ".".join(parts)
 
         joins_str = str(self._join_builder)
-        where_str = str(self._where_builder)
+        where_str = self._where_builder.render(ctx)
         group_by_str = str(self._group_by_builder)
-        having_str = str(self._having_builder)
+        having_str = self._having_builder.render(ctx)
 
         select_parts = ["SELECT"]
         if self._distinct:
@@ -400,44 +409,59 @@ class QueryBuilder:
 
         return " ".join(query_parts)
 
-    def __str__(self) -> str:
+    def _collect_ctes(self) -> List[Tuple[str, "QueryBuilder"]]:
         """
-        Builds and returns the final SQL query string.
-        Returns:
-            str: The complete SQL query.
+        Gathers CTEs from this query, its FROM subquery chain, its own CTE
+        subqueries, and its union members, in dependency order. All of them
+        are rendered in a single top-level WITH clause because WITH cannot
+        appear inside a parenthesized subquery in every dialect.
         """
-        # Hoist all CTEs to the top level.
-        all_with_clauses = self._with_clauses[:]
-        if self._union_clauses:
-            for _, query in self._union_clauses:
-                # The subquery's __str__ will be called by the `with_` method,
-                # so we need to get the clauses from the builder instance directly.
-                all_with_clauses.extend(query._with_clauses)
+        ctes: List[Tuple[str, "QueryBuilder"]] = []
+        if isinstance(self._from_source, tuple):
+            ctes.extend(self._from_source[0]._collect_ctes())
+        for alias, subquery in self._with_clauses:
+            ctes.extend(subquery._collect_ctes())
+            ctes.append((alias, subquery))
+        for _, query in self._union_clauses:
+            ctes.extend(query._collect_ctes())
+        return ctes
 
+    def _render_sql(self, ctx: RenderContext, include_ctes: bool = True) -> str:
+        """Renders the full statement with the given context."""
         query_parts = []
-        if all_with_clauses:
-            # Use a dictionary to handle potential duplicate CTE aliases,
-            # letting the last one win.
-            unique_ctes = {alias: subquery for alias, subquery in all_with_clauses}
-            cte_strs = [
-                f"{alias} AS ({subquery_str})"
-                for alias, subquery_str in unique_ctes.items()
-            ]
-            with_str = "WITH " + ", ".join(cte_strs)
-            query_parts.append(with_str)
+
+        if include_ctes:
+            collected = self._collect_ctes()
+            if collected:
+                unique_ctes: Dict[str, "QueryBuilder"] = {}
+                for alias, subquery in collected:
+                    existing = unique_ctes.get(alias)
+                    if existing is not None:
+                        if existing is subquery or str(existing) == str(subquery):
+                            continue
+                        raise ValueError(
+                            f"Duplicate CTE alias '{alias}' refers to different subqueries."
+                        )
+                    unique_ctes[alias] = subquery
+                cte_strs = [
+                    f"{alias} AS ({subquery._render_sql(ctx, include_ctes=False)})"
+                    for alias, subquery in unique_ctes.items()
+                ]
+                query_parts.append("WITH " + ", ".join(cte_strs))
 
         # Build the main query part.
-        base_select = self._build_base_select_sql()
+        base_select = self._build_base_select_sql(ctx)
 
         if self._union_clauses:
-            # If there are unions, wrap the SELECT statements in parentheses.
+            # Wrap each SELECT in parentheses. Members render their own
+            # ORDER BY and LIMIT inside the parentheses, so per-member
+            # clauses are honored rather than silently dropped.
             query_parts.append(f"({base_select})")
             for union_type, query in self._union_clauses:
                 query_parts.append(union_type)
-                base_union_select = query._build_base_select_sql()
-                query_parts.append(f"({base_union_select})")
+                rendered_member = query._render_sql(ctx, include_ctes=False)
+                query_parts.append(f"({rendered_member})")
         else:
-            # Otherwise, just add the base select statement.
             query_parts.append(base_select)
 
         # Append ORDER BY, LIMIT, and OFFSET clauses, which apply to the entire query.
@@ -452,6 +476,33 @@ class QueryBuilder:
             query_parts.append(limit_offset_str)
 
         return " ".join(query_parts)
+
+    def __str__(self) -> str:
+        """
+        Builds and returns the final SQL query string with all values
+        inlined as SQL literals. Intended for debugging and logging; use
+        to_sql() when executing against a database.
+
+        Returns:
+            str: The complete SQL query.
+        """
+        return self._render_sql(RenderContext(self._compiler))
+
+    def to_sql(self) -> Tuple[str, Tuple[DbReturnValue, ...]]:
+        """
+        Builds the query as a parameterized statement.
+
+        Values supplied to WHERE, HAVING, IN, BETWEEN, and LIKE clauses are
+        replaced with the dialect's placeholder and returned separately, in
+        the order they appear in the SQL. Pass both directly to a DB-API
+        cursor: `cursor.execute(sql, params)`.
+
+        Returns:
+            A (sql, params) tuple.
+        """
+        ctx = RenderContext(self._compiler, parameterize=True)
+        sql = self._render_sql(ctx)
+        return sql, tuple(ctx.params)
 
     def limit(self, value: int) -> "QueryBuilder":
         """

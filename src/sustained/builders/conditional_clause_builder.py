@@ -14,6 +14,7 @@ from typing import (
 )
 
 from ..dialects import Dialects
+from ..rendering import Renderable, RenderContext, render_part
 from ..types import DbReturnValue, Expression, QueryResolvable
 
 if TYPE_CHECKING:
@@ -46,7 +47,7 @@ class ConditionalClauseBuilder(ABC):
         self._compiler = (
             compiler if compiler else Dialects.get_compiler(Dialects.DEFAULT)
         )
-        self._clauses: List[Tuple[str, str]] = []
+        self._clauses: List[Tuple[str, Renderable]] = []
 
     @property
     @abstractmethod
@@ -55,6 +56,14 @@ class ConditionalClauseBuilder(ABC):
     @property
     @abstractmethod
     def _clause_type(self) -> str: ...
+
+    def _quote_column(self, column: str) -> str:
+        """Quotes a column reference through the compiler.
+
+        Anything that is not a plain (optionally dotted) identifier, such as
+        an aggregate call in a HAVING clause, is passed through untouched.
+        """
+        return self._compiler.quote_column_reference(column)
 
     def __getattr__(self, name: str) -> Callable[..., "ConditionalClauseBuilder"]:
         """
@@ -128,11 +137,13 @@ class ConditionalClauseBuilder(ABC):
         op_like_override: Optional[str] = None,
     ) -> None:
         """Internal handler for adding `BETWEEN` and `NOT BETWEEN` clauses."""
-        formatted_val1 = self._compiler.format_value(val1)
-        formatted_val2 = self._compiler.format_value(val2)
         actual_op = "NOT BETWEEN" if op_override else "BETWEEN"
-        clause = f"{col} {actual_op} {formatted_val1} AND {formatted_val2}"
-        self._clauses.append((conjunction, clause))
+        quoted_col = self._quote_column(col)
+
+        def render(ctx: RenderContext) -> str:
+            return f"{quoted_col} {actual_op} {ctx.value(val1)} AND {ctx.value(val2)}"
+
+        self._clauses.append((conjunction, render))
 
     def _add_exists_internal(
         self,
@@ -147,20 +158,28 @@ class ConditionalClauseBuilder(ABC):
 
         actual_op = "NOT EXISTS" if op_override else "EXISTS"
 
-        clause_str = ""
-        if callable(query):
-            sub_query = QueryBuilder(self._model_class, dialect=self._compiler._dialect)
-            query(sub_query)
-            clause_str = str(sub_query)
-        elif isinstance(query, (str, QueryBuilder)):
-            clause_str = str(query)
+        sub_builder: Optional["QueryBuilder"] = None
+        raw_sql: Optional[str] = None
+        if isinstance(query, QueryBuilder):
+            sub_builder = query
+        elif callable(query):
+            sub_builder = QueryBuilder(
+                self._model_class, dialect=self._compiler._dialect
+            )
+            query(sub_builder)
+        elif isinstance(query, str):
+            raw_sql = query
         else:
             raise ValueError(
                 "Argument for exists must be a callable, string, or QueryBuilder instance."
             )
 
-        clause = f"{actual_op} ({clause_str})"
-        self._clauses.append((conjunction, clause))
+        def render(ctx: RenderContext) -> str:
+            if sub_builder is not None:
+                return f"{actual_op} ({sub_builder._render_sql(ctx)})"
+            return f"{actual_op} ({raw_sql})"
+
+        self._clauses.append((conjunction, render))
 
     def _add_like_internal(
         self,
@@ -173,10 +192,12 @@ class ConditionalClauseBuilder(ABC):
     ) -> None:
         """Internal handler for adding `LIKE` and `ILIKE` clauses."""
         actual_op = op_like_override if op_like_override else "LIKE"
-        # Escape single quotes in the pattern for SQL literal
-        formatted_pattern = self._compiler.format_value(pattern)
-        clause = f"{col} {actual_op} {formatted_pattern}"
-        self._clauses.append((conjunction, clause))
+        quoted_col = self._quote_column(col)
+
+        def render(ctx: RenderContext) -> str:
+            return ctx.compiler.compile_like(quoted_col, ctx.value(pattern), actual_op)
+
+        self._clauses.append((conjunction, render))
 
     def _add_null_internal(
         self,
@@ -188,15 +209,8 @@ class ConditionalClauseBuilder(ABC):
     ) -> None:
         """Internal handler for adding `IS NULL` and `IS NOT NULL` clauses."""
         actual_op = "IS NOT NULL" if op_override else "IS NULL"
-        clause = f"{col} {actual_op}"
+        clause = f"{self._quote_column(col)} {actual_op}"
         self._clauses.append((conjunction, clause))
-
-    def _build_clause(
-        self, column: str, operator: str, value: Union[Expression, DbReturnValue]
-    ) -> str:
-        """Formats a single clause condition."""
-        formatted_value = self._compiler.format_value(value)
-        return f"{column} {operator} {formatted_value}"
 
     def _add_internal(
         self,
@@ -214,19 +228,35 @@ class ConditionalClauseBuilder(ABC):
             temp_builder = type(self)(self._model_class, self._compiler)
             column_or_callable(temp_builder)
             if temp_builder.has_clauses():
-                grouped_clause_str = temp_builder._build_clause_list_string()
-                self._clauses.append((conjunction, f"({grouped_clause_str})"))
+
+                def render(ctx: RenderContext) -> str:
+                    return f"({temp_builder._build_clause_list_string(ctx)})"
+
+                self._clauses.append((conjunction, render))
         else:
             if op is None:
                 raise ValueError(
                     f"Operator must be provided for non-callable {self._clause_keyword.lower()} clause."
                 )
+            operator = self._compiler.validate_operator(op)
             if val is None:
+                if operator in ("=", "IS"):
+                    self._add_null_internal(conjunction, column_or_callable)
+                    return
+                if operator in ("!=", "<>", "IS NOT"):
+                    self._add_null_internal(
+                        conjunction, column_or_callable, op_override=True
+                    )
+                    return
                 raise ValueError(
                     f"Value must be provided for non-callable {self._clause_keyword.lower()} clause."
                 )
-            clause = self._build_clause(column_or_callable, op, val)
-            self._clauses.append((conjunction, clause))
+            quoted_col = self._quote_column(column_or_callable)
+
+            def render(ctx: RenderContext) -> str:
+                return f"{quoted_col} {operator} {ctx.value(val)}"
+
+            self._clauses.append((conjunction, render))
 
     def _add_in_internal(
         self,
@@ -241,39 +271,62 @@ class ConditionalClauseBuilder(ABC):
         from ..builder import QueryBuilder
 
         actual_op = "NOT IN" if op_override else "IN"
+        quoted_col = self._quote_column(col)
 
         if isinstance(vals, list):
-            formatted_values = [self._compiler.format_value(v) for v in vals]
-            values_str = ", ".join(formatted_values)
-        elif isinstance(vals, (str, QueryBuilder)):
-            values_str = str(vals)
+            if not vals:
+                raise ValueError("IN/NOT IN requires a non-empty list of values.")
+            value_list = list(vals)
+
+            def render(ctx: RenderContext) -> str:
+                values_str = ", ".join(ctx.value(v) for v in value_list)
+                return f"{quoted_col} {actual_op} ({values_str})"
+
+            self._clauses.append((conjunction, render))
+            return
+
+        sub_builder: Optional["QueryBuilder"] = None
+        raw_sql: Optional[str] = None
+        if isinstance(vals, QueryBuilder):
+            sub_builder = vals
+        elif isinstance(vals, str):
+            raw_sql = vals
         elif callable(vals):
-            sub_query = QueryBuilder(self._model_class, dialect=self._compiler._dialect)
-            vals(sub_query)
-            values_str = str(sub_query)
+            sub_builder = QueryBuilder(
+                self._model_class, dialect=self._compiler._dialect
+            )
+            vals(sub_builder)
         else:
             raise ValueError(
                 "Argument for In/NotIn must be a list, a callable, string, or QueryBuilder instance."
             )
 
-        clause = f"{col} {actual_op} ({values_str})"
-        self._clauses.append((conjunction, clause))
+        def render_sub(ctx: RenderContext) -> str:
+            if sub_builder is not None:
+                return f"{quoted_col} {actual_op} ({sub_builder._render_sql(ctx)})"
+            return f"{quoted_col} {actual_op} ({raw_sql})"
 
-    def _build_clause_list_string(self) -> str:
+        self._clauses.append((conjunction, render_sub))
+
+    def _build_clause_list_string(self, ctx: RenderContext) -> str:
         """Builds the complete clause string from all parts."""
         if not self._clauses:
             return ""
 
-        parts = [self._clauses[0][1]]
+        parts = [render_part(self._clauses[0][1], ctx)]
         for conjunction, clause in self._clauses[1:]:
-            parts.append(f"{conjunction} {clause}")
+            parts.append(f"{conjunction} {render_part(clause, ctx)}")
         return " ".join(parts)
 
-    def __str__(self) -> str:
-        """Builds the final clause string."""
+    def render(self, ctx: RenderContext) -> str:
+        """Builds the final clause string with the given context."""
         if not self._clauses:
             return ""
-        return f"{self._clause_keyword} " + self._build_clause_list_string()
+        return f"{self._clause_keyword} " + self._build_clause_list_string(ctx)
+
+    def __str__(self) -> str:
+        """Builds the final clause string with values inlined as literals."""
+        return self.render(RenderContext(self._compiler))
 
     def has_clauses(self) -> bool:
         return bool(self._clauses)
