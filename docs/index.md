@@ -36,6 +36,7 @@ These are design decisions, not roadmap gaps. Knowing them up front saves you a 
 | --- | --- |
 | Map classes to tables, catch column typos | [Models](./models) |
 | Build a SELECT: columns, functions, CTEs, unions, pagination | [Queries](./queries) |
+| Target a specific engine, pick a driver | [SQL Dialects](./dialects) |
 | Filter rows: where methods and typed predicates | [Filtering](./filtering) |
 | Aggregate and filter groups | [Grouping](./grouping) |
 | Join tables and define relations | [Relations and Joins](./relations) |

@@ -20,7 +20,7 @@ query = User.query()        # a new QueryBuilder for the model's table
 | --- | --- |
 | `Model.query()` | Starts a new `QueryBuilder` on the model's table. |
 | `create_model(name, table_name, mappings=None, table_schema=None, database=None, columns=None)` | Builds a model class at runtime. |
-| `Model.set_dialect(dialect)` | Sets the SQL dialect for the model's queries: `Dialects.DEFAULT`, `POSTGRES`, `MSSQL`, `PRESTO`, `ATHENA`, or `DUCKDB`. |
+| `Model.set_dialect(dialect)` | Sets the SQL dialect for the model's queries: `Dialects.DEFAULT`, `POSTGRES`, `MSSQL`, `PRESTO`, `ATHENA`, or `DUCKDB`. See [SQL Dialects](./dialects) for drivers and per-dialect behavior. |
 | `Model.bind(connection)` / `Model.unbind()` | Attaches or removes a DB-API connection or `ConnectionPool` for execution. |
 | `Model.bind_async(adapter)` / `Model.unbind_async()` | Attaches or removes an async adapter. |
 

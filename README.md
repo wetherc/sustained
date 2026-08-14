@@ -97,7 +97,7 @@ migrator.down()                    # rolls it back
 
 ## Documentation
 
-The [documentation](https://sustained.tbmh.org/) covers [models](https://sustained.tbmh.org/models), [queries](https://sustained.tbmh.org/queries), [filtering](https://sustained.tbmh.org/filtering), [grouping](https://sustained.tbmh.org/grouping), [relations and joins](https://sustained.tbmh.org/relations), [execution, pooling, and async](https://sustained.tbmh.org/executing), and [schema and migrations](https://sustained.tbmh.org/schema). The [API reference](https://sustained.tbmh.org/reference) lists every public method by task.
+The [documentation](https://sustained.tbmh.org/) covers [models](https://sustained.tbmh.org/models), [queries](https://sustained.tbmh.org/queries), [dialects and drivers](https://sustained.tbmh.org/dialects), [filtering](https://sustained.tbmh.org/filtering), [grouping](https://sustained.tbmh.org/grouping), [relations and joins](https://sustained.tbmh.org/relations), [execution, pooling, and async](https://sustained.tbmh.org/executing), and [schema and migrations](https://sustained.tbmh.org/schema). The [API reference](https://sustained.tbmh.org/reference) lists every public method by task.
 
 ## Development
 

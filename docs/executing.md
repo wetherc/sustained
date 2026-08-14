@@ -5,7 +5,7 @@ title: Executing Queries
 
 Sustained can execute the queries it builds. It works with any DB-API 2.0 connection, such as `sqlite3`, `psycopg`, or `pyodbc`. Every statement runs parameterized: user values travel as parameters, never as text inside the SQL.
 
-The connection's parameter style must match the dialect. The default and MSSQL dialects use `?` (qmark). The Postgres and Athena dialects use `%s` (format), matching psycopg and pyathena.
+The connection's parameter style must match the dialect. The default and MSSQL dialects use `?` (qmark). The Postgres and Athena dialects use `%s` (format), matching psycopg and pyathena. [SQL Dialects](./dialects) pairs every dialect with its recommended driver and shows how to connect.
 
 ## Binding a Connection
 
