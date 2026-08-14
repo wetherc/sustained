@@ -50,6 +50,14 @@ def _load_config(module_name: str) -> Any:
         sys.path.pop(0)
 
 
+def _close_quietly(connection: Any) -> None:
+    if hasattr(connection, "close"):
+        try:
+            connection.close()
+        except Exception:
+            pass
+
+
 def _build_migrator(config: Any) -> Tuple[Migrator, Any]:
     if hasattr(config, "connection"):
         connection = config.connection
@@ -59,17 +67,23 @@ def _build_migrator(config: Any) -> Tuple[Migrator, Any]:
         raise ValueError(
             "The config module must define 'connection' or 'get_connection()'."
         )
-    migrations: List[Migration] = list(getattr(config, "migrations", []))
-    directory = getattr(config, "migrations_dir", None)
-    if directory is not None:
-        migrations.extend(load_migrations(directory))
-    migrator = Migrator(
-        connection,
-        migrations,
-        table=getattr(config, "table", "sustained_migrations"),
-        dialect=_resolve_dialect(getattr(config, "dialect", None)),
-        tracking_table_options=getattr(config, "tracking_table_options", None),
-    )
+    try:
+        migrations: List[Migration] = list(getattr(config, "migrations", []))
+        directory = getattr(config, "migrations_dir", None)
+        if directory is not None:
+            migrations.extend(load_migrations(directory))
+        migrator = Migrator(
+            connection,
+            migrations,
+            table=getattr(config, "table", "sustained_migrations"),
+            dialect=_resolve_dialect(getattr(config, "dialect", None)),
+            tracking_table_options=getattr(config, "tracking_table_options", None),
+        )
+    except Exception:
+        # The connection never reaches the caller on a setup failure, so it
+        # must close here.
+        _close_quietly(connection)
+        raise
     return migrator, connection
 
 
@@ -213,11 +227,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print(f"error: {error}", file=sys.stderr)
         return 1
     finally:
-        if hasattr(connection, "close"):
-            try:
-                connection.close()
-            except Exception:
-                pass
+        _close_quietly(connection)
 
 
 if __name__ == "__main__":

@@ -176,6 +176,28 @@ class CliTestCase(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("connection", stderr.getvalue())
 
+    def test_setup_failure_closes_connection(self):
+        name = f"leak_config_{id(self)}"
+        with open(os.path.join(self.dir.name, f"{name}.py"), "w") as f:
+            f.write(
+                CONFIG_TEMPLATE + "\nconnections = []\n"
+                "_original = get_connection\n"
+                "def get_connection():\n"
+                "    conn = _original()\n"
+                "    connections.append(conn)\n"
+                "    return conn\n"
+                "migrations_dir = 'does_not_exist_dir'\n"
+            )
+        self.addCleanup(sys.modules.pop, name, None)
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            code = main(["status", "--config", name])
+        self.assertEqual(code, 1)
+        connections = sys.modules[name].connections
+        self.assertEqual(len(connections), 1)
+        with self.assertRaises(sqlite3.ProgrammingError):
+            connections[0].execute("SELECT 1")
+
     def test_dialect_name_resolves(self):
         name = f"dialect_config_{id(self)}"
         with open(os.path.join(self.dir.name, f"{name}.py"), "w") as f:
