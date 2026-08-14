@@ -153,3 +153,17 @@ class MssqlCompiler(Compiler):
         if limit is not None:
             parts.append(f"FETCH NEXT {limit} ROWS ONLY")
         return " ".join(parts)
+
+    def migration_lock_sql(self, name: str) -> "list[str]":
+        # Session-owned and reentrant; released on disconnect. The negative
+        # timeout waits until the lock is free.
+        return [
+            f"EXEC sp_getapplock @Resource = {self.format_value(name)}, "
+            "@LockMode = 'Exclusive', @LockOwner = 'Session', @LockTimeout = -1"
+        ]
+
+    def migration_unlock_sql(self, name: str) -> "list[str]":
+        return [
+            f"EXEC sp_releaseapplock @Resource = {self.format_value(name)}, "
+            "@LockOwner = 'Session'"
+        ]

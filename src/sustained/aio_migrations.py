@@ -27,6 +27,7 @@ from sustained.migrations import (
     _next_seq,
     _tracking_column_defs,
     _upgrade_column_def,
+    _validation_problems,
     migration_checksum,
 )
 
@@ -85,6 +86,28 @@ class AsyncMigrator:
             await self._adapter.rollback()
         except Exception:
             pass
+
+    @asynccontextmanager
+    async def _lock_scope(self) -> AsyncIterator[None]:
+        """
+        Holds the engine's advisory lock, named after the tracking table,
+        for the duration of a run, so concurrent migrators queue instead of
+        racing. A no-op on engines without one.
+        """
+        lock_statements = self._compiler.migration_lock_sql(self._table)
+        if not lock_statements:
+            yield
+            return
+        for statement in lock_statements:
+            await self._adapter.execute(statement, ())
+        try:
+            yield
+        finally:
+            for statement in self._compiler.migration_unlock_sql(self._table):
+                try:
+                    await self._adapter.execute(statement, ())
+                except Exception:
+                    pass
 
     async def _ensure_tracking_table(self) -> None:
         from sustained.schema import build_create_table_sql
@@ -185,11 +208,101 @@ class AsyncMigrator:
             f"VALUES ({values})"
         )
 
-    async def up(self, target: Optional[str] = None) -> List[str]:
+    async def validate(self, raise_on_problems: bool = True) -> List[str]:
+        """
+        Checks the tracking table against the registered migrations and
+        returns the problems found: failed attempts, applied migrations
+        this migrator does not know, checksum mismatches from edited
+        migrations, and out-of-order pending migrations. Raises
+        MigrationError when problems exist, unless raise_on_problems is
+        False.
+        """
+        from sustained.exceptions import MigrationError
+
+        problems = _validation_problems(self._migrations, await self.applied_records())
+        if problems and raise_on_problems:
+            raise MigrationError(problems)
+        return problems
+
+    async def repair(self) -> List[str]:
+        """
+        Brings the tracking table back in line with the registered
+        migrations: deletes rows left by failed attempts and rewrites
+        stored checksums that no longer match, including null checksums on
+        rows written before checksums existed. Returns a description of
+        every action taken. Schema changes a failed attempt left behind
+        are not touched; clean those up first.
+        """
+        records = await self.applied_records()
+        by_id = {m.id: m for m in self._migrations}
+        placeholder = self._compiler.placeholder()
+        actions: List[str] = []
+        for record in records:
+            if not record.success:
+                await self._adapter.execute(
+                    f"DELETE FROM {self._table_sql()} WHERE id = {placeholder} "
+                    f"AND success = {self._compiler.compile_boolean(False)}",
+                    (record.id,),
+                )
+                actions.append(f"removed the failed attempt of '{record.id}'")
+                continue
+            migration = by_id.get(record.id)
+            if migration is None:
+                continue
+            current = migration_checksum(migration)
+            if current is not None and current != record.checksum:
+                await self._adapter.execute(
+                    f"UPDATE {self._table_sql()} SET checksum = {placeholder} "
+                    f"WHERE id = {placeholder}",
+                    (current, record.id),
+                )
+                actions.append(f"updated the stored checksum of '{record.id}'")
+        await self._adapter.commit()
+        return actions
+
+    async def _record_failure(self, migration: Migration, seq: int) -> None:
+        """
+        Writes a failed-attempt row after a migration step raised on an
+        engine without transactions, where partial changes may remain. A
+        failure to write the row never masks the original error.
+        """
+        if self._compiler.supports_transactions():
+            return
+        try:
+            timestamp = datetime.now(timezone.utc).isoformat()
+            await self._adapter.execute(
+                self._insert_sql(),
+                (
+                    migration.id,
+                    seq,
+                    migration_checksum(migration),
+                    timestamp,
+                    None,
+                    False,
+                ),
+            )
+            await self._adapter.commit()
+        except Exception:
+            pass
+
+    async def up(
+        self,
+        target: Optional[str] = None,
+        validate: bool = True,
+        allow_out_of_order: bool = False,
+    ) -> List[str]:
         """
         Applies pending migrations in order, stopping after the target id
         when one is given. Returns the ids that were applied.
+
+        The run validates first: failed attempts, unknown applied ids,
+        checksum mismatches, and out-of-order pending migrations all stop
+        it. Pass validate=False to skip the checks, or
+        allow_out_of_order=True to accept a pending migration that is
+        ordered before an applied one.
         """
+        from sustained.exceptions import MigrationError
+
         migrations = self._migrations
         if target is not None:
             ids = [m.id for m in migrations]
@@ -197,32 +310,43 @@ class AsyncMigrator:
                 raise ValueError(f"Unknown migration target: {target!r}.")
             migrations = migrations[: ids.index(target) + 1]
 
-        records = await self.applied_records()
-        already_applied = {r.id for r in records if r.success}
-        next_seq = _next_seq(records)
-        applied_now: List[str] = []
-        for migration in migrations:
-            if migration.id in already_applied:
-                continue
-            async with self._migration_scope():
-                started = time.perf_counter()
-                await self._run_step(migration.up)
-                elapsed_ms = int((time.perf_counter() - started) * 1000)
-                timestamp = datetime.now(timezone.utc).isoformat()
-                await self._adapter.execute(
-                    self._insert_sql(),
-                    (
-                        migration.id,
-                        next_seq,
-                        migration_checksum(migration),
-                        timestamp,
-                        elapsed_ms,
-                        True,
-                    ),
+        async with self._lock_scope():
+            records = await self.applied_records()
+            if validate:
+                problems = _validation_problems(
+                    self._migrations, records, allow_out_of_order
                 )
-            next_seq += 1
-            applied_now.append(migration.id)
-        return applied_now
+                if problems:
+                    raise MigrationError(problems)
+            already_applied = {r.id for r in records if r.success}
+            next_seq = _next_seq(records)
+            applied_now: List[str] = []
+            for migration in migrations:
+                if migration.id in already_applied:
+                    continue
+                try:
+                    async with self._migration_scope():
+                        started = time.perf_counter()
+                        await self._run_step(migration.up)
+                        elapsed_ms = int((time.perf_counter() - started) * 1000)
+                        timestamp = datetime.now(timezone.utc).isoformat()
+                        await self._adapter.execute(
+                            self._insert_sql(),
+                            (
+                                migration.id,
+                                next_seq,
+                                migration_checksum(migration),
+                                timestamp,
+                                elapsed_ms,
+                                True,
+                            ),
+                        )
+                except Exception:
+                    await self._record_failure(migration, next_seq)
+                    raise
+                next_seq += 1
+                applied_now.append(migration.id)
+            return applied_now
 
     async def down(self, steps: int = 1) -> List[str]:
         """
@@ -230,27 +354,28 @@ class AsyncMigrator:
         reverted migration must define a down step and be registered with
         this migrator. Returns the ids that were reverted.
         """
-        applied = await self.applied()
-        by_id = {m.id: m for m in self._migrations}
-        placeholder = self._compiler.placeholder()
-        reverted: List[str] = []
-        for migration_id in reversed(applied[-steps:] if steps else []):
-            migration = by_id.get(migration_id)
-            if migration is None:
-                raise ValueError(
-                    f"Applied migration '{migration_id}' is not registered "
-                    "with this migrator; cannot revert."
-                )
-            if migration.down is None:
-                raise ValueError(f"Migration '{migration_id}' has no down step.")
-            async with self._migration_scope():
-                await self._run_step(migration.down)
-                await self._adapter.execute(
-                    f"DELETE FROM {self._table_sql()} WHERE id = {placeholder}",
-                    (migration_id,),
-                )
-            reverted.append(migration_id)
-        return reverted
+        async with self._lock_scope():
+            applied = await self.applied()
+            by_id = {m.id: m for m in self._migrations}
+            placeholder = self._compiler.placeholder()
+            reverted: List[str] = []
+            for migration_id in reversed(applied[-steps:] if steps else []):
+                migration = by_id.get(migration_id)
+                if migration is None:
+                    raise ValueError(
+                        f"Applied migration '{migration_id}' is not registered "
+                        "with this migrator; cannot revert."
+                    )
+                if migration.down is None:
+                    raise ValueError(f"Migration '{migration_id}' has no down step.")
+                async with self._migration_scope():
+                    await self._run_step(migration.down)
+                    await self._adapter.execute(
+                        f"DELETE FROM {self._table_sql()} WHERE id = {placeholder}",
+                        (migration_id,),
+                    )
+                reverted.append(migration_id)
+            return reverted
 
     async def down_to(self, target: str) -> List[str]:
         """

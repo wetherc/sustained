@@ -4,8 +4,10 @@ Tests for the migration runner against in-memory SQLite.
 
 import sqlite3
 import unittest
+from unittest import mock
 
 from sustained import Model
+from sustained.exceptions import MigrationError
 from sustained.migrations import (
     Migration,
     Migrator,
@@ -231,6 +233,131 @@ class TestTrackingTable(MigrationTestCase):
         self.assertIn(f"'{migration_checksum(migration)}'", script)
         self.assertIn("1, ", script)
         self.assertIn("TRUE", script)
+
+
+class TestValidateAndRepair(MigrationTestCase):
+    def test_validate_passes_on_a_clean_history(self):
+        migrator = Migrator(
+            self.conn, [Migration("a", up="CREATE TABLE va (x INTEGER)")]
+        )
+        migrator.up()
+        self.assertEqual(migrator.validate(), [])
+
+    def test_validate_detects_an_edited_migration(self):
+        Migrator(self.conn, [Migration("a", up="CREATE TABLE va (x INTEGER)")]).up()
+        edited = Migrator(self.conn, [Migration("a", up="CREATE TABLE va (x BIGINT)")])
+        with self.assertRaises(MigrationError):
+            edited.validate()
+        problems = edited.validate(raise_on_problems=False)
+        self.assertEqual(len(problems), 1)
+        self.assertIn("checksum mismatch", problems[0])
+
+    def test_validate_detects_an_unregistered_applied_migration(self):
+        Migrator(self.conn, [Migration("a", up="CREATE TABLE va (x INTEGER)")]).up()
+        problems = Migrator(self.conn, []).validate(raise_on_problems=False)
+        self.assertIn("not registered", problems[0])
+
+    def test_up_refuses_an_edited_migration_unless_told_not_to_validate(self):
+        Migrator(self.conn, [Migration("a", up="CREATE TABLE va (x INTEGER)")]).up()
+        edited = Migrator(
+            self.conn,
+            [
+                Migration("a", up="CREATE TABLE va (x BIGINT)"),
+                Migration("b", up="CREATE TABLE vb (x INTEGER)"),
+            ],
+        )
+        with self.assertRaises(MigrationError):
+            edited.up()
+        self.assertEqual(edited.up(validate=False), ["b"])
+
+    def test_out_of_order_pending_migration_is_refused_by_default(self):
+        Migrator(
+            self.conn,
+            [
+                Migration("a", up="CREATE TABLE oa (x INTEGER)"),
+                Migration("c", up="CREATE TABLE oc (x INTEGER)"),
+            ],
+        ).up()
+        late = Migrator(
+            self.conn,
+            [
+                Migration("a", up="CREATE TABLE oa (x INTEGER)"),
+                Migration("b", up="CREATE TABLE ob (x INTEGER)"),
+                Migration("c", up="CREATE TABLE oc (x INTEGER)"),
+            ],
+        )
+        with self.assertRaises(MigrationError):
+            late.up()
+        self.assertEqual(late.up(allow_out_of_order=True), ["b"])
+        self.assertEqual(late.validate(), [])
+
+    def test_repair_accepts_an_edited_migration(self):
+        Migrator(self.conn, [Migration("a", up="CREATE TABLE va (x INTEGER)")]).up()
+        edited = Migrator(self.conn, [Migration("a", up="CREATE TABLE va (x BIGINT)")])
+        actions = edited.repair()
+        self.assertEqual(actions, ["updated the stored checksum of 'a'"])
+        self.assertEqual(edited.validate(), [])
+
+    def test_repair_adopts_legacy_rows_without_checksums(self):
+        self.conn.execute(
+            "CREATE TABLE sustained_migrations "
+            "(id VARCHAR(255) PRIMARY KEY, applied_at TEXT NOT NULL)"
+        )
+        self.conn.execute(
+            "INSERT INTO sustained_migrations VALUES ('a', '2024-01-01T00:00:00')"
+        )
+        self.conn.commit()
+        migration = Migration("a", up="CREATE TABLE va (x INTEGER)")
+        migrator = Migrator(self.conn, [migration])
+        self.assertEqual(migrator.repair(), ["updated the stored checksum of 'a'"])
+        stored = self.conn.execute(
+            "SELECT checksum FROM sustained_migrations WHERE id = 'a'"
+        ).fetchone()[0]
+        self.assertEqual(stored, migration_checksum(migration))
+
+
+class TestFailureTracking(MigrationTestCase):
+    def _bare_migrator(self, migrations):
+        """A migrator whose engine reports no transaction support."""
+        migrator = Migrator(self.conn, migrations)
+        patcher = mock.patch.object(
+            migrator._compiler, "supports_transactions", return_value=False
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return migrator
+
+    def test_failed_step_records_a_failure_row_without_transactions(self):
+        migrator = self._bare_migrator([Migration("bad", up="THIS IS NOT SQL")])
+        with self.assertRaises(sqlite3.OperationalError):
+            migrator.up()
+        row = self.conn.execute(
+            "SELECT id, success FROM sustained_migrations"
+        ).fetchone()
+        self.assertEqual((row[0], row[1]), ("bad", 0))
+        self.assertEqual(migrator.applied(), [])
+
+    def test_failure_row_blocks_up_until_repair(self):
+        migrator = self._bare_migrator(
+            [Migration("bad", up="CREATE TABLE ft (x INTEGER)")]
+        )
+        migrator.applied_records()
+        migrator._record_failure(migrator._migrations[0], 1)
+        with self.assertRaises(MigrationError):
+            migrator.up()
+        actions = migrator.repair()
+        self.assertEqual(actions, ["removed the failed attempt of 'bad'"])
+        self.assertEqual(migrator.up(), ["bad"])
+        self.assertEqual(migrator.applied(), ["bad"])
+
+    def test_transactional_failure_leaves_no_row(self):
+        migrator = Migrator(self.conn, [Migration("bad", up="THIS IS NOT SQL")])
+        with self.assertRaises(sqlite3.OperationalError):
+            migrator.up()
+        count = self.conn.execute(
+            "SELECT COUNT(*) FROM sustained_migrations"
+        ).fetchone()[0]
+        self.assertEqual(count, 0)
 
 
 if __name__ == "__main__":

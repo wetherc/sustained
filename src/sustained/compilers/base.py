@@ -285,6 +285,19 @@ class Compiler:
         """
         return True
 
+    def migration_lock_sql(self, name: str) -> "list[str]":
+        """
+        Statements that take an exclusive, session-scoped advisory lock so
+        two migrators cannot run at once. An empty list means the engine
+        has no such lock; SQLite and DuckDB serialize writers on their own,
+        and Athena offers nothing to lock with.
+        """
+        return []
+
+    def migration_unlock_sql(self, name: str) -> "list[str]":
+        """Statements that release the advisory lock taken for migrations."""
+        return []
+
     def validate_column_def(self, column: Any) -> None:
         """
         Rejects ColumnDef features the dialect cannot express in DDL.

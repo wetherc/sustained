@@ -118,6 +118,38 @@ class TestAsyncMigrator(unittest.IsolatedAsyncioTestCase):
         ).fetchall()
         self.assertEqual(rows, [("a", 1, 1), ("b", 2, 1)])
 
+    async def test_validate_detects_edit_and_repair_accepts_it(self):
+        from sustained.exceptions import MigrationError
+
+        await AsyncMigrator(
+            self.adapter, [Migration("a", up="CREATE TABLE va (x INTEGER)")]
+        ).up()
+        edited = AsyncMigrator(
+            self.adapter, [Migration("a", up="CREATE TABLE va (x BIGINT)")]
+        )
+        with self.assertRaises(MigrationError):
+            await edited.validate()
+        actions = await edited.repair()
+        self.assertEqual(actions, ["updated the stored checksum of 'a'"])
+        self.assertEqual(await edited.validate(), [])
+
+    async def test_up_validates_by_default(self):
+        from sustained.exceptions import MigrationError
+
+        await AsyncMigrator(
+            self.adapter, [Migration("a", up="CREATE TABLE va (x INTEGER)")]
+        ).up()
+        edited = AsyncMigrator(
+            self.adapter,
+            [
+                Migration("a", up="CREATE TABLE va (x BIGINT)"),
+                Migration("b", up="CREATE TABLE vb (x INTEGER)"),
+            ],
+        )
+        with self.assertRaises(MigrationError):
+            await edited.up()
+        self.assertEqual(await edited.up(validate=False), ["b"])
+
 
 if __name__ == "__main__":
     unittest.main()

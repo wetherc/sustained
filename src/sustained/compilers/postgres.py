@@ -58,3 +58,11 @@ class PostgresCompiler(Compiler):
 
     def quote_fully_qualified_identifier(self, identifier: str) -> str:
         return ".".join([self.quote_identifier(part) for part in identifier.split(".")])
+
+    def migration_lock_sql(self, name: str) -> "list[str]":
+        # Session-scoped and reentrant, so a sync() that calls up() locks
+        # and unlocks in balanced pairs. Released on disconnect.
+        return [f"SELECT pg_advisory_lock(hashtext({self.format_value(name)}))"]
+
+    def migration_unlock_sql(self, name: str) -> "list[str]":
+        return [f"SELECT pg_advisory_unlock(hashtext({self.format_value(name)}))"]

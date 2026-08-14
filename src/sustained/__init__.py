@@ -11,7 +11,7 @@ in a more programmatic and reusable way. The main components are:
 """
 
 from sustained.builder import QueryBuilder
-from sustained.exceptions import DialectError
+from sustained.exceptions import DialectError, MigrationError
 from sustained.expressions import (
     AggregateExpression,
     CaseExpression,
@@ -37,6 +37,7 @@ from sustained.types import (
 __all__ = [
     # from exceptions
     "DialectError",
+    "MigrationError",
     # from expressions
     "Column",
     "ColumnExpr",
