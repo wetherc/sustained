@@ -125,6 +125,34 @@ class Compiler:
     def compile_boolean(self, value: bool) -> str:
         return "TRUE" if value else "FALSE"
 
+    def compile_upsert_statement(
+        self,
+        table_sql: str,
+        column_names: "list[str]",
+        row_values_sql: "list[str]",
+        conflict_columns: "list[str]",
+        action: str,
+        update_columns: "list[str]",
+    ) -> str:
+        """
+        Renders an insert with conflict handling. The base form is the
+        ON CONFLICT syntax shared by Postgres, SQLite, and DuckDB. Dialects
+        with a different upsert statement override this.
+        """
+        columns_sql = ", ".join(self.quote_identifier(c) for c in column_names)
+        sql = (
+            f"INSERT INTO {table_sql} ({columns_sql}) "
+            f"VALUES {', '.join(row_values_sql)}"
+        )
+        conflict_sql = ", ".join(self.quote_identifier(c) for c in conflict_columns)
+        if action == "ignore":
+            return f"{sql} ON CONFLICT ({conflict_sql}) DO NOTHING"
+        assignments = ", ".join(
+            f"{self.quote_identifier(c)} = EXCLUDED.{self.quote_identifier(c)}"
+            for c in update_columns
+        )
+        return f"{sql} ON CONFLICT ({conflict_sql}) DO UPDATE SET {assignments}"
+
     def compile_returning(self, columns_sql: str) -> str:
         """
         Renders a RETURNING clause for DML statements. Dialects without

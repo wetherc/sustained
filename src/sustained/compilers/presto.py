@@ -7,6 +7,19 @@ class PrestoCompiler(Compiler):
     def quote_identifier(self, identifier: str) -> str:
         return f'"{identifier}"'
 
+    def compile_upsert_statement(
+        self,
+        table_sql: str,
+        column_names: "list[str]",
+        row_values_sql: "list[str]",
+        conflict_columns: "list[str]",
+        action: str,
+        update_columns: "list[str]",
+    ) -> str:
+        from sustained.exceptions import DialectError
+
+        raise DialectError("Presto does not support upserts.")
+
     def compile_returning(self, columns_sql: str) -> str:
         from sustained.exceptions import DialectError
 

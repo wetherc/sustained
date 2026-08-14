@@ -92,6 +92,8 @@ class QueryBuilder:
         self._update_values: Dict[str, Any] = {}
         self._returning_columns: List[str] = []
         self._eager_relations: List[str] = []
+        self._conflict_columns: Optional[List[str]] = None
+        self._conflict_action: Optional[Tuple[str, Optional[List[str]]]] = None
 
     def distinct(self) -> "QueryBuilder":
         """
@@ -634,6 +636,57 @@ class QueryBuilder:
         self._insert_rows = [dict(row) for row in rows]
         return self
 
+    def onConflict(self, *columns: str) -> "QueryBuilder":
+        """
+        Declares the conflict target for an upsert. Follow with merge() or
+        ignore(). Only valid after insert(), and every conflict column must
+        be one of the inserted columns.
+
+        Args:
+            *columns: The unique or primary key columns that define a
+                conflict.
+
+        Returns:
+            The current QueryBuilder instance for chaining.
+        """
+        if self._stmt_type != "insert":
+            raise ValueError("onConflict() applies to insert() statements.")
+        if not columns:
+            raise ValueError("onConflict() requires at least one column.")
+        insert_columns = set(self._insert_rows[0].keys())
+        missing = [c for c in columns if c not in insert_columns]
+        if missing:
+            raise ValueError(
+                f"Conflict columns must be inserted columns; missing: {missing}."
+            )
+        self._conflict_columns = list(columns)
+        return self
+
+    def merge(self, columns: Optional[List[str]] = None) -> "QueryBuilder":
+        """
+        On conflict, updates the existing row. Updates every inserted
+        column except the conflict columns, or only the columns given.
+
+        Returns:
+            The current QueryBuilder instance for chaining.
+        """
+        if self._conflict_columns is None:
+            raise ValueError("merge() requires onConflict() first.")
+        self._conflict_action = ("merge", list(columns) if columns else None)
+        return self
+
+    def ignore(self) -> "QueryBuilder":
+        """
+        On conflict, skips the conflicting row instead of raising.
+
+        Returns:
+            The current QueryBuilder instance for chaining.
+        """
+        if self._conflict_columns is None:
+            raise ValueError("ignore() requires onConflict() first.")
+        self._conflict_action = ("ignore", None)
+        return self
+
     def update(self, values: Dict[str, Any]) -> "QueryBuilder":
         """
         Turns this query into an UPDATE statement. Combine with where()
@@ -689,7 +742,35 @@ class QueryBuilder:
             for row in self._insert_rows:
                 rendered = ", ".join(ctx.value(row[c]) for c in columns)
                 row_groups.append(f"({rendered})")
-            sql = f"INSERT INTO {table_sql} ({columns_sql}) VALUES {', '.join(row_groups)}"
+            if self._conflict_columns is not None:
+                if self._conflict_action is None:
+                    raise ValueError(
+                        "onConflict() needs an action: call merge() or ignore()."
+                    )
+                action, update_columns = self._conflict_action
+                if action == "merge":
+                    if update_columns is None:
+                        update_columns = [
+                            c for c in columns if c not in self._conflict_columns
+                        ]
+                    if not update_columns:
+                        raise ValueError(
+                            "merge() has no columns to update; every inserted "
+                            "column is a conflict column."
+                        )
+                sql = self._compiler.compile_upsert_statement(
+                    table_sql,
+                    columns,
+                    row_groups,
+                    self._conflict_columns,
+                    action,
+                    update_columns or [],
+                )
+            else:
+                sql = (
+                    f"INSERT INTO {table_sql} ({columns_sql}) "
+                    f"VALUES {', '.join(row_groups)}"
+                )
         elif self._stmt_type == "update":
             if not self._where_builder.has_clauses():
                 raise ValueError(

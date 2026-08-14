@@ -15,6 +15,42 @@ class MssqlCompiler(Compiler):
     def compile_top(self, value: int) -> str:
         return f"TOP {value}"
 
+    def compile_upsert_statement(
+        self,
+        table_sql: str,
+        column_names: "list[str]",
+        row_values_sql: "list[str]",
+        conflict_columns: "list[str]",
+        action: str,
+        update_columns: "list[str]",
+    ) -> str:
+        # T-SQL has no ON CONFLICT; MERGE covers both upsert actions. The
+        # trailing semicolon is required by the MERGE grammar.
+        columns_sql = ", ".join(self.quote_identifier(c) for c in column_names)
+        on_sql = " AND ".join(
+            f"target.{self.quote_identifier(c)} = source.{self.quote_identifier(c)}"
+            for c in conflict_columns
+        )
+        sql = (
+            f"MERGE INTO {table_sql} AS target "
+            f"USING (VALUES {', '.join(row_values_sql)}) AS source ({columns_sql}) "
+            f"ON {on_sql}"
+        )
+        if action == "merge":
+            assignments = ", ".join(
+                f"target.{self.quote_identifier(c)} = source.{self.quote_identifier(c)}"
+                for c in update_columns
+            )
+            sql += f" WHEN MATCHED THEN UPDATE SET {assignments}"
+        insert_values = ", ".join(
+            f"source.{self.quote_identifier(c)}" for c in column_names
+        )
+        sql += (
+            f" WHEN NOT MATCHED THEN INSERT ({columns_sql}) "
+            f"VALUES ({insert_values});"
+        )
+        return sql
+
     def compile_returning(self, columns_sql: str) -> str:
         raise DialectError(
             "MSSQL does not support RETURNING. Use an OUTPUT clause via raw SQL."
