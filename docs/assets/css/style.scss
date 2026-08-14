@@ -38,3 +38,11 @@ nav ul li a {
 nav ul li a:hover {
   text-decoration: underline;
 }
+
+/* The minimal theme bolds links on hover. Bold text is wider, so table
+   columns jitter as the pointer moves over them. Underline instead. */
+section a:hover,
+section a:focus {
+  font-weight: normal;
+  text-decoration: underline;
+}
