@@ -7,8 +7,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from sustained.migration_files import load_migrations, split_sql_statements
-from sustained.migrations import Migrator
+from sustained.migration_files import (
+    load_migrations,
+    split_sql_statements,
+    substitute_placeholders,
+)
+from sustained.migrations import Migrator, migration_checksum
 
 
 class TestSplitSqlStatements(unittest.TestCase):
@@ -98,6 +102,56 @@ class TestLoadMigrations(LoaderTestCase):
         self.write("0001_x.up.sql", "SELECT 1;\n")
         self.write("README.md", "notes")
         self.assertEqual([m.id for m in load_migrations(self.dir)], ["0001_x"])
+
+
+class TestSubstitutePlaceholders(unittest.TestCase):
+    def test_replaces_known_keys(self):
+        self.assertEqual(
+            substitute_placeholders(
+                "GRANT SELECT ON t TO ${reader}", {"reader": "app_ro"}, "f.up.sql"
+            ),
+            "GRANT SELECT ON t TO app_ro",
+        )
+
+    def test_escape_produces_literal(self):
+        self.assertEqual(
+            substitute_placeholders("SELECT '$${x}'", None, "f.up.sql"),
+            "SELECT '${x}'",
+        )
+
+    def test_escape_allowed_next_to_known_key(self):
+        self.assertEqual(
+            substitute_placeholders("$${a}${a}", {"a": "1"}, "f.up.sql"),
+            "${a}1",
+        )
+
+    def test_unknown_key_raises_with_file_and_key(self):
+        with self.assertRaisesRegex(ValueError, r"'f\.up\.sql'.*\$\{schema\}"):
+            substitute_placeholders("SET search_path = ${schema}", {}, "f.up.sql")
+
+    def test_non_identifier_braces_pass_through(self):
+        text = "SELECT '${1bad}' || '${}'"
+        self.assertEqual(substitute_placeholders(text, None, "f.up.sql"), text)
+
+
+class TestLoaderPlaceholders(LoaderTestCase):
+    def test_values_substitute_in_up_and_down(self):
+        self.write("0001_grant.up.sql", "GRANT SELECT ON t TO ${reader};\n")
+        self.write("0001_grant.down.sql", "REVOKE SELECT ON t FROM ${reader};\n")
+        migrations = load_migrations(self.dir, placeholders={"reader": "app_ro"})
+        self.assertEqual(migrations[0].up, ["GRANT SELECT ON t TO app_ro"])
+        self.assertEqual(migrations[0].down, ["REVOKE SELECT ON t FROM app_ro"])
+
+    def test_unknown_key_raises(self):
+        self.write("0001_grant.up.sql", "GRANT SELECT ON t TO ${reader};\n")
+        with self.assertRaisesRegex(ValueError, "0001_grant.up.sql"):
+            load_migrations(self.dir)
+
+    def test_checksum_covers_substituted_text(self):
+        self.write("0001_grant.up.sql", "GRANT SELECT ON t TO ${reader};\n")
+        first = load_migrations(self.dir, placeholders={"reader": "a"})[0]
+        second = load_migrations(self.dir, placeholders={"reader": "b"})[0]
+        self.assertNotEqual(migration_checksum(first), migration_checksum(second))
 
 
 if __name__ == "__main__":

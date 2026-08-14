@@ -250,6 +250,23 @@ migrator.up()
 
 Empty up or down files, a down file without its up file, and `.sql` files that fit neither naming pattern raise `ValueError`. Files without a `.sql` extension are ignored, so a README can live alongside the migrations.
 
+## Placeholders
+
+SQL files may hold `${key}` placeholders, filled from a mapping at load time:
+
+```sql
+-- 003_grant.up.sql
+GRANT SELECT ON users TO ${reader};
+```
+
+```python
+migrations = load_migrations('migrations', placeholders={'reader': 'app_ro'})
+```
+
+A `${key}` with no value raises `ValueError` naming the file and the key. `$${` escapes to a literal `${`. Keys are identifiers; there are no expressions, defaults, or environment lookups.
+
+Substitution happens before checksums compute, so the checksum covers the SQL that actually ran. Changing a placeholder value after a migration applied flags a checksum mismatch, because different SQL was applied; run `repair()` if the new value is intentional.
+
 ## Command Line
 
 The `sustained` console script (also `python -m sustained`) runs migrations from the shell. It imports a config module, `sustained_config` by default or `--config mymodule`, from the current directory:

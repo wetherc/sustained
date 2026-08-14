@@ -11,13 +11,18 @@ Files split into statements at semicolons that end a line. A body with
 embedded semicolons, such as a trigger or procedure, does not survive
 that; write it as a hand-written Migration with a callable step, or keep
 it as the only statement in its file with no trailing semicolon.
+
+Files may hold `${key}` placeholders, filled from the mapping passed to
+load_migrations(). Substitution happens before checksums are computed,
+so a changed value reads as a changed migration. `$${` escapes to a
+literal `${`.
 """
 
 from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import List, Union
+from typing import Dict, List, Optional, Union
 
 from sustained.migrations import Migration
 
@@ -25,6 +30,33 @@ _STATEMENT_END_RE = re.compile(r";[ \t]*\n")
 
 _UP_SUFFIX = ".up.sql"
 _DOWN_SUFFIX = ".down.sql"
+
+_PLACEHOLDER_RE = re.compile(r"\$\$\{|\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+
+
+def substitute_placeholders(
+    text: str, placeholders: Optional[Dict[str, str]], source: str
+) -> str:
+    """
+    Replaces every '${key}' in the text with its value from the mapping
+    and turns the '$${' escape into a literal '${'. A '${key}' with no
+    value raises ValueError naming the source file and the key, so a
+    typo cannot reach the database as raw text.
+    """
+    values = placeholders or {}
+
+    def _replace(match: "re.Match[str]") -> str:
+        if match.group(0) == "$${":
+            return "${"
+        key = match.group(1)
+        if key not in values:
+            raise ValueError(
+                f"Migration file {source!r} uses placeholder '${{{key}}}' "
+                "with no value; add it to placeholders."
+            )
+        return str(values[key])
+
+    return _PLACEHOLDER_RE.sub(_replace, text)
 
 
 def split_sql_statements(text: str) -> List[str]:
@@ -45,13 +77,19 @@ def split_sql_statements(text: str) -> List[str]:
     return statements
 
 
-def load_migrations(directory: Union[str, Path]) -> List[Migration]:
+def load_migrations(
+    directory: Union[str, Path],
+    placeholders: Optional[Dict[str, str]] = None,
+) -> List[Migration]:
     """
     Reads every '<id>.up.sql' file in the directory, pairs it with its
     '<id>.down.sql' when one exists, and returns the migrations ordered by
     id. Raises when the directory is missing, an up file is empty, a down
     file has no up file, or a '.sql' file follows neither naming pattern,
     so a misnamed migration cannot be skipped silently.
+
+    '${key}' placeholders in the files are filled from the placeholders
+    mapping before statements split and checksums compute.
     """
     path = Path(directory)
     if not path.is_dir():
@@ -77,16 +115,19 @@ def load_migrations(directory: Union[str, Path]) -> List[Migration]:
     if orphaned:
         raise ValueError(f"Down files without an up file: {', '.join(orphaned)}.")
 
+    def read(entry: Path) -> str:
+        return substitute_placeholders(
+            entry.read_text(encoding="utf-8"), placeholders, entry.name
+        )
+
     migrations: List[Migration] = []
     for id in sorted(ups):
-        up_statements = split_sql_statements(ups[id].read_text(encoding="utf-8"))
+        up_statements = split_sql_statements(read(ups[id]))
         if not up_statements:
             raise ValueError(f"Migration file {ups[id].name!r} has no statements.")
         down_statements = None
         if id in downs:
-            down_statements = split_sql_statements(
-                downs[id].read_text(encoding="utf-8")
-            )
+            down_statements = split_sql_statements(read(downs[id]))
             if not down_statements:
                 raise ValueError(
                     f"Migration file {downs[id].name!r} has no statements; "
