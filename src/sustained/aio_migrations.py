@@ -11,13 +11,24 @@ async_transaction() block.
 from __future__ import annotations
 
 import inspect
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any, AsyncIterator, List, Optional, Tuple
 
 from sustained.aio import AsyncAdapter, async_transaction
 from sustained.dialects import Dialects
-from sustained.migrations import Migration, MigrationStep
+from sustained.migrations import (
+    _RECORDS_SELECT,
+    _UPGRADE_COLUMNS,
+    AppliedRecord,
+    Migration,
+    MigrationStep,
+    _next_seq,
+    _tracking_column_defs,
+    _upgrade_column_def,
+    migration_checksum,
+)
 
 
 class AsyncMigrator:
@@ -41,6 +52,7 @@ class AsyncMigrator:
         self._dialect = dialect
         self._compiler = Dialects.get_compiler(dialect)
         self._tracking_table_options = tracking_table_options
+        self._tracking_ready = False
 
     def _table_sql(self) -> str:
         return self._compiler.quote_identifier(self._table)
@@ -68,36 +80,91 @@ class AsyncMigrator:
         yield
         await self._adapter.commit()
 
-    async def _ensure_tracking_table(self) -> None:
-        from sustained.schema import String, Text, build_create_table_sql
+    async def _rollback_quietly(self) -> None:
+        try:
+            await self._adapter.rollback()
+        except Exception:
+            pass
 
-        if self._compiler.supports_constraints():
-            columns = {
-                "id": String(255, primary_key=True),
-                "applied_at": Text(nullable=False),
-            }
-        else:
-            columns = {
-                "id": String(255),
-                "applied_at": Text(),
-            }
+    async def _ensure_tracking_table(self) -> None:
+        from sustained.schema import build_create_table_sql
+
+        if self._tracking_ready:
+            return
         sql = build_create_table_sql(
             self._compiler,
             self._table_sql(),
-            columns,
+            _tracking_column_defs(self._compiler.supports_constraints()),
             if_not_exists=True,
             options=self._tracking_table_options,
         )
         await self._adapter.execute(sql, ())
         await self._adapter.commit()
+        await self._upgrade_tracking_table()
+        self._tracking_ready = True
 
-    async def applied(self) -> List[str]:
-        """Returns the applied migration ids in application order."""
-        await self._ensure_tracking_table()
+    async def _has_columns(self, columns: Tuple[str, ...]) -> bool:
+        """Probes the tracking table for the given columns."""
+        try:
+            await self._adapter.fetch(
+                f"SELECT {', '.join(columns)} FROM {self._table_sql()} WHERE 1 = 0",
+                (),
+            )
+            return True
+        except Exception:
+            # A failed probe can poison an open transaction (Postgres
+            # aborts it), so clear the slate before the next statement.
+            await self._rollback_quietly()
+            return False
+
+    async def _upgrade_tracking_table(self) -> None:
+        """
+        Brings a tracking table written by an earlier version, which held
+        only id and applied_at, up to the current shape. Missing columns
+        are added nullable; seq and success are backfilled from the
+        existing rows in applied order.
+        """
+        from sustained.schema import render_column_sql
+
+        if await self._has_columns(_UPGRADE_COLUMNS):
+            return
+        added: List[str] = []
+        for name in _UPGRADE_COLUMNS:
+            if await self._has_columns((name,)):
+                continue
+            column_sql = render_column_sql(
+                self._compiler, name, _upgrade_column_def(name), inline_pk=False
+            )
+            statement = self._compiler.compile_add_column(self._table_sql(), column_sql)
+            await self._adapter.execute(statement, ())
+            added.append(name)
+        await self._adapter.commit()
+        if "seq" not in added and "success" not in added:
+            return
         _, rows = await self._adapter.fetch(
             f"SELECT id FROM {self._table_sql()} ORDER BY applied_at, id", ()
         )
-        return [row[0] for row in rows]
+        placeholder = self._compiler.placeholder()
+        for position, row in enumerate(rows, start=1):
+            await self._adapter.execute(
+                f"UPDATE {self._table_sql()} SET seq = {placeholder}, "
+                f"success = {placeholder} WHERE id = {placeholder}",
+                (position, True, row[0]),
+            )
+        await self._adapter.commit()
+
+    async def applied_records(self) -> List[AppliedRecord]:
+        """Returns every tracking table row in application order."""
+        await self._ensure_tracking_table()
+        _, rows = await self._adapter.fetch(
+            f"{_RECORDS_SELECT} {self._table_sql()} ORDER BY seq, applied_at, id",
+            (),
+        )
+        return [AppliedRecord(row[0], row[1], row[2], bool(row[3])) for row in rows]
+
+    async def applied(self) -> List[str]:
+        """Returns the applied migration ids in application order."""
+        return [r.id for r in await self.applied_records() if r.success]
 
     async def pending(self) -> List[Migration]:
         """Returns the registered migrations that have not been applied."""
@@ -108,6 +175,15 @@ class AsyncMigrator:
         """Returns (id, applied) pairs for every registered migration."""
         applied = set(await self.applied())
         return [(m.id, m.id in applied) for m in self._migrations]
+
+    def _insert_sql(self) -> str:
+        placeholder = self._compiler.placeholder()
+        values = ", ".join([placeholder] * 6)
+        return (
+            f"INSERT INTO {self._table_sql()} "
+            f"(id, seq, checksum, applied_at, execution_ms, success) "
+            f"VALUES ({values})"
+        )
 
     async def up(self, target: Optional[str] = None) -> List[str]:
         """
@@ -121,20 +197,30 @@ class AsyncMigrator:
                 raise ValueError(f"Unknown migration target: {target!r}.")
             migrations = migrations[: ids.index(target) + 1]
 
-        already_applied = set(await self.applied())
-        placeholder = self._compiler.placeholder()
+        records = await self.applied_records()
+        already_applied = {r.id for r in records if r.success}
+        next_seq = _next_seq(records)
         applied_now: List[str] = []
         for migration in migrations:
             if migration.id in already_applied:
                 continue
             async with self._migration_scope():
+                started = time.perf_counter()
                 await self._run_step(migration.up)
+                elapsed_ms = int((time.perf_counter() - started) * 1000)
                 timestamp = datetime.now(timezone.utc).isoformat()
                 await self._adapter.execute(
-                    f"INSERT INTO {self._table_sql()} (id, applied_at) "
-                    f"VALUES ({placeholder}, {placeholder})",
-                    (migration.id, timestamp),
+                    self._insert_sql(),
+                    (
+                        migration.id,
+                        next_seq,
+                        migration_checksum(migration),
+                        timestamp,
+                        elapsed_ms,
+                        True,
+                    ),
                 )
+            next_seq += 1
             applied_now.append(migration.id)
         return applied_now
 

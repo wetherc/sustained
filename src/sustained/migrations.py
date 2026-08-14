@@ -6,6 +6,12 @@ are a SQL string, a list of SQL strings, or a callable that receives the
 connection. The Migrator applies pending migrations in order, records each
 applied id in a tracking table, and reverts through the down steps.
 
+The tracking table stores one row per applied migration: the id, a
+monotonic sequence number, a SHA-256 checksum of the up step, the apply
+timestamp, the execution time in milliseconds, and a success flag.
+Tracking tables written by earlier versions of Sustained, which held only
+the id and the timestamp, are upgraded in place on first use.
+
 Migrations are written by hand, generated from a model with
 create_table_migration(), or produced by schema diffing through
 sustained.autogenerate and Migrator.sync().
@@ -13,30 +19,131 @@ sustained.autogenerate and Migrator.sync().
 
 from __future__ import annotations
 
+import hashlib
+import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, Callable, Iterator, List, Optional, Type, Union
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    Dict,
+    Iterator,
+    List,
+    NamedTuple,
+    Optional,
+    Tuple,
+    Type,
+    Union,
+)
 
 from sustained.dialects import Dialects
 from sustained.execution import transaction
 
 if TYPE_CHECKING:
+    from sustained.compilers.base import Compiler
     from sustained.model import Model
+    from sustained.schema import ColumnDef
 
 MigrationStep = Union[str, List[str], Callable[[Any], None]]
 
 
 class Migration:
-    """One schema change with an id, an up step, and an optional down step."""
+    """
+    One schema change with an id, an up step, and an optional down step.
+
+    A checksum may be supplied for callable steps, whose SQL cannot be
+    hashed; validation then compares it like a computed one.
+    """
 
     def __init__(
-        self, id: str, up: MigrationStep, down: Optional[MigrationStep] = None
+        self,
+        id: str,
+        up: MigrationStep,
+        down: Optional[MigrationStep] = None,
+        checksum: Optional[str] = None,
     ) -> None:
         if not id:
             raise ValueError("A migration needs a non-empty id.")
         self.id = id
         self.up = up
         self.down = down
+        self.checksum = checksum
+
+
+def migration_checksum(migration: Migration) -> Optional[str]:
+    """
+    The SHA-256 hex digest of a migration's up statements, each stripped of
+    surrounding whitespace. Callable steps have no SQL to hash and return
+    the migration's explicit checksum, or None when it has none.
+    """
+    if migration.checksum is not None:
+        return migration.checksum
+    step = migration.up
+    if callable(step):
+        return None
+    statements = [step] if isinstance(step, str) else list(step)
+    digest = hashlib.sha256()
+    for statement in statements:
+        digest.update(statement.strip().encode("utf-8"))
+        digest.update(b"\n")
+    return digest.hexdigest()
+
+
+class AppliedRecord(NamedTuple):
+    """One row of the tracking table."""
+
+    id: str
+    seq: Optional[int]
+    checksum: Optional[str]
+    success: bool
+
+
+# Columns added when upgrading a tracking table written by an earlier
+# version, which held only id and applied_at.
+_UPGRADE_COLUMNS = ("seq", "checksum", "execution_ms", "success")
+
+_RECORDS_SELECT = "SELECT id, seq, checksum, success FROM"
+
+
+def _tracking_column_defs(constraints: bool) -> Dict[str, "ColumnDef"]:
+    """
+    The tracking table's columns. Engines without constraints, such as
+    Athena, get plain nullable columns; the migrator never writes a
+    duplicate id.
+    """
+    from sustained.schema import Boolean, Integer, String, Text
+
+    if constraints:
+        return {
+            "id": String(255, primary_key=True),
+            "seq": Integer(),
+            "checksum": String(64),
+            "applied_at": Text(nullable=False),
+            "execution_ms": Integer(),
+            "success": Boolean(nullable=False),
+        }
+    return {
+        "id": String(255),
+        "seq": Integer(),
+        "checksum": String(64),
+        "applied_at": Text(),
+        "execution_ms": Integer(),
+        "success": Boolean(),
+    }
+
+
+def _upgrade_column_def(name: str) -> "ColumnDef":
+    """A nullable definition for one upgrade column, safe to ADD COLUMN."""
+    from sustained.schema import Boolean, Integer, String
+
+    defs: Dict[str, "ColumnDef"] = {
+        "seq": Integer(),
+        "checksum": String(64),
+        "execution_ms": Integer(),
+        "success": Boolean(),
+    }
+    return defs[name]
 
 
 def create_table_migration(model: Type["Model"]) -> Migration:
@@ -75,6 +182,10 @@ def _run_step(connection: Any, step: MigrationStep) -> None:
         cursor.execute(statement)
 
 
+def _next_seq(records: List[AppliedRecord]) -> int:
+    return 1 + max((r.seq or 0 for r in records), default=0)
+
+
 class Migrator:
     """
     Applies and reverts an ordered list of migrations on one connection.
@@ -104,8 +215,9 @@ class Migrator:
         self._migrations = list(migrations)
         self._table = table
         self._dialect = dialect
-        self._compiler = Dialects.get_compiler(dialect)
+        self._compiler: "Compiler" = Dialects.get_compiler(dialect)
         self._tracking_table_options = tracking_table_options
+        self._tracking_ready = False
 
     def _table_sql(self) -> str:
         return self._compiler.quote_identifier(self._table)
@@ -121,41 +233,102 @@ class Migrator:
                 yield
             return
         yield
+        self._commit_quietly()
+
+    def _commit_quietly(self) -> None:
         if hasattr(self._connection, "commit"):
             self._connection.commit()
 
-    def _ensure_tracking_table(self) -> None:
-        from sustained.schema import String, Text, build_create_table_sql
+    def _rollback_quietly(self) -> None:
+        try:
+            if hasattr(self._connection, "rollback"):
+                self._connection.rollback()
+        except Exception:
+            pass
 
-        if self._compiler.supports_constraints():
-            columns = {
-                "id": String(255, primary_key=True),
-                "applied_at": Text(nullable=False),
-            }
-        else:
-            # Engines without constraints, such as Athena, get plain
-            # nullable columns; the migrator never writes a duplicate id.
-            columns = {
-                "id": String(255),
-                "applied_at": Text(),
-            }
+    def _ensure_tracking_table(self) -> None:
+        from sustained.schema import build_create_table_sql
+
+        if self._tracking_ready:
+            return
         sql = build_create_table_sql(
             self._compiler,
             self._table_sql(),
-            columns,
+            _tracking_column_defs(self._compiler.supports_constraints()),
             if_not_exists=True,
             options=self._tracking_table_options,
         )
         self._connection.cursor().execute(sql)
-        if hasattr(self._connection, "commit"):
-            self._connection.commit()
+        self._commit_quietly()
+        self._upgrade_tracking_table()
+        self._tracking_ready = True
+
+    def _has_columns(self, columns: Tuple[str, ...]) -> bool:
+        """Probes the tracking table for the given columns."""
+        try:
+            cursor = self._connection.cursor()
+            cursor.execute(
+                f"SELECT {', '.join(columns)} FROM {self._table_sql()} WHERE 1 = 0"
+            )
+            cursor.fetchall()
+            return True
+        except Exception:
+            # A failed probe can poison an open transaction (Postgres
+            # aborts it), so clear the slate before the next statement.
+            self._rollback_quietly()
+            return False
+
+    def _upgrade_tracking_table(self) -> None:
+        """
+        Brings a tracking table written by an earlier version, which held
+        only id and applied_at, up to the current shape. Missing columns
+        are added nullable; seq and success are backfilled from the
+        existing rows in applied order.
+        """
+        from sustained.schema import render_column_sql
+
+        if self._has_columns(_UPGRADE_COLUMNS):
+            return
+        added: List[str] = []
+        for name in _UPGRADE_COLUMNS:
+            if self._has_columns((name,)):
+                continue
+            column_sql = render_column_sql(
+                self._compiler, name, _upgrade_column_def(name), inline_pk=False
+            )
+            statement = self._compiler.compile_add_column(self._table_sql(), column_sql)
+            self._connection.cursor().execute(statement)
+            added.append(name)
+        self._commit_quietly()
+        if "seq" not in added and "success" not in added:
+            return
+        cursor = self._connection.cursor()
+        cursor.execute(f"SELECT id FROM {self._table_sql()} ORDER BY applied_at, id")
+        ids = [row[0] for row in cursor.fetchall()]
+        placeholder = self._compiler.placeholder()
+        for position, migration_id in enumerate(ids, start=1):
+            cursor.execute(
+                f"UPDATE {self._table_sql()} SET seq = {placeholder}, "
+                f"success = {placeholder} WHERE id = {placeholder}",
+                (position, True, migration_id),
+            )
+        self._commit_quietly()
+
+    def applied_records(self) -> List[AppliedRecord]:
+        """Returns every tracking table row in application order."""
+        self._ensure_tracking_table()
+        cursor = self._connection.cursor()
+        cursor.execute(
+            f"{_RECORDS_SELECT} {self._table_sql()} ORDER BY seq, applied_at, id"
+        )
+        return [
+            AppliedRecord(row[0], row[1], row[2], bool(row[3]))
+            for row in cursor.fetchall()
+        ]
 
     def applied(self) -> List[str]:
         """Returns the applied migration ids in application order."""
-        self._ensure_tracking_table()
-        cursor = self._connection.cursor()
-        cursor.execute(f"SELECT id FROM {self._table_sql()} ORDER BY applied_at, id")
-        return [row[0] for row in cursor.fetchall()]
+        return [r.id for r in self.applied_records() if r.success]
 
     def pending(self) -> List[Migration]:
         """Returns the registered migrations that have not been applied."""
@@ -166,6 +339,15 @@ class Migrator:
         """Returns (id, applied) pairs for every registered migration."""
         applied = set(self.applied())
         return [(m.id, m.id in applied) for m in self._migrations]
+
+    def _insert_sql(self) -> str:
+        placeholder = self._compiler.placeholder()
+        values = ", ".join([placeholder] * 6)
+        return (
+            f"INSERT INTO {self._table_sql()} "
+            f"(id, seq, checksum, applied_at, execution_ms, success) "
+            f"VALUES ({values})"
+        )
 
     def up(self, target: Optional[str] = None) -> List[str]:
         """
@@ -179,20 +361,30 @@ class Migrator:
                 raise ValueError(f"Unknown migration target: {target!r}.")
             migrations = migrations[: ids.index(target) + 1]
 
-        already_applied = set(self.applied())
-        placeholder = self._compiler.placeholder()
+        records = self.applied_records()
+        already_applied = {r.id for r in records if r.success}
+        next_seq = _next_seq(records)
         applied_now: List[str] = []
         for migration in migrations:
             if migration.id in already_applied:
                 continue
             with self._migration_scope():
+                started = time.perf_counter()
                 _run_step(self._connection, migration.up)
+                elapsed_ms = int((time.perf_counter() - started) * 1000)
                 timestamp = datetime.now(timezone.utc).isoformat()
                 self._connection.cursor().execute(
-                    f"INSERT INTO {self._table_sql()} (id, applied_at) "
-                    f"VALUES ({placeholder}, {placeholder})",
-                    (migration.id, timestamp),
+                    self._insert_sql(),
+                    (
+                        migration.id,
+                        next_seq,
+                        migration_checksum(migration),
+                        timestamp,
+                        elapsed_ms,
+                        True,
+                    ),
                 )
+            next_seq += 1
             applied_now.append(migration.id)
         return applied_now
 
@@ -244,16 +436,26 @@ class Migrator:
         bookkeeping statements are included.
         """
         placeholder_free_ts = datetime.now(timezone.utc).isoformat()
+        format_value = self._compiler.format_value
         lines: List[str] = []
         if direction == "up":
-            for migration in self.pending():
+            records = self.applied_records()
+            applied = {r.id for r in records if r.success}
+            next_seq = _next_seq(records)
+            for migration in self._migrations:
+                if migration.id in applied:
+                    continue
                 lines.append(f"-- up: {migration.id}")
                 lines.extend(f"{s};" for s in migration_sql(migration, "up"))
                 lines.append(
-                    f"INSERT INTO {self._table_sql()} (id, applied_at) VALUES "
-                    f"({self._compiler.format_value(migration.id)}, "
-                    f"{self._compiler.format_value(placeholder_free_ts)});"
+                    f"INSERT INTO {self._table_sql()} "
+                    f"(id, seq, checksum, applied_at, execution_ms, success) "
+                    f"VALUES ({format_value(migration.id)}, {next_seq}, "
+                    f"{format_value(migration_checksum(migration))}, "
+                    f"{format_value(placeholder_free_ts)}, NULL, "
+                    f"{self._compiler.compile_boolean(True)});"
                 )
+                next_seq += 1
         elif direction == "down":
             by_id = {m.id: m for m in self._migrations}
             for migration_id in reversed(self.applied()):
@@ -267,7 +469,7 @@ class Migrator:
                 lines.extend(f"{s};" for s in migration_sql(registered, "down"))
                 lines.append(
                     f"DELETE FROM {self._table_sql()} WHERE id = "
-                    f"{self._compiler.format_value(migration_id)};"
+                    f"{format_value(migration_id)};"
                 )
         else:
             raise ValueError("direction must be 'up' or 'down'.")

@@ -83,6 +83,41 @@ class TestAsyncMigrator(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             await migrator.up(target="nope")
 
+    async def test_apply_records_checksum_and_seq(self):
+        from sustained.migrations import migration_checksum
+
+        migrations = self.migrations()
+        migrator = AsyncMigrator(self.adapter, migrations)
+        await migrator.up()
+        rows = self.conn.execute(
+            "SELECT id, seq, checksum, success FROM sustained_migrations "
+            "ORDER BY seq"
+        ).fetchall()
+        self.assertEqual(
+            rows,
+            [
+                ("a", 1, migration_checksum(migrations[0]), 1),
+                ("b", 2, migration_checksum(migrations[1]), 1),
+            ],
+        )
+
+    async def test_legacy_tracking_table_is_upgraded(self):
+        self.conn.execute(
+            "CREATE TABLE sustained_migrations "
+            "(id VARCHAR(255) PRIMARY KEY, applied_at TEXT NOT NULL)"
+        )
+        self.conn.execute(
+            "INSERT INTO sustained_migrations VALUES ('a', '2024-01-01T00:00:00')"
+        )
+        self.conn.commit()
+        migrator = AsyncMigrator(self.adapter, self.migrations())
+        self.assertEqual(await migrator.applied(), ["a"])
+        self.assertEqual(await migrator.up(), ["b"])
+        rows = self.conn.execute(
+            "SELECT id, seq, success FROM sustained_migrations ORDER BY seq"
+        ).fetchall()
+        self.assertEqual(rows, [("a", 1, 1), ("b", 2, 1)])
+
 
 if __name__ == "__main__":
     unittest.main()
