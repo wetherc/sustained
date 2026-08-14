@@ -20,7 +20,7 @@ query = User.query()        # a new QueryBuilder for the model's table
 | --- | --- |
 | `Model.query()` | Starts a new `QueryBuilder` on the model's table. |
 | `create_model(name, table_name, mappings=None, table_schema=None, database=None, columns=None)` | Builds a model class at runtime. |
-| `Model.set_dialect(dialect)` | Sets the SQL dialect for the model's queries: `Dialects.DEFAULT`, `POSTGRES`, `MSSQL`, `PRESTO`, or `DUCKDB`. |
+| `Model.set_dialect(dialect)` | Sets the SQL dialect for the model's queries: `Dialects.DEFAULT`, `POSTGRES`, `MSSQL`, `PRESTO`, `ATHENA`, or `DUCKDB`. |
 | `Model.bind(connection)` / `Model.unbind()` | Attaches or removes a DB-API connection or `ConnectionPool` for execution. |
 | `Model.bind_async(adapter)` / `Model.unbind_async()` | Attaches or removes an async adapter. |
 
@@ -150,6 +150,7 @@ All adapters live in `sustained.aio` and share `fetch`, `execute`, `executemany`
 | `Integer`, `BigInteger`, `String(length)`, `Text`, `Boolean`, `Float`, `Numeric(precision, scale)`, `Date`, `Timestamp`, `Json` | Typed column factories for `tableColumns`. Types map per dialect. |
 | ColumnDef options | `primary_key`, `autoincrement`, `nullable`, `unique`, `default` (literal or raw `Expression`), `references='table.column'`, `backfill` (value for NOT NULL migrations). |
 | `Index(name, *columns, unique=False)` | A named index, declared in the model's `indexes` list. |
+| `TableOptions(location=None, partitioned_by=None, properties=None)` | Storage clauses for engines that need them, declared as the model's `tableOptions`. Athena renders PARTITIONED BY, LOCATION, and TBLPROPERTIES; other dialects raise. |
 | `Model.create_table_sql(if_not_exists=False)` | The CREATE TABLE statement. |
 | `Model.create_table_statements()` | CREATE TABLE plus CREATE INDEX statements. |
 | `Model.create_table(connection=None)` | Executes them. |
@@ -162,7 +163,7 @@ Guide: [Schema and Migrations](./schema)
 | Name | What it does |
 | --- | --- |
 | `Migration(id, up, down=None)` | One schema change. Steps are a SQL string, a list of statements, or a callable receiving the connection. |
-| `Migrator(connection, migrations, table='sustained_migrations', dialect=...)` | Applies and reverts migrations with a tracking table, one transaction per migration. |
+| `Migrator(connection, migrations, table='sustained_migrations', dialect=..., tracking_table_options=None)` | Applies and reverts migrations with a tracking table, one transaction per migration. Engines without transactions (Athena) run steps bare; `tracking_table_options` supplies the tracking table's storage clauses there. |
 | `migrator.up(target=None)` | Applies pending migrations, optionally stopping after a target id. |
 | `migrator.down(steps=1)` / `migrator.down_to(id)` | Reverts newest-first. |
 | `migrator.sync(models, ...)` | Diffs the database against the models, generates a migration, applies it. Accepts `allow_drops`, `ignore_changed_columns`, `renames`, `table_renames`, `type_casts`, `migration_id`. |

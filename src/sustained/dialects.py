@@ -1,5 +1,6 @@
 from enum import Enum
 
+from sustained.compilers.athena import AthenaCompiler
 from sustained.compilers.base import Compiler
 from sustained.compilers.duckdb import DuckDbCompiler
 from sustained.compilers.mssql import MssqlCompiler
@@ -8,6 +9,7 @@ from sustained.compilers.presto import PrestoCompiler
 
 
 class Dialects(Enum):
+    ATHENA = AthenaCompiler
     PRESTO = PrestoCompiler
     MSSQL = MssqlCompiler
     POSTGRES = PostgresCompiler

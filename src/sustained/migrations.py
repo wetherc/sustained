@@ -13,8 +13,9 @@ sustained.autogenerate and Migrator.sync().
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, Callable, List, Optional, Type, Union
+from typing import TYPE_CHECKING, Any, Callable, Iterator, List, Optional, Type, Union
 
 from sustained.dialects import Dialects
 from sustained.execution import transaction
@@ -82,7 +83,9 @@ class Migrator:
     Each migration runs inside a transaction, so a failing step leaves the
     schema at the previous migration. Engines that do not support
     transactional DDL may still leave partial changes from a multi-step
-    migration.
+    migration. Engines without transactions at all, such as Athena, run
+    each step bare; a failing migration there can leave partial changes
+    that need manual cleanup.
     """
 
     def __init__(
@@ -91,6 +94,7 @@ class Migrator:
         migrations: List[Migration],
         table: str = "sustained_migrations",
         dialect: Dialects = Dialects.DEFAULT,
+        tracking_table_options: Optional[Any] = None,
     ) -> None:
         ids = [m.id for m in migrations]
         duplicates = {i for i in ids if ids.count(i) > 1}
@@ -101,21 +105,46 @@ class Migrator:
         self._table = table
         self._dialect = dialect
         self._compiler = Dialects.get_compiler(dialect)
+        self._tracking_table_options = tracking_table_options
 
     def _table_sql(self) -> str:
         return self._compiler.quote_identifier(self._table)
 
+    @contextmanager
+    def _migration_scope(self) -> Iterator[None]:
+        """
+        A transaction on engines that have them; a bare run followed by a
+        commit (when the driver has one) on engines that do not.
+        """
+        if self._compiler.supports_transactions():
+            with transaction(self._connection):
+                yield
+            return
+        yield
+        if hasattr(self._connection, "commit"):
+            self._connection.commit()
+
     def _ensure_tracking_table(self) -> None:
         from sustained.schema import String, Text, build_create_table_sql
 
+        if self._compiler.supports_constraints():
+            columns = {
+                "id": String(255, primary_key=True),
+                "applied_at": Text(nullable=False),
+            }
+        else:
+            # Engines without constraints, such as Athena, get plain
+            # nullable columns; the migrator never writes a duplicate id.
+            columns = {
+                "id": String(255),
+                "applied_at": Text(),
+            }
         sql = build_create_table_sql(
             self._compiler,
             self._table_sql(),
-            {
-                "id": String(255, primary_key=True),
-                "applied_at": Text(nullable=False),
-            },
+            columns,
             if_not_exists=True,
+            options=self._tracking_table_options,
         )
         self._connection.cursor().execute(sql)
         if hasattr(self._connection, "commit"):
@@ -156,7 +185,7 @@ class Migrator:
         for migration in migrations:
             if migration.id in already_applied:
                 continue
-            with transaction(self._connection):
+            with self._migration_scope():
                 _run_step(self._connection, migration.up)
                 timestamp = datetime.now(timezone.utc).isoformat()
                 self._connection.cursor().execute(
@@ -274,7 +303,7 @@ class Migrator:
                 )
             if migration.down is None:
                 raise ValueError(f"Migration '{migration_id}' has no down step.")
-            with transaction(self._connection):
+            with self._migration_scope():
                 _run_step(self._connection, migration.down)
                 self._connection.cursor().execute(
                     f"DELETE FROM {self._table_sql()} WHERE id = {placeholder}",

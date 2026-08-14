@@ -1,5 +1,16 @@
 # Changelog
 
+## 2.5.0 (2026-08-14)
+
+### Added
+
+- AWS Athena dialect (`Dialects.ATHENA`): inherits Presto's query behavior with Athena's differences. `%s` placeholders matching pyathena, MERGE upserts on Iceberg tables, and Athena's type spellings (INT, STRING, DOUBLE, DECIMAL; JSON maps to STRING).
+- `TableOptions(location, partitioned_by, properties)`: storage clauses declared as a model's `tableOptions` and rendered as PARTITIONED BY, LOCATION, and TBLPROPERTIES on Athena. Other dialects raise when options are set. Partition entries pass through as written so Iceberg transforms work.
+- Athena DDL: `ADD COLUMNS` spelling for added columns, `CHANGE COLUMN` for Iceberg type widenings. Constraints (primary key, unique, default, foreign key, NOT NULL, autoincrement) and indexes raise `DialectError` at build time because Athena cannot enforce them. Renames, nullability changes, `type_casts` hints, RETURNING, and temporary CTAS raise with directions.
+- Migrations on engines without transactions: the migrator now consults the dialect and runs each step bare on Athena instead of wrapping it in a transaction, never calling rollback. `Migrator` and `AsyncMigrator` accept `tracking_table_options` for the tracking table's storage clauses, and create it without constraints on constraint-free engines.
+- The function registry recognizes Athena wherever it recognizes Presto, including `NOW()` and the `GETDATE()` translation.
+- Schema diffing normalizes Athena's STRING type, so tables created from models diff clean through `information_schema`.
+
 ## 2.4.0 (2026-08-14)
 
 ### Added

@@ -37,6 +37,7 @@ class _FunctionRegistry:
         all_dialects = [
             Dialects.DEFAULT,
             Dialects.PRESTO,
+            Dialects.ATHENA,
             Dialects.MSSQL,
             Dialects.POSTGRES,
             Dialects.DUCKDB,
@@ -70,6 +71,7 @@ class _FunctionRegistry:
             FunctionMetadata(
                 supported_dialects=[
                     Dialects.PRESTO,
+                    Dialects.ATHENA,
                     Dialects.POSTGRES,
                     Dialects.DUCKDB,
                 ]
@@ -81,6 +83,7 @@ class _FunctionRegistry:
                 supported_dialects=[Dialects.MSSQL],
                 dialect_names={
                     Dialects.PRESTO: "NOW",
+                    Dialects.ATHENA: "NOW",
                     Dialects.POSTGRES: "NOW",
                     Dialects.DUCKDB: "NOW",
                 },
@@ -91,6 +94,7 @@ class _FunctionRegistry:
             FunctionMetadata(
                 supported_dialects=[
                     Dialects.PRESTO,
+                    Dialects.ATHENA,
                     Dialects.POSTGRES,
                     Dialects.DUCKDB,
                 ],
@@ -104,6 +108,7 @@ class _FunctionRegistry:
                 supported_dialects=[
                     Dialects.DEFAULT,
                     Dialects.PRESTO,
+                    Dialects.ATHENA,
                     Dialects.POSTGRES,
                     Dialects.DUCKDB,
                 ],

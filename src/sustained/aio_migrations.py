@@ -11,8 +11,9 @@ async_transaction() block.
 from __future__ import annotations
 
 import inspect
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from typing import Any, List, Optional, Tuple
+from typing import Any, AsyncIterator, List, Optional, Tuple
 
 from sustained.aio import AsyncAdapter, async_transaction
 from sustained.dialects import Dialects
@@ -28,6 +29,7 @@ class AsyncMigrator:
         migrations: List[Migration],
         table: str = "sustained_migrations",
         dialect: Dialects = Dialects.DEFAULT,
+        tracking_table_options: Any = None,
     ) -> None:
         ids = [m.id for m in migrations]
         duplicates = {i for i in ids if ids.count(i) > 1}
@@ -38,6 +40,7 @@ class AsyncMigrator:
         self._table = table
         self._dialect = dialect
         self._compiler = Dialects.get_compiler(dialect)
+        self._tracking_table_options = tracking_table_options
 
     def _table_sql(self) -> str:
         return self._compiler.quote_identifier(self._table)
@@ -52,17 +55,38 @@ class AsyncMigrator:
         for statement in statements:
             await self._adapter.execute(statement, ())
 
+    @asynccontextmanager
+    async def _migration_scope(self) -> AsyncIterator[None]:
+        """
+        A transaction on engines that have them; a bare run followed by a
+        commit on engines that do not.
+        """
+        if self._compiler.supports_transactions():
+            async with async_transaction(self._adapter):
+                yield
+            return
+        yield
+        await self._adapter.commit()
+
     async def _ensure_tracking_table(self) -> None:
         from sustained.schema import String, Text, build_create_table_sql
 
+        if self._compiler.supports_constraints():
+            columns = {
+                "id": String(255, primary_key=True),
+                "applied_at": Text(nullable=False),
+            }
+        else:
+            columns = {
+                "id": String(255),
+                "applied_at": Text(),
+            }
         sql = build_create_table_sql(
             self._compiler,
             self._table_sql(),
-            {
-                "id": String(255, primary_key=True),
-                "applied_at": Text(nullable=False),
-            },
+            columns,
             if_not_exists=True,
+            options=self._tracking_table_options,
         )
         await self._adapter.execute(sql, ())
         await self._adapter.commit()
@@ -103,7 +127,7 @@ class AsyncMigrator:
         for migration in migrations:
             if migration.id in already_applied:
                 continue
-            async with async_transaction(self._adapter):
+            async with self._migration_scope():
                 await self._run_step(migration.up)
                 timestamp = datetime.now(timezone.utc).isoformat()
                 await self._adapter.execute(
@@ -133,7 +157,7 @@ class AsyncMigrator:
                 )
             if migration.down is None:
                 raise ValueError(f"Migration '{migration_id}' has no down step.")
-            async with async_transaction(self._adapter):
+            async with self._migration_scope():
                 await self._run_step(migration.down)
                 await self._adapter.execute(
                     f"DELETE FROM {self._table_sql()} WHERE id = {placeholder}",

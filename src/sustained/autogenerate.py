@@ -89,6 +89,7 @@ _TYPE_SYNONYMS = {
     "CHARACTER VARYING": "VARCHAR",
     "NVARCHAR": "VARCHAR",
     "TEXT": "TEXT",
+    "STRING": "TEXT",
     "BOOLEAN": "BOOLEAN",
     "BOOL": "BOOLEAN",
     "BIT": "BOOLEAN",

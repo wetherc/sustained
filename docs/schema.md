@@ -110,6 +110,50 @@ User.drop_table(conn)     # DROP TABLE IF EXISTS
 
 Types map per dialect: `BIT`, `NVARCHAR`, and `DATETIME2` on MSSQL; `JSONB` and identity columns on Postgres; plain `INTEGER PRIMARY KEY` rowid behavior on the default dialect. Schema introspection reads SQLite's PRAGMA tables on the default dialect and `information_schema.columns` elsewhere.
 
+## Athena
+
+Athena tables are files on S3, so the rules above bend in specific ways on `Dialects.ATHENA`:
+
+- **No constraints.** A column with `primary_key`, `unique`, `default`, `references`, `nullable=False`, or `autoincrement` raises `DialectError` at DDL time. Declare Athena model columns plain and nullable. Declared indexes also raise; partition instead.
+- **Table options.** Athena tables need storage clauses. Declare them with `TableOptions` on the model:
+
+```python
+from sustained.schema import Integer, String, TableOptions, Timestamp
+
+class Event(Model):
+    tableName = 'events'
+    tableColumns = {
+        'id': Integer(),
+        'name': String(120),
+        'created_at': Timestamp(),
+    }
+    tableOptions = TableOptions(
+        location='s3://bucket/warehouse/events/',
+        partitioned_by=['day(created_at)'],
+        properties={'table_type': 'ICEBERG'},
+    )
+```
+
+This renders `PARTITIONED BY (day(created_at)) LOCATION '...' TBLPROPERTIES ('table_type'='ICEBERG')` after the column list. Partition entries pass through as written, so Iceberg transforms work. Every other dialect raises when `tableOptions` is set.
+
+- **Migrations run without transactions.** Athena has none, so the migrator runs each step bare and never calls rollback. A failing multi-step migration can leave partial changes that need manual cleanup. The tracking table needs its own storage location:
+
+```python
+migrator = Migrator(
+    conn, [], dialect=Dialects.ATHENA,
+    tracking_table_options=TableOptions(
+        location='s3://bucket/warehouse/sustained_migrations/',
+        properties={'table_type': 'ICEBERG'},
+    ),
+)
+```
+
+Reverting migrations deletes tracking rows, which requires the tracking table to be Iceberg.
+
+- **Column changes use Iceberg rules.** `sync()` adds columns with `ALTER TABLE ... ADD COLUMNS` and changes types with `CHANGE COLUMN`, which Iceberg only allows for widenings such as `INT` to `BIGINT`. Renames, nullability changes, and `type_casts` hints raise; write those by hand in a `Migration`.
+
+Upserts (`onConflict().merge()`), `UPDATE`, `DELETE`, and `down()` reverts all depend on Iceberg tables. Plain Hive external tables are read-and-append only.
+
 ## Hand-Written Migrations
 
 Anything autogeneration will not express, write explicitly. A `Migration` pairs an id with an up step and an optional down step; steps are a SQL string, a list of statements, or a callable receiving the connection. Hand-written and generated migrations share one ordered list and one tracking table.

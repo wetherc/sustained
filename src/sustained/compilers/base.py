@@ -270,6 +270,42 @@ class Compiler:
         """
         return False
 
+    def supports_constraints(self) -> bool:
+        """
+        Reports whether the dialect supports column and table constraints
+        such as PRIMARY KEY, UNIQUE, DEFAULT, and REFERENCES. Athena does
+        not; its tables are files on object storage.
+        """
+        return True
+
+    def supports_transactions(self) -> bool:
+        """
+        Reports whether the engine supports transactions. The migration
+        runner wraps each migration in a transaction only when it does.
+        """
+        return True
+
+    def validate_column_def(self, column: Any) -> None:
+        """
+        Rejects ColumnDef features the dialect cannot express in DDL.
+        The base compiler accepts everything.
+        """
+
+    def compile_table_options(self, options: Any) -> str:
+        """
+        Renders the clause that follows the column list of CREATE TABLE:
+        partitioning, storage location, and table properties. Dialects
+        without these clauses raise when options are given.
+        """
+        if options is None:
+            return ""
+        from sustained.exceptions import DialectError
+
+        raise DialectError(
+            f"The '{self._dialect.name}' dialect does not support table "
+            "options (partitioning, location, or table properties)."
+        )
+
     def compile_alter_column_type(
         self,
         table_sql: str,

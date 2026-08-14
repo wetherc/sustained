@@ -10,7 +10,7 @@ adults = User.query().where(User.c.age >= 18).orderBy('name').run()
 
 ## What it does
 
-- **SQL building** for the default (ANSI), Postgres, MSSQL, Presto, and DuckDB dialects: joins, CTEs (including recursive), unions, window functions, CASE expressions, and subqueries. Features a dialect lacks raise `DialectError` at build time.
+- **SQL building** for the default (ANSI), Postgres, MSSQL, Presto, AWS Athena, and DuckDB dialects: joins, CTEs (including recursive), unions, window functions, CASE expressions, and subqueries. Features a dialect lacks raise `DialectError` at build time.
 - **Safe execution**: every statement runs parameterized. Transactions nest through savepoints. `update()` and `delete()` refuse to run without a WHERE clause.
 - **Writes**: `insert()`, `update()`, `delete()`, upserts with `onConflict()`, `INSERT ... SELECT`, CTAS, and RETURNING.
 - **Typed filters**: `User.query().where((User.c.age > 21) & User.c.name.like('A%'))`.

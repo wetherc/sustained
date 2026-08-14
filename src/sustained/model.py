@@ -144,6 +144,7 @@ class Model(metaclass=ModelMeta):
     columns: Optional[Tuple[str, ...]] = None
     tableColumns: Optional[Dict[str, Any]] = None
     indexes: Optional[list[Any]] = None
+    tableOptions: Optional[Any] = None
     _dialect: Dialects = Dialects.DEFAULT
     _connection: Optional[Any] = None
     _async_adapter: Optional[Any] = None
@@ -277,7 +278,11 @@ class Model(metaclass=ModelMeta):
             )
         compiler = Dialects.get_compiler(cls._dialect)
         return build_create_table_sql(
-            compiler, cls._qualified_table_sql(), cls.tableColumns, if_not_exists
+            compiler,
+            cls._qualified_table_sql(),
+            cls.tableColumns,
+            if_not_exists,
+            options=cls.tableOptions,
         )
 
     @classmethod

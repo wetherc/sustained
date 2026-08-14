@@ -474,6 +474,7 @@ Currently, the following dialects are supported:
 
 *   **`Dialects.DEFAULT`**: Standard ANSI SQL (Default)
 *   **`Dialects.PRESTO`**: SQL dialect for the Presto query engine.
+*   **`Dialects.ATHENA`**: SQL dialect for AWS Athena (Trino-based). Inherits Presto's query behavior with Athena's DDL, `%s` placeholders for pyathena, and MERGE upserts on Iceberg tables.
 *   **`Dialects.MSSQL`**: SQL dialect for Microsoft SQL Server.
 *   **`Dialects.POSTGRES`**: SQL dialect for PostgreSQL.
 *   **`Dialects.DUCKDB`**: SQL dialect for DuckDB.
@@ -540,6 +541,6 @@ sql, params = User.query().select('name').where('id', '=', 1).to_sql()
 cursor.execute(sql, params)
 ```
 
-The placeholder style follows the dialect: `?` by default and for MSSQL, `%s` for Postgres.
+The placeholder style follows the dialect: `?` by default and for MSSQL, `%s` for Postgres and Athena.
 
 Sustained can also execute queries for you and hydrate the results into model instances. See [Executing Queries](./executing) for `Model.bind()`, `run()`, `first()`, and eager loading, and for the `insert()`, `update()`, and `delete()` statement builders.

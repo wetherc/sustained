@@ -74,6 +74,31 @@ class ColumnDef:
         self.backfill = backfill
 
 
+class TableOptions:
+    """
+    Storage clauses that follow the column list of CREATE TABLE, for
+    engines that need them. Athena renders these as PARTITIONED BY,
+    LOCATION, and TBLPROPERTIES; every other dialect raises when any
+    option is set.
+
+    Attributes:
+        location: The storage location, e.g. an s3:// path.
+        partitioned_by: Partition columns or transforms, rendered as
+            given, so Iceberg transforms like day(created_at) work.
+        properties: Table properties, e.g. {'table_type': 'ICEBERG'}.
+    """
+
+    def __init__(
+        self,
+        location: Optional[str] = None,
+        partitioned_by: Optional[List[str]] = None,
+        properties: Optional[Dict[str, str]] = None,
+    ) -> None:
+        self.location = location
+        self.partitioned_by = list(partitioned_by) if partitioned_by else []
+        self.properties = dict(properties) if properties else {}
+
+
 class Index:
     """
     Declares a named index on a model. List instances in the model's
@@ -152,6 +177,7 @@ def render_column_sql(
     inline_pk: bool,
 ) -> str:
     """Renders one column definition for CREATE TABLE or ADD COLUMN."""
+    compiler.validate_column_def(col)
     parts = [compiler.quote_identifier(name), compiler.compile_column_type(col)]
     if col.autoincrement:
         identity = compiler.compile_identity()
@@ -178,6 +204,7 @@ def build_create_table_sql(
     table_sql: str,
     columns: Dict[str, ColumnDef],
     if_not_exists: bool = False,
+    options: Optional[TableOptions] = None,
 ) -> str:
     """
     Renders a CREATE TABLE statement from typed column definitions using
@@ -206,12 +233,15 @@ def build_create_table_sql(
 
     body = ", ".join(column_parts + table_constraints)
     exists_sql = "IF NOT EXISTS " if if_not_exists else ""
-    return f"CREATE TABLE {exists_sql}{table_sql} ({body})"
+    suffix = compiler.compile_table_options(options)
+    suffix_sql = f" {suffix}" if suffix else ""
+    return f"CREATE TABLE {exists_sql}{table_sql} ({body}){suffix_sql}"
 
 
 __all__ = [
     "ColumnDef",
     "Index",
+    "TableOptions",
     "Integer",
     "BigInteger",
     "String",
