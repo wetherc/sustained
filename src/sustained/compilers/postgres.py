@@ -21,6 +21,33 @@ class PostgresCompiler(Compiler):
     def compile_distinct_on(self, columns_sql: "list[str]") -> str:
         return f"DISTINCT ON ({', '.join(columns_sql)})"
 
+    def supports_alter_column(self) -> bool:
+        return True
+
+    def compile_alter_column_type(
+        self,
+        table_sql: str,
+        column_name: str,
+        type_sql: str,
+        using: "str | None" = None,
+    ) -> "list[str]":
+        column_sql = self.quote_identifier(column_name)
+        statement = f"ALTER TABLE {table_sql} ALTER COLUMN {column_sql} TYPE {type_sql}"
+        if using:
+            statement += f" USING {using}"
+        return [statement]
+
+    def compile_alter_column_nullability(
+        self,
+        table_sql: str,
+        column_name: str,
+        type_sql: str,
+        nullable: bool,
+    ) -> "list[str]":
+        column_sql = self.quote_identifier(column_name)
+        action = "DROP NOT NULL" if nullable else "SET NOT NULL"
+        return [f"ALTER TABLE {table_sql} ALTER COLUMN {column_sql} {action}"]
+
     def compile_locking(self, skip_locked: bool, nowait: bool) -> str:
         clause = "FOR UPDATE"
         if skip_locked:

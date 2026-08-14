@@ -143,6 +143,7 @@ class Model(metaclass=ModelMeta):
     relationMappings: Dict[str, RelationMapping] = {}
     columns: Optional[Tuple[str, ...]] = None
     tableColumns: Optional[Dict[str, Any]] = None
+    indexes: Optional[list[Any]] = None
     _dialect: Dialects = Dialects.DEFAULT
     _connection: Optional[Any] = None
     _async_adapter: Optional[Any] = None
@@ -280,14 +281,44 @@ class Model(metaclass=ModelMeta):
         )
 
     @classmethod
+    def create_indexes_sql(cls) -> list[str]:
+        """Renders CREATE INDEX statements for the model's indexes."""
+        from sustained.dialects import Dialects
+
+        compiler = Dialects.get_compiler(cls._dialect)
+        statements = []
+        for index in cls.indexes or []:
+            statements.append(
+                compiler.compile_create_index(
+                    index.name,
+                    cls._qualified_table_sql(),
+                    list(index.columns),
+                    index.unique,
+                )
+            )
+        return statements
+
+    @classmethod
+    def create_table_statements(cls, if_not_exists: bool = False) -> list[str]:
+        """The CREATE TABLE statement followed by its CREATE INDEX statements."""
+        return [
+            cls.create_table_sql(if_not_exists=if_not_exists)
+        ] + cls.create_indexes_sql()
+
+    @classmethod
     def create_table(
         cls, connection: Optional[Any] = None, if_not_exists: bool = False
     ) -> None:
-        """Executes CREATE TABLE for this model on the connection."""
+        """
+        Executes CREATE TABLE for this model on the connection, followed by
+        the model's CREATE INDEX statements.
+        """
         from sustained.execution import connection_scope
 
         with connection_scope(connection, cls._connection) as conn:
-            conn.cursor().execute(cls.create_table_sql(if_not_exists=if_not_exists))
+            cursor = conn.cursor()
+            for statement in cls.create_table_statements(if_not_exists=if_not_exists):
+                cursor.execute(statement)
 
     @classmethod
     def drop_table_sql(cls, if_exists: bool = True) -> str:

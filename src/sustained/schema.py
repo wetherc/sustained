@@ -35,6 +35,9 @@ class ColumnDef:
         references: A 'table.column' string rendered as a foreign key.
         autoincrement: Generates identity values. Only valid on an integer
             primary key column.
+        backfill: A value or Expression used to fill existing rows when
+            migration autogeneration adds this column as NOT NULL or
+            tightens it to NOT NULL.
     """
 
     def __init__(
@@ -50,6 +53,7 @@ class ColumnDef:
         default: Any = None,
         references: Optional[str] = None,
         autoincrement: bool = False,
+        backfill: Any = None,
     ) -> None:
         if autoincrement and type_name not in ("INTEGER", "BIGINT"):
             raise ValueError("autoincrement requires an Integer or BigInteger column.")
@@ -67,6 +71,28 @@ class ColumnDef:
         self.default = default
         self.references = references
         self.autoincrement = autoincrement
+        self.backfill = backfill
+
+
+class Index:
+    """
+    Declares a named index on a model. List instances in the model's
+    `indexes` attribute.
+
+    Attributes:
+        name: The index name; must be unique within the database.
+        columns: The indexed columns, in order.
+        unique: Whether the index enforces uniqueness.
+    """
+
+    def __init__(self, name: str, *columns: str, unique: bool = False) -> None:
+        if not name:
+            raise ValueError("An index needs a name.")
+        if not columns:
+            raise ValueError(f"Index '{name}' needs at least one column.")
+        self.name = name
+        self.columns = tuple(columns)
+        self.unique = unique
 
 
 def Integer(**kwargs: Any) -> ColumnDef:
@@ -185,6 +211,7 @@ def build_create_table_sql(
 
 __all__ = [
     "ColumnDef",
+    "Index",
     "Integer",
     "BigInteger",
     "String",

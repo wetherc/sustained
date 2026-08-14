@@ -45,9 +45,22 @@ def create_table_migration(model: Type["Model"]) -> Migration:
     """
     return Migration(
         id=f"create_{model.tableName}",
-        up=model.create_table_sql(),
+        up=model.create_table_statements(),
         down=model.drop_table_sql(),
     )
+
+
+def migration_sql(migration: Migration, direction: str = "up") -> List[str]:
+    """
+    Renders a migration's statements for offline review. Callable steps
+    cannot be rendered and appear as a comment.
+    """
+    step = migration.up if direction == "up" else migration.down
+    if step is None:
+        raise ValueError(f"Migration '{migration.id}' has no {direction} step.")
+    if callable(step):
+        return [f"-- migration '{migration.id}': callable step, run online"]
+    return [step] if isinstance(step, str) else list(step)
 
 
 def _run_step(connection: Any, step: MigrationStep) -> None:
@@ -159,6 +172,9 @@ class Migrator:
         allow_drops: bool = False,
         ignore_changed_columns: bool = False,
         migration_id: Optional[str] = None,
+        renames: Optional[dict[str, str]] = None,
+        table_renames: Optional[dict[str, str]] = None,
+        type_casts: Optional[dict[str, str]] = None,
     ) -> List[str]:
         """
         Diffs the database against the models, registers the generated
@@ -174,7 +190,7 @@ class Migrator:
         generated_id = migration_id or datetime.now(timezone.utc).strftime(
             "auto_%Y%m%d%H%M%S_%f"
         )
-        migration = autogenerate(
+        migration: Optional[Migration] = autogenerate(
             self._connection,
             models,
             id=generated_id,
@@ -182,10 +198,50 @@ class Migrator:
             allow_drops=allow_drops,
             ignore_changed_columns=ignore_changed_columns,
             exclude_tables=(self._table,),
+            renames=renames,
+            table_renames=table_renames,
+            type_casts=type_casts,
         )
         if migration is not None:
             self._migrations.append(migration)
         return self.up()
+
+    def script(self, direction: str = "up") -> str:
+        """
+        Renders the SQL a run would execute, without executing anything,
+        for review or DBA handoff. 'up' renders every pending migration;
+        'down' renders the applied migrations newest-first. Tracking table
+        bookkeeping statements are included.
+        """
+        placeholder_free_ts = datetime.now(timezone.utc).isoformat()
+        lines: List[str] = []
+        if direction == "up":
+            for migration in self.pending():
+                lines.append(f"-- up: {migration.id}")
+                lines.extend(f"{s};" for s in migration_sql(migration, "up"))
+                lines.append(
+                    f"INSERT INTO {self._table_sql()} (id, applied_at) VALUES "
+                    f"({self._compiler.format_value(migration.id)}, "
+                    f"{self._compiler.format_value(placeholder_free_ts)});"
+                )
+        elif direction == "down":
+            by_id = {m.id: m for m in self._migrations}
+            for migration_id in reversed(self.applied()):
+                registered = by_id.get(migration_id)
+                if registered is None or registered.down is None:
+                    lines.append(
+                        f"-- down: {migration_id} has no reversible step; stopping"
+                    )
+                    break
+                lines.append(f"-- down: {migration_id}")
+                lines.extend(f"{s};" for s in migration_sql(registered, "down"))
+                lines.append(
+                    f"DELETE FROM {self._table_sql()} WHERE id = "
+                    f"{self._compiler.format_value(migration_id)};"
+                )
+        else:
+            raise ValueError("direction must be 'up' or 'down'.")
+        return "\n".join(lines)
 
     def down_to(self, target: str) -> List[str]:
         """

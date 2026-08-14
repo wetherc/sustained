@@ -91,7 +91,7 @@ class TestDiffSchema(AutogenTestCase):
         )
         diff = diff_schema(self.conn, [changed])
         self.assertEqual(len(diff.changed_columns), 1)
-        self.assertIn("not auto-migrated", diff.summary())
+        self.assertIn("change column ag_users.email", diff.summary())
 
     def test_tracking_table_excluded(self):
         self.conn.execute("CREATE TABLE sustained_migrations (id TEXT)")
@@ -136,15 +136,16 @@ class TestAutogenerate(AutogenTestCase):
         self.assertEqual(migration.up, ["ALTER TABLE ag_users DROP COLUMN legacy"])
         self.assertIsNone(migration.down)
 
-    def test_changed_columns_block_generation(self):
+    def test_changed_columns_rebuild_on_sqlite(self):
         self.User.create_table(self.conn)
         changed = make_model(
             "AgBlock",
             "ag_users",
             {"id": Integer(primary_key=True), "email": Boolean()},
         )
-        with self.assertRaises(ValueError):
-            autogenerate(self.conn, [changed], id="m4")
+        migration = autogenerate(self.conn, [changed], id="m4")
+        self.assertTrue(any("ag_users_sustained_new" in step for step in migration.up))
+        self.assertIsNone(migration.down)
         self.assertIsNone(
             autogenerate(self.conn, [changed], id="m4", ignore_changed_columns=True)
         )
@@ -202,3 +203,353 @@ class TestMigratorSync(AutogenTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestIndexDiffing(AutogenTestCase):
+    def _indexed_user(self, *indexes):
+        from sustained.schema import Index
+
+        model = make_model(
+            f"AgIx_{len(indexes)}",
+            "ag_users",
+            {
+                "id": Integer(primary_key=True),
+                "email": String(120, nullable=False),
+            },
+        )
+        model.indexes = list(indexes)
+        return model
+
+    def test_create_table_includes_indexes(self):
+        from sustained.schema import Index
+
+        model = self._indexed_user(Index("ix_email", "email", unique=True))
+        migration = autogenerate(self.conn, [model], id="ix1")
+        self.assertIn("CREATE UNIQUE INDEX ix_email ON ag_users (email)", migration.up)
+
+    def test_new_index_on_existing_table(self):
+        from sustained.schema import Index
+
+        plain = self._indexed_user()
+        plain.create_table(self.conn)
+        indexed = self._indexed_user(Index("ix_email", "email"))
+        migration = autogenerate(self.conn, [indexed], id="ix2")
+        self.assertEqual(migration.up, ["CREATE INDEX ix_email ON ag_users (email)"])
+        self.assertEqual(migration.down, ["DROP INDEX ix_email"])
+
+    def test_changed_index_rebuilds(self):
+        from sustained.schema import Index
+
+        first = self._indexed_user(Index("ix_email", "email"))
+        first.create_table(self.conn)
+        changed = self._indexed_user(Index("ix_email", "email", unique=True))
+        migration = autogenerate(self.conn, [changed], id="ix3")
+        self.assertEqual(
+            migration.up,
+            [
+                "DROP INDEX ix_email",
+                "CREATE UNIQUE INDEX ix_email ON ag_users (email)",
+            ],
+        )
+
+    def test_extra_index_requires_opt_in_and_reverses(self):
+        plain = self._indexed_user()
+        plain.create_table(self.conn)
+        self.conn.execute("CREATE INDEX stray_ix ON ag_users (email)")
+        with self.assertRaises(ValueError):
+            autogenerate(self.conn, [plain], id="ix4")
+        migration = autogenerate(self.conn, [plain], id="ix4", allow_drops=True)
+        self.assertEqual(migration.up, ["DROP INDEX stray_ix"])
+        self.assertEqual(migration.down, ["CREATE INDEX stray_ix ON ag_users (email)"])
+
+    def test_unique_column_backing_index_not_extra(self):
+        model = make_model(
+            "AgUniqueCol",
+            "ag_users",
+            {
+                "id": Integer(primary_key=True),
+                "email": String(120, nullable=False, unique=True),
+            },
+        )
+        model.create_table(self.conn)
+        diff = diff_schema(self.conn, [model])
+        self.assertTrue(diff.is_empty(), diff.summary())
+
+
+class TestRenameHints(AutogenTestCase):
+    def test_column_rename_generates_reversible_steps(self):
+        self.User.create_table(self.conn)
+        renamed = make_model(
+            "AgRenamed",
+            "ag_users",
+            {
+                "id": Integer(primary_key=True),
+                "contact_email": String(120, nullable=False),
+            },
+        )
+        migration = autogenerate(
+            self.conn,
+            [renamed],
+            id="r1",
+            renames={"ag_users.email": "contact_email"},
+        )
+        self.assertEqual(
+            migration.up,
+            ["ALTER TABLE ag_users RENAME COLUMN email TO contact_email"],
+        )
+        self.assertEqual(
+            migration.down,
+            ["ALTER TABLE ag_users RENAME COLUMN contact_email TO email"],
+        )
+
+    def test_table_rename(self):
+        self.User.create_table(self.conn)
+        moved = make_model(
+            "AgMoved",
+            "ag_people",
+            {
+                "id": Integer(primary_key=True),
+                "email": String(120, nullable=False),
+            },
+        )
+        migration = autogenerate(
+            self.conn, [moved], id="r2", table_renames={"ag_users": "ag_people"}
+        )
+        self.assertEqual(migration.up, ["ALTER TABLE ag_users RENAME TO ag_people"])
+        self.assertEqual(migration.down, ["ALTER TABLE ag_people RENAME TO ag_users"])
+
+    def test_unknown_rename_targets_raise(self):
+        self.User.create_table(self.conn)
+        with self.assertRaises(ValueError):
+            diff_schema(self.conn, [self.User], renames={"ag_users.nope": "x"})
+        with self.assertRaises(ValueError):
+            diff_schema(self.conn, [self.User], table_renames={"nope": "x"})
+
+
+class TestSqliteRebuild(AutogenTestCase):
+    def test_type_change_rebuilds_and_preserves_rows(self):
+        self.User.create_table(self.conn)
+        self.conn.execute("INSERT INTO ag_users VALUES (1, 'a@x')")
+        changed = make_model(
+            "AgRebuild",
+            "ag_users",
+            {"id": Integer(primary_key=True), "email": Text()},
+        )
+        migration = autogenerate(self.conn, [changed], id="rb1")
+        self.assertIsNone(migration.down)
+        Migrator(self.conn, [migration]).up()
+        rows = self.conn.execute("SELECT id, email FROM ag_users").fetchall()
+        self.assertEqual(rows, [(1, "a@x")])
+        self.assertTrue(diff_schema(self.conn, [changed]).is_empty())
+
+    def test_not_null_add_with_backfill_rebuilds(self):
+        self.User.create_table(self.conn)
+        self.conn.execute("INSERT INTO ag_users VALUES (1, 'a@x')")
+        self.User.tableColumns["status"] = String(10, nullable=False, backfill="new")
+        migration = autogenerate(self.conn, [self.User], id="rb2")
+        Migrator(self.conn, [migration]).up()
+        rows = self.conn.execute("SELECT status FROM ag_users").fetchall()
+        self.assertEqual(rows, [("new",)])
+        notnull = self.conn.execute("PRAGMA table_info(ag_users)").fetchall()[2][3]
+        self.assertEqual(notnull, 1)
+
+
+class TestConstraintNotes(AutogenTestCase):
+    def test_default_mismatch_noted(self):
+        self.User.create_table(self.conn)
+        drifted = make_model(
+            "AgDefault",
+            "ag_users",
+            {
+                "id": Integer(primary_key=True),
+                "email": String(120, nullable=False, default="none@x"),
+            },
+        )
+        diff = diff_schema(self.conn, [drifted])
+        self.assertTrue(any("default" in n for n in diff.constraint_notes))
+
+    def test_missing_foreign_key_noted(self):
+        self.User.create_table(self.conn)
+        self.conn.execute("CREATE TABLE ag_teams (id INTEGER PRIMARY KEY)")
+        fk_model = make_model(
+            "AgFk",
+            "ag_users",
+            {
+                "id": Integer(primary_key=True),
+                "email": String(120, nullable=False),
+                "team_id": Integer(references="ag_teams.id"),
+            },
+        )
+        self.conn.execute("ALTER TABLE ag_users ADD COLUMN team_id INTEGER")
+        diff = diff_schema(
+            self.conn,
+            [fk_model],
+            exclude_tables=("sustained_migrations", "ag_teams"),
+        )
+        self.assertTrue(any("foreign key" in n for n in diff.constraint_notes))
+
+    def test_notes_do_not_block_generation(self):
+        self.User.create_table(self.conn)
+        drifted = make_model(
+            "AgNoteOnly",
+            "ag_users",
+            {
+                "id": Integer(primary_key=True),
+                "email": String(120, nullable=False, default="none@x"),
+            },
+        )
+        self.assertIsNone(autogenerate(self.conn, [drifted], id="n1"))
+
+
+class TestLengthChanges(AutogenTestCase):
+    def test_length_change_detected(self):
+        self.User.create_table(self.conn)
+        widened = make_model(
+            "AgWide",
+            "ag_users",
+            {
+                "id": Integer(primary_key=True),
+                "email": String(255, nullable=False),
+            },
+        )
+        diff = diff_schema(self.conn, [widened])
+        self.assertEqual(len(diff.changed_columns), 1)
+
+
+class TestOfflineScript(AutogenTestCase):
+    def test_script_renders_pending_sql(self):
+        migrator = Migrator(
+            self.conn,
+            [Migration("m1", up="CREATE TABLE s1 (id INTEGER)", down="DROP TABLE s1")],
+        )
+        script = migrator.script("up")
+        self.assertIn("CREATE TABLE s1 (id INTEGER);", script)
+        self.assertIn("INSERT INTO sustained_migrations", script)
+        self.assertEqual(migrator.pending()[0].id, "m1")
+
+    def test_script_down_after_apply(self):
+        migrator = Migrator(
+            self.conn,
+            [Migration("m1", up="CREATE TABLE s1 (id INTEGER)", down="DROP TABLE s1")],
+        )
+        migrator.up()
+        script = migrator.script("down")
+        self.assertIn("DROP TABLE s1;", script)
+        self.assertIn("DELETE FROM sustained_migrations", script)
+
+    def test_script_callable_step_renders_comment(self):
+        from sustained.migrations import migration_sql
+
+        rendered = migration_sql(Migration("cb", up=lambda conn: None), "up")
+        self.assertIn("callable step", rendered[0])
+
+
+class FakeCursor:
+    """Serves canned information_schema rows for Postgres-dialect tests."""
+
+    def __init__(self, columns_rows):
+        self._columns_rows = columns_rows
+        self._current = []
+
+    def execute(self, sql, params=()):
+        if "information_schema.columns" in sql:
+            self._current = self._columns_rows
+        else:
+            self._current = []
+
+    def fetchall(self):
+        return self._current
+
+
+class FakeConnection:
+    def __init__(self, columns_rows):
+        self._cursor = FakeCursor(columns_rows)
+
+    def cursor(self):
+        return self._cursor
+
+
+class TestAlterGeneration(unittest.TestCase):
+    def _pg_model(self, email_def):
+        model = make_model(
+            "AgPg",
+            "pg_users",
+            {"id": Integer(primary_key=True), "email": email_def},
+        )
+        model.set_dialect(Dialects.POSTGRES)
+        return model
+
+    def _connection(self, email_type, email_nullable):
+        return FakeConnection(
+            [
+                ("pg_users", "id", "integer", "NO", None),
+                ("pg_users", "email", email_type, email_nullable, None),
+            ]
+        )
+
+    def test_type_change_generates_alter_with_cast(self):
+        model = self._pg_model(Integer())
+        conn = self._connection("character varying", "YES")
+        migration = autogenerate(
+            self.conn if False else conn,
+            [model],
+            id="alter1",
+            dialect=Dialects.POSTGRES,
+            type_casts={"pg_users.email": "email::integer"},
+        )
+        self.assertEqual(
+            migration.up,
+            [
+                'ALTER TABLE "pg_users" ALTER COLUMN "email" TYPE INTEGER '
+                "USING email::integer"
+            ],
+        )
+        self.assertEqual(
+            migration.down,
+            ['ALTER TABLE "pg_users" ALTER COLUMN "email" TYPE character varying'],
+        )
+
+    def test_tightening_nullability_needs_backfill(self):
+        model = self._pg_model(String(120, nullable=False))
+        conn = self._connection("character varying", "YES")
+        with self.assertRaises(ValueError):
+            autogenerate(conn, [model], id="alter2", dialect=Dialects.POSTGRES)
+
+    def test_tightening_with_backfill_emits_update_then_set(self):
+        model = self._pg_model(String(120, nullable=False, backfill="none@x"))
+        conn = self._connection("character varying", "YES")
+        migration = autogenerate(conn, [model], id="alter3", dialect=Dialects.POSTGRES)
+        self.assertEqual(
+            migration.up,
+            [
+                'UPDATE "pg_users" SET "email" = \'none@x\' ' 'WHERE "email" IS NULL',
+                'ALTER TABLE "pg_users" ALTER COLUMN "email" SET NOT NULL',
+            ],
+        )
+        self.assertEqual(
+            migration.down,
+            ['ALTER TABLE "pg_users" ALTER COLUMN "email" DROP NOT NULL'],
+        )
+
+    def test_not_null_add_with_backfill_three_step(self):
+        model = make_model(
+            "AgPgAdd",
+            "pg_users",
+            {
+                "id": Integer(primary_key=True),
+                "email": String(120),
+                "status": String(10, nullable=False, backfill="new"),
+            },
+        )
+        model.set_dialect(Dialects.POSTGRES)
+        conn = self._connection("character varying", "YES")
+        migration = autogenerate(conn, [model], id="alter4", dialect=Dialects.POSTGRES)
+        self.assertEqual(len(migration.up), 3)
+        self.assertIn("ADD COLUMN", migration.up[0])
+        self.assertNotIn("NOT NULL", migration.up[0])
+        self.assertIn("UPDATE", migration.up[1])
+        self.assertIn("SET NOT NULL", migration.up[2])
+        self.assertEqual(
+            migration.down,
+            ['ALTER TABLE "pg_users" DROP COLUMN "status"'],
+        )

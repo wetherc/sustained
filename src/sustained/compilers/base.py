@@ -233,6 +233,73 @@ class Compiler:
         quoted = self.quote_identifier(column_name)
         return f"ALTER TABLE {table_sql} DROP COLUMN {quoted}"
 
+    def compile_rename_column(
+        self, table_sql: str, old_name: str, new_name: str
+    ) -> str:
+        """Renders a column rename."""
+        old_sql = self.quote_identifier(old_name)
+        new_sql = self.quote_identifier(new_name)
+        return f"ALTER TABLE {table_sql} RENAME COLUMN {old_sql} TO {new_sql}"
+
+    def compile_rename_table(self, old_sql: str, new_sql: str) -> str:
+        """Renders a table rename."""
+        return f"ALTER TABLE {old_sql} RENAME TO {new_sql}"
+
+    def compile_create_index(
+        self,
+        index_name: str,
+        table_sql: str,
+        columns: "list[str]",
+        unique: bool,
+    ) -> str:
+        """Renders a CREATE INDEX statement."""
+        unique_sql = "UNIQUE " if unique else ""
+        name_sql = self.quote_identifier(index_name)
+        columns_sql = ", ".join(self.quote_identifier(c) for c in columns)
+        return f"CREATE {unique_sql}INDEX {name_sql} ON {table_sql} ({columns_sql})"
+
+    def compile_drop_index(self, index_name: str, table_sql: str) -> str:
+        """Renders a DROP INDEX statement."""
+        return f"DROP INDEX {self.quote_identifier(index_name)}"
+
+    def supports_alter_column(self) -> bool:
+        """
+        Reports whether the dialect can change a column's type or
+        nullability with ALTER TABLE. SQLite cannot and needs a table
+        rebuild instead.
+        """
+        return False
+
+    def compile_alter_column_type(
+        self,
+        table_sql: str,
+        column_name: str,
+        type_sql: str,
+        using: Optional[str] = None,
+    ) -> "list[str]":
+        """Renders statements that change a column's type."""
+        from sustained.exceptions import DialectError
+
+        raise DialectError(
+            f"The '{self._dialect.name}' dialect cannot alter a column type "
+            "in place."
+        )
+
+    def compile_alter_column_nullability(
+        self,
+        table_sql: str,
+        column_name: str,
+        type_sql: str,
+        nullable: bool,
+    ) -> "list[str]":
+        """Renders statements that change a column's nullability."""
+        from sustained.exceptions import DialectError
+
+        raise DialectError(
+            f"The '{self._dialect.name}' dialect cannot alter column "
+            "nullability in place."
+        )
+
     def compile_returning(self, columns_sql: str) -> str:
         """
         Renders a RETURNING clause for DML statements. Dialects without

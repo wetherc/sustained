@@ -78,6 +78,50 @@ class MssqlCompiler(Compiler):
         # T-SQL spells it ADD without the COLUMN keyword.
         return f"ALTER TABLE {table_sql} ADD {column_sql}"
 
+    def compile_rename_column(
+        self, table_sql: str, old_name: str, new_name: str
+    ) -> str:
+        # T-SQL renames through sp_rename with an unquoted object path.
+        table_path = table_sql.replace("[", "").replace("]", "")
+        return f"EXEC sp_rename '{table_path}.{old_name}', '{new_name}', 'COLUMN'"
+
+    def compile_rename_table(self, old_sql: str, new_sql: str) -> str:
+        old_path = old_sql.replace("[", "").replace("]", "")
+        new_path = new_sql.replace("[", "").replace("]", "")
+        return f"EXEC sp_rename '{old_path}', '{new_path}'"
+
+    def compile_drop_index(self, index_name: str, table_sql: str) -> str:
+        # T-SQL requires the table in DROP INDEX.
+        return f"DROP INDEX {self.quote_identifier(index_name)} ON {table_sql}"
+
+    def supports_alter_column(self) -> bool:
+        return True
+
+    def compile_alter_column_type(
+        self,
+        table_sql: str,
+        column_name: str,
+        type_sql: str,
+        using: "str | None" = None,
+    ) -> "list[str]":
+        column_sql = self.quote_identifier(column_name)
+        return [f"ALTER TABLE {table_sql} ALTER COLUMN {column_sql} {type_sql}"]
+
+    def compile_alter_column_nullability(
+        self,
+        table_sql: str,
+        column_name: str,
+        type_sql: str,
+        nullable: bool,
+    ) -> "list[str]":
+        # T-SQL restates the full column definition.
+        column_sql = self.quote_identifier(column_name)
+        null_sql = "NULL" if nullable else "NOT NULL"
+        return [
+            f"ALTER TABLE {table_sql} ALTER COLUMN {column_sql} "
+            f"{type_sql} {null_sql}"
+        ]
+
     def compile_with_keyword(self, recursive: bool) -> str:
         # T-SQL uses plain WITH for recursive CTEs.
         return "WITH"
