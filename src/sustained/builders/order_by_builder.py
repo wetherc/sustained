@@ -61,7 +61,7 @@ class OrderByClauseBuilder:
 
         clauses_str = ", ".join(
             [
-                f"{self._compiler.quote_fully_qualified_identifier(col)} {direction}"
+                f"{self._compiler.quote_column_reference(col)} {direction}"
                 for col, direction in self._clauses
             ]
         )

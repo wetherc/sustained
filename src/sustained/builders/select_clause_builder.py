@@ -2,10 +2,20 @@
 Select-clause builder.
 """
 
+import re
 from typing import TYPE_CHECKING, List, Optional
 
-from sustained.expressions import Func
+from sustained.expressions import (
+    AggregateExpression,
+    CaseExpression,
+    Func,
+    WindowExpression,
+)
 from sustained.types import Expression
+
+_ALIAS_RE = re.compile(
+    r"^(?P<column>.+?)\s+AS\s+(?P<alias>[A-Za-z_][A-Za-z0-9_$]*)$", re.IGNORECASE
+)
 
 if TYPE_CHECKING:
     from sustained.compilers import Compiler
@@ -45,21 +55,36 @@ class SelectClauseBuilder:
         formatted_columns = []
         for c in self._selected_columns:
             if isinstance(c, str):
-                if c == "*":
-                    formatted_columns.append(c)
-                else:
-                    formatted_columns.append(
-                        self._compiler.quote_fully_qualified_identifier(c)
-                    )
+                formatted_columns.append(self._format_string_column(c))
             elif isinstance(c, Func):
                 formatted_columns.append(self._compiler.compile_function(c))
+            elif isinstance(c, AggregateExpression):
+                formatted_columns.append(self._compiler.compile_aggregate(c))
+            elif isinstance(c, WindowExpression):
+                formatted_columns.append(self._compiler.compile_window(c))
+            elif isinstance(c, CaseExpression):
+                formatted_columns.append(self._compiler.compile_case(c))
             elif isinstance(c, Expression):
                 formatted_columns.append(str(c))
             else:
-                # Should not happen with current type hints, but as a safeguard:
+                # Subquery and Column render themselves.
                 formatted_columns.append(str(c))
 
         return ", ".join(formatted_columns)
+
+    def _format_string_column(self, column: str) -> str:
+        """
+        Formats a string column, supporting an optional 'col AS alias'
+        suffix so aliased selections quote correctly in every dialect.
+        """
+        alias_match = _ALIAS_RE.match(column)
+        if alias_match:
+            quoted_column = self._compiler.quote_column_reference(
+                alias_match.group("column").strip()
+            )
+            quoted_alias = self._compiler.quote_identifier(alias_match.group("alias"))
+            return f"{quoted_column} AS {quoted_alias}"
+        return self._compiler.quote_column_reference(column)
 
     def select(self, *columns: "Selectable") -> None:
         """

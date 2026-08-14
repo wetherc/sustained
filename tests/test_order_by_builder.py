@@ -1,7 +1,7 @@
 import unittest
 
-from src.sustained.builders.order_by_builder import OrderByClauseBuilder
-from src.sustained.model import Model
+from sustained.builders.order_by_builder import OrderByClauseBuilder
+from sustained.model import Model
 
 
 class TestOrderByClauseBuilder(unittest.TestCase):

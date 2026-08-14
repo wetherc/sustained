@@ -99,14 +99,25 @@ class Compiler:
     def placeholder(self) -> str:
         return "?"
 
-    def format_value(self, value: Union[Expression, DbReturnValue]) -> str:
+    def format_value(self, value: Union[Expression, DbReturnValue, None]) -> str:
         if isinstance(value, Expression):
             return str(value)
-        elif isinstance(value, str):
+        if value is None:
+            return "NULL"
+        # bool must be checked before int because bool subclasses int.
+        if isinstance(value, bool):
+            return self.compile_boolean(value)
+        if isinstance(value, (int, float)):
+            return str(value)
+        if isinstance(value, str):
             escaped_value = value.replace("'", "''")
             return f"'{escaped_value}'"
-        else:
-            return str(value)
+        raise TypeError(
+            f"Cannot render a value of type {type(value).__name__} as a SQL literal."
+        )
+
+    def compile_boolean(self, value: bool) -> str:
+        return "TRUE" if value else "FALSE"
 
     def compile_top(self, value: int) -> str:
         return ""
@@ -128,6 +139,54 @@ class Compiler:
         if func.alias:
             sql += f" AS {self.quote_identifier(func.alias)}"
         return sql
+
+    def compile_aggregate(self, agg: AggregateExpression) -> str:
+        """
+        Renders an aggregate expression with dialect quoting for the column
+        and the alias.
+        """
+        column = self.quote_column_reference(agg.column)
+        sql = f"{agg.function_name}({column})"
+        if agg.alias:
+            sql += f" AS {self.quote_identifier(agg.alias)}"
+        return sql
+
+    def compile_window(self, window: WindowExpression) -> str:
+        """
+        Renders a window expression with dialect quoting for partition and
+        order columns and the alias.
+        """
+        over_clauses = []
+        if window.partition_by:
+            partition_cols = ", ".join(
+                self.quote_column_reference(c) for c in window.partition_by
+            )
+            over_clauses.append(f"PARTITION BY {partition_cols}")
+        if window.order_by:
+            order_cols = ", ".join(
+                self.quote_column_reference(c) for c in window.order_by
+            )
+            over_clauses.append(f"ORDER BY {order_cols}")
+        over_sql = " ".join(over_clauses)
+        alias_sql = self.quote_identifier(window.alias)
+        return f"{window.function_name}() OVER ({over_sql}) AS {alias_sql}"
+
+    def compile_case(self, case: CaseExpression) -> str:
+        """
+        Renders a CASE expression. Results go through the dialect's value
+        formatting, so booleans and NULL render correctly per dialect.
+        """
+        sql = "CASE"
+        for condition, result in case.whens:
+            sql += f" WHEN {condition} THEN {self._format_case_result(result)}"
+        sql += f" ELSE {self._format_case_result(case.else_result)}"
+        sql += f" END AS {self.quote_identifier(case.alias)}"
+        return sql
+
+    def _format_case_result(self, result: Any) -> str:
+        if isinstance(result, Column):
+            return str(result)
+        return self.format_value(result)
 
     def _format_arg(self, arg: Any) -> str:
         """

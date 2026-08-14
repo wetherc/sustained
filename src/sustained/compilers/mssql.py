@@ -13,6 +13,10 @@ class MssqlCompiler(Compiler):
     def compile_top(self, value: int) -> str:
         return f"TOP {value}"
 
+    def compile_boolean(self, value: bool) -> str:
+        # T-SQL has no boolean literals; BIT columns compare against 1 and 0.
+        return "1" if value else "0"
+
     def compile_limit_offset(self, limit: Optional[int], offset: Optional[int]) -> str:
         parts = []
         if offset is not None:

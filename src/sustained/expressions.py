@@ -158,6 +158,11 @@ class CaseExpression:
         self.else_result = else_result
         self._whens: List[Tuple[str, "CaseResult"]] = []
 
+    @property
+    def whens(self) -> List[Tuple[str, "CaseResult"]]:
+        """The accumulated (condition, result) pairs."""
+        return list(self._whens)
+
     def when(self, condition: str, result: "CaseResult") -> "CaseExpression":
         """
         Adds a WHEN/THEN clause to the CASE expression.

@@ -36,5 +36,5 @@ class GroupByClauseBuilder:
         if not self._group_by_columns:
             return ""
         return "GROUP BY " + ", ".join(
-            self._compiler.quote_identifier(c) for c in self._group_by_columns
+            self._compiler.quote_column_reference(c) for c in self._group_by_columns
         )

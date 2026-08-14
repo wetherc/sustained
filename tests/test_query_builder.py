@@ -1,8 +1,8 @@
 import unittest
 from typing import Dict
 
-from src.sustained import Model, QueryBuilder, RelationType
-from src.sustained.expressions import Column
+from sustained import Model, QueryBuilder, RelationType
+from sustained.expressions import Column
 
 
 class TestQueryBuilder(unittest.TestCase):
@@ -160,7 +160,7 @@ class TestQueryBuilder(unittest.TestCase):
         query = active_users.union(active_customers)
         self.assertEqual(
             str(query),
-            "(SELECT id, name FROM users WHERE active = True) UNION (SELECT id, name FROM customers WHERE active = True)",
+            "(SELECT id, name FROM users WHERE active = TRUE) UNION (SELECT id, name FROM customers WHERE active = TRUE)",
         )
 
     def test_simple_union_all(self):
@@ -178,7 +178,7 @@ class TestQueryBuilder(unittest.TestCase):
         query = active_users.unionAll(active_customers)
         self.assertEqual(
             str(query),
-            "(SELECT id, name FROM users WHERE active = True) UNION ALL (SELECT id, name FROM customers WHERE active = True)",
+            "(SELECT id, name FROM users WHERE active = TRUE) UNION ALL (SELECT id, name FROM customers WHERE active = TRUE)",
         )
 
     def test_union_with_offset(self):
@@ -196,7 +196,7 @@ class TestQueryBuilder(unittest.TestCase):
         query = active_users.union(active_customers).offset(10)
         self.assertEqual(
             str(query),
-            "(SELECT id, name FROM users WHERE active = True) UNION (SELECT id, name FROM customers WHERE active = True) OFFSET 10",
+            "(SELECT id, name FROM users WHERE active = TRUE) UNION (SELECT id, name FROM customers WHERE active = TRUE) OFFSET 10",
         )
 
     def test_union_with_cte_hoisting(self):

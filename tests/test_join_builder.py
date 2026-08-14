@@ -1,11 +1,11 @@
 import unittest
 from typing import Dict
 
-from src.sustained import Model, RelationType
-from src.sustained.builders.join_builder import (
+from sustained import Model, RelationType
+from sustained.builders.join_builder import (
     JoinClauseBuilder,  # For direct testing where needed
 )
-from src.sustained.types import RelationMapping
+from sustained.types import RelationMapping
 
 
 class TestJoinBuilder(unittest.TestCase):
