@@ -40,7 +40,7 @@ class TestDialectFunctions(unittest.TestCase):
             User.query().now()
 
     def test_coalesce_succeeds_with_all_dialects(self):
-        from sustained.expressions import Column
+        from sustained.expressions import Column, Literal
 
         dialects = [
             Dialects.DEFAULT,
@@ -52,7 +52,7 @@ class TestDialectFunctions(unittest.TestCase):
             with self.subTest(dialect=dialect.name):
                 User.set_dialect(dialect)
                 query = User.query().coalesce(
-                    Column("nickname"), "N/A", alias="display_name"
+                    Column("nickname"), Literal("N/A"), alias="display_name"
                 )
                 # We don't check the full string due to quoting differences,
                 # just that the main parts are there.

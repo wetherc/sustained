@@ -6,6 +6,7 @@ from sustained.expressions import (
     CaseExpression,
     Column,
     Func,
+    Literal,
     Subquery,
     WindowExpression,
 )
@@ -204,16 +205,23 @@ class Compiler:
 
     def _format_arg(self, arg: Any) -> str:
         """
-        Formats an argument for inclusion in the SQL string.
+        Formats a function argument for inclusion in the SQL string.
+
+        Strings are treated as column references and quoted per dialect.
+        Literal values must be wrapped in Literal(). Numbers, booleans, and
+        None render as literals directly.
         """
         if isinstance(arg, Func):
             return self.compile_function(arg)
+        if isinstance(arg, Literal):
+            return self.format_value(arg.value)
+        if isinstance(arg, AggregateExpression):
+            return self.compile_aggregate(arg)
         if isinstance(
             arg,
             (
                 Column,
                 Expression,
-                AggregateExpression,
                 WindowExpression,
                 CaseExpression,
                 Subquery,
@@ -221,5 +229,14 @@ class Compiler:
         ):
             return str(arg)
         if isinstance(arg, str):
-            return f"'{arg}'"
-        return str(arg)
+            if arg == "*" or _IDENTIFIER_PATH_RE.match(arg):
+                return self.quote_column_reference(arg)
+            raise ValueError(
+                f"Function argument {arg!r} is not a column name. "
+                "Wrap literal values in Literal() or raw SQL in Column()."
+            )
+        if arg is None or isinstance(arg, (bool, int, float)):
+            return self.format_value(arg)
+        raise TypeError(
+            f"Cannot render a function argument of type {type(arg).__name__}."
+        )

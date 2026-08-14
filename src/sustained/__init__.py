@@ -17,6 +17,7 @@ from sustained.expressions import (
     CaseExpression,
     Column,
     Func,
+    Literal,
     WindowExpression,
 )
 from sustained.model import Model, create_model
@@ -36,6 +37,7 @@ __all__ = [
     # from expressions
     "Column",
     "Func",
+    "Literal",
     "AggregateExpression",
     "WindowExpression",
     "CaseExpression",

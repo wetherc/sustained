@@ -2,7 +2,7 @@ import unittest
 from typing import Dict
 
 from sustained import DialectError, Model, QueryBuilder, RelationType
-from sustained.expressions import Column
+from sustained.expressions import Column, Literal
 
 
 class TestQueryBuilder(unittest.TestCase):
@@ -495,7 +495,9 @@ class TestFuncRendering(unittest.TestCase):
         self.User = User
 
     def test_simple_func(self):
-        query = self.User.query().select_func("COALESCE", Column("name"), "Unknown")
+        query = self.User.query().select_func(
+            "COALESCE", Column("name"), Literal("Unknown")
+        )
         self.assertEqual(str(query), "SELECT COALESCE(name, 'Unknown') FROM users")
 
     def test_func_with_alias(self):
@@ -509,7 +511,9 @@ class TestFuncRendering(unittest.TestCase):
     def test_nested_func(self):
         from sustained.expressions import Func
 
-        inner_func = Func("CONCAT", Column("first_name"), " ", Column("last_name"))
+        inner_func = Func(
+            "CONCAT", Column("first_name"), Literal(" "), Column("last_name")
+        )
         query = self.User.query().select_func("UPPER", inner_func, alias="full_name")
         self.assertEqual(
             str(query),
@@ -520,7 +524,7 @@ class TestFuncRendering(unittest.TestCase):
         from sustained.expressions import AggregateExpression
 
         agg = AggregateExpression("COUNT", "*")
-        query = self.User.query().select_func("FORMAT", "User count: %s", agg)
+        query = self.User.query().select_func("FORMAT", Literal("User count: %s"), agg)
         self.assertEqual(
             str(query), "SELECT FORMAT('User count: %s', COUNT(*)) FROM users"
         )

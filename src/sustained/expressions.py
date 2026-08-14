@@ -21,6 +21,19 @@ class Column:
         return self.name
 
 
+class Literal:
+    """
+    Wraps a Python value that should render as a SQL literal.
+
+    Bare strings passed to functions are treated as column references, so a
+    string literal argument must be wrapped: Func('COALESCE', 'nickname',
+    Literal('N/A')).
+    """
+
+    def __init__(self, value: Any):
+        self.value = value
+
+
 class Func:
     """
     Represents a generic SQL function call.
