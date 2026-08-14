@@ -18,6 +18,7 @@ If you are new to Sustained, it's recommended to read the guides in the followin
 5.  **[Filtering](./filtering):** Dive into the various `where` methods for filtering your results.
 6.  **[Relations and Joins](./relations):** Learn how to define relationships between models and join them in your queries.
 7.  **[Executing Queries](./executing):** Run queries against a database, hydrate results into models, write data, and eager load relations.
+8.  **[Schema and Migrations](./schema):** Declare typed columns on models, generate DDL, and run ordered migrations.
 
 ## API Reference
 

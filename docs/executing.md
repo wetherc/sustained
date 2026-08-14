@@ -137,6 +137,47 @@ Eager loading needs the join key columns in both result sets, so keep them in yo
 
 pandas and pyarrow are optional; the methods raise a clear error when the library is missing.
 
+## Connection Pooling
+
+`ConnectionPool` creates connections lazily from a factory up to `max_size` and reuses released ones. Bind it like a connection; every statement checks a connection out for its duration.
+
+```python
+from sustained.pool import ConnectionPool
+
+pool = ConnectionPool(lambda: psycopg2.connect(DSN), max_size=10)
+User.bind(pool)
+
+users = User.query().where('active', '=', True).run()
+
+with User.transaction():
+    # One connection is pinned to this thread for the whole block.
+    User.query().insert({...}).run()
+    Account.query().update({...}).where(...).run()
+```
+
+An exhausted pool raises `PoolTimeout` after the configured timeout. `pool.close()` closes idle connections.
+
+## Async Execution
+
+Queries run asynchronously through an adapter. `DbApiAsyncAdapter` wraps any synchronous DB-API connection in a worker thread; `AiosqliteAdapter` and `AsyncpgAdapter` wrap their native drivers. The asyncpg adapter converts `%s` placeholders to `$1..$n`.
+
+```python
+from sustained.aio import DbApiAsyncAdapter
+
+adapter = DbApiAsyncAdapter(sqlite3.connect('app.db', check_same_thread=False))
+User.bind_async(adapter)
+
+users = await User.query().where('active', '=', True).arun()
+user = await User.query().where('id', '=', 1).afirst()
+rows = await User.query().ato_dicts()
+
+async with User.async_transaction():
+    await User.query().insert({...}).arun()
+    await Account.query().update({...}).where(...).arun()
+```
+
+`arun()` mirrors `run()`: hydration, RETURNING rows, batched multi-row inserts, and eager loading of basic relations. Async eager loading of through relations is not supported yet, and async transactions do not nest.
+
 ## Statement Logging
 
 `sustained.execution.set_statement_listener(fn)` registers an observer called after every executed statement with the SQL text, the parameter tuple, and the duration in seconds. Pass `None` to remove it.

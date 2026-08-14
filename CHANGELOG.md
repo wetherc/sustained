@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.2.0 (2026-08-14)
+
+### Added
+
+- Typed column definitions: models declare `tableColumns` with `Integer`, `BigInteger`, `String`, `Text`, `Boolean`, `Float`, `Numeric`, `Date`, `Timestamp`, and `Json`, including composite primary keys, defaults, unique constraints, foreign key references, and autoincrement. Strict column access derives automatically.
+- Model-driven DDL: `create_table_sql()`, `create_table()`, `drop_table()` with per-dialect type mapping and identity syntax. DuckDB and Presto raise for autoincrement.
+- Migration runner: ordered `Migration` objects with up/down steps (SQL, statement lists, or callables), a self-creating tracking table, transactional application, stop-after targets, and newest-first reverts. `create_table_migration()` derives create/drop pairs from models. No catalog diffing.
+- `ConnectionPool`: thread-safe, lazy, bounded pooling for DB-API connections. `Model.bind()` and all execution entry points accept a pool; transactions pin one checked-out connection to the thread; nested blocks reuse it via savepoints.
+- Async execution: `arun()`, `afirst()`, `ato_dicts()` through an adapter interface with `DbApiAsyncAdapter` (any sync driver via worker threads), `AiosqliteAdapter`, and `AsyncpgAdapter` (`%s` to `$n` conversion). `Model.bind_async()` and `async_transaction()` with ContextVar pinning. Async through-relation eager loading and nested async transactions are not supported yet.
+
 ## 2.1.0 (2026-08-14)
 
 ### Added
