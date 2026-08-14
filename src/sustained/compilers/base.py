@@ -125,6 +125,13 @@ class Compiler:
     def compile_boolean(self, value: bool) -> str:
         return "TRUE" if value else "FALSE"
 
+    def compile_returning(self, columns_sql: str) -> str:
+        """
+        Renders a RETURNING clause for DML statements. Dialects without
+        support raise DialectError.
+        """
+        return f"RETURNING {columns_sql}"
+
     def compile_top(self, value: int) -> str:
         from sustained.exceptions import DialectError
 

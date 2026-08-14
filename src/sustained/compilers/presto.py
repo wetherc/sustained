@@ -7,6 +7,11 @@ class PrestoCompiler(Compiler):
     def quote_identifier(self, identifier: str) -> str:
         return f'"{identifier}"'
 
+    def compile_returning(self, columns_sql: str) -> str:
+        from sustained.exceptions import DialectError
+
+        raise DialectError("Presto does not support RETURNING clauses.")
+
     def compile_limit_offset(
         self,
         limit: Optional[int],

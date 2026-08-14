@@ -15,6 +15,11 @@ class MssqlCompiler(Compiler):
     def compile_top(self, value: int) -> str:
         return f"TOP {value}"
 
+    def compile_returning(self, columns_sql: str) -> str:
+        raise DialectError(
+            "MSSQL does not support RETURNING. Use an OUTPUT clause via raw SQL."
+        )
+
     def compile_boolean(self, value: bool) -> str:
         # T-SQL has no boolean literals; BIT columns compare against 1 and 0.
         return "1" if value else "0"

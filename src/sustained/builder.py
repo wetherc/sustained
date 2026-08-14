@@ -87,6 +87,10 @@ class QueryBuilder:
         self._top_value: Optional[int] = None
         self._from_source: Optional[Union[str, Tuple["QueryBuilder", str]]] = None
         self._distinct = False
+        self._stmt_type = "select"
+        self._insert_rows: List[Dict[str, Any]] = []
+        self._update_values: Dict[str, Any] = {}
+        self._returning_columns: List[str] = []
 
     def distinct(self) -> "QueryBuilder":
         """
@@ -371,15 +375,11 @@ class QueryBuilder:
         elif isinstance(self._from_source, str):
             full_table_name = self._from_source
         else:
-            model_cls = self._model_class
-            parts = []
-            if model_cls.database:
-                parts.append(self._compiler.quote_identifier(model_cls.database))
-            if model_cls.tableSchema:
-                parts.append(self._compiler.quote_identifier(model_cls.tableSchema))
-            if model_cls.tableName:
-                parts.append(self._compiler.quote_identifier(model_cls.tableName))
-            full_table_name = ".".join(parts)
+            try:
+                full_table_name = self._model_table_sql()
+            except ValueError:
+                # A model without a table renders a FROM-less SELECT.
+                full_table_name = ""
 
         joins_str = str(self._join_builder)
         where_str = self._where_builder.render(ctx)
@@ -438,6 +438,9 @@ class QueryBuilder:
 
     def _render_sql(self, ctx: RenderContext, include_ctes: bool = True) -> str:
         """Renders the full statement with the given context."""
+        if self._stmt_type != "select":
+            return self._render_dml(ctx)
+
         query_parts = []
 
         if include_ctes:
@@ -585,6 +588,137 @@ class QueryBuilder:
             raise ValueError("Offset can only be set once per query.")
         self._offset_value = value
         return self
+
+    def _model_table_sql(self) -> str:
+        """Renders the model's qualified, quoted table name."""
+        model_cls = self._model_class
+        parts = []
+        if model_cls.database:
+            parts.append(self._compiler.quote_identifier(model_cls.database))
+        if model_cls.tableSchema:
+            parts.append(self._compiler.quote_identifier(model_cls.tableSchema))
+        if model_cls.tableName:
+            parts.append(self._compiler.quote_identifier(model_cls.tableName))
+        if not parts:
+            raise ValueError(
+                f"Model '{model_cls.__name__}' must define a tableName to build this statement."
+            )
+        return ".".join(parts)
+
+    def insert(
+        self, values: Union[Dict[str, Any], List[Dict[str, Any]]]
+    ) -> "QueryBuilder":
+        """
+        Turns this query into an INSERT statement.
+
+        Args:
+            values: A dict of column-to-value pairs, or a list of such dicts
+                for a multi-row insert. Every row must have the same columns.
+
+        Returns:
+            The current QueryBuilder instance for chaining.
+        """
+        rows = values if isinstance(values, list) else [values]
+        if not rows:
+            raise ValueError("insert() requires at least one row.")
+        first_keys = list(rows[0].keys())
+        if not first_keys:
+            raise ValueError("insert() rows must have at least one column.")
+        for row in rows:
+            if list(row.keys()) != first_keys:
+                raise ValueError(
+                    "All rows in a multi-row insert must share the same columns."
+                )
+        self._stmt_type = "insert"
+        self._insert_rows = [dict(row) for row in rows]
+        return self
+
+    def update(self, values: Dict[str, Any]) -> "QueryBuilder":
+        """
+        Turns this query into an UPDATE statement. Combine with where()
+        clauses to target rows.
+
+        Args:
+            values: A dict of column-to-value pairs to set.
+
+        Returns:
+            The current QueryBuilder instance for chaining.
+        """
+        if not values:
+            raise ValueError("update() requires at least one column to set.")
+        self._stmt_type = "update"
+        self._update_values = dict(values)
+        return self
+
+    def delete(self) -> "QueryBuilder":
+        """
+        Turns this query into a DELETE statement. Combine with where()
+        clauses to target rows.
+
+        Returns:
+            The current QueryBuilder instance for chaining.
+        """
+        self._stmt_type = "delete"
+        return self
+
+    def returning(self, *columns: str) -> "QueryBuilder":
+        """
+        Adds a RETURNING clause to an INSERT, UPDATE, or DELETE statement on
+        dialects that support it.
+
+        Args:
+            *columns: The columns to return. Defaults to '*' when omitted.
+
+        Returns:
+            The current QueryBuilder instance for chaining.
+        """
+        self._returning_columns = list(columns) if columns else ["*"]
+        return self
+
+    def _render_dml(self, ctx: RenderContext) -> str:
+        """Renders an INSERT, UPDATE, or DELETE statement."""
+        table_sql = self._model_table_sql()
+
+        if self._stmt_type == "insert":
+            if self._where_builder.has_clauses():
+                raise ValueError("INSERT statements cannot have a WHERE clause.")
+            columns = list(self._insert_rows[0].keys())
+            columns_sql = ", ".join(self._compiler.quote_identifier(c) for c in columns)
+            row_groups = []
+            for row in self._insert_rows:
+                rendered = ", ".join(ctx.value(row[c]) for c in columns)
+                row_groups.append(f"({rendered})")
+            sql = f"INSERT INTO {table_sql} ({columns_sql}) VALUES {', '.join(row_groups)}"
+        elif self._stmt_type == "update":
+            if not self._where_builder.has_clauses():
+                raise ValueError(
+                    "UPDATE without a WHERE clause would modify every row. "
+                    "Add where() clauses, or where(QueryBuilder.raw('1'), '=', 1) to force it."
+                )
+            # Assignments render before the WHERE clause so parameters are
+            # collected in the order they appear in the SQL.
+            assignments = ", ".join(
+                f"{self._compiler.quote_identifier(c)} = {ctx.value(v)}"
+                for c, v in self._update_values.items()
+            )
+            where_str = self._where_builder.render(ctx)
+            sql = f"UPDATE {table_sql} SET {assignments} {where_str}"
+        else:
+            if not self._where_builder.has_clauses():
+                raise ValueError(
+                    "DELETE without a WHERE clause would remove every row. "
+                    "Add where() clauses, or where(QueryBuilder.raw('1'), '=', 1) to force it."
+                )
+            where_str = self._where_builder.render(ctx)
+            sql = f"DELETE FROM {table_sql} {where_str}"
+
+        if self._returning_columns:
+            returning_sql = ", ".join(
+                self._compiler.quote_column_reference(c)
+                for c in self._returning_columns
+            )
+            sql += f" {self._compiler.compile_returning(returning_sql)}"
+        return sql
 
     def clone(self) -> "QueryBuilder":
         """
