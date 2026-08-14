@@ -1,7 +1,7 @@
 import unittest
 from typing import Dict
 
-from sustained import Model, QueryBuilder, RelationType
+from sustained import DialectError, Model, QueryBuilder, RelationType
 from sustained.expressions import Column
 
 
@@ -289,14 +289,16 @@ class TestQueryBuilder(unittest.TestCase):
             tableName = "users"
 
         query = User.query().select("*").top(10)
-        self.assertEqual(str(query), "SELECT * FROM users")
+        with self.assertRaises(DialectError):
+            str(query)
 
     def test_top_with_offset(self):
         class User(Model):
             tableName = "users"
 
         query = User.query().select("*").top(10).offset(20)
-        self.assertEqual(str(query), "SELECT * FROM users OFFSET 20")
+        with self.assertRaises(DialectError):
+            str(query)
 
     def test_top_and_limit_raise_error(self):
         class User(Model):
@@ -349,7 +351,10 @@ class TestWhereClauseOperators(unittest.TestCase):
 
     def test_where_ilike(self):
         query = self.User.query().whereILike("name", "john%")
-        self.assertEqual(str(query), "SELECT * FROM users WHERE name ILIKE 'john%'")
+        self.assertEqual(
+            str(query),
+            "SELECT * FROM users WHERE LOWER(name) LIKE LOWER('john%')",
+        )
 
     def test_where_like_and_or(self):
         query = (
@@ -360,7 +365,7 @@ class TestWhereClauseOperators(unittest.TestCase):
         )
         self.assertEqual(
             str(query),
-            "SELECT * FROM users WHERE age > 18 AND email LIKE '%@example.com' OR name ILIKE 'jane%'",
+            "SELECT * FROM users WHERE age > 18 AND email LIKE '%@example.com' OR LOWER(name) LIKE LOWER('jane%')",
         )
 
     def test_where_null(self):

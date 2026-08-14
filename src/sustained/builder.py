@@ -470,7 +470,7 @@ class QueryBuilder:
             query_parts.append(order_by_str)
 
         limit_offset_str = self._compiler.compile_limit_offset(
-            self._limit_value, self._offset_value
+            self._limit_value, self._offset_value, has_order_by=bool(order_by_str)
         )
         if limit_offset_str:
             query_parts.append(limit_offset_str)

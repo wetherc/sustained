@@ -1,6 +1,6 @@
 import unittest
 
-from sustained import Model
+from sustained import DialectError, Model
 from sustained.dialects import Dialects
 
 
@@ -16,24 +16,34 @@ class TestMssqlCompiler(unittest.TestCase):
         Person.set_dialect(Dialects.DEFAULT)
 
     def test_select_with_limit(self):
-        query = Person.query().limit(10)
+        query = Person.query().orderBy("id").limit(10)
         self.assertEqual(
             str(query),
-            "SELECT * FROM [person] OFFSET 0 ROWS FETCH NEXT 10 ROWS ONLY",
+            "SELECT * FROM [person] ORDER BY [id] ASC OFFSET 0 ROWS FETCH NEXT 10 ROWS ONLY",
         )
+
+    def test_select_with_limit_requires_order_by(self):
+        query = Person.query().limit(10)
+        with self.assertRaises(DialectError):
+            str(query)
 
     def test_select_with_offset(self):
-        query = Person.query().offset(5)
+        query = Person.query().orderBy("id").offset(5)
         self.assertEqual(
             str(query),
-            "SELECT * FROM [person] OFFSET 5 ROWS",
+            "SELECT * FROM [person] ORDER BY [id] ASC OFFSET 5 ROWS",
         )
 
+    def test_select_with_offset_requires_order_by(self):
+        query = Person.query().offset(5)
+        with self.assertRaises(DialectError):
+            str(query)
+
     def test_select_with_limit_and_offset(self):
-        query = Person.query().limit(10).offset(5)
+        query = Person.query().orderBy("id").limit(10).offset(5)
         self.assertEqual(
             str(query),
-            "SELECT * FROM [person] OFFSET 5 ROWS FETCH NEXT 10 ROWS ONLY",
+            "SELECT * FROM [person] ORDER BY [id] ASC OFFSET 5 ROWS FETCH NEXT 10 ROWS ONLY",
         )
 
     def test_select_with_top(self):

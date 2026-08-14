@@ -91,9 +91,14 @@ class Compiler:
 
     def compile_like(self, column_sql: str, pattern_sql: str, operator: str) -> str:
         """
-        Renders a LIKE or ILIKE predicate. Dialects without native ILIKE
-        override this to emulate case-insensitive matching.
+        Renders a LIKE or ILIKE predicate. ILIKE is a Postgres extension, so
+        the base compiler emulates it by lowercasing both sides. Dialects
+        with native ILIKE override this.
         """
+        if operator == "ILIKE":
+            return f"LOWER({column_sql}) LIKE LOWER({pattern_sql})"
+        if operator == "NOT ILIKE":
+            return f"LOWER({column_sql}) NOT LIKE LOWER({pattern_sql})"
         return f"{column_sql} {operator} {pattern_sql}"
 
     def placeholder(self) -> str:
@@ -120,9 +125,18 @@ class Compiler:
         return "TRUE" if value else "FALSE"
 
     def compile_top(self, value: int) -> str:
-        return ""
+        from sustained.exceptions import DialectError
 
-    def compile_limit_offset(self, limit: Optional[int], offset: Optional[int]) -> str:
+        raise DialectError(
+            f"TOP is not supported by the '{self._dialect.name}' dialect. Use limit() instead."
+        )
+
+    def compile_limit_offset(
+        self,
+        limit: Optional[int],
+        offset: Optional[int],
+        has_order_by: bool = False,
+    ) -> str:
         parts = []
         if limit is not None:
             parts.append(f"LIMIT {limit}")

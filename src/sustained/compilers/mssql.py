@@ -1,5 +1,7 @@
 from typing import Optional
 
+from sustained.exceptions import DialectError
+
 from .base import Compiler
 
 
@@ -17,17 +19,21 @@ class MssqlCompiler(Compiler):
         # T-SQL has no boolean literals; BIT columns compare against 1 and 0.
         return "1" if value else "0"
 
-    def compile_limit_offset(self, limit: Optional[int], offset: Optional[int]) -> str:
-        parts = []
-        if offset is not None:
-            parts.append(f"OFFSET {offset} ROWS")
-            if limit is not None:
-                parts.append(f"FETCH NEXT {limit} ROWS ONLY")
-        elif limit is not None:
-            # MS SQL requires OFFSET for FETCH, which is not ideal.
-            # The user should use .top() for simple limits.
-            # We will add OFFSET 0 to make FETCH work.
-            parts.append("OFFSET 0 ROWS")
+    def compile_limit_offset(
+        self,
+        limit: Optional[int],
+        offset: Optional[int],
+        has_order_by: bool = False,
+    ) -> str:
+        if limit is None and offset is None:
+            return ""
+        # T-SQL only allows OFFSET/FETCH after an ORDER BY clause.
+        if not has_order_by:
+            raise DialectError(
+                "MSSQL requires an ORDER BY clause to use limit() or offset(). "
+                "Add orderBy(), or use top() for a simple row cap."
+            )
+        parts = [f"OFFSET {offset if offset is not None else 0} ROWS"]
+        if limit is not None:
             parts.append(f"FETCH NEXT {limit} ROWS ONLY")
-
         return " ".join(parts)

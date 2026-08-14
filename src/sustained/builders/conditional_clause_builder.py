@@ -253,8 +253,17 @@ class ConditionalClauseBuilder(ABC):
                 )
             quoted_col = self._quote_column(column_or_callable)
 
-            def render(ctx: RenderContext) -> str:
-                return f"{quoted_col} {operator} {ctx.value(val)}"
+            if operator in ("LIKE", "NOT LIKE", "ILIKE", "NOT ILIKE"):
+
+                def render(ctx: RenderContext) -> str:
+                    return ctx.compiler.compile_like(
+                        quoted_col, ctx.value(val), operator
+                    )
+
+            else:
+
+                def render(ctx: RenderContext) -> str:
+                    return f"{quoted_col} {operator} {ctx.value(val)}"
 
             self._clauses.append((conjunction, render))
 

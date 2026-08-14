@@ -1,17 +1,22 @@
-from typing import TYPE_CHECKING
+from typing import Optional
 
 from .base import Compiler
 
-if TYPE_CHECKING:
-    from ..dialects import Dialects
-
 
 class PrestoCompiler(Compiler):
-    def __init__(self, dialect: "Dialects") -> None:
-        super().__init__(dialect)
-
     def quote_identifier(self, identifier: str) -> str:
         return f'"{identifier}"'
 
-    def quote_fully_qualified_identifier(self, identifier: str) -> str:
-        return ".".join([f'"{part}"' for part in identifier.split(".")])
+    def compile_limit_offset(
+        self,
+        limit: Optional[int],
+        offset: Optional[int],
+        has_order_by: bool = False,
+    ) -> str:
+        # Presto and Trino require OFFSET before LIMIT.
+        parts = []
+        if offset is not None:
+            parts.append(f"OFFSET {offset}")
+        if limit is not None:
+            parts.append(f"LIMIT {limit}")
+        return " ".join(parts)

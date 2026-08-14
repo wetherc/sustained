@@ -1,6 +1,6 @@
 import unittest
 
-from sustained import Model
+from sustained import DialectError, Model
 from sustained.dialects import Dialects
 
 
@@ -36,12 +36,10 @@ class TestPostgresCompiler(unittest.TestCase):
             'SELECT * FROM "person" LIMIT 10 OFFSET 5',
         )
 
-    def test_select_with_top_is_ignored(self):
+    def test_select_with_top_raises(self):
         query = Person.query().top(10)
-        self.assertEqual(
-            str(query),
-            'SELECT * FROM "person"',
-        )
+        with self.assertRaises(DialectError):
+            str(query)
 
     def test_table_name_quoting(self):
         query = Person.query()
