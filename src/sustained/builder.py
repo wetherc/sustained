@@ -91,6 +91,7 @@ class QueryBuilder:
         self._insert_rows: List[Dict[str, Any]] = []
         self._update_values: Dict[str, Any] = {}
         self._returning_columns: List[str] = []
+        self._eager_relations: List[str] = []
 
     def distinct(self) -> "QueryBuilder":
         """
@@ -729,6 +730,93 @@ class QueryBuilder:
         import copy
 
         return copy.deepcopy(self)
+
+    def withGraphFetched(self, *relation_names: str) -> "QueryBuilder":
+        """
+        Eager loads the named relations when the query runs. Each relation
+        costs one extra query; results attach to the fetched instances under
+        the relation name. Through relations are not supported yet.
+
+        Args:
+            *relation_names: Relation names defined in relationMappings.
+
+        Returns:
+            The current QueryBuilder instance for chaining.
+        """
+        for name in relation_names:
+            if name not in self._model_class.relationMappings:
+                raise ValueError(
+                    f"Relation '{name}' not found in model "
+                    f"'{self._model_class.__name__}'"
+                )
+            self._eager_relations.append(name)
+        return self
+
+    def _resolve_connection(self, connection: Optional[Any]) -> Any:
+        conn = connection if connection is not None else self._model_class._connection
+        if conn is None:
+            raise RuntimeError(
+                "No database connection. Bind one with Model.bind(connection) "
+                "or pass it to run()."
+            )
+        return conn
+
+    def run(self, connection: Optional[Any] = None) -> Any:
+        """
+        Executes the query against a DB-API 2.0 connection.
+
+        SELECT statements return a list of hydrated model instances, with
+        any withGraphFetched() relations attached. INSERT, UPDATE, and
+        DELETE statements are committed and return the affected row count,
+        or a list of dicts when a RETURNING clause is present.
+
+        Args:
+            connection: A DB-API 2.0 connection. Falls back to the one
+                bound with Model.bind().
+
+        Returns:
+            The statement's result, as described above.
+        """
+        from sustained.execution import eager_load_relation, fetch_models
+
+        conn = self._resolve_connection(connection)
+        sql, params = self.to_sql()
+        cursor = conn.cursor()
+        cursor.execute(sql, params)
+
+        if self._stmt_type == "select":
+            models = fetch_models(self._model_class, cursor)
+            for relation_name in self._eager_relations:
+                eager_load_relation(self._model_class, conn, models, relation_name)
+            return models
+
+        if self._returning_columns and cursor.description is not None:
+            columns = [desc[0] for desc in cursor.description]
+            result: Any = [dict(zip(columns, row)) for row in cursor.fetchall()]
+        else:
+            result = cursor.rowcount
+        if hasattr(conn, "commit"):
+            conn.commit()
+        return result
+
+    def first(self, connection: Optional[Any] = None) -> Optional["Model"]:
+        """
+        Executes the query with LIMIT 1 and returns the first hydrated model
+        instance, or None when the result set is empty. The query itself is
+        left unmodified.
+
+        Args:
+            connection: A DB-API 2.0 connection. Falls back to the one
+                bound with Model.bind().
+
+        Returns:
+            The first model instance or None.
+        """
+        query = self.clone()
+        if query._limit_value is None and query._top_value is None:
+            query.limit(1)
+        results = query.run(connection)
+        return results[0] if results else None
 
     def page(self, page: int, page_size: int) -> "QueryBuilder":
         """

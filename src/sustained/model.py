@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple, Type
+from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple, Type, Union
 
 from sustained.builder import QueryBuilder
 from sustained.dialects import Dialects
@@ -16,6 +16,36 @@ _MODEL_REGISTRY: Dict[str, Type["Model"]] = {}
 def get_registered_model(name: str) -> Optional[Type["Model"]]:
     """Returns a previously defined Model subclass by class name, if any."""
     return _MODEL_REGISTRY.get(name)
+
+
+def resolve_model_reference(
+    reference: "Union[Type[Model], str]", context_module: Optional[str] = None
+) -> Type["Model"]:
+    """
+    Resolves a model reference that may be a class or a class name.
+
+    Names resolve through the model registry first. As a fallback for
+    classes that never registered, the context module is searched.
+
+    Raises:
+        ValueError: If a string reference cannot be resolved.
+    """
+    if not isinstance(reference, str):
+        return reference
+    registered = get_registered_model(reference)
+    if registered is not None:
+        return registered
+    if context_module:
+        try:
+            module = __import__(context_module, fromlist=[reference])
+            return getattr(module, reference)  # type: ignore[no-any-return]
+        except AttributeError:
+            pass
+    raise ValueError(
+        f"Cannot resolve model reference '{reference}'. Define the model "
+        "class before building the query, or pass the class itself instead "
+        "of its name."
+    )
 
 
 def _qualified_column(cls: Type["Model"], name: str) -> str:
@@ -85,6 +115,7 @@ class Model(metaclass=ModelMeta):
     relationMappings: Dict[str, RelationMapping] = {}
     columns: Optional[Tuple[str, ...]] = None
     _dialect: Dialects = Dialects.DEFAULT
+    _connection: Optional[Any] = None
 
     def __init__(self, **kwargs: Any) -> None:
         """
@@ -135,6 +166,24 @@ class Model(metaclass=ModelMeta):
             dialect: The dialect to use.
         """
         cls._dialect = dialect
+
+    @classmethod
+    def bind(cls, connection: Any) -> None:
+        """
+        Binds a DB-API 2.0 connection for queries made with this model.
+        Binding on Model itself shares the connection with every model;
+        binding on a subclass scopes it to that subclass and its children.
+
+        Args:
+            connection: An open DB-API 2.0 connection whose paramstyle
+                matches the dialect (qmark by default, format for Postgres).
+        """
+        cls._connection = connection
+
+    @classmethod
+    def unbind(cls) -> None:
+        """Removes the connection bound to this class, if any."""
+        cls._connection = None
 
     @classmethod
     def query(cls) -> "QueryBuilder":

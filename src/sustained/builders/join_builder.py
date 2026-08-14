@@ -236,25 +236,11 @@ class JoinClauseBuilder:
         self, model_class_ref: Union[Type["Model"], str]
     ) -> Type["Model"]:
         """Resolves a model class reference (string or class) to a class type."""
-        if isinstance(model_class_ref, str):
-            from ..model import get_registered_model
+        from ..model import resolve_model_reference
 
-            registered = get_registered_model(model_class_ref)
-            if registered is not None:
-                return registered
-            # Fall back to the defining module for models that were never
-            # registered, such as classes without a tableName.
-            module = self._model_class.__module__
-            try:
-                models = __import__(module, fromlist=[model_class_ref])
-                return cast(Type["Model"], getattr(models, model_class_ref))
-            except AttributeError:
-                raise ValueError(
-                    f"Cannot resolve model reference '{model_class_ref}'. "
-                    "Define the model class before building the query, or pass "
-                    "the class itself instead of its name."
-                ) from None
-        return model_class_ref
+        return resolve_model_reference(
+            model_class_ref, context_module=self._model_class.__module__
+        )
 
     def _add_basic_join(
         self,
