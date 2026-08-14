@@ -15,6 +15,9 @@ license-files = [ "LICENSE",]
 name = "Christopher Wetherill"
 email = "git@tbmh.org"
 
+[project.scripts]
+sustained = "sustained.cli:main"
+
 [project.urls]
 Homepage = "https://github.com/wetherc/sustained"
 Issues = "https://github.com/wetherc/sustained/issues"
