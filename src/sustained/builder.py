@@ -777,12 +777,38 @@ class QueryBuilder:
         Returns:
             The statement's result, as described above.
         """
-        from sustained.execution import eager_load_relation, fetch_models
+        import time
+
+        from sustained.execution import (
+            eager_load_relation,
+            fetch_models,
+            in_transaction,
+            notify_statement,
+        )
 
         conn = self._resolve_connection(connection)
-        sql, params = self.to_sql()
         cursor = conn.cursor()
-        cursor.execute(sql, params)
+
+        use_executemany = (
+            self._stmt_type == "insert"
+            and len(self._insert_rows) > 1
+            and not self._returning_columns
+        )
+        started = time.perf_counter()
+        if use_executemany:
+            # Render a single-row template and bind each row's values, so
+            # large inserts go through the driver's batch path.
+            template = self.clone()
+            template._insert_rows = [self._insert_rows[0]]
+            sql, _ = template.to_sql()
+            columns = list(self._insert_rows[0].keys())
+            row_params = [tuple(row[c] for c in columns) for row in self._insert_rows]
+            cursor.executemany(sql, row_params)
+            notify_statement(sql, (), time.perf_counter() - started)
+        else:
+            sql, params = self.to_sql()
+            cursor.execute(sql, params)
+            notify_statement(sql, params, time.perf_counter() - started)
 
         if self._stmt_type == "select":
             models = fetch_models(self._model_class, cursor)
@@ -795,7 +821,9 @@ class QueryBuilder:
             result: Any = [dict(zip(columns, row)) for row in cursor.fetchall()]
         else:
             result = cursor.rowcount
-        if hasattr(conn, "commit"):
+        # Inside a transaction() context the context manager owns the
+        # commit; committing here would break atomicity.
+        if not in_transaction(conn) and hasattr(conn, "commit"):
             conn.commit()
         return result
 

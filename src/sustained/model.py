@@ -210,6 +210,29 @@ class Model(metaclass=ModelMeta):
         cls._connection = None
 
     @classmethod
+    def transaction(cls, connection: Optional[Any] = None) -> Any:
+        """
+        Opens a transaction context on the bound connection, or on the one
+        passed in. Statements inside the block share one transaction that
+        commits on success and rolls back on an exception. Nested blocks use
+        savepoints.
+
+        Example:
+            with User.transaction():
+                User.query().insert({...}).run()
+                Account.query().update({...}).where(...).run()
+        """
+        from sustained.execution import transaction
+
+        conn = connection if connection is not None else cls._connection
+        if conn is None:
+            raise RuntimeError(
+                "No database connection. Bind one with Model.bind(connection) "
+                "or pass it to transaction()."
+            )
+        return transaction(conn)
+
+    @classmethod
     def query(cls) -> "QueryBuilder":
         """
         Starts a new query for this model.

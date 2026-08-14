@@ -10,12 +10,95 @@ the dialect's placeholder: qmark for the default and MSSQL dialects
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Type
+from contextlib import contextmanager
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    Dict,
+    Iterator,
+    List,
+    Optional,
+    Tuple,
+    Type,
+)
 
 from sustained.types import RelationType
 
 if TYPE_CHECKING:
     from sustained.model import Model
+
+
+# Connections with an open transaction, keyed by id(). The value holds a
+# strong reference to the connection, so the id cannot be reused while the
+# entry exists, plus the current savepoint nesting depth.
+_ACTIVE_TRANSACTIONS: Dict[int, Tuple[Any, int]] = {}
+
+# Optional observer called after every executed statement.
+_statement_listener: Optional[Callable[[str, Tuple[Any, ...], float], None]] = None
+
+
+def set_statement_listener(
+    listener: Optional[Callable[[str, Tuple[Any, ...], float], None]],
+) -> None:
+    """
+    Registers a callable invoked after every statement run() executes, with
+    the SQL text, the parameter tuple, and the duration in seconds. Pass
+    None to remove the listener. Useful for logging and timing.
+    """
+    global _statement_listener
+    _statement_listener = listener
+
+
+def notify_statement(sql: str, params: Tuple[Any, ...], duration: float) -> None:
+    """Invokes the registered statement listener, if any."""
+    if _statement_listener is not None:
+        _statement_listener(sql, params, duration)
+
+
+def in_transaction(connection: Any) -> bool:
+    """Reports whether the connection has an open transaction() context."""
+    entry = _ACTIVE_TRANSACTIONS.get(id(connection))
+    return entry is not None and entry[0] is connection
+
+
+@contextmanager
+def transaction(connection: Any) -> Iterator[Any]:
+    """
+    Runs the block atomically on the connection. Commits when the block
+    finishes and rolls back when it raises. While the context is open,
+    run() stops committing per statement.
+
+    Nested contexts on the same connection use ANSI savepoints, so an inner
+    failure rolls back only the inner block.
+    """
+    key = id(connection)
+    entry = _ACTIVE_TRANSACTIONS.get(key)
+
+    if entry is not None and entry[0] is connection:
+        depth = entry[1] + 1
+        _ACTIVE_TRANSACTIONS[key] = (connection, depth)
+        savepoint = f"sustained_sp_{depth}"
+        connection.cursor().execute(f"SAVEPOINT {savepoint}")
+        try:
+            yield connection
+            connection.cursor().execute(f"RELEASE SAVEPOINT {savepoint}")
+        except BaseException:
+            connection.cursor().execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+            raise
+        finally:
+            _ACTIVE_TRANSACTIONS[key] = (connection, depth - 1)
+        return
+
+    _ACTIVE_TRANSACTIONS[key] = (connection, 0)
+    try:
+        yield connection
+        connection.commit()
+    except BaseException:
+        connection.rollback()
+        raise
+    finally:
+        del _ACTIVE_TRANSACTIONS[key]
 
 
 def fetch_models(model_class: Type["Model"], cursor: Any) -> List["Model"]:
