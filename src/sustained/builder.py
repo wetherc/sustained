@@ -913,14 +913,69 @@ class QueryBuilder:
             )
         return conn
 
+    def _run_select_raw(self, connection: Optional[Any]) -> Tuple[List[str], List[Any]]:
+        """Executes this SELECT and returns (column names, raw rows)."""
+        import time
+
+        from sustained.execution import notify_statement
+
+        if self._stmt_type != "select":
+            raise ValueError("Only SELECT queries return result sets.")
+        conn = self._resolve_connection(connection)
+        cursor = conn.cursor()
+        sql, params = self.to_sql()
+        started = time.perf_counter()
+        cursor.execute(sql, params)
+        notify_statement(sql, params, time.perf_counter() - started)
+        columns = [desc[0] for desc in cursor.description] if cursor.description else []
+        return columns, cursor.fetchall()
+
+    def to_dicts(self, connection: Optional[Any] = None) -> List[Dict[str, Any]]:
+        """
+        Executes the SELECT and returns rows as plain dicts keyed by column
+        name. Eager loading is not applied; use run() for model instances.
+        """
+        columns, rows = self._run_select_raw(connection)
+        return [dict(zip(columns, row)) for row in rows]
+
+    def to_df(self, connection: Optional[Any] = None) -> Any:
+        """
+        Executes the SELECT and returns a pandas DataFrame with the query's
+        column names. Requires pandas to be installed.
+        """
+        try:
+            import pandas
+        except ImportError:
+            raise RuntimeError(
+                "to_df() requires pandas. Install it with: pip install pandas"
+            ) from None
+        columns, rows = self._run_select_raw(connection)
+        return pandas.DataFrame.from_records(list(rows), columns=columns)
+
+    def to_arrow(self, connection: Optional[Any] = None) -> Any:
+        """
+        Executes the SELECT and returns a pyarrow Table with the query's
+        column names. Requires pyarrow to be installed.
+        """
+        try:
+            import pyarrow
+        except ImportError:
+            raise RuntimeError(
+                "to_arrow() requires pyarrow. Install it with: pip install pyarrow"
+            ) from None
+        columns, rows = self._run_select_raw(connection)
+        data = {name: [row[i] for row in rows] for i, name in enumerate(columns)}
+        return pyarrow.table(data)
+
     def run(self, connection: Optional[Any] = None) -> Any:
         """
         Executes the query against a DB-API 2.0 connection.
 
         SELECT statements return a list of hydrated model instances, with
-        any withGraphFetched() relations attached. INSERT, UPDATE, and
-        DELETE statements are committed and return the affected row count,
-        or a list of dicts when a RETURNING clause is present.
+        any withGraphFetched() relations attached. Use to_dicts(), to_df(),
+        or to_arrow() for other result shapes. INSERT, UPDATE, and DELETE
+        statements are committed and return the affected row count, or a
+        list of dicts when a RETURNING clause is present.
 
         Args:
             connection: A DB-API 2.0 connection. Falls back to the one
