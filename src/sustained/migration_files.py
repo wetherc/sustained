@@ -7,6 +7,11 @@ lexicographically, so number them: '0001_create_users.up.sql',
 '0002_add_flag.up.sql'. load_migrations() turns the directory into the
 ordered Migration list a Migrator takes.
 
+A '<id>.repeat.sql' file is a repeatable migration: it re-runs whenever
+its contents change, for views, functions, and seed data. Repeatables
+have no down file, sort after every versioned migration, and an id may
+not have both an up file and a repeat file.
+
 Files split into statements at semicolons that end a line. A body with
 embedded semicolons, such as a trigger or procedure, does not survive
 that; write it as a hand-written Migration with a callable step, or keep
@@ -30,6 +35,7 @@ _STATEMENT_END_RE = re.compile(r";[ \t]*\n")
 
 _UP_SUFFIX = ".up.sql"
 _DOWN_SUFFIX = ".down.sql"
+_REPEAT_SUFFIX = ".repeat.sql"
 
 _PLACEHOLDER_RE = re.compile(r"\$\$\{|\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
@@ -83,10 +89,12 @@ def load_migrations(
 ) -> List[Migration]:
     """
     Reads every '<id>.up.sql' file in the directory, pairs it with its
-    '<id>.down.sql' when one exists, and returns the migrations ordered by
-    id. Raises when the directory is missing, an up file is empty, a down
-    file has no up file, or a '.sql' file follows neither naming pattern,
-    so a misnamed migration cannot be skipped silently.
+    '<id>.down.sql' when one exists, and returns the migrations ordered
+    by id, followed by the '<id>.repeat.sql' repeatables in id order.
+    Raises when the directory is missing, a file is empty, a down file
+    has no up file, an id has both an up file and a repeat file, or a
+    '.sql' file follows no naming pattern, so a misnamed migration
+    cannot be skipped silently.
 
     '${key}' placeholders in the files are filled from the placeholders
     mapping before statements split and checksums compute.
@@ -97,6 +105,7 @@ def load_migrations(
 
     ups = {}
     downs = {}
+    repeats = {}
     for entry in sorted(path.iterdir()):
         if not entry.is_file() or not entry.name.endswith(".sql"):
             continue
@@ -104,13 +113,21 @@ def load_migrations(
             ups[entry.name[: -len(_UP_SUFFIX)]] = entry
         elif entry.name.endswith(_DOWN_SUFFIX):
             downs[entry.name[: -len(_DOWN_SUFFIX)]] = entry
+        elif entry.name.endswith(_REPEAT_SUFFIX):
+            repeats[entry.name[: -len(_REPEAT_SUFFIX)]] = entry
         else:
             raise ValueError(
-                f"Migration file {entry.name!r} matches neither "
-                f"'*{_UP_SUFFIX}' nor '*{_DOWN_SUFFIX}'; rename it so it "
-                "cannot be skipped silently."
+                f"Migration file {entry.name!r} matches none of "
+                f"'*{_UP_SUFFIX}', '*{_DOWN_SUFFIX}', '*{_REPEAT_SUFFIX}'; "
+                "rename it so it cannot be skipped silently."
             )
 
+    both = sorted(set(ups) & set(repeats))
+    if both:
+        raise ValueError(
+            f"Ids with both an up file and a repeat file: {', '.join(both)}. "
+            "A migration is versioned or repeatable, not both."
+        )
     orphaned = sorted(set(downs) - set(ups))
     if orphaned:
         raise ValueError(f"Down files without an up file: {', '.join(orphaned)}.")
@@ -134,4 +151,9 @@ def load_migrations(
                     "delete it if the migration is not reversible."
                 )
         migrations.append(Migration(id, up=up_statements, down=down_statements))
+    for id in sorted(repeats):
+        statements = split_sql_statements(read(repeats[id]))
+        if not statements:
+            raise ValueError(f"Migration file {repeats[id].name!r} has no statements.")
+        migrations.append(Migration(id, up=statements, repeatable=True))
     return migrations

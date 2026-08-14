@@ -95,13 +95,46 @@ class TestLoadMigrations(LoaderTestCase):
 
     def test_misnamed_sql_file_raises(self):
         self.write("0001_x.sql", "SELECT 1;\n")
-        with self.assertRaisesRegex(ValueError, "neither"):
+        with self.assertRaisesRegex(ValueError, "none of"):
             load_migrations(self.dir)
 
     def test_non_sql_files_are_ignored(self):
         self.write("0001_x.up.sql", "SELECT 1;\n")
         self.write("README.md", "notes")
         self.assertEqual([m.id for m in load_migrations(self.dir)], ["0001_x"])
+
+
+class TestRepeatFiles(LoaderTestCase):
+    def test_repeatables_load_after_versioned(self):
+        self.write("zz_view.repeat.sql", "CREATE VIEW v AS SELECT 1;\n")
+        self.write("0001_t.up.sql", "CREATE TABLE t (id INTEGER);\n")
+        self.write("aa_seed.repeat.sql", "DELETE FROM t;\nINSERT INTO t VALUES (1);\n")
+        migrations = load_migrations(self.dir)
+        self.assertEqual([m.id for m in migrations], ["0001_t", "aa_seed", "zz_view"])
+        self.assertEqual([m.repeatable for m in migrations], [False, True, True])
+        self.assertIsNone(migrations[2].down)
+
+    def test_up_and_repeat_for_same_id_raises(self):
+        self.write("0001_t.up.sql", "SELECT 1;\n")
+        self.write("0001_t.repeat.sql", "SELECT 1;\n")
+        with self.assertRaisesRegex(ValueError, "both an up file and a repeat file"):
+            load_migrations(self.dir)
+
+    def test_empty_repeat_file_raises(self):
+        self.write("v.repeat.sql", "-- nothing\n")
+        with self.assertRaisesRegex(ValueError, "no statements"):
+            load_migrations(self.dir)
+
+    def test_down_next_to_repeat_is_orphaned(self):
+        self.write("v.repeat.sql", "SELECT 1;\n")
+        self.write("v.down.sql", "SELECT 1;\n")
+        with self.assertRaisesRegex(ValueError, "without an up file"):
+            load_migrations(self.dir)
+
+    def test_placeholders_fill_repeat_files(self):
+        self.write("v.repeat.sql", "CREATE VIEW ${name} AS SELECT 1;\n")
+        migrations = load_migrations(self.dir, placeholders={"name": "v1"})
+        self.assertEqual(migrations[0].up, ["CREATE VIEW v1 AS SELECT 1"])
 
 
 class TestSubstitutePlaceholders(unittest.TestCase):

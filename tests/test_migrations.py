@@ -445,5 +445,159 @@ class TestPlan(MigrationTestCase):
         self.assertIsNone(migrator.plan([MigUser]))
 
 
+class TestRepeatableMigrations(MigrationTestCase):
+    def migrations(self, view_sql="SELECT id FROM t"):
+        return [
+            Migration("001_t", up="CREATE TABLE t (id INTEGER)", down="DROP TABLE t"),
+            Migration(
+                "active_view",
+                up=f"CREATE VIEW IF NOT EXISTS v AS {view_sql}",
+                repeatable=True,
+            ),
+        ]
+
+    def test_repeatable_rejects_down_step(self):
+        with self.assertRaisesRegex(ValueError, "down step"):
+            Migration("r", up="SELECT 1", down="SELECT 2", repeatable=True)
+
+    def test_repeatable_callable_requires_checksum(self):
+        with self.assertRaisesRegex(ValueError, "checksum"):
+            Migration("r", up=lambda conn: None, repeatable=True)
+        Migration("r", up=lambda conn: None, checksum="abc", repeatable=True)
+
+    def test_runs_after_versioned_and_records_once(self):
+        migrator = Migrator(self.conn, self.migrations())
+        self.assertEqual(migrator.up(), ["001_t", "active_view"])
+        self.assertEqual(migrator.up(), [])
+        records = {r.id: r for r in migrator.applied_records()}
+        self.assertEqual(records["active_view"].seq, 2)
+
+    def test_changed_checksum_reruns_and_updates_in_place(self):
+        migrator = Migrator(self.conn, self.migrations())
+        migrator.up()
+        first_seq = {r.id: r.seq for r in migrator.applied_records()}
+        self.conn.execute("DROP VIEW v")
+        changed = Migrator(self.conn, self.migrations("SELECT id, id AS b FROM t"))
+        self.assertEqual(changed.up(), ["active_view"])
+        records = {r.id: r for r in changed.applied_records()}
+        self.assertEqual(records["active_view"].seq, first_seq["active_view"])
+        self.assertEqual(len(changed.applied_records()), 2)
+
+    def test_changed_checksum_is_not_a_validation_problem(self):
+        migrator = Migrator(self.conn, self.migrations())
+        migrator.up()
+        changed = Migrator(self.conn, self.migrations("SELECT id, id AS b FROM t"))
+        self.assertEqual(changed.validate(), [])
+
+    def test_statuses_reports_changed(self):
+        migrator = Migrator(self.conn, self.migrations())
+        self.assertEqual(
+            migrator.statuses(),
+            [("001_t", "pending"), ("active_view", "pending")],
+        )
+        migrator.up()
+        self.assertEqual(
+            migrator.statuses(),
+            [("001_t", "applied"), ("active_view", "applied")],
+        )
+        changed = Migrator(self.conn, self.migrations("SELECT id, id AS b FROM t"))
+        self.assertEqual(
+            changed.statuses(),
+            [("001_t", "applied"), ("active_view", "changed")],
+        )
+
+    def test_pending_includes_changed_repeatable(self):
+        migrator = Migrator(self.conn, self.migrations())
+        migrator.up()
+        changed = Migrator(self.conn, self.migrations("SELECT id, id AS b FROM t"))
+        self.assertEqual([m.id for m in changed.pending()], ["active_view"])
+
+    def test_down_skips_repeatables(self):
+        migrator = Migrator(self.conn, self.migrations())
+        migrator.up()
+        self.assertEqual(migrator.down(), ["001_t"])
+        applied = {r.id for r in migrator.applied_records() if r.success}
+        self.assertEqual(applied, {"active_view"})
+
+    def test_down_to_skips_repeatables(self):
+        migrations = self.migrations()
+        migrations.insert(
+            1,
+            Migration("002_u", up="CREATE TABLE u (id INTEGER)", down="DROP TABLE u"),
+        )
+        migrator = Migrator(self.conn, migrations)
+        migrator.up()
+        self.assertEqual(migrator.down_to("001_t"), ["002_u"])
+
+    def test_target_runs_repeatables_and_rejects_repeatable_target(self):
+        migrations = self.migrations()
+        migrations.insert(
+            1,
+            Migration("002_u", up="CREATE TABLE u (id INTEGER)", down="DROP TABLE u"),
+        )
+        migrator = Migrator(self.conn, migrations)
+        self.assertEqual(migrator.up(target="001_t"), ["001_t", "active_view"])
+        with self.assertRaisesRegex(ValueError, "repeatable"):
+            migrator.up(target="active_view")
+
+    def test_baseline_records_repeatables_at_current_checksum(self):
+        self.conn.execute("CREATE TABLE t (id INTEGER)")
+        self.conn.execute("CREATE VIEW v AS SELECT id FROM t")
+        migrator = Migrator(self.conn, self.migrations())
+        self.assertEqual(migrator.baseline("001_t"), ["001_t", "active_view"])
+        self.assertEqual(migrator.up(), [])
+        with self.assertRaisesRegex(ValueError, "repeatable"):
+            migrator.baseline("active_view")
+
+    def test_script_up_renders_insert_then_update(self):
+        migrator = Migrator(self.conn, self.migrations())
+        script = migrator.script("up")
+        self.assertIn("-- repeat: active_view", script)
+        self.assertIn("INSERT INTO", script)
+        migrator.up()
+        changed = Migrator(self.conn, self.migrations("SELECT id, id AS b FROM t"))
+        script = changed.script("up")
+        self.assertIn("-- repeat: active_view", script)
+        self.assertIn("UPDATE", script)
+        self.assertNotIn("-- up:", script)
+
+    def test_script_down_skips_repeatables(self):
+        migrator = Migrator(self.conn, self.migrations())
+        migrator.up()
+        script = migrator.script("down")
+        self.assertNotIn("active_view", script)
+        self.assertIn("001_t", script)
+
+    def test_out_of_order_check_ignores_repeatables(self):
+        migrator = Migrator(self.conn, self.migrations())
+        migrator.up()
+        migrations = self.migrations()
+        migrations.append(
+            Migration("002_u", up="CREATE TABLE u (id INTEGER)", down="DROP TABLE u")
+        )
+        later = Migrator(self.conn, migrations)
+        self.assertEqual(later.validate(), [])
+        self.assertEqual(later.up(), ["002_u"])
+
+    def test_failed_repeatable_rerun_updates_failure_row(self):
+        migrator = Migrator(self.conn, self.migrations())
+        migrator.up()
+        broken = Migrator(
+            self.conn,
+            [
+                self.migrations()[0],
+                Migration("active_view", up="SELECT * FROM missing", repeatable=True),
+            ],
+        )
+        with mock.patch.object(
+            broken._compiler, "supports_transactions", return_value=False
+        ):
+            with self.assertRaises(sqlite3.OperationalError):
+                broken.up(validate=False)
+        records = {r.id: r for r in broken.applied_records()}
+        self.assertFalse(records["active_view"].success)
+        self.assertEqual(len(broken.applied_records()), 2)
+
+
 if __name__ == "__main__":
     unittest.main()
