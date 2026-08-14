@@ -6,8 +6,9 @@ are a SQL string, a list of SQL strings, or a callable that receives the
 connection. The Migrator applies pending migrations in order, records each
 applied id in a tracking table, and reverts through the down steps.
 
-There is no automatic diffing against the database catalog: migrations are
-written by hand or generated from a model with create_table_migration().
+Migrations are written by hand, generated from a model with
+create_table_migration(), or produced by schema diffing through
+sustained.autogenerate and Migrator.sync().
 """
 
 from __future__ import annotations

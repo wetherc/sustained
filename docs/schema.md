@@ -61,11 +61,13 @@ print(migration.down)  # ['ALTER TABLE users DROP COLUMN bio']
 Autogeneration refuses to guess about anything that loses data or fails on populated tables:
 
 - **Drops are opt-in.** Extra tables and columns raise unless `allow_drops=True`. A migration containing drops has no down step, because the dropped data cannot come back.
-- **Type changes are never auto-migrated.** A changed type or nullability is reported in the diff and blocks generation until you write that migration by hand or pass `ignore_changed_columns=True`. SQLite cannot alter a column type in place, and a silent rewrite is exactly the change a human should review.
-- **Unsafe adds are rejected.** A new NOT NULL column needs a default; new primary key or autoincrement columns cannot be added with ALTER TABLE.
+- **Type and nullability changes migrate per dialect.** Postgres, MSSQL, and DuckDB alter in place with reversible down steps; Postgres casts take a hint through `type_casts={'table.col': 'col::integer'}`. SQLite rebuilds the table (create new, copy rows, replace), which is not reversible. Pass `ignore_changed_columns=True` to skip them entirely.
+- **NOT NULL needs a value for existing rows.** Adding or tightening to NOT NULL requires a `default` or a `backfill` value on the ColumnDef; generation emits add-nullable, UPDATE backfill, SET NOT NULL, or folds the backfill into a SQLite rebuild. New primary key or autoincrement columns cannot be added with ALTER TABLE.
 - The migration tracking table is excluded from diffing, and `exclude_tables` protects any other tables Sustained does not manage.
 
-Diffing compares column presence, type, and nullability. Constraint changes (primary keys, unique indexes, foreign keys) are out of scope.
+Renames cannot be detected from the catalog, so pass hints: `sync(models, renames={'users.name': 'full_name'}, table_renames={'old': 'new'})` emits reversible RENAME statements instead of a destructive drop-plus-add.
+
+Primary key, foreign key, column-level unique, and default differences are reported as constraint notes in the diff but never auto-migrated.
 
 ## Typed Columns
 
@@ -85,7 +87,18 @@ class User(Model):
     }
 ```
 
-Definitions support composite primary keys (mark several columns `primary_key=True`), `unique`, literal or raw `Expression` defaults, and foreign keys through `references='table.column'`. `autoincrement` requires a single integer primary key; DuckDB and Presto raise because they have no identity columns. A model with `tableColumns` also gets strict column-name access automatically: a typo'd column raises `AttributeError`.
+Definitions support composite primary keys (mark several columns `primary_key=True`), `unique`, literal or raw `Expression` defaults, foreign keys through `references='table.column'`, and `backfill` values for NOT NULL migrations. Models also declare named indexes, which `create_table()` and generated migrations create and keep in sync:
+
+```python
+from sustained.schema import Index
+
+class User(Model):
+    tableName = 'users'
+    tableColumns = {...}
+    indexes = [Index('ix_users_email', 'email', unique=True)]
+```
+
+`autoincrement` requires a single integer primary key; DuckDB and Presto raise because they have no identity columns. A model with `tableColumns` also gets strict column-name access automatically: a typo'd column raises `AttributeError`.
 
 ## Generating and Running DDL Directly
 
@@ -121,3 +134,7 @@ migrator.up()                        # apply all pending
 migrator.up(target='create_users')   # stop after a target
 migrator.status()                    # [(id, applied), ...]
 ```
+
+## Offline Review and Async
+
+`migrator.script('up')` renders every statement a run would execute, including tracking bookkeeping, without touching the database, for review or DBA handoff; `script('down')` renders the rollback. For async services, `AsyncMigrator` in `sustained.aio_migrations` runs the same `Migration` objects on an `AsyncAdapter` with the same `up`, `down`, `down_to`, and `status` surface; callable steps receive the adapter and are awaited.

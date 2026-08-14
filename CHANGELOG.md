@@ -1,5 +1,19 @@
 # Changelog
 
+## 2.4.0 (2026-08-14)
+
+### Added
+
+- Constraint-aware introspection: primary keys, unique constraints, foreign keys, column defaults, and indexes are read from SQLite PRAGMA tables or information_schema, with graceful degradation and system schemas filtered.
+- Type and nullability changes now generate migrations: in-place reversible ALTER COLUMN on Postgres (with `type_casts` USING hints), MSSQL, and DuckDB; automatic table rebuild with row copy on SQLite.
+- Rename hints: `renames={'table.old': 'new'}` and `table_renames` produce reversible RENAME statements (sp_rename on MSSQL) instead of destructive drop-plus-add.
+- Declared indexes on models via `Index`; created with the table and diffed for additions, definition changes, and opt-in drops, all reversible.
+- `backfill` on ColumnDef: NOT NULL adds and tightenings emit add-nullable, UPDATE, SET NOT NULL, or fold into the SQLite rebuild.
+- Length and precision changes detected when both sides report them.
+- Constraint notes: PK, FK, unique, and default drift reported in the diff, never auto-migrated.
+- Offline scripts: `migration_sql()` and `Migrator.script()` render the SQL a run would execute for DBA review.
+- `AsyncMigrator`: the migration runner on an AsyncAdapter with transactional application and awaited callable steps.
+
 ## 2.3.0 (2026-08-14)
 
 ### Added
