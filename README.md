@@ -97,7 +97,7 @@ migrator.down()                    # rolls it back
 
 ## Documentation
 
-The [documentation](https://github.com/wetherc/sustained/tree/main/docs) covers [models](docs/models.md), [queries](docs/queries.md), [filtering](docs/filtering.md), [grouping](docs/grouping.md), [relations and joins](docs/relations.md), [execution, pooling, and async](docs/executing.md), and [schema and migrations](docs/schema.md). The [API reference](docs/reference.md) lists every public method by task.
+The [documentation](https://sustained.tbmh.org/) covers [models](https://sustained.tbmh.org/models), [queries](https://sustained.tbmh.org/queries), [filtering](https://sustained.tbmh.org/filtering), [grouping](https://sustained.tbmh.org/grouping), [relations and joins](https://sustained.tbmh.org/relations), [execution, pooling, and async](https://sustained.tbmh.org/executing), and [schema and migrations](https://sustained.tbmh.org/schema). The [API reference](https://sustained.tbmh.org/reference) lists every public method by task.
 
 ## Development
 
