@@ -251,9 +251,15 @@ class CliTestCase(unittest.TestCase):
         self._write(
             migrations, "003_extra.up.sql", "CREATE TABLE ${extra} (id INTEGER);"
         )
-        code, _, err = self.run_cli("status")
+        name = f"empty_ph_config_{id(self)}"
+        with open(os.path.join(self.dir.name, f"{name}.py"), "w") as f:
+            f.write(CONFIG_TEMPLATE + "\nplaceholders = {}\n")
+        self.addCleanup(sys.modules.pop, name, None)
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            code = main(["status", "--config", name])
         self.assertEqual(code, 1)
-        self.assertIn("placeholder", err)
+        self.assertIn("placeholder", stderr.getvalue())
 
     def test_unknown_dialect_exits_one(self):
         name = f"bad_dialect_{id(self)}"

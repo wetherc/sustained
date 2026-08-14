@@ -173,7 +173,7 @@ Guide: [Schema and Migrations](./schema)
 | `migrator.sync(models, ...)` | Diffs the database against the models, generates a migration, applies it. Accepts `allow_drops`, `ignore_changed_columns`, `renames`, `table_renames`, `type_casts`, `migration_id`. |
 | `migrator.plan(models, ...)` | The migration `sync()` would generate, without registering or applying it; `None` when the schema is current. Same options as `sync()`. |
 | `migrator.baseline(target)` | Records migrations up to and including the target as applied without running them, for adopting a database whose schema already matches. |
-| `load_migrations(directory, placeholders=None)` | Builds `Migration` objects from `<id>.up.sql` / `<id>.down.sql` files, ordered by id, then `<id>.repeat.sql` repeatables in id order. `placeholders` fills `${key}` markers in the files. In `sustained.migration_files`. |
+| `load_migrations(directory, placeholders=None)` | Builds `Migration` objects from `<id>.up.sql` / `<id>.down.sql` files, ordered by id, then `<id>.repeat.sql` repeatables in id order. Passing a `placeholders` mapping fills `${key}` markers in the files; `None` loads them untouched. In `sustained.migration_files`. |
 | `substitute_placeholders(text, placeholders, source)` | Fills `${key}` markers in SQL text; `$${` escapes to a literal `${`. Unknown keys raise `ValueError`. |
 | `migrator.status()` / `applied()` / `pending()` | What has and has not run. `pending()` includes repeatables whose checksum changed. |
 | `migrator.statuses()` | (id, state) pairs: `applied`, `pending`, or `changed` for a repeatable whose contents differ from its last run. |

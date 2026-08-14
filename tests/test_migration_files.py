@@ -178,7 +178,12 @@ class TestLoaderPlaceholders(LoaderTestCase):
     def test_unknown_key_raises(self):
         self.write("0001_grant.up.sql", "GRANT SELECT ON t TO ${reader};\n")
         with self.assertRaisesRegex(ValueError, "0001_grant.up.sql"):
-            load_migrations(self.dir)
+            load_migrations(self.dir, placeholders={})
+
+    def test_no_mapping_leaves_files_untouched(self):
+        self.write("0001_grant.up.sql", "GRANT SELECT ON t TO ${reader};\n")
+        migrations = load_migrations(self.dir)
+        self.assertEqual(migrations[0].up, ["GRANT SELECT ON t TO ${reader}"])
 
     def test_checksum_covers_substituted_text(self):
         self.write("0001_grant.up.sql", "GRANT SELECT ON t TO ${reader};\n")

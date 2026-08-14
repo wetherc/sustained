@@ -277,7 +277,7 @@ GRANT SELECT ON users TO ${reader};
 migrations = load_migrations('migrations', placeholders={'reader': 'app_ro'})
 ```
 
-A `${key}` with no value raises `ValueError` naming the file and the key. `$${` escapes to a literal `${`. Keys are identifiers; there are no expressions, defaults, or environment lookups.
+Passing a mapping, even an empty one, turns substitution on: a `${key}` with no value then raises `ValueError` naming the file and the key, and `$${` escapes to a literal `${`. With no mapping, files load untouched. Keys are identifiers; there are no expressions, defaults, or environment lookups.
 
 Substitution happens before checksums compute, so the checksum covers the SQL that actually ran. Changing a placeholder value after a migration applied flags a checksum mismatch, because different SQL was applied; run `repair()` if the new value is intentional.
 

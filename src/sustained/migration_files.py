@@ -20,7 +20,7 @@ it as the only statement in its file with no trailing semicolon.
 Files may hold `${key}` placeholders, filled from the mapping passed to
 load_migrations(). Substitution happens before checksums are computed,
 so a changed value reads as a changed migration. `$${` escapes to a
-literal `${`.
+literal `${`. With no mapping, files load untouched.
 """
 
 from __future__ import annotations
@@ -96,8 +96,10 @@ def load_migrations(
     '.sql' file follows no naming pattern, so a misnamed migration
     cannot be skipped silently.
 
-    '${key}' placeholders in the files are filled from the placeholders
-    mapping before statements split and checksums compute.
+    When a placeholders mapping is given, even an empty one, '${key}'
+    markers in the files are filled from it before statements split and
+    checksums compute, and an unknown key raises ValueError. When it is
+    None, the files load untouched.
     """
     path = Path(directory)
     if not path.is_dir():
@@ -133,9 +135,12 @@ def load_migrations(
         raise ValueError(f"Down files without an up file: {', '.join(orphaned)}.")
 
     def read(entry: Path) -> str:
-        return substitute_placeholders(
-            entry.read_text(encoding="utf-8"), placeholders, entry.name
-        )
+        text = entry.read_text(encoding="utf-8")
+        # None means substitution is off, so files that happen to contain
+        # '${...}' keep loading as they did before placeholders existed.
+        if placeholders is None:
+            return text
+        return substitute_placeholders(text, placeholders, entry.name)
 
     migrations: List[Migration] = []
     for id in sorted(ups):
