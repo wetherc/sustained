@@ -10,6 +10,7 @@ the dialect's placeholder: qmark for the default and MSSQL dialects
 
 from __future__ import annotations
 
+import threading
 from contextlib import contextmanager
 from typing import (
     TYPE_CHECKING,
@@ -56,6 +57,63 @@ def notify_statement(sql: str, params: Tuple[Any, ...], duration: float) -> None
         _statement_listener(sql, params, duration)
 
 
+# Per-thread stack of connections pinned by transaction() blocks that were
+# opened against a pool. Statements inside the block use the pinned
+# connection instead of checking a fresh one out.
+_thread_state = threading.local()
+
+
+def _pinned_connection() -> Optional[Any]:
+    stack = getattr(_thread_state, "pinned", None)
+    return stack[-1] if stack else None
+
+
+def _pin(connection: Any) -> None:
+    stack = getattr(_thread_state, "pinned", None)
+    if stack is None:
+        stack = []
+        _thread_state.pinned = stack
+    stack.append(connection)
+
+
+def _unpin() -> None:
+    _thread_state.pinned.pop()
+
+
+@contextmanager
+def connection_scope(explicit: Optional[Any], binding: Optional[Any]) -> Iterator[Any]:
+    """
+    Resolves the connection for one statement. An explicit argument wins;
+    then a connection pinned by an open transaction() block on this thread;
+    then the model binding. Pools check a connection out for the scope.
+    """
+    from sustained.pool import ConnectionPool
+
+    if explicit is not None:
+        if isinstance(explicit, ConnectionPool):
+            with explicit.connection() as conn:
+                yield conn
+        else:
+            yield explicit
+        return
+
+    pinned = _pinned_connection()
+    if pinned is not None:
+        yield pinned
+        return
+
+    if binding is None:
+        raise RuntimeError(
+            "No database connection. Bind one with Model.bind(connection) "
+            "or pass it to run()."
+        )
+    if isinstance(binding, ConnectionPool):
+        with binding.connection() as conn:
+            yield conn
+    else:
+        yield binding
+
+
 def in_transaction(connection: Any) -> bool:
     """Reports whether the connection has an open transaction() context."""
     entry = _ACTIVE_TRANSACTIONS.get(id(connection))
@@ -71,7 +129,30 @@ def transaction(connection: Any) -> Iterator[Any]:
 
     Nested contexts on the same connection use ANSI savepoints, so an inner
     failure rolls back only the inner block.
+
+    When given a ConnectionPool, one connection is checked out, pinned to
+    the calling thread for the duration of the block, and released after.
     """
+    from sustained.pool import ConnectionPool
+
+    if isinstance(connection, ConnectionPool):
+        pinned = _pinned_connection()
+        if pinned is not None:
+            # A transaction is already open on this thread; nest on its
+            # connection with a savepoint instead of checking out another.
+            with transaction(pinned):
+                yield pinned
+            return
+        conn = connection.acquire_raw()
+        _pin(conn)
+        try:
+            with transaction(conn):
+                yield conn
+        finally:
+            _unpin()
+            connection.release(conn)
+        return
+
     key = id(connection)
     entry = _ACTIVE_TRANSACTIONS.get(key)
 

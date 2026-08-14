@@ -252,13 +252,10 @@ class Model(metaclass=ModelMeta):
         cls, connection: Optional[Any] = None, if_not_exists: bool = False
     ) -> None:
         """Executes CREATE TABLE for this model on the connection."""
-        conn = connection if connection is not None else cls._connection
-        if conn is None:
-            raise RuntimeError(
-                "No database connection. Bind one with Model.bind(connection) "
-                "or pass it to create_table()."
-            )
-        conn.cursor().execute(cls.create_table_sql(if_not_exists=if_not_exists))
+        from sustained.execution import connection_scope
+
+        with connection_scope(connection, cls._connection) as conn:
+            conn.cursor().execute(cls.create_table_sql(if_not_exists=if_not_exists))
 
     @classmethod
     def drop_table_sql(cls, if_exists: bool = True) -> str:
@@ -271,13 +268,10 @@ class Model(metaclass=ModelMeta):
         cls, connection: Optional[Any] = None, if_exists: bool = True
     ) -> None:
         """Executes DROP TABLE for this model on the connection."""
-        conn = connection if connection is not None else cls._connection
-        if conn is None:
-            raise RuntimeError(
-                "No database connection. Bind one with Model.bind(connection) "
-                "or pass it to drop_table()."
-            )
-        conn.cursor().execute(cls.drop_table_sql(if_exists=if_exists))
+        from sustained.execution import connection_scope
+
+        with connection_scope(connection, cls._connection) as conn:
+            conn.cursor().execute(cls.drop_table_sql(if_exists=if_exists))
 
     @classmethod
     def transaction(cls, connection: Optional[Any] = None) -> Any:
