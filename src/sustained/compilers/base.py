@@ -160,6 +160,14 @@ class Compiler:
         """
         return f"RETURNING {columns_sql}"
 
+    def compile_ctas(self, table_sql: str, select_sql: str, temporary: bool) -> str:
+        """
+        Renders a CREATE TABLE ... AS statement. Dialects with a different
+        shape raise DialectError.
+        """
+        keyword = "CREATE TEMPORARY TABLE" if temporary else "CREATE TABLE"
+        return f"{keyword} {table_sql} AS {select_sql}"
+
     def compile_top(self, value: int) -> str:
         from sustained.exceptions import DialectError
 

@@ -56,6 +56,11 @@ class MssqlCompiler(Compiler):
             "MSSQL does not support RETURNING. Use an OUTPUT clause via raw SQL."
         )
 
+    def compile_ctas(self, table_sql: str, select_sql: str, temporary: bool) -> str:
+        raise DialectError(
+            "MSSQL does not support CREATE TABLE AS. Use SELECT ... INTO via raw SQL."
+        )
+
     def compile_boolean(self, value: bool) -> str:
         # T-SQL has no boolean literals; BIT columns compare against 1 and 0.
         return "1" if value else "0"

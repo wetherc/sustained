@@ -94,6 +94,8 @@ class QueryBuilder:
         self._eager_relations: List[str] = []
         self._conflict_columns: Optional[List[str]] = None
         self._conflict_action: Optional[Tuple[str, Optional[List[str]]]] = None
+        self._insert_from: Optional[Tuple[Optional[List[str]], "QueryBuilder"]] = None
+        self._ctas_target: Tuple[str, bool] = ("", False)
 
     def distinct(self) -> "QueryBuilder":
         """
@@ -441,9 +443,17 @@ class QueryBuilder:
 
     def _render_sql(self, ctx: RenderContext, include_ctes: bool = True) -> str:
         """Renders the full statement with the given context."""
+        if self._stmt_type == "ctas":
+            table_name, temporary = self._ctas_target
+            table_sql = self._compiler.quote_fully_qualified_identifier(table_name)
+            select_sql = self._render_select(ctx, include_ctes)
+            return self._compiler.compile_ctas(table_sql, select_sql, temporary)
         if self._stmt_type != "select":
             return self._render_dml(ctx)
+        return self._render_select(ctx, include_ctes)
 
+    def _render_select(self, ctx: RenderContext, include_ctes: bool = True) -> str:
+        """Renders the SELECT statement body."""
         query_parts = []
 
         if include_ctes:
@@ -636,6 +646,46 @@ class QueryBuilder:
         self._insert_rows = [dict(row) for row in rows]
         return self
 
+    def insert_from(
+        self, columns: Optional[List[str]], query: "QueryBuilder"
+    ) -> "QueryBuilder":
+        """
+        Turns this query into an INSERT ... SELECT statement.
+
+        Args:
+            columns: The target columns, or None to insert positionally.
+            query: The SELECT query providing the rows.
+
+        Returns:
+            The current QueryBuilder instance for chaining.
+        """
+        if not isinstance(query, QueryBuilder):
+            raise TypeError("insert_from() requires a QueryBuilder as the source.")
+        self._stmt_type = "insert_from"
+        self._insert_from = (list(columns) if columns else None, query)
+        return self
+
+    def create_table_as(
+        self, table_name: str, temporary: bool = False
+    ) -> "QueryBuilder":
+        """
+        Turns this SELECT into a CREATE TABLE ... AS statement (CTAS).
+
+        Args:
+            table_name: The name of the table to create.
+            temporary: Create a temporary table when True.
+
+        Returns:
+            The current QueryBuilder instance for chaining.
+        """
+        if self._stmt_type != "select":
+            raise ValueError("create_table_as() applies to SELECT queries.")
+        if not table_name:
+            raise ValueError("create_table_as() requires a table name.")
+        self._stmt_type = "ctas"
+        self._ctas_target = (table_name, temporary)
+        return self
+
     def onConflict(self, *columns: str) -> "QueryBuilder":
         """
         Declares the conflict target for an upsert. Follow with merge() or
@@ -732,6 +782,27 @@ class QueryBuilder:
     def _render_dml(self, ctx: RenderContext) -> str:
         """Renders an INSERT, UPDATE, or DELETE statement."""
         table_sql = self._model_table_sql()
+
+        if self._stmt_type == "insert_from":
+            if self._where_builder.has_clauses():
+                raise ValueError("INSERT statements cannot have a WHERE clause.")
+            assert self._insert_from is not None
+            source_columns, source_query = self._insert_from
+            columns_part = ""
+            if source_columns:
+                quoted = ", ".join(
+                    self._compiler.quote_identifier(c) for c in source_columns
+                )
+                columns_part = f" ({quoted})"
+            select_sql = source_query._render_sql(ctx)
+            sql = f"INSERT INTO {table_sql}{columns_part} {select_sql}"
+            if self._returning_columns:
+                returning_sql = ", ".join(
+                    self._compiler.quote_column_reference(c)
+                    for c in self._returning_columns
+                )
+                sql += f" {self._compiler.compile_returning(returning_sql)}"
+            return sql
 
         if self._stmt_type == "insert":
             if self._where_builder.has_clauses():
