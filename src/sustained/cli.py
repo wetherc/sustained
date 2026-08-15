@@ -425,6 +425,12 @@ def _build_parser() -> argparse.ArgumentParser:
         machine_readable=True,
     )
 
+    # Ordered as they are used: plan reads, rehearse proves, migrate applies.
+    command(
+        "rehearse",
+        "Run the pending migrations up and back down, then roll it all back.",
+    )
+
     migrate = command("migrate", "Apply pending migrations in order.")
     migrate.add_argument("--target", help="Stop after this migration id.")
     migrate.add_argument(
@@ -447,10 +453,6 @@ def _build_parser() -> argparse.ArgumentParser:
         "validate",
         "Check the tracking table against the migrations.",
         machine_readable=True,
-    )
-    command(
-        "rehearse",
-        "Run the pending migrations up and back down, then roll it all back.",
     )
     command("repair", "Fix tracking rows after failures or intentional edits.")
 
