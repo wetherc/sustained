@@ -134,7 +134,11 @@ class RehearsalResult(NamedTuple):
 
 
 # Dialects whose schema changes roll back, so a rehearsal can undo itself.
-# The others need a scratch database; see Migrator.rehearse().
+# The others need a scratch database; see Migrator.rehearse(). DEFAULT is
+# on the list for SQLite, the engine the generic compiler usually serves;
+# a config that leaves the dialect unset while pointing at an engine
+# without transactional DDL, such as MySQL, should declare its dialect or
+# rehearse against a scratch database.
 _REHEARSABLE = frozenset({Dialects.DEFAULT, Dialects.POSTGRES, Dialects.DUCKDB})
 
 
@@ -148,8 +152,9 @@ def _check_rehearsable(dialect: Dialects) -> None:
         f"rehearse needs a database whose schema changes roll back, and "
         f"{dialect.name.lower()} is not on that list "
         f"({', '.join(sorted(d.name.lower() for d in _REHEARSABLE))}). "
-        "Point rehearse at a scratch database instead: define "
-        "get_rehearsal_connection() in the config module."
+        "Point rehearse at a scratch database instead: pass scratch=True "
+        "on a throwaway connection, or define get_rehearsal_connection() "
+        "in the config module when running the CLI."
     )
 
 
@@ -313,9 +318,13 @@ def _tag_migration(error: BaseException, migration_id: str) -> None:
     Records which migration raised on the exception itself, so a caller
     that catches it can name the migration. The CLI reads it when it hands
     a failure to the config module's on_error callback, and when it prints
-    the error.
+    the error. An exception type that rejects new attributes, such as one
+    with __slots__, keeps its error unmarked rather than masking it.
     """
-    setattr(error, "migration_id", migration_id)
+    try:
+        setattr(error, "migration_id", migration_id)
+    except Exception:
+        pass
 
 
 def _validation_problems(
@@ -656,6 +665,11 @@ class Migrator:
         rows written before checksums existed. Returns a description of
         every action taken. Schema changes a failed attempt left behind
         are not touched; clean those up first.
+
+        Repeatables keep their stored checksums. For them a changed
+        checksum schedules a re-run, and rewriting the row here would
+        cancel that run without the new contents ever reaching the
+        database.
         """
         records = self.applied_records()
         by_id = {m.id: m for m in self._migrations}
@@ -672,7 +686,7 @@ class Migrator:
                 actions.append(f"removed the failed attempt of '{record.id}'")
                 continue
             migration = by_id.get(record.id)
-            if migration is None:
+            if migration is None or migration.repeatable:
                 continue
             current = migration_checksum(migration)
             if current is not None and current != record.checksum:
@@ -731,9 +745,11 @@ class Migrator:
         allow_out_of_order=True to accept a pending migration that is
         ordered before an applied one.
 
-        Repeatables run after the versioned migrations, on every call
-        including targeted ones, whenever their checksum is new or
-        changed. The target must name a versioned migration.
+        Repeatables run after the versioned migrations, whenever their
+        checksum is new or changed. A targeted run skips them: a
+        repeatable may depend on a versioned migration past the target,
+        and the next full up() runs it. The target must name a versioned
+        migration.
         """
         from sustained.exceptions import MigrationError
 
@@ -767,7 +783,7 @@ class Migrator:
                 self._apply(migration, next_seq, update=False)
                 next_seq += 1
                 applied_now.append(migration.id)
-            for migration in self._repeatables():
+            for migration in self._repeatables() if target is None else []:
                 record = records_by_id.get(migration.id)
                 if _is_current(record, migration_checksum(migration), True):
                     continue
@@ -844,16 +860,17 @@ class Migrator:
                 "rehearse cannot run inside an open transaction() block: "
                 "its rollback would take the caller's work back too."
             )
-        self.validate()
-        pending = self.pending()
-        if not pending:
-            return []
-        records = {r.id: r for r in self.applied_records()}
-        seq = _next_seq(list(records.values()))
-
         # The lock sits outside the rehearsal transaction, so the rollback
-        # runs before the lock is released.
+        # runs before the lock is released. The state reads sit inside it,
+        # so a concurrent migrator cannot apply between the read and the
+        # rehearsal.
         with self._lock_scope():
+            self.validate()
+            pending = self.pending()
+            if not pending:
+                return []
+            records = {r.id: r for r in self.applied_records()}
+            seq = _next_seq(list(records.values()))
             self._rehearsing = True
             try:
                 # Close whatever transaction the reads above opened, so the

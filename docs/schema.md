@@ -60,7 +60,7 @@ migrator.up(allow_out_of_order=True)    # accept a late-arriving migration
 migrator.up(validate=False)             # skip the checks entirely
 ```
 
-`repair()` brings the tracking table back in line: it deletes rows left by failed attempts and rewrites stored checksums after an intentional edit, including null checksums on rows written before checksums existed. Repair only fixes bookkeeping; schema changes a failed attempt left behind need manual cleanup first.
+`repair()` brings the tracking table back in line: it deletes rows left by failed attempts and rewrites stored checksums after an intentional edit, including null checksums on rows written before checksums existed. Repair only fixes bookkeeping; schema changes a failed attempt left behind need manual cleanup first. Repeatables keep their stored checksums: a changed repeatable is scheduled to re-run, and the next `up()` runs it.
 
 ```python
 migrator.repair()
@@ -254,7 +254,7 @@ Empty up or down files, a down file without its up file, and `.sql` files that f
 
 ## Repeatable Migrations
 
-Views, functions, and seed data are replaced rather than evolved, so they fit badly in versioned migrations. A `<id>.repeat.sql` file is a repeatable migration: it runs whenever its checksum is new or changed, after every versioned migration, on every `migrate` including targeted ones.
+Views, functions, and seed data are replaced rather than evolved, so they fit badly in versioned migrations. A `<id>.repeat.sql` file is a repeatable migration: it runs whenever its checksum is new or changed, after every versioned migration. A targeted `migrate` skips repeatables, because one may depend on a versioned migration past the target; the next full `migrate` runs them.
 
 ```sql
 -- active_users.repeat.sql
@@ -281,7 +281,7 @@ migrations = load_migrations('migrations', placeholders={'reader': 'app_ro'})
 
 Passing a mapping, even an empty one, turns substitution on: a `${key}` with no value then raises `ValueError` naming the file and the key, and `$${` escapes to a literal `${`. With no mapping, files load untouched. Keys are identifiers; there are no expressions, defaults, or environment lookups.
 
-Substitution happens before checksums compute, so the checksum covers the SQL that actually ran. Changing a placeholder value after a migration applied flags a checksum mismatch, because different SQL was applied; run `repair()` if the new value is intentional.
+Substitution happens before checksums compute, so the checksum covers the SQL that actually ran. Changing a placeholder value after a versioned migration applied flags a checksum mismatch, because different SQL was applied; run `repair()` if the new value is intentional. A repeatable needs no repair: its changed checksum re-runs it with the new value.
 
 ## Command Line
 
@@ -332,9 +332,10 @@ drift
 
 2 pending migrations, 1 drift statement
 run: sustained migrate
+run: Migrator.sync(models)
 ```
 
-A statement that drops a table, drops a column, or truncates one is labelled `destructive`. The scan is textual, so a drop named inside a string literal is labelled too. The label informs the operator; nothing is blocked and there is no flag to gate it.
+A statement that drops a table, drops a column, or truncates one is labelled `destructive`. A column drop written without the COLUMN keyword, as MySQL allows, is labelled too. The scan is textual, so a drop named inside a string literal is labelled too. The label informs the operator; nothing is blocked and there is no flag to gate it.
 
 The drift section appears only when the config module names `models`. It reports every difference, drops included, unlike `sync()`, which refuses to generate them. With no `models`, the plan says drift went unchecked rather than reporting none.
 
@@ -390,7 +391,7 @@ A rehearsal proves that the statements are valid and that the down steps reverse
 
 The rehearsal creates the tracking table when the database has none, because it reads the applied rows before it opens its transaction. Nothing else survives: the tracking rows it writes roll back with everything else, and the migrations stay pending. A callable step that commits on its own is the exception, since that commit cannot be taken back.
 
-Only databases whose schema changes roll back can rehearse: SQLite, Postgres, and DuckDB. The rest are refused, and so is a connection in autocommit mode or one inside an open `transaction()` block, because none of them could take the changes back.
+Only databases whose schema changes roll back can rehearse: SQLite, Postgres, and DuckDB. The rest are refused, and so is a connection in autocommit mode or one inside an open `transaction()` block, because none of them could take the changes back. The check reads the declared dialect. The default dialect passes it, since the generic compiler usually serves SQLite; a config that leaves the dialect unset while pointing at an engine like MySQL would rehearse for real, so declare the dialect or use a scratch database.
 
 ### Rehearsing on a scratch database
 
@@ -401,7 +402,7 @@ def get_rehearsal_connection():
     return psycopg.connect('postgresql://localhost/app_rehearsal')
 ```
 
-The scratch database is usually empty, so the whole history replays rather than what is pending on the real one, which proves the migrations run from nothing. The dialect check does not apply, the changes may survive the rollback, and the footer says so. The connection closes when the command ends.
+The scratch database is usually empty, so the whole history replays rather than what is pending on the real one, which proves the migrations run from nothing. The dialect check does not apply, the changes may survive the rollback, and the footer says so. The connection closes when the command ends. On an engine whose schema changes do not roll back, the rehearsed objects stay behind, so recreate the scratch database before the next rehearsal.
 
 In Python, `migrator.rehearse()` returns a list of `RehearsalResult(id, up_ok, down_ok, error)`. `down_ok` is `None` when nothing was proved, and `error` then says why. Pass `rehearse(scratch=True)` for a connection to a database you can throw away. `AsyncMigrator.rehearse()` is the same on an adapter.
 

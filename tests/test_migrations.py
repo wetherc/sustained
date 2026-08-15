@@ -317,6 +317,41 @@ class TestValidateAndRepair(MigrationTestCase):
         self.assertEqual(actions, ["updated the stored checksum of 'a'"])
         self.assertEqual(edited.validate(), [])
 
+    def test_repair_leaves_a_changed_repeatable_pending(self):
+        Migrator(
+            self.conn,
+            [Migration("r", up="CREATE VIEW rv AS SELECT 1", repeatable=True)],
+        ).up()
+        changed = Migrator(
+            self.conn,
+            [Migration("r", up="CREATE VIEW rv2 AS SELECT 2", repeatable=True)],
+        )
+        self.assertEqual(changed.repair(), [])
+        self.assertEqual([m.id for m in changed.pending()], ["r"])
+        self.assertEqual(changed.up(), ["r"])
+
+    def test_repair_still_removes_a_repeatable_failure_row(self):
+        migration = Migration("r", up="CREATE VIEW rv AS SELECT 1", repeatable=True)
+        migrator = Migrator(self.conn, [migration])
+        migrator.applied_records()
+        with mock.patch.object(
+            migrator._compiler, "supports_transactions", return_value=False
+        ):
+            migrator._record_failure(migration, 1)
+        self.assertEqual(migrator.repair(), ["removed the failed attempt of 'r'"])
+        self.assertEqual(migrator.validate(), [])
+
+    def test_tag_migration_never_masks_the_original_error(self):
+        from sustained.migrations import _tag_migration
+
+        class Frozen(Exception):
+            def __setattr__(self, name, value):
+                raise AttributeError(name)
+
+        error = Frozen("boom")
+        _tag_migration(error, "m1")
+        self.assertFalse(hasattr(error, "migration_id"))
+
     def test_repair_adopts_legacy_rows_without_checksums(self):
         self.conn.execute(
             "CREATE TABLE sustained_migrations "
@@ -529,16 +564,17 @@ class TestRepeatableMigrations(MigrationTestCase):
         migrator.up()
         self.assertEqual(migrator.down_to("001_t"), ["002_u"])
 
-    def test_target_runs_repeatables_and_rejects_repeatable_target(self):
+    def test_target_skips_repeatables_and_rejects_repeatable_target(self):
         migrations = self.migrations()
         migrations.insert(
             1,
             Migration("002_u", up="CREATE TABLE u (id INTEGER)", down="DROP TABLE u"),
         )
         migrator = Migrator(self.conn, migrations)
-        self.assertEqual(migrator.up(target="001_t"), ["001_t", "active_view"])
+        self.assertEqual(migrator.up(target="001_t"), ["001_t"])
         with self.assertRaisesRegex(ValueError, "repeatable"):
             migrator.up(target="active_view")
+        self.assertEqual(migrator.up(), ["002_u", "active_view"])
 
     def test_baseline_records_repeatables_at_current_checksum(self):
         self.conn.execute("CREATE TABLE t (id INTEGER)")
@@ -638,13 +674,16 @@ class TestRehearse(MigrationTestCase):
 
     def test_rehearse_after_a_partial_run_covers_only_the_rest(self):
         migrator = Migrator(self.conn, self.migrations())
-        # A targeted run also applies the repeatables, so only 002 is left.
+        # A targeted run skips the repeatables, so 002 and the view remain.
         migrator.up(target="001_users")
         results = migrator.rehearse()
-        self.assertEqual([(r.id, r.down_ok) for r in results], [("002_flags", True)])
+        self.assertEqual(
+            [(r.id, r.down_ok) for r in results],
+            [("002_flags", True), ("r_view", None)],
+        )
         self.assertIn("r_users", table_names(self.conn))
         self.assertNotIn("r_flags", table_names(self.conn))
-        self.assertEqual(migrator.applied(), ["001_users", "r_view"])
+        self.assertEqual(migrator.applied(), ["001_users"])
 
     def test_rehearse_reruns_a_changed_repeatable_without_recording_it(self):
         migrator = Migrator(self.conn, self.migrations())

@@ -133,6 +133,25 @@ class TestAsyncMigrator(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(actions, ["updated the stored checksum of 'a'"])
         self.assertEqual(await edited.validate(), [])
 
+    async def test_repair_leaves_a_changed_repeatable_pending(self):
+        await AsyncMigrator(
+            self.adapter,
+            [Migration("r", up="CREATE VIEW rv AS SELECT 1", repeatable=True)],
+        ).up()
+        changed = AsyncMigrator(
+            self.adapter,
+            [Migration("r", up="CREATE VIEW rv2 AS SELECT 2", repeatable=True)],
+        )
+        self.assertEqual(await changed.repair(), [])
+        self.assertEqual([m.id for m in await changed.pending()], ["r"])
+        self.assertEqual(await changed.up(), ["r"])
+
+    async def test_rehearse_rejects_autocommit_connections(self):
+        self.conn.autocommit = True
+        migrator = AsyncMigrator(self.adapter, self.migrations())
+        with self.assertRaisesRegex(ValueError, "autocommit"):
+            await migrator.rehearse()
+
     async def test_up_validates_by_default(self):
         from sustained.exceptions import MigrationError
 

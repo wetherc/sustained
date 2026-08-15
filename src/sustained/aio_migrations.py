@@ -298,6 +298,11 @@ class AsyncMigrator:
         rows written before checksums existed. Returns a description of
         every action taken. Schema changes a failed attempt left behind
         are not touched; clean those up first.
+
+        Repeatables keep their stored checksums. For them a changed
+        checksum schedules a re-run, and rewriting the row here would
+        cancel that run without the new contents ever reaching the
+        database.
         """
         records = await self.applied_records()
         by_id = {m.id: m for m in self._migrations}
@@ -313,7 +318,7 @@ class AsyncMigrator:
                 actions.append(f"removed the failed attempt of '{record.id}'")
                 continue
             migration = by_id.get(record.id)
-            if migration is None:
+            if migration is None or migration.repeatable:
                 continue
             current = migration_checksum(migration)
             if current is not None and current != record.checksum:
@@ -417,9 +422,11 @@ class AsyncMigrator:
         allow_out_of_order=True to accept a pending migration that is
         ordered before an applied one.
 
-        Repeatables run after the versioned migrations, on every call
-        including targeted ones, whenever their checksum is new or
-        changed. The target must name a versioned migration.
+        Repeatables run after the versioned migrations, whenever their
+        checksum is new or changed. A targeted run skips them: a
+        repeatable may depend on a versioned migration past the target,
+        and the next full up() runs it. The target must name a versioned
+        migration.
         """
         from sustained.exceptions import MigrationError
 
@@ -453,7 +460,7 @@ class AsyncMigrator:
                 await self._apply(migration, next_seq, update=False)
                 next_seq += 1
                 applied_now.append(migration.id)
-            for migration in self._repeatables():
+            for migration in self._repeatables() if target is None else []:
                 record = records_by_id.get(migration.id)
                 if _is_current(record, migration_checksum(migration), True):
                     continue
@@ -503,21 +510,29 @@ class AsyncMigrator:
 
         if not scratch:
             _check_rehearsable(self._dialect)
+        connection = getattr(self._adapter, "_connection", None)
+        if getattr(connection, "autocommit", False) is True:
+            raise ValueError(
+                "rehearse cannot run on a connection in autocommit mode: "
+                "nothing would roll back. Open the connection without "
+                "autocommit, or point rehearse at a scratch database."
+            )
         if in_async_transaction(self._adapter):
             raise ValueError(
                 "rehearse cannot run inside an open async_transaction() "
                 "block: its rollback would take the caller's work back too."
             )
-        await self.validate()
-        pending = await self.pending()
-        if not pending:
-            return []
-        records = {r.id: r for r in await self.applied_records()}
-        seq = _next_seq(list(records.values()))
-
         # The lock sits outside the rehearsal transaction, so the rollback
-        # runs before the lock is released.
+        # runs before the lock is released. The state reads sit inside it,
+        # so a concurrent migrator cannot apply between the read and the
+        # rehearsal.
         async with self._lock_scope():
+            await self.validate()
+            pending = await self.pending()
+            if not pending:
+                return []
+            records = {r.id: r for r in await self.applied_records()}
+            seq = _next_seq(list(records.values()))
             self._rehearsing = True
             try:
                 # Close whatever transaction the reads above opened, so the
