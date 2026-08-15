@@ -295,12 +295,14 @@ def get_connection():
 migrations_dir = 'migrations'
 # optional: migrations = [...], placeholders = {...},
 # models = [User, Post], dialect = 'postgres', table = '...',
-# tracking_table_options = TableOptions(...)
+# tracking_table_options = TableOptions(...),
+# get_rehearsal_connection(), before_migrate(), after_migrate(), on_error()
 ```
 
 ```console
 $ sustained plan                    # what a run would do; exits 2 when work is waiting
 $ sustained status
+$ sustained rehearse                # run it all, forwards and back, then roll back
 $ sustained migrate                 # --target ID, --no-validate, --allow-out-of-order
 $ sustained down                    # --steps N or --to ID
 $ sustained validate                # exits 1 when problems exist
@@ -358,6 +360,67 @@ $ sustained plan --json
 ```
 
 `statements` is `null` for a callable step, which has no SQL to count. `drift` is `null`, not `[]`, when the config module names no models, so a caller can tell "nothing was compared" from "compared and found no gap". `status --json` prints `{"migrations": [{"id": ..., "state": ...}]}` and `validate --json` prints `{"ok": ..., "problems": [...]}`. Output is plain in both modes; nothing is coloured.
+
+## Rehearsing a Migration
+
+`plan` reads the migrations. `rehearse` runs them. It applies every pending migration, runs the down steps back down, and rolls the whole thing back, so the database ends where it started and you learn whether the SQL is valid and whether it reverses.
+
+```console
+$ sustained rehearse
+rehearsed 003_sessions  up ok, down ok
+rehearsed 004_trim      up ok, down ok
+rehearsed vw_active     up ok, no down step (repeatable)
+rollback complete, database unchanged
+```
+
+A broken migration names the statement that failed and the migrations under it that never got their turn:
+
+```console
+$ sustained rehearse
+rehearsed 003_sessions  up ok, down not rehearsed: the run stopped
+failed    004_trim      up: column "legacy" of relation "users" does not exist
+rollback complete, database unchanged
+```
+
+The run exits 1 when an up or a down step failed, and 0 otherwise. A migration with no down step is not a failure: the line says `no down step`, and the migrations older than it report `down not reached`, because they sit under changes that cannot be taken back. Repeatables run in their usual place, after the versioned migrations, and have no down step to prove.
+
+A rehearsal proves that the statements are valid and that the down steps reverse them. It proves nothing about how long they take on a production-sized table, or what happens to the rows in it.
+
+The rehearsal creates the tracking table when the database has none, because it reads the applied rows before it opens its transaction. Nothing else survives: the tracking rows it writes roll back with everything else, and the migrations stay pending. A callable step that commits on its own is the exception, since that commit cannot be taken back.
+
+Only databases whose schema changes roll back can rehearse: SQLite, Postgres, and DuckDB. The rest are refused, and so is a connection in autocommit mode or one inside an open `transaction()` block, because none of them could take the changes back.
+
+### Rehearsing on a scratch database
+
+Where the rollback cannot be trusted, point the rehearsal somewhere disposable. A config module that defines `get_rehearsal_connection()` sends `rehearse` there instead:
+
+```python
+def get_rehearsal_connection():
+    return psycopg.connect('postgresql://localhost/app_rehearsal')
+```
+
+The scratch database is usually empty, so the whole history replays rather than what is pending on the real one, which proves the migrations run from nothing. The dialect check does not apply, the changes may survive the rollback, and the footer says so. The connection closes when the command ends.
+
+In Python, `migrator.rehearse()` returns a list of `RehearsalResult(id, up_ok, down_ok, error)`. `down_ok` is `None` when nothing was proved, and `error` then says why. Pass `rehearse(scratch=True)` for a connection to a database you can throw away. `AsyncMigrator.rehearse()` is the same on an adapter.
+
+## Callbacks Around a Run
+
+The config module can name three functions, and `migrate` calls whichever ones it finds:
+
+```python
+def before_migrate(connection):
+    notify('migration starting')
+
+def after_migrate(connection, applied):
+    notify(f'applied {len(applied)} migrations')
+
+def on_error(connection, migration_id, error):
+    page_someone(f'{migration_id} failed: {error}')
+```
+
+`before_migrate` runs before the run starts, which is before validation and before the advisory lock. `after_migrate` runs only when at least one migration applied, so a run with nothing to do stays quiet. `on_error` runs after the failure and before it reaches the shell; if the callback itself raises, its error prints on stderr and the migration error is the one that decides the exit code. `migration_id` names the migration that failed, or is `None` when the run failed before reaching one.
+
+Only `migrate` calls them. `rehearse` does not, since nothing real happened. Code calling `Migrator` directly already controls what runs around `up()`.
 
 ## Offline Review and Async
 

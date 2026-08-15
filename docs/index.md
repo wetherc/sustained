@@ -17,6 +17,7 @@ adults = User.query().where(User.c.age >= 18).orderBy('name').run()
 - **Writes data.** `insert()`, `update()`, `delete()`, upserts through `onConflict()`, `INSERT ... SELECT`, CREATE TABLE AS, and RETURNING.
 - **Hydrates results.** Rows become model instances, plain dicts, pandas DataFrames, or pyarrow Tables. Relations eager load with `withGraphFetched()`.
 - **Manages schema.** Models declare typed columns and indexes. `Migrator.sync()` diffs the live database against your models, generates a migration, applies it, and `down()` rolls it back. Destructive changes are opt-in.
+- **Rehearses migrations.** `sustained rehearse` applies every pending migration, runs the down steps back down, and rolls the whole thing back. A migration that does not run, or does not reverse, says so before it reaches the real schema.
 - **Runs async.** The same queries run through driver adapters with `await query.arun()`, including asyncpg and aiosqlite, plus an `AsyncMigrator`.
 
 ## What Sustained does not do
@@ -41,7 +42,7 @@ These are design decisions, not roadmap gaps. Knowing them up front saves you a 
 | Aggregate and filter groups | [Grouping](./grouping) |
 | Join tables and define relations | [Relations and Joins](./relations) |
 | Run queries, write data, transactions, pooling, async | [Executing Queries](./executing) |
-| Create tables, generate and roll back migrations | [Schema and Migrations](./schema) |
+| Create tables, rehearse, generate and roll back migrations | [Schema and Migrations](./schema) |
 | Look up any method by name | [API Reference](./reference) |
 
 New to Sustained? Read the pages in the order above. Each builds on the one before it.

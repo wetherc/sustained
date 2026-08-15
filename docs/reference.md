@@ -172,6 +172,8 @@ Guide: [Schema and Migrations](./schema)
 | `migrator.down(steps=1)` / `migrator.down_to(id)` | Reverts newest-first. |
 | `migrator.sync(models, ...)` | Diffs the database against the models, generates a migration, applies it. Accepts `allow_drops`, `ignore_changed_columns`, `renames`, `table_renames`, `type_casts`, `migration_id`. |
 | `migrator.plan(models, ...)` | The migration `sync()` would generate, without registering or applying it; `None` when the schema is current. Same options as `sync()`. |
+| `migrator.rehearse(scratch=False)` | Applies every pending migration, runs the down steps back down, and rolls it all back, so the database is untouched. Returns a `RehearsalResult` list. Only SQLite, Postgres, and DuckDB may rehearse; `scratch=True` waives that for a throwaway database. |
+| `RehearsalResult(id, up_ok, down_ok, error)` | What a rehearsal proved about one migration. `down_ok` is `None` when nothing was proved, and `error` then says why: no down step, not reached, or the run stopped. |
 | `migrator.baseline(target)` | Records migrations up to and including the target as applied without running them, for adopting a database whose schema already matches. |
 | `load_migrations(directory, placeholders=None)` | Builds `Migration` objects from `<id>.up.sql` / `<id>.down.sql` files, ordered by id, then `<id>.repeat.sql` repeatables in id order. Passing a `placeholders` mapping fills `${key}` markers in the files; `None` loads them untouched. In `sustained.migration_files`. |
 | `substitute_placeholders(text, placeholders, source)` | Fills `${key}` markers in SQL text; `$${` escapes to a literal `${`. Unknown keys raise `ValueError`. |
@@ -180,8 +182,10 @@ Guide: [Schema and Migrations](./schema)
 | `migrator.script(direction)` | Renders the SQL a run would execute, including tracking bookkeeping, without executing. |
 | `create_table_migration(model)` | A create/drop migration pair derived from a model. |
 | `migration_sql(migration, direction)` | One migration's statements for offline review. |
-| `AsyncMigrator` | The same runner on an `AsyncAdapter`, in `sustained.aio_migrations`. Includes `baseline()`. |
-| `sustained <command> --config module` | The CLI: `status`, `plan`, `migrate`, `down`, `validate`, `repair`, `script`, `baseline`. Also runs as `python -m sustained`. |
+| `AsyncMigrator` | The same runner on an `AsyncAdapter`, in `sustained.aio_migrations`. Includes `baseline()` and `rehearse()`. |
+| `sustained <command> --config module` | The CLI: `status`, `plan`, `rehearse`, `migrate`, `down`, `validate`, `repair`, `script`, `baseline`. Also runs as `python -m sustained`. |
+| `sustained rehearse` | Runs the pending migrations up and back down, then rolls it all back. Exits 1 when a step failed. A config module defining `get_rehearsal_connection()` sends the rehearsal to a scratch database instead. |
+| `before_migrate` / `after_migrate` / `on_error` | Config module callbacks around `sustained migrate`. `after_migrate(connection, applied)` runs only when something applied; `on_error(connection, migration_id, error)` runs before the failure reaches the shell. |
 | `sustained plan` | Pending migrations with statement counts and destructive labels, the problems `validate` reports, and the drift from the config module's `models`. Exits 0 when current, 2 when work is waiting, 1 on problems. |
 | `--json` on `status`, `validate`, `plan` | One JSON object on stdout instead of the plain lines. Exit codes unchanged. |
 | `destructive_statements(sql)` | The statements that drop a table, drop a column, or truncate, whitespace collapsed. A textual scan for labelling, in `sustained.analysis`. |

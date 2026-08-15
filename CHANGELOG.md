@@ -1,5 +1,19 @@
 # Changelog
 
+## 2.10.0 (2026-08-14)
+
+### Added
+
+- `sustained rehearse` and `Migrator.rehearse()`: applies every pending migration, runs the down steps back down, and rolls the whole thing back, so the database ends where it started. It reports whether each up step ran and whether each down step ran, exits 1 when a step failed, and exits 0 otherwise. A migration with no down step is not a failure; its line says so, and the migrations older than it report that the sweep never reached them, since they sit under changes that cannot be taken back. Repeatables run in their usual place and have no down step to prove. The tracking rows a rehearsal writes roll back with everything else, so the migrations stay pending. `AsyncMigrator.rehearse()` is the same on an adapter.
+- Only databases whose schema changes roll back may rehearse: SQLite, Postgres, and DuckDB. The others raise with the reason. So does a connection in autocommit mode, and one inside an open `transaction()` block, whose work the rollback would take back too. A config module that defines `get_rehearsal_connection()` sends the rehearsal to a scratch database instead, where the dialect check does not apply and the changes may survive the rollback. A scratch database is usually empty, so the whole history replays there rather than what is pending on the real one.
+- `Compiler.begin_transaction_sql()` and `Compiler.rollback_transaction_sql()`: the statements that open and take back a transaction, which a rehearsal uses instead of the driver's own calls. Drivers disagree on when a transaction exists: SQLite opens one for INSERT but not for CREATE TABLE, and asyncpg runs in autocommit until one is opened, with an adapter whose `rollback()` does nothing. Both would leave a rehearsal's changes in place. MSSQL spells them `BEGIN TRANSACTION` and `ROLLBACK TRANSACTION`; engines without transactions return `None`. The rehearsal rolls back before it begins, so the explicit statement does not land inside a transaction the reads already opened.
+- Config module callbacks around `sustained migrate`: `before_migrate(connection)` before the run starts, `after_migrate(connection, applied)` when at least one migration applied, and `on_error(connection, migration_id, error)` after a failure and before it reaches the shell. A callback that raises has its own error printed on stderr, and the migration error still decides the exit code. Only `migrate` calls them; `rehearse` does not, since nothing real happened.
+- `Migrator.connection` and `AsyncMigrator.adapter` properties.
+
+### Changed
+
+- A failing statement on the command line prints as an error line naming the migration instead of a traceback. Drivers raise their own error classes, and only `MigrationError` and `ValueError` were caught before. The same applies to a connection that will not open and a migrations directory that will not load.
+
 ## 2.9.0 (2026-08-14)
 
 ### Added

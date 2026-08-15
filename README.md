@@ -16,6 +16,7 @@ adults = User.query().where(User.c.age >= 18).orderBy('name').run()
 - **Typed filters**: `User.query().where((User.c.age > 21) & User.c.name.like('A%'))`.
 - **Results as** model instances, dicts, pandas DataFrames, or pyarrow Tables, with `withGraphFetched()` eager loading.
 - **Schema migrations**: models declare typed columns and indexes; `Migrator.sync(models)` diffs the live database, generates the migration, applies it, and `down()` rolls it back. Destructive changes are gated behind explicit opt-ins.
+- **Rehearsed migrations**: `sustained rehearse` applies every pending migration, runs the down steps back down, and rolls it all back, so a broken or one-way migration shows up before it reaches the real schema.
 - **Async**: the same queries run through driver adapters (`asyncpg`, `aiosqlite`, or any sync driver in a worker thread) with `await query.arun()`.
 
 ## What it does not do
