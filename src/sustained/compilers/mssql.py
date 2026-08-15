@@ -154,6 +154,10 @@ class MssqlCompiler(Compiler):
             parts.append(f"FETCH NEXT {limit} ROWS ONLY")
         return " ".join(parts)
 
+    def begin_transaction_sql(self) -> Optional[str]:
+        # Bare BEGIN opens a statement block in T-SQL, not a transaction.
+        return "BEGIN TRANSACTION"
+
     def migration_lock_sql(self, name: str) -> "list[str]":
         # Session-owned and reentrant; released on disconnect. The negative
         # timeout waits until the lock is free.

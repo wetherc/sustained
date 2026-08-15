@@ -35,6 +35,7 @@ from typing import (
     Tuple,
     Type,
     Union,
+    cast,
 )
 
 from sustained.dialects import Dialects
@@ -113,6 +114,43 @@ class AppliedRecord(NamedTuple):
     seq: Optional[int]
     checksum: Optional[str]
     success: bool
+
+
+class RehearsalResult(NamedTuple):
+    """
+    What a rehearsal proved about one migration.
+
+    `up_ok` reports whether the up step ran. `down_ok` reports whether the
+    down step ran, or None when nothing was proved, and `error` then says
+    why: the migration has no down step, the sweep never reached it, or it
+    is a repeatable, which has no down step to prove. When a step raised,
+    `error` holds the database error.
+    """
+
+    id: str
+    up_ok: bool
+    down_ok: Optional[bool]
+    error: Optional[str]
+
+
+# Dialects whose schema changes roll back, so a rehearsal can undo itself.
+# The others need a scratch database; see Migrator.rehearse().
+_REHEARSABLE = frozenset({Dialects.DEFAULT, Dialects.POSTGRES, Dialects.DUCKDB})
+
+
+def _check_rehearsable(dialect: Dialects) -> None:
+    """
+    Refuses to rehearse where a rollback would not take the schema back.
+    """
+    if dialect in _REHEARSABLE:
+        return
+    raise ValueError(
+        f"rehearse needs a database whose schema changes roll back, and "
+        f"{dialect.name.lower()} is not on that list "
+        f"({', '.join(sorted(d.name.lower() for d in _REHEARSABLE))}). "
+        "Point rehearse at a scratch database instead: define "
+        "get_rehearsal_connection() in the config module."
+    )
 
 
 # Columns added when upgrading a tracking table written by an earlier
@@ -224,6 +262,65 @@ def _migration_state(record: Optional[AppliedRecord], migration: Migration) -> s
     return "applied"
 
 
+def _down_sweep(ran: List[Migration]) -> Iterator[Tuple[Migration, Optional[str]]]:
+    """
+    The order a rehearsal runs its down steps in, newest first, paired with
+    the reason a migration cannot be proved, or None when its down step
+    should run.
+
+    A repeatable has no down step and never blocks the sweep. A versioned
+    migration without one does block it: everything older sits under
+    changes that cannot be taken back, so their down steps cannot run
+    either.
+    """
+    blocked: Optional[str] = None
+    for migration in reversed(ran):
+        if migration.repeatable:
+            yield migration, "repeatable: no down step to rehearse"
+        elif blocked is not None:
+            yield migration, f"not reached: '{blocked}' has no down step"
+        elif migration.down is None:
+            blocked = migration.id
+            yield migration, "no down step"
+        else:
+            yield migration, None
+
+
+def _rehearsal_results(
+    ran: List[Migration],
+    up_error: Optional[Tuple[str, str]],
+    down_outcomes: Dict[str, Tuple[Optional[bool], Optional[str]]],
+) -> List[RehearsalResult]:
+    """
+    Merges the up and down outcomes into one result per migration, in the
+    order the up steps ran. `up_error` is the (id, message) pair of the
+    migration that stopped the rehearsal, if one did.
+    """
+    unfinished: Tuple[Optional[bool], Optional[str]] = (
+        None,
+        "not rehearsed: the run stopped",
+    )
+    results = [
+        RehearsalResult(m.id, True, *down_outcomes.get(m.id, unfinished)) for m in ran
+    ]
+    if up_error is not None:
+        results.append(RehearsalResult(up_error[0], False, None, up_error[1]))
+    return results
+
+
+def _tag_migration(error: BaseException, migration_id: str) -> None:
+    """
+    Records which migration raised on the exception itself, so a caller
+    that catches it can name the migration. The CLI reads it when it hands
+    a failure to the config module's on_error callback. Exceptions that
+    refuse new attributes are left alone.
+    """
+    try:
+        setattr(error, "migration_id", migration_id)
+    except Exception:
+        pass
+
+
 def _validation_problems(
     migrations: List[Migration],
     records: List[AppliedRecord],
@@ -323,6 +420,12 @@ class Migrator:
         self._compiler: "Compiler" = Dialects.get_compiler(dialect)
         self._tracking_table_options = tracking_table_options
         self._tracking_ready = False
+        self._rehearsing = False
+
+    @property
+    def connection(self) -> Any:
+        """The connection this migrator runs on."""
+        return self._connection
 
     def _table_sql(self) -> str:
         return self._compiler.quote_identifier(self._table)
@@ -332,7 +435,13 @@ class Migrator:
         """
         A transaction on engines that have them; a bare run followed by a
         commit (when the driver has one) on engines that do not.
+
+        A rehearsal opens one transaction around the whole run and rolls it
+        back at the end, so each migration runs bare and nothing commits.
         """
+        if self._rehearsing:
+            yield
+            return
         if self._compiler.supports_transactions():
             with transaction(self._connection):
                 yield
@@ -586,9 +695,10 @@ class Migrator:
         Writes a failed-attempt row after a migration step raised on an
         engine without transactions, where partial changes may remain. A
         repeatable that already has a row updates it in place. A failure
-        to write the row never masks the original error.
+        to write the row never masks the original error. A rehearsal writes
+        nothing: its whole run rolls back.
         """
-        if self._compiler.supports_transactions():
+        if self._rehearsing or self._compiler.supports_transactions():
             return
         try:
             timestamp = datetime.now(timezone.utc).isoformat()
@@ -694,9 +804,109 @@ class Migrator:
                         self._insert_sql(),
                         (migration.id, seq, checksum, timestamp, elapsed_ms, True),
                     )
-        except Exception:
+        except Exception as error:
             self._record_failure(migration, seq, update=update)
+            _tag_migration(error, migration.id)
             raise
+
+    def rehearse(self, scratch: bool = False) -> List[RehearsalResult]:
+        """
+        Runs every pending migration up, then back down, inside one
+        transaction, and rolls that transaction back. Returns one result
+        per migration that ran; an empty list means nothing was pending.
+
+        A rehearsal proves that the SQL is valid and that the down steps
+        take the schema back. It does not prove anything about data on a
+        production-sized table. The tracking table is created if it does
+        not exist yet; nothing else survives.
+
+        The up steps run in order. Repeatables run after them, as in up().
+        The down steps then run newest-first, skipping the repeatables,
+        which have none. The first migration without a down step stops the
+        sweep, since everything older sits under changes that cannot be
+        taken back. The first step that raises stops the rehearsal.
+
+        Only dialects whose schema changes roll back may rehearse. Pass
+        scratch=True when the connection points at a database that can be
+        thrown away: the dialect check is then skipped, and the changes may
+        survive the rollback.
+        """
+        from sustained.execution import in_transaction
+
+        if not scratch:
+            _check_rehearsable(self._dialect)
+        if getattr(self._connection, "autocommit", False) is True:
+            raise ValueError(
+                "rehearse cannot run on a connection in autocommit mode: "
+                "nothing would roll back. Open the connection without "
+                "autocommit, or point rehearse at a scratch database."
+            )
+        if in_transaction(self._connection):
+            raise ValueError(
+                "rehearse cannot run inside an open transaction() block: "
+                "its rollback would take the caller's work back too."
+            )
+        self.validate()
+        pending = self.pending()
+        if not pending:
+            return []
+        records = {r.id: r for r in self.applied_records()}
+        seq = _next_seq(list(records.values()))
+
+        # The lock sits outside the rehearsal transaction, so the rollback
+        # runs before the lock is released.
+        with self._lock_scope():
+            self._rehearsing = True
+            try:
+                begin = self._compiler.begin_transaction_sql()
+                if begin is not None:
+                    self._connection.cursor().execute(begin)
+                ran: List[Migration] = []
+                up_error: Optional[Tuple[str, str]] = None
+                for migration in pending:
+                    try:
+                        self._apply(migration, seq, update=migration.id in records)
+                    except Exception as error:
+                        up_error = (migration.id, str(error))
+                        break
+                    seq += 1
+                    ran.append(migration)
+                outcomes = {} if up_error else self._rehearse_down(ran)
+                return _rehearsal_results(ran, up_error, outcomes)
+            finally:
+                self._rehearsing = False
+                self._rollback_quietly()
+
+    def _rehearse_down(
+        self, ran: List[Migration]
+    ) -> Dict[str, Tuple[Optional[bool], Optional[str]]]:
+        """
+        Runs the down steps of a rehearsal, newest-first, and reports what
+        each one proved. A step that raises stops the sweep; the
+        migrations under it report that they were not reached.
+        """
+        placeholder = self._compiler.placeholder()
+        outcomes: Dict[str, Tuple[Optional[bool], Optional[str]]] = {}
+        failed: Optional[str] = None
+        for migration, reason in _down_sweep(ran):
+            if failed is not None:
+                outcomes[migration.id] = (None, f"not reached: '{failed}' down failed")
+            elif reason is not None:
+                outcomes[migration.id] = (None, reason)
+            else:
+                try:
+                    with self._migration_scope():
+                        _run_step(self._connection, cast(MigrationStep, migration.down))
+                        self._connection.cursor().execute(
+                            f"DELETE FROM {self._table_sql()} WHERE id = {placeholder}",
+                            (migration.id,),
+                        )
+                except Exception as error:
+                    outcomes[migration.id] = (False, str(error))
+                    failed = migration.id
+                else:
+                    outcomes[migration.id] = (True, None)
+        return outcomes
 
     def baseline(self, target: str) -> List[str]:
         """

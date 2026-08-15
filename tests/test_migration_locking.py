@@ -81,6 +81,27 @@ class TestLockStatements(unittest.TestCase):
             self.assertEqual(compiler.migration_unlock_sql("t"), [])
 
 
+class TestBeginStatements(unittest.TestCase):
+    """
+    A rehearsal opens its transaction explicitly, because SQLite starts one
+    for INSERT but not for CREATE TABLE.
+    """
+
+    def test_engines_that_need_an_explicit_begin(self):
+        for dialect in (Dialects.DEFAULT, Dialects.DUCKDB, Dialects.PRESTO):
+            compiler = Dialects.get_compiler(dialect)
+            self.assertEqual(compiler.begin_transaction_sql(), "BEGIN")
+
+    def test_mssql_spells_it_out(self):
+        compiler = Dialects.get_compiler(Dialects.MSSQL)
+        self.assertEqual(compiler.begin_transaction_sql(), "BEGIN TRANSACTION")
+
+    def test_postgres_and_athena_need_none(self):
+        for dialect in (Dialects.POSTGRES, Dialects.ATHENA):
+            compiler = Dialects.get_compiler(dialect)
+            self.assertIsNone(compiler.begin_transaction_sql())
+
+
 class TestLockingRun(unittest.TestCase):
     def _migrator(self, conn, migrations):
         return Migrator(conn, migrations, dialect=Dialects.POSTGRES)
@@ -130,6 +151,31 @@ class TestLockingRun(unittest.TestCase):
             "SELECT pg_advisory_lock(hashtext('sustained_migrations'))"
         )
         self.assertEqual(after, before + 1)
+
+    def test_rehearsal_rolls_back_before_it_releases_the_lock(self):
+        conn = FakePostgresConnection()
+        migration = Migration(
+            "one", up="CREATE TABLE t1 (id INTEGER)", down="DROP TABLE t1"
+        )
+        results = self._migrator(conn, [migration]).rehearse()
+        self.assertEqual([(r.up_ok, r.down_ok) for r in results], [(True, True)])
+        rollback_at = len(conn.log) - 1 - conn.log[::-1].index("<rollback>")
+        unlock_at = conn.log.index(
+            "SELECT pg_advisory_unlock(hashtext('sustained_migrations'))"
+        )
+        self.assertLess(rollback_at, unlock_at)
+        self.assertNotIn("BEGIN", conn.log)
+
+    def test_rehearsal_commits_nothing_after_the_tracking_table_exists(self):
+        conn = FakePostgresConnection()
+        migration = Migration(
+            "one", up="CREATE TABLE t1 (id INTEGER)", down="DROP TABLE t1"
+        )
+        migrator = self._migrator(conn, [migration])
+        migrator.applied_records()
+        conn.log.clear()
+        migrator.rehearse()
+        self.assertNotIn("<commit>", conn.log)
 
 
 if __name__ == "__main__":

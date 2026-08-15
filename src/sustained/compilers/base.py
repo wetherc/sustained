@@ -285,6 +285,16 @@ class Compiler:
         """
         return True
 
+    def begin_transaction_sql(self) -> Optional[str]:
+        """
+        The statement that opens a transaction explicitly, or None when the
+        driver opens one on its own. SQLite needs this: it starts a
+        transaction for INSERT and UPDATE but not for CREATE TABLE, so
+        without an explicit BEGIN a schema change commits as it runs and no
+        rollback can take it back. Engines without transactions return None.
+        """
+        return "BEGIN" if self.supports_transactions() else None
+
     def migration_lock_sql(self, name: str) -> "list[str]":
         """
         Statements that take an exclusive, session-scoped advisory lock so

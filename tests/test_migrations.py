@@ -599,5 +599,179 @@ class TestRepeatableMigrations(MigrationTestCase):
         self.assertEqual(len(broken.applied_records()), 2)
 
 
+class TestRehearse(MigrationTestCase):
+    """Rehearsals run everything and leave the database as they found it."""
+
+    def migrations(self):
+        return [
+            Migration(
+                "001_users",
+                up="CREATE TABLE r_users (id INTEGER)",
+                down="DROP TABLE r_users",
+            ),
+            Migration(
+                "002_flags",
+                up=[
+                    "CREATE TABLE r_flags (id INTEGER)",
+                    "CREATE TABLE r_more (id INTEGER)",
+                ],
+                down=["DROP TABLE r_more", "DROP TABLE r_flags"],
+            ),
+            Migration("r_view", up="CREATE VIEW r_v AS SELECT 1", repeatable=True),
+        ]
+
+    def test_rehearse_proves_both_directions_and_changes_nothing(self):
+        migrator = Migrator(self.conn, self.migrations())
+        results = migrator.rehearse()
+        self.assertEqual(
+            [(r.id, r.up_ok, r.down_ok) for r in results],
+            [
+                ("001_users", True, True),
+                ("002_flags", True, True),
+                ("r_view", True, None),
+            ],
+        )
+        self.assertEqual(results[2].error, "repeatable: no down step to rehearse")
+        self.assertEqual(table_names(self.conn), {"sustained_migrations"})
+        self.assertEqual(migrator.applied_records(), [])
+        self.assertEqual(len(migrator.pending()), 3)
+
+    def test_rehearse_after_a_partial_run_covers_only_the_rest(self):
+        migrator = Migrator(self.conn, self.migrations())
+        # A targeted run also applies the repeatables, so only 002 is left.
+        migrator.up(target="001_users")
+        results = migrator.rehearse()
+        self.assertEqual([(r.id, r.down_ok) for r in results], [("002_flags", True)])
+        self.assertIn("r_users", table_names(self.conn))
+        self.assertNotIn("r_flags", table_names(self.conn))
+        self.assertEqual(migrator.applied(), ["001_users", "r_view"])
+
+    def test_rehearse_reruns_a_changed_repeatable_without_recording_it(self):
+        migrator = Migrator(self.conn, self.migrations())
+        migrator.up()
+        before = {r.id: r.checksum for r in migrator.applied_records()}
+        changed = self.migrations()[:2] + [
+            Migration("r_view", up="CREATE VIEW r_v2 AS SELECT 2", repeatable=True)
+        ]
+        later = Migrator(self.conn, changed)
+        results = later.rehearse()
+        self.assertEqual([r.id for r in results], ["r_view"])
+        self.assertTrue(results[0].up_ok)
+        after = {r.id: r.checksum for r in later.applied_records()}
+        self.assertEqual(before, after)
+
+    def test_nothing_pending_rehearses_nothing(self):
+        migrator = Migrator(self.conn, self.migrations())
+        migrator.up()
+        self.assertEqual(migrator.rehearse(), [])
+
+    def test_failing_up_step_stops_the_rehearsal(self):
+        migrations = [
+            self.migrations()[0],
+            Migration("002_bad", up="CRATE TABLE oops", down="DROP TABLE oops"),
+            Migration("003_never", up="CREATE TABLE r_never (id INTEGER)"),
+        ]
+        results = Migrator(self.conn, migrations).rehearse()
+        self.assertEqual(
+            [(r.id, r.up_ok) for r in results],
+            [("001_users", True), ("002_bad", False)],
+        )
+        self.assertIn("syntax error", results[1].error)
+        self.assertEqual(results[0].error, "not rehearsed: the run stopped")
+        self.assertEqual(table_names(self.conn), {"sustained_migrations"})
+
+    def test_missing_down_step_stops_the_down_sweep(self):
+        migrations = [
+            self.migrations()[0],
+            Migration("002_forward", up="CREATE TABLE r_fwd (id INTEGER)"),
+        ]
+        results = Migrator(self.conn, migrations).rehearse()
+        self.assertEqual([r.down_ok for r in results], [None, None])
+        self.assertEqual(results[1].error, "no down step")
+        self.assertEqual(
+            results[0].error, "not reached: '002_forward' has no down step"
+        )
+
+    def test_failing_down_step_is_reported_and_stops_the_sweep(self):
+        migrations = [
+            self.migrations()[0],
+            Migration(
+                "002_bad_down",
+                up="CREATE TABLE r_bad (id INTEGER)",
+                down="DROP TABLE r_missing",
+            ),
+        ]
+        results = Migrator(self.conn, migrations).rehearse()
+        self.assertEqual(
+            [(r.id, r.down_ok) for r in results][1], ("002_bad_down", False)
+        )
+        self.assertIn("r_missing", results[1].error)
+        self.assertEqual(results[0].error, "not reached: '002_bad_down' down failed")
+        self.assertEqual(table_names(self.conn), {"sustained_migrations"})
+
+    def test_validation_problems_stop_the_rehearsal(self):
+        migrator = Migrator(self.conn, self.migrations())
+        migrator.up()
+        edited = [
+            Migration(
+                "001_users",
+                up="CREATE TABLE r_users (id INTEGER, extra TEXT)",
+                down="DROP TABLE r_users",
+            )
+        ] + self.migrations()[1:]
+        with self.assertRaises(MigrationError):
+            Migrator(self.conn, edited).rehearse()
+
+    def test_rehearse_refuses_a_dialect_that_cannot_roll_back(self):
+        from sustained.dialects import Dialects
+
+        migrator = Migrator(self.conn, self.migrations(), dialect=Dialects.ATHENA)
+        with self.assertRaises(ValueError) as caught:
+            migrator.rehearse()
+        self.assertIn("athena is not on that list", str(caught.exception))
+        self.assertIn("get_rehearsal_connection()", str(caught.exception))
+
+    def test_scratch_waives_the_dialect_check(self):
+        from sustained.dialects import Dialects
+
+        # The dialect drives the check; the compiler stays SQLite's so the
+        # statements still run here.
+        migrator = Migrator(self.conn, [self.migrations()[0]])
+        migrator._dialect = Dialects.MSSQL
+        with self.assertRaises(ValueError):
+            migrator.rehearse()
+        results = migrator.rehearse(scratch=True)
+        self.assertEqual(
+            [(r.id, r.up_ok, r.down_ok) for r in results], [("001_users", True, True)]
+        )
+        self.assertEqual(table_names(self.conn), {"sustained_migrations"})
+
+    def test_rehearse_refuses_an_autocommit_connection(self):
+        conn = sqlite3.connect(":memory:", autocommit=True)
+        self.addCleanup(conn.close)
+        with self.assertRaises(ValueError) as caught:
+            Migrator(conn, self.migrations()).rehearse()
+        self.assertIn("autocommit", str(caught.exception))
+
+    def test_rehearse_refuses_inside_an_open_transaction(self):
+        from sustained.execution import transaction
+
+        migrator = Migrator(self.conn, self.migrations())
+        with transaction(self.conn):
+            with self.assertRaises(ValueError) as caught:
+                migrator.rehearse()
+        self.assertIn("open transaction()", str(caught.exception))
+
+    def test_rehearsal_writes_no_failure_row_without_transactions(self):
+        migrations = [Migration("002_bad", up="CRATE TABLE oops")]
+        migrator = Migrator(self.conn, migrations)
+        with mock.patch.object(
+            migrator._compiler, "supports_transactions", return_value=False
+        ):
+            results = migrator.rehearse()
+        self.assertFalse(results[0].up_ok)
+        self.assertEqual(migrator.applied_records(), [])
+
+
 if __name__ == "__main__":
     unittest.main()
