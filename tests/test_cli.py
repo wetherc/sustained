@@ -318,6 +318,7 @@ class PlanCliTestCase(CliBase):
         self.assertIn("1 statement", out)
         self.assertIn("2 pending migrations", out)
         self.assertIn("run: sustained migrate", out)
+        self.assertNotIn("run: Migrator.sync(models)", out)
 
     def test_nothing_to_do_exits_zero(self):
         self.run_cli("migrate")
@@ -377,6 +378,8 @@ class PlanCliTestCase(CliBase):
         self.assertIn("\n\ndrift\n", out)
         self.assertIn("CREATE TABLE users", out)
         self.assertIn("2 pending migrations, 1 drift statement", out)
+        self.assertIn("run: sustained migrate", out)
+        self.assertIn("run: Migrator.sync(models)", out)
 
     def test_changed_repeatable_is_marked(self):
         migrations = os.path.join(self.dir.name, "migrations")
@@ -433,6 +436,7 @@ class PlanCliTestCase(CliBase):
         self.assertIn("DROP TABLE flags", out)
         self.assertIn("2 drift statements", out)
         self.assertNotIn("run: sustained migrate", out)
+        self.assertIn("run: Migrator.sync(models)", out)
 
     def test_no_drift_when_models_match(self):
         name = self._config(
@@ -572,6 +576,8 @@ class JsonOutputTestCase(CliBase):
         self.assertEqual(payload["pending"], [])
         self.assertEqual(len(payload["drift"]), 2)
         self.assertTrue(any("ADD COLUMN bio" in s for s in payload["drift"]))
+        self.assertNotIn("Migrator.sync", stdout.getvalue())
+        self.assertEqual(set(payload), {"pending", "problems", "drift"})
 
 
 class RehearseCliTestCase(CliBase):

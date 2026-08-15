@@ -251,8 +251,11 @@ def _cmd_plan(migrator: Migrator, args: argparse.Namespace, config: Any) -> int:
         return exit_code
     print()
     print(", ".join(sections))
-    if not problems and summaries:
-        print("run: sustained migrate")
+    if not problems:
+        if summaries:
+            print("run: sustained migrate")
+        if drift:
+            print("run: Migrator.sync(models)")
     return exit_code
 
 
