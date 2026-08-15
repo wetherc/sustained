@@ -7,6 +7,7 @@ directory, points the CLI at them, and calls main() directly.
 
 import contextlib
 import io
+import json
 import os
 import sqlite3
 import sys
@@ -405,6 +406,127 @@ class PlanCliTestCase(CliBase):
         code, out, _ = self._run(name, "plan")
         self.assertEqual(code, 0)
         self.assertIn("Nothing pending, no problems, no drift.", out)
+
+
+class JsonOutputTestCase(CliBase):
+    """The --json flag on status, validate, and plan."""
+
+    def _json(self, *argv):
+        code, out, err = self.run_cli(*argv, "--json")
+        return code, json.loads(out), err
+
+    def test_status_lists_every_state(self):
+        self.run_cli("migrate", "--target", "001_users")
+        code, payload, _ = self._json("status")
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            payload,
+            {
+                "migrations": [
+                    {"id": "001_users", "state": "applied"},
+                    {"id": "002_flag", "state": "pending"},
+                ]
+            },
+        )
+
+    def test_validate_ok(self):
+        self.run_cli("migrate")
+        code, payload, _ = self._json("validate")
+        self.assertEqual(code, 0)
+        self.assertEqual(payload, {"ok": True, "problems": []})
+
+    def test_validate_reports_problems(self):
+        self.run_cli("migrate")
+        self._write(
+            os.path.join(self.dir.name, "migrations"),
+            "001_users.up.sql",
+            "CREATE TABLE users (id BIGINT);",
+        )
+        code, payload, _ = self._json("validate")
+        self.assertEqual(code, 1)
+        self.assertFalse(payload["ok"])
+        self.assertEqual(len(payload["problems"]), 1)
+        self.assertIn("checksum mismatch", payload["problems"][0])
+
+    def test_plan_lists_pending_work(self):
+        self._write(
+            os.path.join(self.dir.name, "migrations"),
+            "003_cleanup.up.sql",
+            "DROP TABLE flags;",
+        )
+        code, payload, _ = self._json("plan")
+        self.assertEqual(code, 2)
+        self.assertEqual(payload["problems"], [])
+        self.assertIsNone(payload["drift"])
+        self.assertEqual(
+            payload["pending"][2],
+            {
+                "id": "003_cleanup",
+                "state": "pending",
+                "repeatable": False,
+                "statements": 1,
+                "destructive": ["DROP TABLE flags"],
+            },
+        )
+
+    def test_plan_clean_run(self):
+        self.run_cli("migrate")
+        code, payload, _ = self._json("plan")
+        self.assertEqual(code, 0)
+        self.assertEqual(payload, {"pending": [], "problems": [], "drift": None})
+
+    def test_plan_problems_win(self):
+        self.run_cli("migrate")
+        self._write(
+            os.path.join(self.dir.name, "migrations"),
+            "001_users.up.sql",
+            "CREATE TABLE users (id BIGINT);",
+        )
+        code, payload, _ = self._json("plan")
+        self.assertEqual(code, 1)
+        self.assertEqual(len(payload["problems"]), 1)
+
+    def test_plan_callable_step_has_null_statements(self):
+        name = f"json_config_{id(self)}"
+        with open(os.path.join(self.dir.name, f"{name}.py"), "w") as f:
+            f.write(
+                CONFIG_TEMPLATE + "\nfrom sustained.migrations import Migration\n"
+                "def _backfill(connection):\n    connection.execute('SELECT 1')\n"
+                "migrations = [Migration('000_backfill', up=_backfill, "
+                "checksum='fixed')]\n"
+            )
+        self.addCleanup(sys.modules.pop, name, None)
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            code = main(["plan", "--json", "--config", name])
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(code, 2)
+        self.assertIsNone(payload["pending"][0]["statements"])
+        self.assertEqual(payload["pending"][0]["destructive"], [])
+
+    def test_plan_drift_is_a_list_when_models_are_named(self):
+        name = f"json_models_{id(self)}"
+        with open(os.path.join(self.dir.name, f"{name}.py"), "w") as f:
+            f.write(
+                CONFIG_TEMPLATE + "\nfrom sustained import create_model\n"
+                "from sustained.schema import Integer, Text\n"
+                "Drifted = create_model('Drifted', 'users')\n"
+                "Drifted.tableColumns = {'id': Integer(primary_key=True), "
+                "'bio': Text()}\n"
+                "Drifted.columns = ('id', 'bio')\n"
+                "models = [Drifted]\n"
+            )
+        self.addCleanup(sys.modules.pop, name, None)
+        with contextlib.redirect_stdout(io.StringIO()):
+            main(["migrate", "--config", name])
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                code = main(["plan", "--json", "--config", name])
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(code, 2)
+        self.assertEqual(payload["pending"], [])
+        self.assertEqual(len(payload["drift"]), 2)
+        self.assertTrue(any("ADD COLUMN bio" in s for s in payload["drift"]))
 
 
 if __name__ == "__main__":

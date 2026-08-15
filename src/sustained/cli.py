@@ -19,12 +19,17 @@ The config module names the pieces the migrator needs:
 Commands: status, plan, migrate, down, validate, repair, script,
 baseline. Every command exits 0 on success and 1 on failure. `plan`
 exits 2 when work is waiting.
+
+`status`, `validate`, and `plan` take `--json`, which prints one JSON
+object instead of the plain lines. The exit code stays the same either
+way.
 """
 
 from __future__ import annotations
 
 import argparse
 import importlib
+import json
 import os
 import sys
 from typing import Any, List, Optional, Sequence, Tuple
@@ -98,8 +103,23 @@ def _build_migrator(config: Any) -> Tuple[Migrator, Any]:
     return migrator, connection
 
 
+def _print_json(payload: Any) -> None:
+    print(json.dumps(payload, indent=2))
+
+
 def _cmd_status(migrator: Migrator, args: argparse.Namespace, config: Any) -> int:
-    for migration_id, state in migrator.statuses():
+    states = migrator.statuses()
+    if args.json:
+        _print_json(
+            {
+                "migrations": [
+                    {"id": migration_id, "state": state}
+                    for migration_id, state in states
+                ]
+            }
+        )
+        return 0
+    for migration_id, state in states:
         print(f"{state:8} {migration_id}")
     return 0
 
@@ -143,11 +163,48 @@ def _print_pending(summaries: List[PendingSummary]) -> None:
             print(f"    destructive  {statement}")
 
 
+def _plan_json(
+    summaries: List[PendingSummary], problems: List[str], drift: Optional[List[str]]
+) -> None:
+    """
+    Prints the plan as one JSON object. `drift` is null, not an empty
+    list, when the config module names no models: nothing was compared,
+    which differs from comparing and finding no gap.
+    """
+    _print_json(
+        {
+            "pending": [
+                {
+                    "id": summary.id,
+                    "state": summary.state,
+                    "repeatable": summary.repeatable,
+                    "statements": summary.statements,
+                    "destructive": summary.destructive,
+                }
+                for summary in summaries
+            ],
+            "problems": problems,
+            "drift": drift,
+        }
+    )
+
+
 def _cmd_plan(migrator: Migrator, args: argparse.Namespace, config: Any) -> int:
     states = dict(migrator.statuses())
     summaries = [summarize(m, states.get(m.id, "pending")) for m in migrator.pending()]
     problems = migrator.validate(raise_on_problems=False)
     drift = _drift_statements(migrator, config)
+
+    if problems:
+        exit_code = 1
+    elif summaries or drift:
+        exit_code = 2
+    else:
+        exit_code = 0
+
+    if args.json:
+        _plan_json(summaries, problems, drift)
+        return exit_code
 
     sections: List[str] = []
     if summaries:
@@ -176,14 +233,12 @@ def _cmd_plan(migrator: Migrator, args: argparse.Namespace, config: Any) -> int:
             )
         else:
             print("Nothing pending, no problems, no drift.")
-        return 0
+        return exit_code
     print()
     print(", ".join(sections))
-    if problems:
-        return 1
-    if summaries:
+    if not problems and summaries:
         print("run: sustained migrate")
-    return 2
+    return exit_code
 
 
 def _cmd_migrate(migrator: Migrator, args: argparse.Namespace, config: Any) -> int:
@@ -213,6 +268,9 @@ def _cmd_down(migrator: Migrator, args: argparse.Namespace, config: Any) -> int:
 
 def _cmd_validate(migrator: Migrator, args: argparse.Namespace, config: Any) -> int:
     problems = migrator.validate(raise_on_problems=False)
+    if args.json:
+        _print_json({"ok": not problems, "problems": problems})
+        return 1 if problems else 0
     if not problems:
         print("OK")
         return 0
@@ -250,19 +308,32 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    def command(name: str, help_text: str) -> argparse.ArgumentParser:
+    def command(
+        name: str, help_text: str, machine_readable: bool = False
+    ) -> argparse.ArgumentParser:
         sub = subparsers.add_parser(name, help=help_text)
         sub.add_argument(
             "--config",
             default="sustained_config",
             help="Config module to import (default: sustained_config).",
         )
+        if machine_readable:
+            sub.add_argument(
+                "--json",
+                action="store_true",
+                help="Print one JSON object instead of the plain lines.",
+            )
         return sub
 
-    command("status", "Show every migration's state: applied, pending, or changed.")
+    command(
+        "status",
+        "Show every migration's state: applied, pending, or changed.",
+        machine_readable=True,
+    )
     command(
         "plan",
         "Show the pending migrations, the problems, and the model drift.",
+        machine_readable=True,
     )
 
     migrate = command("migrate", "Apply pending migrations in order.")
@@ -283,7 +354,11 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     group.add_argument("--to", help="Revert until this id is the newest applied.")
 
-    command("validate", "Check the tracking table against the migrations.")
+    command(
+        "validate",
+        "Check the tracking table against the migrations.",
+        machine_readable=True,
+    )
     command("repair", "Fix tracking rows after failures or intentional edits.")
 
     script = command("script", "Print the SQL a run would execute.")
