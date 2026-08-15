@@ -44,6 +44,28 @@ class DestructiveStatementsTestCase(unittest.TestCase):
             [],
         )
 
+    def test_ignores_block_comments(self):
+        self.assertEqual(
+            destructive_statements(
+                ["CREATE TABLE users (id INT) /* DROP TABLE old */"]
+            ),
+            [],
+        )
+        self.assertEqual(
+            destructive_statements(["CREATE TABLE users (id INT) /* keep\nthis */"]),
+            [],
+        )
+
+    def test_drops_the_comment_from_a_labelled_statement(self):
+        self.assertEqual(
+            destructive_statements(["DROP TABLE users -- no longer read"]),
+            ["DROP TABLE users"],
+        )
+        self.assertEqual(
+            destructive_statements(["DROP TABLE users /* no longer read */"]),
+            ["DROP TABLE users"],
+        )
+
     def test_collapses_whitespace(self):
         self.assertEqual(
             destructive_statements(["ALTER TABLE users\n  DROP COLUMN bio"]),

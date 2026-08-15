@@ -6,7 +6,8 @@ preview can label them. `summarize()` reduces one migration to the count
 and the labels the `plan` command prints.
 
 The scan is textual. A drop named inside a string literal is labelled
-too. The label informs the operator; it never blocks a run.
+too, since nothing here parses SQL. The label informs the operator; it
+never blocks a run.
 """
 
 from __future__ import annotations
@@ -16,7 +17,7 @@ from typing import List, NamedTuple, Optional, Sequence, Union
 
 from sustained.migrations import Migration, migration_sql
 
-_LINE_COMMENT_RE = re.compile(r"--[^\n]*")
+_COMMENT_RE = re.compile(r"--[^\n]*|/\*.*?\*/", re.DOTALL)
 _WHITESPACE_RE = re.compile(r"\s+")
 _DESTRUCTIVE_RE = re.compile(
     r"\bDROP\s+TABLE\b|\bDROP\s+COLUMN\b|\bTRUNCATE\b", re.IGNORECASE
@@ -26,16 +27,17 @@ _DESTRUCTIVE_RE = re.compile(
 def destructive_statements(statements: Union[str, Sequence[str]]) -> List[str]:
     """
     Returns the statements that remove data: DROP TABLE, DROP COLUMN, and
-    TRUNCATE. Each is returned on one line, whitespace collapsed, so a
-    multi-line statement stays readable in a list. Line comments are
-    ignored, so a commented-out drop is not labelled.
+    TRUNCATE. Comments are removed and whitespace is collapsed, so each
+    statement comes back on one line and a commented-out drop is not
+    labelled. Both `--` and `/* */` comments are handled.
     """
     if isinstance(statements, str):
         statements = [statements]
     found = []
     for statement in statements:
-        if _DESTRUCTIVE_RE.search(_LINE_COMMENT_RE.sub("", statement)):
-            found.append(_WHITESPACE_RE.sub(" ", statement).strip())
+        stripped = _WHITESPACE_RE.sub(" ", _COMMENT_RE.sub("", statement)).strip()
+        if _DESTRUCTIVE_RE.search(stripped):
+            found.append(stripped)
     return found
 
 
