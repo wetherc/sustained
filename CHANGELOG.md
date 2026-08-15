@@ -1,5 +1,23 @@
 # Changelog
 
+## 2.11.0 (2026-08-14)
+
+### Fixed
+
+- `repair()` no longer rewrites the stored checksum of a changed repeatable. For a repeatable the changed checksum is what schedules the re-run, so the rewrite cancelled the run and the new contents never reached the database. Failed-attempt rows for repeatables are still removed. Both migrators are covered.
+- A malformed placeholder marker in a migration file, such as `${my-key}` or an unclosed `${key`, now raises `ValueError` naming the file instead of passing through to the database as raw SQL. This applies only when a placeholders mapping is given; with none, files still load untouched.
+- `rehearse()` reads validation state, pending migrations, and applied records inside the advisory lock, so a concurrent migrator cannot apply between the read and the rehearsal.
+- `AsyncMigrator.rehearse()` refuses a connection in autocommit mode, as `Migrator.rehearse()` already did.
+- Tagging an exception with its migration id no longer raises on exception types that reject new attributes, which would have masked the original error.
+- `sustained plan` prints `run: Migrator.sync(models)` when it finds model drift. Drift is closed by `sync()`, not by `migrate`, and drift-only output previously offered no next step.
+
+### Changed
+
+- A targeted `up()` no longer runs the repeatables. A repeatable may depend on a versioned migration past the target, and running it against the half-migrated schema fails. The next full `up()` runs it.
+- The destructive scan also labels a column drop written without the COLUMN keyword, as MySQL allows. Drops of constraints, indexes, and keys stay unlabelled.
+- The refusal message for rehearsing a non-rehearsable dialect mentions `scratch=True` for library callers alongside the config module hook.
+- The docs cover the default dialect's place on the rehearsable list, since the check reads the declared dialect rather than the engine, and scratch databases that keep rehearsed objects between runs.
+
 ## 2.10.0 (2026-08-14)
 
 ### Added
