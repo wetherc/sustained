@@ -148,7 +148,7 @@ class TestSubstitutePlaceholders(unittest.TestCase):
 
     def test_escape_produces_literal(self):
         self.assertEqual(
-            substitute_placeholders("SELECT '$${x}'", None, "f.up.sql"),
+            substitute_placeholders("SELECT '$${x}'", {}, "f.up.sql"),
             "SELECT '${x}'",
         )
 
@@ -162,9 +162,25 @@ class TestSubstitutePlaceholders(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, r"'f\.up\.sql'.*\$\{schema\}"):
             substitute_placeholders("SET search_path = ${schema}", {}, "f.up.sql")
 
-    def test_non_identifier_braces_pass_through(self):
-        text = "SELECT '${1bad}' || '${}'"
+    def test_none_mapping_leaves_text_untouched(self):
+        text = "SELECT '${anything}' || '${1bad}' || '${ key }' || '${open"
         self.assertEqual(substitute_placeholders(text, None, "f.up.sql"), text)
+
+    def test_dash_in_key_raises_with_file_and_snippet(self):
+        with self.assertRaisesRegex(ValueError, r"'f\.up\.sql'.*\$\{my-key\}"):
+            substitute_placeholders("SELECT ${my-key}", {}, "f.up.sql")
+
+    def test_spaces_in_key_raise(self):
+        with self.assertRaisesRegex(ValueError, "malformed"):
+            substitute_placeholders("SELECT ${ key }", {"key": "1"}, "f.up.sql")
+
+    def test_digit_first_key_raises(self):
+        with self.assertRaisesRegex(ValueError, "malformed"):
+            substitute_placeholders("SELECT ${1abc}", {}, "f.up.sql")
+
+    def test_unclosed_marker_at_end_raises(self):
+        with self.assertRaisesRegex(ValueError, r"malformed.*\$\{key"):
+            substitute_placeholders("SELECT ${key", {"key": "1"}, "f.up.sql")
 
 
 class TestLoaderPlaceholders(LoaderTestCase):
@@ -184,6 +200,18 @@ class TestLoaderPlaceholders(LoaderTestCase):
         self.write("0001_grant.up.sql", "GRANT SELECT ON t TO ${reader};\n")
         migrations = load_migrations(self.dir)
         self.assertEqual(migrations[0].up, ["GRANT SELECT ON t TO ${reader}"])
+
+    def test_no_mapping_leaves_malformed_markers_untouched(self):
+        self.write("0001_x.up.sql", "SELECT '${my-key}' || '${ key }' || '${open;\n")
+        migrations = load_migrations(self.dir)
+        self.assertEqual(
+            migrations[0].up, ["SELECT '${my-key}' || '${ key }' || '${open"]
+        )
+
+    def test_malformed_marker_raises_with_file_name(self):
+        self.write("0001_x.up.sql", "GRANT SELECT ON t TO ${my-key};\n")
+        with self.assertRaisesRegex(ValueError, r"0001_x\.up\.sql.*malformed"):
+            load_migrations(self.dir, placeholders={})
 
     def test_checksum_covers_substituted_text(self):
         self.write("0001_grant.up.sql", "GRANT SELECT ON t TO ${reader};\n")

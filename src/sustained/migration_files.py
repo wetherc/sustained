@@ -20,7 +20,8 @@ it as the only statement in its file with no trailing semicolon.
 Files may hold `${key}` placeholders, filled from the mapping passed to
 load_migrations(). Substitution happens before checksums are computed,
 so a changed value reads as a changed migration. `$${` escapes to a
-literal `${`. With no mapping, files load untouched.
+literal `${`. A malformed marker, such as `${my-key}` or an unclosed
+`${key`, raises an error. With no mapping, files load untouched.
 """
 
 from __future__ import annotations
@@ -37,7 +38,7 @@ _UP_SUFFIX = ".up.sql"
 _DOWN_SUFFIX = ".down.sql"
 _REPEAT_SUFFIX = ".repeat.sql"
 
-_PLACEHOLDER_RE = re.compile(r"\$\$\{|\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+_PLACEHOLDER_RE = re.compile(r"\$\$\{|\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$\{")
 
 
 def substitute_placeholders(
@@ -46,15 +47,27 @@ def substitute_placeholders(
     """
     Replaces every '${key}' in the text with its value from the mapping
     and turns the '$${' escape into a literal '${'. A '${key}' with no
-    value raises ValueError naming the source file and the key, so a
-    typo cannot reach the database as raw text.
+    value raises ValueError naming the source file and the key. A '${'
+    that does not open a well-formed marker, such as '${my-key}' or an
+    unclosed '${key', also raises ValueError. Both rules keep a typo
+    from reaching the database as raw text. When the mapping is None,
+    substitution is off and the text returns untouched.
     """
-    values = placeholders or {}
+    if placeholders is None:
+        return text
+    values = placeholders
 
     def _replace(match: "re.Match[str]") -> str:
         if match.group(0) == "$${":
             return "${"
         key = match.group(1)
+        if key is None:
+            snippet = text[match.start() : match.start() + 20]
+            raise ValueError(
+                f"Migration file {source!r} has a malformed placeholder "
+                f"near {snippet!r}. Placeholder keys must look like "
+                "'${valid_identifier}'; '$${' escapes a literal '${'."
+            )
         if key not in values:
             raise ValueError(
                 f"Migration file {source!r} uses placeholder '${{{key}}}' "
