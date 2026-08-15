@@ -294,11 +294,12 @@ def get_connection():
 
 migrations_dir = 'migrations'
 # optional: migrations = [...], placeholders = {...},
-# dialect = 'postgres', table = '...',
+# models = [User, Post], dialect = 'postgres', table = '...',
 # tracking_table_options = TableOptions(...)
 ```
 
 ```console
+$ sustained plan                    # what a run would do; exits 2 when work is waiting
 $ sustained status
 $ sustained migrate                 # --target ID, --no-validate, --allow-out-of-order
 $ sustained down                    # --steps N or --to ID
@@ -309,6 +310,54 @@ $ sustained baseline 001_create_users
 ```
 
 Commands exit 0 on success and 1 on failure, with errors on stderr, so they slot into deploy pipelines.
+
+### Reading a plan
+
+`sustained plan` shows what a run would do, in one screen. It merges three sources: the migrations waiting to run, the problems `validate` would report, and the gap between the config module's `models` and the database.
+
+```console
+$ sustained plan
+pending
+  003_sessions  2 statements
+  004_trim      1 statement
+    destructive  ALTER TABLE users DROP COLUMN legacy
+  vw_active     1 statement  repeat changed
+
+drift
+  ALTER TABLE users ADD COLUMN bio TEXT
+
+2 pending migrations, 1 drift statement
+run: sustained migrate
+```
+
+A statement that drops a table, drops a column, or truncates one is labelled `destructive`. The scan is textual, so a drop named inside a string literal is labelled too. The label informs the operator; nothing is blocked and there is no flag to gate it.
+
+The drift section appears only when the config module names `models`. It reports every difference, drops included, unlike `sync()`, which refuses to generate them. With no `models`, the plan says drift went unchecked rather than reporting none.
+
+`plan` exits 0 when the database is current, 2 when work is waiting, and 1 when validation found problems, which win over pending work. Note that argparse also exits 2 on a usage error, so a script that treats 2 as "work is waiting" should check stderr for an `error:` line.
+
+### Machine-readable output
+
+`status`, `validate`, and `plan` take `--json`, which prints one JSON object to stdout instead of the plain lines. Exit codes are the same either way.
+
+```console
+$ sustained plan --json
+{
+  "pending": [
+    {
+      "id": "004_trim",
+      "state": "pending",
+      "repeatable": false,
+      "statements": 1,
+      "destructive": ["ALTER TABLE users DROP COLUMN legacy"]
+    }
+  ],
+  "problems": [],
+  "drift": null
+}
+```
+
+`statements` is `null` for a callable step, which has no SQL to count. `drift` is `null`, not `[]`, when the config module names no models, so a caller can tell "nothing was compared" from "compared and found no gap". `status --json` prints `{"migrations": [{"id": ..., "state": ...}]}` and `validate --json` prints `{"ok": ..., "problems": [...]}`. Output is plain in both modes; nothing is coloured.
 
 ## Offline Review and Async
 

@@ -181,7 +181,11 @@ Guide: [Schema and Migrations](./schema)
 | `create_table_migration(model)` | A create/drop migration pair derived from a model. |
 | `migration_sql(migration, direction)` | One migration's statements for offline review. |
 | `AsyncMigrator` | The same runner on an `AsyncAdapter`, in `sustained.aio_migrations`. Includes `baseline()`. |
-| `sustained <command> --config module` | The CLI: `status`, `migrate`, `down`, `validate`, `repair`, `script`, `baseline`. Also runs as `python -m sustained`. |
+| `sustained <command> --config module` | The CLI: `status`, `plan`, `migrate`, `down`, `validate`, `repair`, `script`, `baseline`. Also runs as `python -m sustained`. |
+| `sustained plan` | Pending migrations with statement counts and destructive labels, the problems `validate` reports, and the drift from the config module's `models`. Exits 0 when current, 2 when work is waiting, 1 on problems. |
+| `--json` on `status`, `validate`, `plan` | One JSON object on stdout instead of the plain lines. Exit codes unchanged. |
+| `destructive_statements(sql)` | The statements that drop a table, drop a column, or truncate, whitespace collapsed. A textual scan for labelling, in `sustained.analysis`. |
+| `summarize(migration, state)` | One migration reduced to a `PendingSummary`: id, state, repeatable, statement count (`None` for a callable step), destructive statements. |
 | `diff_schema(connection, models, ...)` | The schema difference as a `SchemaDiff` with a readable `summary()`. Touches nothing. |
 | `autogenerate(connection, models, id, ...)` | Builds a `Migration` from the diff, or `None` when the schema is current. |
 

@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.9.0 (2026-08-14)
+
+### Added
+
+- `sustained plan`: one screen showing what a run would do before it starts. It lists the pending migrations with their statement counts, the problems `validate` would report, and the drift between the config module's `models` and the database. It exits 0 when the database is current, 2 when work is waiting, and 1 when validation found problems, which win over pending work. The drift section appears only when the config module names `models`, and it reports every difference, drops included, unlike `sync()`. Note that argparse also exits 2 on a usage error, so a script that treats 2 as "work is waiting" should check stderr for an `error:` line.
+- Destructive labels: a statement that drops a table, drops a column, or truncates one is labelled in the plan. The new `sustained.analysis` module holds the scan as `destructive_statements(sql)` and `summarize(migration, state)`, which touch no database and so suit async callers too. The scan is textual, so a drop named inside a string literal is labelled as well. The label informs the operator; nothing is blocked and there is no flag to gate it.
+- `--json` on `status`, `validate`, and `plan`: one indented JSON object on stdout instead of the plain lines, with the exit codes unchanged. `status` prints `{"migrations": [{"id", "state"}]}`, `validate` prints `{"ok", "problems"}`, and `plan` prints `{"pending", "problems", "drift"}`. A pending entry with a callable step has a null statement count. The `drift` key is null rather than an empty list when the config module names no models, which separates "nothing was compared" from "compared and found no gap".
+
 ## 2.8.0 (2026-08-14)
 
 ### Added
