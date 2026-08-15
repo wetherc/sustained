@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "sustained"
 version = "2.10.0"
-description = "A Python query builder inspired by Objection.js"
+description = "A Python query builder and schema migration tool, inspired by Objection.js"
 readme = "README.md"
 requires-python = ">=3.9"
 classifiers = [ "Programming Language :: Python :: 3", "Operating System :: OS Independent",]

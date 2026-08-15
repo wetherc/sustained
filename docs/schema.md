@@ -3,7 +3,9 @@ layout: default
 title: Schema and Migrations
 ---
 
-Sustained manages your database schema from your models. Declare typed columns once, then let the migrator create tables, detect drift, generate migrations, apply them, and roll them back.
+Sustained manages your database schema from your models. Declare typed columns once, then let the migrator create tables, detect drift, generate migrations, rehearse them, apply them, and roll them back.
+
+A schema change is the one thing an application does that a retry cannot undo, so this page is the longest in the documentation. It covers the whole path a migration takes: generated or hand-written, planned, rehearsed, applied under a lock, checksummed in a tracking table, and reverted.
 
 ## Automated Migration in One Call
 
