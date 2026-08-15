@@ -15,10 +15,12 @@ The config module names the pieces the migrator needs:
 - `dialect`: a Dialects member or its name, such as 'postgres' (optional)
 - `table`: the tracking table name (optional)
 - `tracking_table_options`: TableOptions for the tracking table (optional)
+- `get_rehearsal_connection()`: a connection to a scratch database, which
+  `rehearse` then uses instead of the real one (optional)
 
-Commands: status, plan, migrate, down, validate, repair, script,
-baseline. Every command exits 0 on success and 1 on failure. `plan`
-exits 2 when work is waiting.
+Commands: status, plan, migrate, rehearse, down, validate, repair,
+script, baseline. Every command exits 0 on success and 1 on failure.
+`plan` exits 2 when work is waiting.
 
 `status`, `validate`, and `plan` take `--json`, which prints one JSON
 object instead of the plain lines. The exit code stays the same either
@@ -38,7 +40,12 @@ from sustained.analysis import PendingSummary, summarize
 from sustained.dialects import Dialects
 from sustained.exceptions import MigrationError
 from sustained.migration_files import load_migrations
-from sustained.migrations import Migration, Migrator, migration_sql
+from sustained.migrations import (
+    Migration,
+    Migrator,
+    RehearsalResult,
+    migration_sql,
+)
 
 
 def _resolve_dialect(value: Any) -> Dialects:
@@ -70,6 +77,25 @@ def _close_quietly(connection: Any) -> None:
             pass
 
 
+def _migrator_on(connection: Any, config: Any) -> Migrator:
+    """Builds a migrator for the config module on the given connection."""
+    migrations: List[Migration] = list(getattr(config, "migrations", []))
+    directory = getattr(config, "migrations_dir", None)
+    if directory is not None:
+        migrations.extend(
+            load_migrations(
+                directory, placeholders=getattr(config, "placeholders", None)
+            )
+        )
+    return Migrator(
+        connection,
+        migrations,
+        table=getattr(config, "table", "sustained_migrations"),
+        dialect=_resolve_dialect(getattr(config, "dialect", None)),
+        tracking_table_options=getattr(config, "tracking_table_options", None),
+    )
+
+
 def _build_migrator(config: Any) -> Tuple[Migrator, Any]:
     if hasattr(config, "connection"):
         connection = config.connection
@@ -80,21 +106,7 @@ def _build_migrator(config: Any) -> Tuple[Migrator, Any]:
             "The config module must define 'connection' or 'get_connection()'."
         )
     try:
-        migrations: List[Migration] = list(getattr(config, "migrations", []))
-        directory = getattr(config, "migrations_dir", None)
-        if directory is not None:
-            migrations.extend(
-                load_migrations(
-                    directory, placeholders=getattr(config, "placeholders", None)
-                )
-            )
-        migrator = Migrator(
-            connection,
-            migrations,
-            table=getattr(config, "table", "sustained_migrations"),
-            dialect=_resolve_dialect(getattr(config, "dialect", None)),
-            tracking_table_options=getattr(config, "tracking_table_options", None),
-        )
+        migrator = _migrator_on(connection, config)
     except Exception:
         # The connection never reaches the caller on a setup failure, so it
         # must close here.
@@ -241,6 +253,50 @@ def _cmd_plan(migrator: Migrator, args: argparse.Namespace, config: Any) -> int:
     return exit_code
 
 
+def _rehearsal_line(result: RehearsalResult, width: int) -> str:
+    """One migration's line in the rehearsal report."""
+    if not result.up_ok:
+        return f"failed    {result.id:<{width}}  up: {result.error}"
+    if result.down_ok:
+        outcome = "down ok"
+    elif result.down_ok is False:
+        outcome = f"down failed: {result.error}"
+    else:
+        outcome = str(result.error)
+    return f"rehearsed {result.id:<{width}}  up ok, {outcome}"
+
+
+def _report_rehearsal(results: List[RehearsalResult], scratch: bool) -> int:
+    """
+    Prints the rehearsal and returns the exit code: 1 when any step
+    failed, 0 otherwise. A migration whose down step could not be proved
+    is not a failure; the line says so and the run still passes.
+    """
+    if not results:
+        print("Nothing to rehearse.")
+        return 0
+    width = max(len(r.id) for r in results)
+    for result in results:
+        print(_rehearsal_line(result, width))
+    if scratch:
+        print("rehearsal complete on the scratch database")
+    else:
+        print("rollback complete, database unchanged")
+    return 1 if any(not r.up_ok or r.down_ok is False for r in results) else 0
+
+
+def _cmd_rehearse(migrator: Migrator, args: argparse.Namespace, config: Any) -> int:
+    factory = getattr(config, "get_rehearsal_connection", None)
+    if factory is None:
+        return _report_rehearsal(migrator.rehearse(), scratch=False)
+    scratch = factory()
+    try:
+        results = _migrator_on(scratch, config).rehearse(scratch=True)
+    finally:
+        _close_quietly(scratch)
+    return _report_rehearsal(results, scratch=True)
+
+
 def _cmd_migrate(migrator: Migrator, args: argparse.Namespace, config: Any) -> int:
     applied = migrator.up(
         target=args.target,
@@ -359,6 +415,10 @@ def _build_parser() -> argparse.ArgumentParser:
         "Check the tracking table against the migrations.",
         machine_readable=True,
     )
+    command(
+        "rehearse",
+        "Run the pending migrations up and back down, then roll it all back.",
+    )
     command("repair", "Fix tracking rows after failures or intentional edits.")
 
     script = command("script", "Print the SQL a run would execute.")
@@ -375,6 +435,7 @@ _COMMANDS = {
     "plan": _cmd_plan,
     "migrate": _cmd_migrate,
     "down": _cmd_down,
+    "rehearse": _cmd_rehearse,
     "validate": _cmd_validate,
     "repair": _cmd_repair,
     "script": _cmd_script,

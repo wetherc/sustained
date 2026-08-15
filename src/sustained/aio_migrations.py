@@ -554,7 +554,10 @@ class AsyncMigrator:
         failed: Optional[str] = None
         for migration, reason in _down_sweep(ran):
             if failed is not None:
-                outcomes[migration.id] = (None, f"not reached: '{failed}' down failed")
+                outcomes[migration.id] = (
+                    None,
+                    f"down not reached: '{failed}' down failed",
+                )
             elif reason is not None:
                 outcomes[migration.id] = (None, reason)
             else:

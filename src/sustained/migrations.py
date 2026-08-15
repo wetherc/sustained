@@ -276,9 +276,9 @@ def _down_sweep(ran: List[Migration]) -> Iterator[Tuple[Migration, Optional[str]
     blocked: Optional[str] = None
     for migration in reversed(ran):
         if migration.repeatable:
-            yield migration, "repeatable: no down step to rehearse"
+            yield migration, "no down step (repeatable)"
         elif blocked is not None:
-            yield migration, f"not reached: '{blocked}' has no down step"
+            yield migration, f"down not reached: '{blocked}' has no down step"
         elif migration.down is None:
             blocked = migration.id
             yield migration, "no down step"
@@ -298,7 +298,7 @@ def _rehearsal_results(
     """
     unfinished: Tuple[Optional[bool], Optional[str]] = (
         None,
-        "not rehearsed: the run stopped",
+        "down not rehearsed: the run stopped",
     )
     results = [
         RehearsalResult(m.id, True, *down_outcomes.get(m.id, unfinished)) for m in ran
@@ -890,7 +890,10 @@ class Migrator:
         failed: Optional[str] = None
         for migration, reason in _down_sweep(ran):
             if failed is not None:
-                outcomes[migration.id] = (None, f"not reached: '{failed}' down failed")
+                outcomes[migration.id] = (
+                    None,
+                    f"down not reached: '{failed}' down failed",
+                )
             elif reason is not None:
                 outcomes[migration.id] = (None, reason)
             else:

@@ -558,5 +558,99 @@ class JsonOutputTestCase(CliBase):
         self.assertTrue(any("ADD COLUMN bio" in s for s in payload["drift"]))
 
 
+class RehearseCliTestCase(CliBase):
+    """`sustained rehearse` and the scratch database escape hatch."""
+
+    def test_rehearse_reports_both_directions_and_changes_nothing(self):
+        code, out, _ = self.run_cli("rehearse")
+        self.assertEqual(code, 0)
+        self.assertIn("rehearsed 001_users  up ok, down ok", out)
+        self.assertIn("rehearsed 002_flag   up ok, down ok", out)
+        self.assertIn("rollback complete, database unchanged", out)
+        self.assertEqual(self.table_names(), {"sustained_migrations"})
+
+    def test_rehearse_reports_a_broken_migration_and_exits_1(self):
+        self._write(
+            os.path.join(self.dir.name, "migrations"),
+            "003_bad.up.sql",
+            "CRATE TABLE oops (id INTEGER);",
+        )
+        code, out, _ = self.run_cli("rehearse")
+        self.assertEqual(code, 1)
+        self.assertIn("failed    003_bad", out)
+        self.assertIn("syntax error", out)
+        self.assertIn("rollback complete, database unchanged", out)
+        self.assertEqual(self.table_names(), {"sustained_migrations"})
+
+    def test_a_migration_without_a_down_step_is_not_a_failure(self):
+        self._write(
+            os.path.join(self.dir.name, "migrations"),
+            "003_notes.up.sql",
+            "CREATE TABLE notes (id INTEGER);",
+        )
+        code, out, _ = self.run_cli("rehearse")
+        self.assertEqual(code, 0)
+        self.assertIn("rehearsed 003_notes  up ok, no down step", out)
+        self.assertIn("down not reached: '003_notes' has no down step", out)
+
+    def test_a_failing_down_step_exits_1(self):
+        migrations = os.path.join(self.dir.name, "migrations")
+        self._write(migrations, "003_bad.up.sql", "CREATE TABLE bd (id INTEGER);")
+        self._write(migrations, "003_bad.down.sql", "DROP TABLE missing_table;")
+        code, out, _ = self.run_cli("rehearse")
+        self.assertEqual(code, 1)
+        self.assertIn("down failed", out)
+
+    def test_nothing_pending_rehearses_nothing(self):
+        self.run_cli("migrate")
+        code, out, _ = self.run_cli("rehearse")
+        self.assertEqual(code, 0)
+        self.assertIn("Nothing to rehearse.", out)
+
+    def test_a_dialect_that_cannot_roll_back_is_refused(self):
+        name = f"athena_config_{id(self)}"
+        with open(os.path.join(self.dir.name, f"{name}.py"), "w") as f:
+            f.write(CONFIG_TEMPLATE + "\ndialect = 'athena'\n")
+        self.addCleanup(sys.modules.pop, name, None)
+        stderr = io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()):
+            with contextlib.redirect_stderr(stderr):
+                code = main(["rehearse", "--config", name])
+        self.assertEqual(code, 1)
+        self.assertIn("athena is not on that list", stderr.getvalue())
+        self.assertIn("get_rehearsal_connection()", stderr.getvalue())
+
+    def test_a_scratch_connection_runs_the_whole_history_there(self):
+        name = f"scratch_config_{id(self)}"
+        with open(os.path.join(self.dir.name, f"{name}.py"), "w") as f:
+            f.write(
+                CONFIG_TEMPLATE + "\n"
+                "def get_rehearsal_connection():\n"
+                "    return sqlite3.connect(\n"
+                "        os.path.join(os.path.dirname(__file__), 'scratch.db')\n"
+                "    )\n"
+            )
+        self.addCleanup(sys.modules.pop, name, None)
+        with contextlib.redirect_stdout(io.StringIO()):
+            main(["migrate", "--config", name])
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            code = main(["rehearse", "--config", name])
+        out = stdout.getvalue()
+        self.assertEqual(code, 0)
+        # Nothing is pending on the real database, but the scratch one is
+        # empty, so the whole history rehearses there.
+        self.assertIn("rehearsed 001_users", out)
+        self.assertIn("rehearsal complete on the scratch database", out)
+        self.assertIn("users", self.table_names())
+        with contextlib.closing(
+            sqlite3.connect(os.path.join(self.dir.name, "scratch.db"))
+        ) as conn:
+            rows = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        self.assertEqual({r[0] for r in rows}, {"sustained_migrations"})
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -631,7 +631,7 @@ class TestRehearse(MigrationTestCase):
                 ("r_view", True, None),
             ],
         )
-        self.assertEqual(results[2].error, "repeatable: no down step to rehearse")
+        self.assertEqual(results[2].error, "no down step (repeatable)")
         self.assertEqual(table_names(self.conn), {"sustained_migrations"})
         self.assertEqual(migrator.applied_records(), [])
         self.assertEqual(len(migrator.pending()), 3)
@@ -677,7 +677,7 @@ class TestRehearse(MigrationTestCase):
             [("001_users", True), ("002_bad", False)],
         )
         self.assertIn("syntax error", results[1].error)
-        self.assertEqual(results[0].error, "not rehearsed: the run stopped")
+        self.assertEqual(results[0].error, "down not rehearsed: the run stopped")
         self.assertEqual(table_names(self.conn), {"sustained_migrations"})
 
     def test_missing_down_step_stops_the_down_sweep(self):
@@ -689,7 +689,7 @@ class TestRehearse(MigrationTestCase):
         self.assertEqual([r.down_ok for r in results], [None, None])
         self.assertEqual(results[1].error, "no down step")
         self.assertEqual(
-            results[0].error, "not reached: '002_forward' has no down step"
+            results[0].error, "down not reached: '002_forward' has no down step"
         )
 
     def test_failing_down_step_is_reported_and_stops_the_sweep(self):
@@ -706,7 +706,9 @@ class TestRehearse(MigrationTestCase):
             [(r.id, r.down_ok) for r in results][1], ("002_bad_down", False)
         )
         self.assertIn("r_missing", results[1].error)
-        self.assertEqual(results[0].error, "not reached: '002_bad_down' down failed")
+        self.assertEqual(
+            results[0].error, "down not reached: '002_bad_down' down failed"
+        )
         self.assertEqual(table_names(self.conn), {"sustained_migrations"})
 
     def test_validation_problems_stop_the_rehearsal(self):

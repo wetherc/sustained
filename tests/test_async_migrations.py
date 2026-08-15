@@ -296,7 +296,7 @@ class TestAsyncRehearse(unittest.IsolatedAsyncioTestCase):
         results = await migrator.rehearse()
         self.assertEqual([r.error for r in results][1], "no down step")
         self.assertEqual(
-            results[0].error, "not reached: '002_forward' has no down step"
+            results[0].error, "down not reached: '002_forward' has no down step"
         )
 
         broken = AsyncMigrator(
@@ -312,7 +312,9 @@ class TestAsyncRehearse(unittest.IsolatedAsyncioTestCase):
         )
         results = await broken.rehearse()
         self.assertEqual(results[1].down_ok, False)
-        self.assertEqual(results[0].error, "not reached: '002_bad_down' down failed")
+        self.assertEqual(
+            results[0].error, "down not reached: '002_bad_down' down failed"
+        )
 
     async def test_rehearse_refuses_a_dialect_that_cannot_roll_back(self):
         from sustained.dialects import Dialects
