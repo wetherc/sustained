@@ -815,7 +815,8 @@ class Migrator:
         A rehearsal proves that the SQL is valid and that the down steps
         take the schema back. It does not prove anything about data on a
         production-sized table. The tracking table is created if it does
-        not exist yet; nothing else survives.
+        not exist yet; nothing else survives. A callable step that commits
+        on its own is the exception: that commit cannot be taken back.
 
         The up steps run in order. Repeatables run after them, as in up().
         The down steps then run newest-first, skipping the repeatables,
@@ -855,6 +856,9 @@ class Migrator:
         with self._lock_scope():
             self._rehearsing = True
             try:
+                # Close whatever transaction the reads above opened, so the
+                # explicit BEGIN starts a fresh one instead of warning.
+                self._rollback_quietly()
                 begin = self._compiler.begin_transaction_sql()
                 if begin is not None:
                     self._connection.cursor().execute(begin)
@@ -872,7 +876,22 @@ class Migrator:
                 return _rehearsal_results(ran, up_error, outcomes)
             finally:
                 self._rehearsing = False
-                self._rollback_quietly()
+                self._roll_back_rehearsal()
+
+    def _roll_back_rehearsal(self) -> None:
+        """
+        Takes back everything the rehearsal did. The statement runs first,
+        because a driver's own rollback() call does nothing on connections
+        that never opened a transaction of their own; the driver call
+        follows to leave its bookkeeping straight.
+        """
+        statement = self._compiler.rollback_transaction_sql()
+        if statement is not None:
+            try:
+                self._connection.cursor().execute(statement)
+            except Exception:
+                pass
+        self._rollback_quietly()
 
     def _rehearse_down(
         self, ran: List[Migration]

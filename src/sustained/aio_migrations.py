@@ -520,6 +520,9 @@ class AsyncMigrator:
         async with self._lock_scope():
             self._rehearsing = True
             try:
+                # Close whatever transaction the reads above opened, so the
+                # explicit BEGIN starts a fresh one instead of warning.
+                await self._rollback_quietly()
                 begin = self._compiler.begin_transaction_sql()
                 if begin is not None:
                     await self._adapter.execute(begin, ())
@@ -539,7 +542,22 @@ class AsyncMigrator:
                 return _rehearsal_results(ran, up_error, outcomes)
             finally:
                 self._rehearsing = False
-                await self._rollback_quietly()
+                await self._roll_back_rehearsal()
+
+    async def _roll_back_rehearsal(self) -> None:
+        """
+        Takes back everything the rehearsal did. The statement runs first,
+        because an adapter's own rollback() does nothing on drivers that
+        run in autocommit until a transaction is opened, asyncpg among
+        them; the adapter call follows to leave its bookkeeping straight.
+        """
+        statement = self._compiler.rollback_transaction_sql()
+        if statement is not None:
+            try:
+                await self._adapter.execute(statement, ())
+            except Exception:
+                pass
+        await self._rollback_quietly()
 
     async def _rehearse_down(
         self, ran: List[Migration]

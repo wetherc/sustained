@@ -158,6 +158,9 @@ class MssqlCompiler(Compiler):
         # Bare BEGIN opens a statement block in T-SQL, not a transaction.
         return "BEGIN TRANSACTION"
 
+    def rollback_transaction_sql(self) -> Optional[str]:
+        return "ROLLBACK TRANSACTION"
+
     def migration_lock_sql(self, name: str) -> "list[str]":
         # Session-owned and reentrant; released on disconnect. The negative
         # timeout waits until the lock is free.

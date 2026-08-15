@@ -349,6 +349,27 @@ class TestAsyncRehearse(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(MigrationError):
             await AsyncMigrator(self.adapter, edited).rehearse()
 
+    async def test_rehearsal_rolls_back_without_help_from_the_adapter(self):
+        """
+        asyncpg runs in autocommit until a transaction is opened, and its
+        adapter's commit() and rollback() do nothing. The rehearsal must
+        still take its changes back.
+        """
+
+        class AutocommitAdapter(DbApiAsyncAdapter):
+            async def commit(self):
+                pass
+
+            async def rollback(self):
+                pass
+
+        adapter = AutocommitAdapter(self.conn)
+        migrator = AsyncMigrator(adapter, self.migrations())
+        results = await migrator.rehearse()
+        self.assertEqual([r.up_ok for r in results], [True, True, True])
+        self.assertEqual(table_names(self.conn), {"sustained_migrations"})
+        self.assertEqual(await migrator.applied_records(), [])
+
     async def test_the_adapter_is_reachable(self):
         migrator = AsyncMigrator(self.adapter, [])
         self.assertIs(migrator.adapter, self.adapter)

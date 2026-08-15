@@ -287,13 +287,24 @@ class Compiler:
 
     def begin_transaction_sql(self) -> Optional[str]:
         """
-        The statement that opens a transaction explicitly, or None when the
-        driver opens one on its own. SQLite needs this: it starts a
-        transaction for INSERT and UPDATE but not for CREATE TABLE, so
-        without an explicit BEGIN a schema change commits as it runs and no
-        rollback can take it back. Engines without transactions return None.
+        The statement that opens a transaction, or None on engines that
+        have no transactions.
+
+        A rehearsal opens and closes its transaction with these statements
+        rather than with the driver's own calls, because drivers disagree:
+        SQLite starts a transaction for INSERT but not for CREATE TABLE,
+        and asyncpg runs in autocommit until a transaction is opened. On a
+        driver that already opened one, an explicit BEGIN would warn, so
+        the rehearsal rolls back first.
         """
         return "BEGIN" if self.supports_transactions() else None
+
+    def rollback_transaction_sql(self) -> Optional[str]:
+        """
+        The statement that takes back the transaction begin_transaction_sql()
+        opened, or None on engines that have no transactions.
+        """
+        return "ROLLBACK" if self.supports_transactions() else None
 
     def migration_lock_sql(self, name: str) -> "list[str]":
         """

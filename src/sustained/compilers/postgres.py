@@ -1,5 +1,3 @@
-from typing import Optional
-
 from .base import Compiler
 
 
@@ -60,11 +58,6 @@ class PostgresCompiler(Compiler):
 
     def quote_fully_qualified_identifier(self, identifier: str) -> str:
         return ".".join([self.quote_identifier(part) for part in identifier.split(".")])
-
-    def begin_transaction_sql(self) -> Optional[str]:
-        # psycopg opens a transaction on the first statement of a block, so
-        # an explicit BEGIN would land inside one and warn.
-        return None
 
     def migration_lock_sql(self, name: str) -> "list[str]":
         # Session-scoped and reentrant, so a sync() that calls up() locks

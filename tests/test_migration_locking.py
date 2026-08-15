@@ -83,23 +83,31 @@ class TestLockStatements(unittest.TestCase):
 
 class TestBeginStatements(unittest.TestCase):
     """
-    A rehearsal opens its transaction explicitly, because SQLite starts one
-    for INSERT but not for CREATE TABLE.
+    A rehearsal opens and closes its transaction with statements rather
+    than driver calls, since SQLite starts a transaction for INSERT but not
+    for CREATE TABLE, and asyncpg runs in autocommit until one is opened.
     """
 
-    def test_engines_that_need_an_explicit_begin(self):
-        for dialect in (Dialects.DEFAULT, Dialects.DUCKDB, Dialects.PRESTO):
+    def test_engines_that_take_the_plain_spelling(self):
+        for dialect in (
+            Dialects.DEFAULT,
+            Dialects.DUCKDB,
+            Dialects.PRESTO,
+            Dialects.POSTGRES,
+        ):
             compiler = Dialects.get_compiler(dialect)
             self.assertEqual(compiler.begin_transaction_sql(), "BEGIN")
+            self.assertEqual(compiler.rollback_transaction_sql(), "ROLLBACK")
 
     def test_mssql_spells_it_out(self):
         compiler = Dialects.get_compiler(Dialects.MSSQL)
         self.assertEqual(compiler.begin_transaction_sql(), "BEGIN TRANSACTION")
+        self.assertEqual(compiler.rollback_transaction_sql(), "ROLLBACK TRANSACTION")
 
-    def test_postgres_and_athena_need_none(self):
-        for dialect in (Dialects.POSTGRES, Dialects.ATHENA):
-            compiler = Dialects.get_compiler(dialect)
-            self.assertIsNone(compiler.begin_transaction_sql())
+    def test_an_engine_without_transactions_has_neither(self):
+        compiler = Dialects.get_compiler(Dialects.ATHENA)
+        self.assertIsNone(compiler.begin_transaction_sql())
+        self.assertIsNone(compiler.rollback_transaction_sql())
 
 
 class TestLockingRun(unittest.TestCase):
@@ -159,12 +167,22 @@ class TestLockingRun(unittest.TestCase):
         )
         results = self._migrator(conn, [migration]).rehearse()
         self.assertEqual([(r.up_ok, r.down_ok) for r in results], [(True, True)])
-        rollback_at = len(conn.log) - 1 - conn.log[::-1].index("<rollback>")
+        lock_at = conn.log.index(
+            "SELECT pg_advisory_lock(hashtext('sustained_migrations'))"
+        )
+        begin_at = conn.log.index("BEGIN")
+        ddl_at = conn.log.index("CREATE TABLE t1 (id INTEGER)")
+        rollback_at = conn.log.index("ROLLBACK")
         unlock_at = conn.log.index(
             "SELECT pg_advisory_unlock(hashtext('sustained_migrations'))"
         )
+        self.assertLess(lock_at, begin_at)
+        self.assertLess(begin_at, ddl_at)
+        self.assertLess(ddl_at, rollback_at)
         self.assertLess(rollback_at, unlock_at)
-        self.assertNotIn("BEGIN", conn.log)
+        # The reads before the rehearsal leave a transaction open on
+        # psycopg, so it closes before BEGIN rather than warning.
+        self.assertEqual(conn.log[begin_at - 1], "<rollback>")
 
     def test_rehearsal_commits_nothing_after_the_tracking_table_exists(self):
         conn = FakePostgresConnection()

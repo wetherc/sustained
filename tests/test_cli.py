@@ -203,6 +203,22 @@ class CliTestCase(CliBase):
         with self.assertRaises(sqlite3.ProgrammingError):
             connections[0].execute("SELECT 1")
 
+    def test_a_connection_that_will_not_open_reports_an_error(self):
+        name = f"broken_config_{id(self)}"
+        with open(os.path.join(self.dir.name, f"{name}.py"), "w") as f:
+            f.write(
+                "import sqlite3\n\n"
+                "def get_connection():\n"
+                "    return sqlite3.connect('/nowhere/at/all/app.db')\n"
+            )
+        self.addCleanup(sys.modules.pop, name, None)
+        stderr = io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()):
+            with contextlib.redirect_stderr(stderr):
+                code = main(["status", "--config", name])
+        self.assertEqual(code, 1)
+        self.assertIn("error: unable to open database file", stderr.getvalue())
+
     def test_dialect_name_resolves(self):
         name = f"dialect_config_{id(self)}"
         with open(os.path.join(self.dir.name, f"{name}.py"), "w") as f:

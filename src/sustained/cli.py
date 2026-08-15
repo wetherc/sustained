@@ -481,7 +481,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     try:
         config = _load_config(args.config)
         migrator, connection = _build_migrator(config)
-    except (ImportError, ValueError) as error:
+    except Exception as error:
+        # A config module that will not import, a connection that will not
+        # open, a migrations directory that will not load: none of them
+        # leave a connection behind, and none should reach the shell as a
+        # traceback.
         print(f"error: {error}", file=sys.stderr)
         return 1
     try:
