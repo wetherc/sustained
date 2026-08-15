@@ -333,6 +333,35 @@ class PlanCliTestCase(CliBase):
         self.assertIn("checksum mismatch", out)
         self.assertNotIn("run: sustained migrate", out)
 
+    def test_pending_and_problems_print_as_two_sections(self):
+        self.run_cli("migrate", "--target", "001_users")
+        self._write(
+            os.path.join(self.dir.name, "migrations"),
+            "001_users.up.sql",
+            "CREATE TABLE users (id BIGINT);",
+        )
+        code, out, _ = self.run_cli("plan")
+        self.assertEqual(code, 1)
+        self.assertIn("pending\n  002_flag", out)
+        self.assertIn("\n\nproblems\n", out)
+        self.assertIn("1 pending migration, 1 problem", out)
+
+    def test_pending_and_drift_print_as_two_sections(self):
+        name = self._config(
+            "both",
+            "\nfrom sustained import create_model\n"
+            "from sustained.schema import Integer\n"
+            "Users = create_model('Users', 'users')\n"
+            "Users.tableColumns = {'id': Integer()}\n"
+            "Users.columns = ('id',)\n"
+            "models = [Users]\n",
+        )
+        code, out, _ = self._run(name, "plan")
+        self.assertEqual(code, 2)
+        self.assertIn("\n\ndrift\n", out)
+        self.assertIn("CREATE TABLE users", out)
+        self.assertIn("2 pending migrations, 1 drift statement", out)
+
     def test_changed_repeatable_is_marked(self):
         migrations = os.path.join(self.dir.name, "migrations")
         self._write(
