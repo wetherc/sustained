@@ -24,6 +24,29 @@ class DestructiveStatementsTestCase(unittest.TestCase):
             destructive_statements(["drop   table  users"]), ["drop table users"]
         )
 
+    def test_finds_bare_column_drop(self):
+        self.assertEqual(
+            destructive_statements(["ALTER TABLE users DROP legacy"]),
+            ["ALTER TABLE users DROP legacy"],
+        )
+
+    def test_bare_column_drop_ignores_case_and_spacing(self):
+        self.assertEqual(
+            destructive_statements(["alter   table users\n  drop  legacy"]),
+            ["alter table users drop legacy"],
+        )
+
+    def test_constraint_drop_is_not_labelled(self):
+        statements = [
+            "ALTER TABLE users DROP CONSTRAINT fk_x",
+            "ALTER TABLE users DROP INDEX idx_users_email",
+            "ALTER TABLE users DROP FOREIGN KEY fk_x",
+            "ALTER TABLE users DROP PRIMARY KEY",
+            "DROP INDEX idx_users_email",
+            "DROP VIEW active_users",
+        ]
+        self.assertEqual(destructive_statements(statements), [])
+
     def test_keeps_creates_out(self):
         statements = [
             "CREATE TABLE users (id INTEGER)",

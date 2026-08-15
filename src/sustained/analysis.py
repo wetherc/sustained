@@ -22,12 +22,24 @@ _WHITESPACE_RE = re.compile(r"\s+")
 _DESTRUCTIVE_RE = re.compile(
     r"\bDROP\s+TABLE\b|\bDROP\s+COLUMN\b|\bTRUNCATE\b", re.IGNORECASE
 )
+# MySQL lets a column drop omit the COLUMN keyword. This matches
+# `ALTER TABLE <name> DROP <identifier>` while it skips drops of other
+# schema objects, such as a constraint, an index, or a key.
+_ALTER_DROP_RE = re.compile(
+    r"\bALTER\s+TABLE\s+\S+\s+DROP\s+"
+    r"(?!CONSTRAINT\b|INDEX\b|KEY\b|FOREIGN\b|PRIMARY\b|CHECK\b|PARTITION\b)"
+    r"[A-Za-z_`\"\[]",
+    re.IGNORECASE,
+)
 
 
 def destructive_statements(statements: Union[str, Sequence[str]]) -> List[str]:
     """
-    Returns the statements that remove data: DROP TABLE, DROP COLUMN, and
-    TRUNCATE. Comments are removed and whitespace is collapsed, so each
+    Returns the statements that remove data: DROP TABLE, DROP COLUMN,
+    TRUNCATE, and a MySQL-style column drop that omits the COLUMN
+    keyword (`ALTER TABLE t DROP col`). Drops of constraints, indexes,
+    and keys are not labelled. Comments are removed and whitespace is
+    collapsed, so each
     statement comes back on one line and a commented-out drop is not
     labelled. Both `--` and `/* */` comments are handled.
     """
@@ -36,7 +48,7 @@ def destructive_statements(statements: Union[str, Sequence[str]]) -> List[str]:
     found = []
     for statement in statements:
         stripped = _WHITESPACE_RE.sub(" ", _COMMENT_RE.sub("", statement)).strip()
-        if _DESTRUCTIVE_RE.search(stripped):
+        if _DESTRUCTIVE_RE.search(stripped) or _ALTER_DROP_RE.search(stripped):
             found.append(stripped)
     return found
 
