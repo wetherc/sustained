@@ -14,7 +14,7 @@ import inspect
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from typing import Any, AsyncIterator, List, Optional, Tuple
+from typing import Any, AsyncIterator, Dict, List, Optional, Tuple, cast
 
 from sustained.aio import AsyncAdapter, async_transaction
 from sustained.dialects import Dialects
@@ -24,9 +24,14 @@ from sustained.migrations import (
     AppliedRecord,
     Migration,
     MigrationStep,
+    RehearsalResult,
+    _check_rehearsable,
+    _down_sweep,
     _is_current,
     _migration_state,
     _next_seq,
+    _rehearsal_results,
+    _tag_migration,
     _tracking_column_defs,
     _upgrade_column_def,
     _validation_problems,
@@ -56,6 +61,12 @@ class AsyncMigrator:
         self._compiler = Dialects.get_compiler(dialect)
         self._tracking_table_options = tracking_table_options
         self._tracking_ready = False
+        self._rehearsing = False
+
+    @property
+    def adapter(self) -> AsyncAdapter:
+        """The adapter this migrator runs on."""
+        return self._adapter
 
     def _table_sql(self) -> str:
         return self._compiler.quote_identifier(self._table)
@@ -75,7 +86,13 @@ class AsyncMigrator:
         """
         A transaction on engines that have them; a bare run followed by a
         commit on engines that do not.
+
+        A rehearsal opens one transaction around the whole run and rolls it
+        back at the end, so each migration runs bare and nothing commits.
         """
+        if self._rehearsing:
+            yield
+            return
         if self._compiler.supports_transactions():
             async with async_transaction(self._adapter):
                 yield
@@ -362,9 +379,10 @@ class AsyncMigrator:
         Writes a failed-attempt row after a migration step raised on an
         engine without transactions, where partial changes may remain. A
         repeatable that already has a row updates it in place. A failure
-        to write the row never masks the original error.
+        to write the row never masks the original error. A rehearsal writes
+        nothing: its whole run rolls back.
         """
-        if self._compiler.supports_transactions():
+        if self._rehearsing or self._compiler.supports_transactions():
             return
         try:
             timestamp = datetime.now(timezone.utc).isoformat()
@@ -468,9 +486,91 @@ class AsyncMigrator:
                         self._insert_sql(),
                         (migration.id, seq, checksum, timestamp, elapsed_ms, True),
                     )
-        except Exception:
+        except Exception as error:
             await self._record_failure(migration, seq, update=update)
+            _tag_migration(error, migration.id)
             raise
+
+    async def rehearse(self, scratch: bool = False) -> List[RehearsalResult]:
+        """
+        Runs every pending migration up, then back down, inside one
+        transaction, and rolls that transaction back. Returns one result
+        per migration that ran; an empty list means nothing was pending.
+        Mirrors Migrator.rehearse(), including the dialect check and the
+        scratch=True waiver for a database that can be thrown away.
+        """
+        from sustained.aio import in_async_transaction
+
+        if not scratch:
+            _check_rehearsable(self._dialect)
+        if in_async_transaction(self._adapter):
+            raise ValueError(
+                "rehearse cannot run inside an open async_transaction() "
+                "block: its rollback would take the caller's work back too."
+            )
+        await self.validate()
+        pending = await self.pending()
+        if not pending:
+            return []
+        records = {r.id: r for r in await self.applied_records()}
+        seq = _next_seq(list(records.values()))
+
+        # The lock sits outside the rehearsal transaction, so the rollback
+        # runs before the lock is released.
+        async with self._lock_scope():
+            self._rehearsing = True
+            try:
+                begin = self._compiler.begin_transaction_sql()
+                if begin is not None:
+                    await self._adapter.execute(begin, ())
+                ran: List[Migration] = []
+                up_error: Optional[Tuple[str, str]] = None
+                for migration in pending:
+                    try:
+                        await self._apply(
+                            migration, seq, update=migration.id in records
+                        )
+                    except Exception as error:
+                        up_error = (migration.id, str(error))
+                        break
+                    seq += 1
+                    ran.append(migration)
+                outcomes = {} if up_error else await self._rehearse_down(ran)
+                return _rehearsal_results(ran, up_error, outcomes)
+            finally:
+                self._rehearsing = False
+                await self._rollback_quietly()
+
+    async def _rehearse_down(
+        self, ran: List[Migration]
+    ) -> Dict[str, Tuple[Optional[bool], Optional[str]]]:
+        """
+        Runs the down steps of a rehearsal, newest-first, and reports what
+        each one proved. A step that raises stops the sweep; the
+        migrations under it report that they were not reached.
+        """
+        placeholder = self._compiler.placeholder()
+        outcomes: Dict[str, Tuple[Optional[bool], Optional[str]]] = {}
+        failed: Optional[str] = None
+        for migration, reason in _down_sweep(ran):
+            if failed is not None:
+                outcomes[migration.id] = (None, f"not reached: '{failed}' down failed")
+            elif reason is not None:
+                outcomes[migration.id] = (None, reason)
+            else:
+                try:
+                    async with self._migration_scope():
+                        await self._run_step(cast(MigrationStep, migration.down))
+                        await self._adapter.execute(
+                            f"DELETE FROM {self._table_sql()} WHERE id = {placeholder}",
+                            (migration.id,),
+                        )
+                except Exception as error:
+                    outcomes[migration.id] = (False, str(error))
+                    failed = migration.id
+                else:
+                    outcomes[migration.id] = (True, None)
+        return outcomes
 
     async def _applied_versioned(self) -> List[str]:
         """Applied ids with the repeatables left out; down() skips them."""
