@@ -652,5 +652,102 @@ class RehearseCliTestCase(CliBase):
         self.assertEqual({r[0] for r in rows}, {"sustained_migrations"})
 
 
+CALLBACK_CONFIG = """
+import os
+import sqlite3
+
+def get_connection():
+    return sqlite3.connect(os.path.join(os.path.dirname(__file__), "cli.db"))
+
+migrations_dir = os.path.join(os.path.dirname(__file__), "migrations")
+log_path = os.path.join(os.path.dirname(__file__), "callbacks.log")
+
+def _note(line):
+    with open(log_path, "a") as handle:
+        handle.write(line + "\\n")
+
+def before_migrate(connection):
+    _note("before")
+
+def after_migrate(connection, applied):
+    _note("after " + ",".join(applied))
+
+def on_error(connection, migration_id, error):
+    _note("error " + str(migration_id))
+"""
+
+
+class CallbackCliTestCase(CliBase):
+    """The config module's hooks around the migrate command."""
+
+    def _write_config(self, name, body):
+        with open(os.path.join(self.dir.name, f"{name}.py"), "w") as f:
+            f.write(body)
+        self.addCleanup(sys.modules.pop, name, None)
+        return name
+
+    def _run(self, name, *argv):
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            code = main([*argv, "--config", name])
+        return code, stdout.getvalue(), stderr.getvalue()
+
+    def _log(self):
+        path = os.path.join(self.dir.name, "callbacks.log")
+        if not os.path.exists(path):
+            return []
+        with open(path) as handle:
+            return handle.read().split()
+
+    def test_callbacks_fire_around_a_successful_run(self):
+        name = self._write_config(f"cb_{id(self)}", CALLBACK_CONFIG)
+        code, _, _ = self._run(name, "migrate")
+        self.assertEqual(code, 0)
+        self.assertEqual(self._log(), ["before", "after", "001_users,002_flag"])
+
+    def test_after_migrate_is_skipped_when_nothing_applied(self):
+        name = self._write_config(f"cb_empty_{id(self)}", CALLBACK_CONFIG)
+        self._run(name, "migrate")
+        os.remove(os.path.join(self.dir.name, "callbacks.log"))
+        self._run(name, "migrate")
+        self.assertEqual(self._log(), ["before"])
+
+    def test_on_error_names_the_migration_that_failed(self):
+        name = self._write_config(f"cb_error_{id(self)}", CALLBACK_CONFIG)
+        self._write(
+            os.path.join(self.dir.name, "migrations"),
+            "003_bad.up.sql",
+            "CRATE TABLE oops (id INTEGER);",
+        )
+        code, _, err = self._run(name, "migrate")
+        self.assertEqual(code, 1)
+        self.assertEqual(self._log(), ["before", "error", "003_bad"])
+        self.assertIn("error in '003_bad': ", err)
+        self.assertIn("syntax error", err)
+
+    def test_a_raising_callback_does_not_hide_the_migration_error(self):
+        body = CALLBACK_CONFIG.replace(
+            'def on_error(connection, migration_id, error):\n    _note("error "'
+            " + str(migration_id))",
+            "def on_error(connection, migration_id, error):\n"
+            '    raise RuntimeError("hook is broken")',
+        )
+        name = self._write_config(f"cb_raise_{id(self)}", body)
+        self._write(
+            os.path.join(self.dir.name, "migrations"),
+            "003_bad.up.sql",
+            "CRATE TABLE oops (id INTEGER);",
+        )
+        code, _, err = self._run(name, "migrate")
+        self.assertEqual(code, 1)
+        self.assertIn("on_error raised RuntimeError('hook is broken')", err)
+        self.assertIn("syntax error", err)
+
+    def test_a_config_without_callbacks_still_migrates(self):
+        code, out, _ = self.run_cli("migrate")
+        self.assertEqual(code, 0)
+        self.assertIn("applied  001_users", out)
+
+
 if __name__ == "__main__":
     unittest.main()

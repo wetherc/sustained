@@ -17,6 +17,9 @@ The config module names the pieces the migrator needs:
 - `tracking_table_options`: TableOptions for the tracking table (optional)
 - `get_rehearsal_connection()`: a connection to a scratch database, which
   `rehearse` then uses instead of the real one (optional)
+- `before_migrate(connection)`, `after_migrate(connection, applied)`, and
+  `on_error(connection, migration_id, error)`: callbacks around the
+  `migrate` command (optional)
 
 Commands: status, plan, migrate, rehearse, down, validate, repair,
 script, baseline. Every command exits 0 on success and 1 on failure.
@@ -297,16 +300,46 @@ def _cmd_rehearse(migrator: Migrator, args: argparse.Namespace, config: Any) -> 
     return _report_rehearsal(results, scratch=True)
 
 
+def _callback(config: Any, name: str) -> Optional[Any]:
+    """The named callback from the config module, or None when it has none."""
+    hook = getattr(config, name, None)
+    return hook if callable(hook) else None
+
+
+def _call_on_error(hook: Any, connection: Any, error: BaseException) -> None:
+    """
+    Hands a failed run to the config module's on_error callback. A callback
+    that raises is reported on stderr and then set aside, so the migration
+    error is the one that reaches the operator.
+    """
+    try:
+        hook(connection, getattr(error, "migration_id", None), error)
+    except Exception as callback_error:
+        print(f"error: on_error raised {callback_error!r}", file=sys.stderr)
+
+
 def _cmd_migrate(migrator: Migrator, args: argparse.Namespace, config: Any) -> int:
-    applied = migrator.up(
-        target=args.target,
-        validate=not args.no_validate,
-        allow_out_of_order=args.allow_out_of_order,
-    )
+    before = _callback(config, "before_migrate")
+    if before is not None:
+        before(migrator.connection)
+    try:
+        applied = migrator.up(
+            target=args.target,
+            validate=not args.no_validate,
+            allow_out_of_order=args.allow_out_of_order,
+        )
+    except Exception as error:
+        hook = _callback(config, "on_error")
+        if hook is not None:
+            _call_on_error(hook, migrator.connection, error)
+        raise
     if not applied:
         print("Nothing to apply.")
     for migration_id in applied:
         print(f"applied  {migration_id}")
+    after = _callback(config, "after_migrate")
+    if after is not None and applied:
+        after(migrator.connection, applied)
     return 0
 
 
@@ -456,8 +489,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     except MigrationError as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
-    except ValueError as error:
-        print(f"error: {error}", file=sys.stderr)
+    except Exception as error:
+        # A driver raises its own error class, so a failing statement would
+        # otherwise reach the shell as a traceback.
+        migration_id = getattr(error, "migration_id", None)
+        where = f" in '{migration_id}'" if migration_id else ""
+        print(f"error{where}: {error}", file=sys.stderr)
         return 1
     finally:
         _close_quietly(connection)

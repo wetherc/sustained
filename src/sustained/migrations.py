@@ -312,13 +312,10 @@ def _tag_migration(error: BaseException, migration_id: str) -> None:
     """
     Records which migration raised on the exception itself, so a caller
     that catches it can name the migration. The CLI reads it when it hands
-    a failure to the config module's on_error callback. Exceptions that
-    refuse new attributes are left alone.
+    a failure to the config module's on_error callback, and when it prints
+    the error.
     """
-    try:
-        setattr(error, "migration_id", migration_id)
-    except Exception:
-        pass
+    setattr(error, "migration_id", migration_id)
 
 
 def _validation_problems(
