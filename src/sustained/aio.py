@@ -239,6 +239,11 @@ async def async_transaction(adapter: AsyncAdapter) -> AsyncIterator[AsyncAdapter
 
     Nested blocks on the same adapter use ANSI savepoints, so an inner
     failure rolls back only the inner block.
+
+    Nesting is tracked per adapter, not per task. Two tasks that open a
+    block on one adapter at the same time share one transaction, and the
+    second one is read as nested. Give each concurrent task its own adapter,
+    as a connection carries one transaction at a time in any case.
     """
     key = id(adapter)
     entry = _active_async_transactions.get(key)

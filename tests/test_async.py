@@ -309,6 +309,22 @@ class TestAsyncNestedEagerLoad(unittest.IsolatedAsyncioTestCase):
         pets = await AioPet.query().where("id", "=", 4).withGraphFetched("owner").arun()
         self.assertIsNone(pets[0].owner)
 
+    async def test_unknown_segment_names_model_and_path(self):
+        with self.assertRaises(ValueError) as caught:
+            AioOwner.query().withGraphFetched("pets.wheels")
+        message = str(caught.exception)
+        self.assertIn("'wheels'", message)
+        self.assertIn("AioPet", message)
+        self.assertIn("pets.wheels", message)
+
+    async def test_unknown_first_segment_keeps_the_plain_message(self):
+        with self.assertRaises(ValueError) as caught:
+            AioOwner.query().withGraphFetched("wheels")
+        self.assertEqual(
+            str(caught.exception),
+            "Relation 'wheels' not found in model 'AioOwner'",
+        )
+
 
 class TestPlaceholderConversion(unittest.TestCase):
     def test_sequential_numbering(self):

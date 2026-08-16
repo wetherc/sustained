@@ -123,7 +123,7 @@ which driver is underneath.
 
 | Signature | Description |
 | --- | --- |
-| `async_transaction(adapter)` | An async context manager issuing `BEGIN`, `COMMIT`, and `ROLLBACK`. Nested blocks on one adapter use `SAVEPOINT sustained_sp_<depth>`. |
+| `async_transaction(adapter)` | An async context manager issuing `BEGIN`, `COMMIT`, and `ROLLBACK`. Nested blocks on one adapter use `SAVEPOINT sustained_sp_<depth>`. Nesting is tracked per adapter, so give each concurrent task its own adapter. |
 | `in_async_transaction(adapter)` | Whether one is open. |
 | `resolve_adapter(explicit, model_class)` | Resolves argument, then the open transaction, then `Model.bind_async()`. Raises `RuntimeError` with none. |
 | `await run_async(query, adapter=None)` | What `arun()` calls. |
