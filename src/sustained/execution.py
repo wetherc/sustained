@@ -14,7 +14,6 @@ import threading
 from contextlib import contextmanager
 from typing import (
     TYPE_CHECKING,
-    Any,
     Callable,
     Dict,
     Iterator,
@@ -22,25 +21,37 @@ from typing import (
     Optional,
     Tuple,
     Type,
+    Union,
+    cast,
 )
 
-from sustained.types import RelationType
+from sustained.types import (
+    Binding,
+    Connection,
+    Cursor,
+    JoinMappingWithThrough,
+    RelationTree,
+    RelationType,
+    RowValue,
+    SqlValue,
+)
 
 if TYPE_CHECKING:
     from sustained.model import Model
+    from sustained.types import AnyQuery
 
 
 # Connections with an open transaction, keyed by id(). The value holds a
 # strong reference to the connection, so the id cannot be reused while the
 # entry exists, plus the current savepoint nesting depth.
-_ACTIVE_TRANSACTIONS: Dict[int, Tuple[Any, int]] = {}
+_ACTIVE_TRANSACTIONS: Dict[int, Tuple[Connection, int]] = {}
 
 # Optional observer called after every executed statement.
-_statement_listener: Optional[Callable[[str, Tuple[Any, ...], float], None]] = None
+_statement_listener: Optional[Callable[[str, Tuple[SqlValue, ...], float], None]] = None
 
 
 def set_statement_listener(
-    listener: Optional[Callable[[str, Tuple[Any, ...], float], None]],
+    listener: Optional[Callable[[str, Tuple[SqlValue, ...], float], None]],
 ) -> None:
     """
     Registers a callable invoked after every statement run() executes, with
@@ -51,7 +62,7 @@ def set_statement_listener(
     _statement_listener = listener
 
 
-def notify_statement(sql: str, params: Tuple[Any, ...], duration: float) -> None:
+def notify_statement(sql: str, params: Tuple[SqlValue, ...], duration: float) -> None:
     """Invokes the registered statement listener, if any."""
     if _statement_listener is not None:
         _statement_listener(sql, params, duration)
@@ -63,12 +74,12 @@ def notify_statement(sql: str, params: Tuple[Any, ...], duration: float) -> None
 _thread_state = threading.local()
 
 
-def _pinned_connection() -> Optional[Any]:
+def _pinned_connection() -> Optional[Connection]:
     stack = getattr(_thread_state, "pinned", None)
     return stack[-1] if stack else None
 
 
-def _pin(connection: Any) -> None:
+def _pin(connection: Connection) -> None:
     stack = getattr(_thread_state, "pinned", None)
     if stack is None:
         stack = []
@@ -81,7 +92,9 @@ def _unpin() -> None:
 
 
 @contextmanager
-def connection_scope(explicit: Optional[Any], binding: Optional[Any]) -> Iterator[Any]:
+def connection_scope(
+    explicit: Optional[Binding], binding: Optional[Binding]
+) -> Iterator[Connection]:
     """
     Resolves the connection for one statement. An explicit argument wins;
     then a connection pinned by an open transaction() block on this thread;
@@ -114,14 +127,14 @@ def connection_scope(explicit: Optional[Any], binding: Optional[Any]) -> Iterato
         yield binding
 
 
-def in_transaction(connection: Any) -> bool:
+def in_transaction(connection: Connection) -> bool:
     """Reports whether the connection has an open transaction() context."""
     entry = _ACTIVE_TRANSACTIONS.get(id(connection))
     return entry is not None and entry[0] is connection
 
 
 @contextmanager
-def transaction(connection: Any) -> Iterator[Any]:
+def transaction(connection: Binding) -> Iterator[Connection]:
     """
     Runs the block atomically on the connection. Commits when the block
     finishes and rolls back when it raises. While the context is open,
@@ -182,7 +195,7 @@ def transaction(connection: Any) -> Iterator[Any]:
         del _ACTIVE_TRANSACTIONS[key]
 
 
-def fetch_models(model_class: Type["Model"], cursor: Any) -> List["Model"]:
+def fetch_models(model_class: Type["Model"], cursor: Cursor) -> List["Model"]:
     """Hydrates every row on the cursor into instances of model_class."""
     if cursor.description is None:
         return []
@@ -238,12 +251,12 @@ def check_relation_path(model_class: Type["Model"], path: str) -> None:
             raise
 
 
-def relation_tree(paths: List[str]) -> Dict[str, Any]:
+def relation_tree(paths: List[str]) -> RelationTree:
     """
     Folds dotted relation paths into a nested dict, so paths sharing a
     prefix load that prefix once.
     """
-    tree: Dict[str, Any] = {}
+    tree: RelationTree = {}
     for path in paths:
         node = tree
         for segment in path.split("."):
@@ -265,7 +278,7 @@ def _attached_children(parents: List["Model"], relation_name: str) -> List["Mode
 
 def eager_load_paths(
     model_class: Type["Model"],
-    connection: Any,
+    connection: Connection,
     parents: List["Model"],
     paths: List[str],
 ) -> None:
@@ -279,9 +292,9 @@ def eager_load_paths(
 
 def _eager_load_tree(
     model_class: Type["Model"],
-    connection: Any,
+    connection: Connection,
     parents: List["Model"],
-    tree: Dict[str, Any],
+    tree: RelationTree,
 ) -> None:
     """Loads one level of the relation tree, then recurses into each child."""
     for relation_name, children in tree.items():
@@ -311,9 +324,9 @@ class EagerPlan:
     def __init__(
         self,
         relation_name: str,
-        parent_keys: List[Any],
+        parent_keys: List[RowValue],
         is_many: bool,
-        query: Optional[Any] = None,
+        query: Optional["AnyQuery"] = None,
         child_col: Optional[str] = None,
         through: bool = False,
     ) -> None:
@@ -355,8 +368,11 @@ def plan_eager_load(
     to_table, to_col = _split_column_ref(join_info["to"], relation_name)
 
     if "through" in join_info:
+        # The key test above is what tells the two join mappings apart; a
+        # type checker cannot read it, so the narrowing is spelled out.
+        through_join = cast(JoinMappingWithThrough, join_info)
         return _plan_eager_load_through(
-            related_cls, parents, relation_name, relation, from_col, to_col
+            related_cls, parents, relation_name, through_join, from_col, to_col
         )
 
     # The side whose table matches the parent model holds the parent key.
@@ -390,13 +406,13 @@ def attach_eager_load(
     Raises:
         ValueError: If the fetched rows lack the join key column.
     """
-    empty: Any = [] if plan.is_many else None
+    empty: Optional[List["Model"]] = [] if plan.is_many else None
     if plan.query is None:
         for parent in parents:
             setattr(parent, plan.relation_name, [] if plan.is_many else None)
         return
 
-    grouped: Dict[Any, List["Model"]] = {}
+    grouped: Dict[RowValue, List["Model"]] = {}
     for child in children:
         if plan.through:
             key = child.__dict__.pop(_PARENT_KEY_ALIAS, None)
@@ -420,7 +436,7 @@ def attach_eager_load(
 
 def eager_load_relation(
     model_class: Type["Model"],
-    connection: Any,
+    connection: Connection,
     parents: List["Model"],
     relation_name: str,
 ) -> None:
@@ -440,7 +456,7 @@ def eager_load_relation(
 
 def _collect_parent_keys(
     parents: List["Model"], parent_col: str, relation_name: str
-) -> List[Any]:
+) -> List[RowValue]:
     """
     Reads the join key from each parent's hydrated data. Values come from
     __dict__ so a missing column is an error instead of silently resolving
@@ -465,7 +481,7 @@ def _plan_eager_load_through(
     related_cls: Type["Model"],
     parents: List["Model"],
     relation_name: str,
-    relation: Any,
+    join_info: JoinMappingWithThrough,
     parent_col: str,
     related_col: str,
 ) -> EagerPlan:
@@ -474,10 +490,9 @@ def _plan_eager_load_through(
     the through table and exposes the parent key under a reserved alias for
     grouping.
     """
-    join_info = relation["join"]
     through = join_info["through"]
 
-    def through_table_name(ref: Any) -> str:
+    def through_table_name(ref: Union[Type["Model"], str]) -> str:
         if isinstance(ref, str):
             return ref
         name = ref.tableName

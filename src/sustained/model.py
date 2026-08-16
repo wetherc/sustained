@@ -1,13 +1,26 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple, Type, TypeVar, Union
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    AsyncContextManager,
+    ContextManager,
+    Dict,
+    Optional,
+    Tuple,
+    Type,
+    TypeVar,
+    Union,
+)
 
 from sustained.builder import QueryBuilder
 from sustained.dialects import Dialects
-from sustained.types import CaseResult, RelationMapping
+from sustained.types import Binding, CaseResult, Connection, RelationMapping
 
 if TYPE_CHECKING:
+    from sustained.aio import AsyncAdapter
     from sustained.expressions import ColumnExpr
+    from sustained.schema import ColumnDef, Index, TableOptions
 
 
 _MODEL_REGISTRY: Dict[str, Type["Model"]] = {}
@@ -103,6 +116,8 @@ class ModelMeta(type):
         """Typed column namespace: Model.c.age is a ColumnExpr."""
         return ColumnNamespace(cls)  # type: ignore[arg-type]
 
+    # The class namespace mixes methods, column definitions, and plain
+    # attributes, exactly as type.__init__ receives it.
     def __init__(cls, name: str, bases: Tuple[type, ...], namespace: Dict[str, Any]):
         super().__init__(name, bases, namespace)
         if getattr(cls, "tableName", None):
@@ -144,13 +159,15 @@ class Model(metaclass=ModelMeta):
     tableSchema: Optional[str] = None
     relationMappings: Dict[str, RelationMapping] = {}
     columns: Optional[Tuple[str, ...]] = None
-    tableColumns: Optional[Dict[str, Any]] = None
-    indexes: Optional[list[Any]] = None
-    tableOptions: Optional[Any] = None
+    tableColumns: Optional[Dict[str, "ColumnDef"]] = None
+    indexes: Optional[list["Index"]] = None
+    tableOptions: Optional["TableOptions"] = None
     _dialect: Dialects = Dialects.DEFAULT
-    _connection: Optional[Any] = None
-    _async_adapter: Optional[Any] = None
+    _connection: Optional[Binding] = None
+    _async_adapter: Optional["AsyncAdapter"] = None
 
+    # Hydration sets one attribute per selected column, and the column set
+    # is only known at query time, so the row values cannot be typed here.
     def __init__(self, **kwargs: Any) -> None:
         """
         Initializes a model instance, allowing attributes to be set from
@@ -202,7 +219,7 @@ class Model(metaclass=ModelMeta):
         cls._dialect = dialect
 
     @classmethod
-    def bind(cls, connection: Any) -> None:
+    def bind(cls, connection: Binding) -> None:
         """
         Binds a DB-API 2.0 connection for queries made with this model.
         Binding on Model itself shares the connection with every model;
@@ -220,7 +237,7 @@ class Model(metaclass=ModelMeta):
         cls._connection = None
 
     @classmethod
-    def bind_async(cls, adapter: Any) -> None:
+    def bind_async(cls, adapter: "AsyncAdapter") -> None:
         """
         Binds an AsyncAdapter for async queries made with this model. See
         sustained.aio for the shipped adapters.
@@ -233,7 +250,9 @@ class Model(metaclass=ModelMeta):
         cls._async_adapter = None
 
     @classmethod
-    def async_transaction(cls, adapter: Optional[Any] = None) -> Any:
+    def async_transaction(
+        cls, adapter: Optional["AsyncAdapter"] = None
+    ) -> "AsyncContextManager[AsyncAdapter]":
         """
         Opens an async transaction context on the bound adapter, or the one
         passed in. Statements inside the block share one transaction that
@@ -314,7 +333,7 @@ class Model(metaclass=ModelMeta):
 
     @classmethod
     def create_table(
-        cls, connection: Optional[Any] = None, if_not_exists: bool = False
+        cls, connection: Optional[Binding] = None, if_not_exists: bool = False
     ) -> None:
         """
         Executes CREATE TABLE for this model on the connection, followed by
@@ -335,7 +354,7 @@ class Model(metaclass=ModelMeta):
 
     @classmethod
     def drop_table(
-        cls, connection: Optional[Any] = None, if_exists: bool = True
+        cls, connection: Optional[Binding] = None, if_exists: bool = True
     ) -> None:
         """Executes DROP TABLE for this model on the connection."""
         from sustained.execution import connection_scope
@@ -344,7 +363,9 @@ class Model(metaclass=ModelMeta):
             conn.cursor().execute(cls.drop_table_sql(if_exists=if_exists))
 
     @classmethod
-    def transaction(cls, connection: Optional[Any] = None) -> Any:
+    def transaction(
+        cls, connection: Optional[Binding] = None
+    ) -> ContextManager[Connection]:
         """
         Opens a transaction context on the bound connection, or on the one
         passed in. Statements inside the block share one transaction that
@@ -425,7 +446,7 @@ def create_model(
     if mappings is None:
         mappings = {}
 
-    model_attrs: Dict[str, Any] = {
+    model_attrs: Dict[str, object] = {
         "tableName": table_name,
         "relationMappings": mappings,
     }

@@ -1,5 +1,5 @@
 import re
-from typing import TYPE_CHECKING, Any, Optional, Union
+from typing import TYPE_CHECKING, Optional, Union
 
 from sustained.expressions import (
     AggregateExpression,
@@ -10,10 +10,12 @@ from sustained.expressions import (
     Subquery,
     WindowExpression,
 )
-from sustained.types import DbReturnValue, Expression
+from sustained.types import Expression, SqlValue
 
 if TYPE_CHECKING:
     from sustained.dialects import Dialects
+    from sustained.schema import ColumnDef, TableOptions
+    from sustained.types import CaseResult
 
 
 # A plain identifier path such as "users", "users.id", or "db.dbo.users.id".
@@ -139,7 +141,7 @@ class Compiler:
     def placeholder(self) -> str:
         return "?"
 
-    def format_value(self, value: Union[Expression, DbReturnValue, None]) -> str:
+    def format_value(self, value: SqlValue) -> str:
         if isinstance(value, Expression):
             return str(value)
         if value is None:
@@ -202,7 +204,7 @@ class Compiler:
         "JSON": "JSON",
     }
 
-    def compile_column_type(self, column: Any) -> str:
+    def compile_column_type(self, column: "ColumnDef") -> str:
         """
         Renders a ColumnDef's logical type as this dialect's SQL type.
         """
@@ -319,13 +321,13 @@ class Compiler:
         """Statements that release the advisory lock taken for migrations."""
         return []
 
-    def validate_column_def(self, column: Any) -> None:
+    def validate_column_def(self, column: "ColumnDef") -> None:
         """
         Rejects ColumnDef features the dialect cannot express in DDL.
         The base compiler accepts everything.
         """
 
-    def compile_table_options(self, options: Any) -> str:
+    def compile_table_options(self, options: Optional["TableOptions"]) -> str:
         """
         Renders the clause that follows the column list of CREATE TABLE:
         partitioning, storage location, and table properties. Dialects
@@ -472,12 +474,12 @@ class Compiler:
         sql += f" END AS {self.quote_identifier(case.alias)}"
         return sql
 
-    def _format_case_result(self, result: Any) -> str:
+    def _format_case_result(self, result: "CaseResult") -> str:
         if isinstance(result, Column):
             return str(result)
         return self.format_value(result)
 
-    def _format_arg(self, arg: Any) -> str:
+    def _format_arg(self, arg: SqlValue) -> str:
         """
         Formats a function argument for inclusion in the SQL string.
 

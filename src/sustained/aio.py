@@ -23,13 +23,82 @@ import asyncio
 import time
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
-from typing import TYPE_CHECKING, Any, AsyncIterator, Dict, List, Optional, Tuple, Type
+from typing import (
+    TYPE_CHECKING,
+    AsyncIterator,
+    Dict,
+    Iterator,
+    List,
+    Optional,
+    Protocol,
+    Sequence,
+    Tuple,
+    Type,
+    Union,
+    cast,
+)
 
 from sustained.execution import notify_statement
+from sustained.types import (
+    ColumnDescription,
+    Connection,
+    RelationTree,
+    RowValue,
+    SqlValue,
+    WriteResult,
+)
 
 if TYPE_CHECKING:
-    from sustained.builder import QueryBuilder
     from sustained.model import Model
+    from sustained.types import AnyQuery
+
+
+class AiosqliteConnection(Protocol):
+    """What this module calls on an aiosqlite connection."""
+
+    async def execute(
+        self, sql: str, parameters: Sequence[SqlValue] = ..., /
+    ) -> "AiosqliteCursor": ...
+
+    async def executemany(
+        self, sql: str, parameters: Sequence[Sequence[SqlValue]], /
+    ) -> "AiosqliteCursor": ...
+
+    async def commit(self) -> None: ...
+
+    async def rollback(self) -> None: ...
+
+
+class AiosqliteCursor(Protocol):
+    """What this module reads off an aiosqlite cursor."""
+
+    @property
+    def description(self) -> Optional[Sequence[ColumnDescription]]: ...
+
+    @property
+    def rowcount(self) -> int: ...
+
+    async def fetchall(self) -> Sequence[Sequence[RowValue]]: ...
+
+
+class AsyncpgRecord(Protocol):
+    """What this module reads off an asyncpg record."""
+
+    def keys(self) -> Sequence[str]: ...
+
+    def __iter__(self) -> "Iterator[RowValue]": ...
+
+
+class AsyncpgConnection(Protocol):
+    """What this module calls on an asyncpg connection."""
+
+    async def fetch(self, sql: str, *args: SqlValue) -> Sequence[AsyncpgRecord]: ...
+
+    async def execute(self, sql: str, *args: SqlValue) -> str: ...
+
+    async def executemany(
+        self, sql: str, args: Sequence[Sequence[SqlValue]]
+    ) -> object: ...
 
 
 class AsyncAdapter:
@@ -39,16 +108,18 @@ class AsyncAdapter:
     """
 
     async def fetch(
-        self, sql: str, params: Tuple[Any, ...]
-    ) -> Tuple[List[str], List[Any]]:
+        self, sql: str, params: Tuple[SqlValue, ...]
+    ) -> Tuple[List[str], List[Sequence[RowValue]]]:
         """Runs a statement and returns (column names, rows)."""
         raise NotImplementedError
 
-    async def execute(self, sql: str, params: Tuple[Any, ...]) -> int:
+    async def execute(self, sql: str, params: Tuple[SqlValue, ...]) -> int:
         """Runs a statement and returns the affected row count."""
         raise NotImplementedError
 
-    async def executemany(self, sql: str, seq_of_params: List[Tuple[Any, ...]]) -> int:
+    async def executemany(
+        self, sql: str, seq_of_params: List[Tuple[SqlValue, ...]]
+    ) -> int:
         """Runs a statement for every parameter tuple."""
         raise NotImplementedError
 
@@ -66,41 +137,43 @@ class DbApiAsyncAdapter(AsyncAdapter):
     from other threads, e.g. sqlite3.connect(..., check_same_thread=False).
     """
 
-    def __init__(self, connection: Any) -> None:
+    def __init__(self, connection: Connection) -> None:
         self._connection = connection
         # One statement at a time per connection; DB-API connections are
         # not safe for concurrent use.
         self._lock = asyncio.Lock()
 
     def _fetch_sync(
-        self, sql: str, params: Tuple[Any, ...]
-    ) -> Tuple[List[str], List[Any]]:
+        self, sql: str, params: Tuple[SqlValue, ...]
+    ) -> Tuple[List[str], List[Sequence[RowValue]]]:
         cursor = self._connection.cursor()
         cursor.execute(sql, params)
         columns = [d[0] for d in cursor.description] if cursor.description else []
-        return columns, cursor.fetchall()
+        return columns, list(cursor.fetchall())
 
-    def _execute_sync(self, sql: str, params: Tuple[Any, ...]) -> int:
+    def _execute_sync(self, sql: str, params: Tuple[SqlValue, ...]) -> int:
         cursor = self._connection.cursor()
         cursor.execute(sql, params)
         return int(cursor.rowcount)
 
-    def _executemany_sync(self, sql: str, seq: List[Tuple[Any, ...]]) -> int:
+    def _executemany_sync(self, sql: str, seq: List[Tuple[SqlValue, ...]]) -> int:
         cursor = self._connection.cursor()
         cursor.executemany(sql, seq)
         return int(cursor.rowcount)
 
     async def fetch(
-        self, sql: str, params: Tuple[Any, ...]
-    ) -> Tuple[List[str], List[Any]]:
+        self, sql: str, params: Tuple[SqlValue, ...]
+    ) -> Tuple[List[str], List[Sequence[RowValue]]]:
         async with self._lock:
             return await asyncio.to_thread(self._fetch_sync, sql, params)
 
-    async def execute(self, sql: str, params: Tuple[Any, ...]) -> int:
+    async def execute(self, sql: str, params: Tuple[SqlValue, ...]) -> int:
         async with self._lock:
             return await asyncio.to_thread(self._execute_sync, sql, params)
 
-    async def executemany(self, sql: str, seq_of_params: List[Tuple[Any, ...]]) -> int:
+    async def executemany(
+        self, sql: str, seq_of_params: List[Tuple[SqlValue, ...]]
+    ) -> int:
         async with self._lock:
             return await asyncio.to_thread(self._executemany_sync, sql, seq_of_params)
 
@@ -116,22 +189,24 @@ class DbApiAsyncAdapter(AsyncAdapter):
 class AiosqliteAdapter(AsyncAdapter):
     """Adapts an aiosqlite connection."""
 
-    def __init__(self, connection: Any) -> None:
+    def __init__(self, connection: AiosqliteConnection) -> None:
         self._connection = connection
 
     async def fetch(
-        self, sql: str, params: Tuple[Any, ...]
-    ) -> Tuple[List[str], List[Any]]:
+        self, sql: str, params: Tuple[SqlValue, ...]
+    ) -> Tuple[List[str], List[Sequence[RowValue]]]:
         cursor = await self._connection.execute(sql, params)
         columns = [d[0] for d in cursor.description] if cursor.description else []
         rows = await cursor.fetchall()
         return columns, list(rows)
 
-    async def execute(self, sql: str, params: Tuple[Any, ...]) -> int:
+    async def execute(self, sql: str, params: Tuple[SqlValue, ...]) -> int:
         cursor = await self._connection.execute(sql, params)
         return int(cursor.rowcount)
 
-    async def executemany(self, sql: str, seq_of_params: List[Tuple[Any, ...]]) -> int:
+    async def executemany(
+        self, sql: str, seq_of_params: List[Tuple[SqlValue, ...]]
+    ) -> int:
         cursor = await self._connection.executemany(sql, seq_of_params)
         return int(cursor.rowcount)
 
@@ -158,19 +233,19 @@ class AsyncpgAdapter(AsyncAdapter):
     compiler's %s placeholders and are converted to $1..$n.
     """
 
-    def __init__(self, connection: Any) -> None:
+    def __init__(self, connection: AsyncpgConnection) -> None:
         self._connection = connection
 
     async def fetch(
-        self, sql: str, params: Tuple[Any, ...]
-    ) -> Tuple[List[str], List[Any]]:
+        self, sql: str, params: Tuple[SqlValue, ...]
+    ) -> Tuple[List[str], List[Sequence[RowValue]]]:
         records = await self._connection.fetch(convert_format_to_numbered(sql), *params)
         if not records:
             return [], []
         columns = list(records[0].keys())
         return columns, [tuple(r) for r in records]
 
-    async def execute(self, sql: str, params: Tuple[Any, ...]) -> int:
+    async def execute(self, sql: str, params: Tuple[SqlValue, ...]) -> int:
         status = await self._connection.execute(
             convert_format_to_numbered(sql), *params
         )
@@ -180,7 +255,9 @@ class AsyncpgAdapter(AsyncAdapter):
         except (ValueError, AttributeError):
             return -1
 
-    async def executemany(self, sql: str, seq_of_params: List[Tuple[Any, ...]]) -> int:
+    async def executemany(
+        self, sql: str, seq_of_params: List[Tuple[SqlValue, ...]]
+    ) -> int:
         await self._connection.executemany(
             convert_format_to_numbered(sql), seq_of_params
         )
@@ -284,8 +361,8 @@ async def async_transaction(adapter: AsyncAdapter) -> AsyncIterator[AsyncAdapter
 
 
 async def run_async(
-    query: "QueryBuilder[Any]", adapter: Optional[AsyncAdapter] = None
-) -> Any:
+    query: "AnyQuery", adapter: Optional[AsyncAdapter] = None
+) -> Union[List["Model"], WriteResult]:
     """
     Executes a built query on an async adapter. SELECT statements return
     hydrated model instances with eager relations attached; writes return
@@ -315,7 +392,7 @@ async def run_async(
         sql, _ = template.to_sql()
         column_names = list(query._insert_rows[0].keys())
         seq = [tuple(row[c] for c in column_names) for row in query._insert_rows]
-        result: Any = await resolved.executemany(sql, seq)
+        result: WriteResult = await resolved.executemany(sql, seq)
         notify_statement(sql, (), time.perf_counter() - started)
     elif query._returning_columns:
         sql, params = query.to_sql()
@@ -352,7 +429,7 @@ async def _eager_load_tree_async(
     model_class: Type["Model"],
     adapter: AsyncAdapter,
     parents: List["Model"],
-    tree: Dict[str, Any],
+    tree: RelationTree,
 ) -> None:
     """Loads one level of the relation tree, then recurses into each child."""
     from sustained.execution import _attached_children, related_model
@@ -387,5 +464,9 @@ async def _eager_load_async(
     if not parents:
         return
     plan = plan_eager_load(model_class, parents, relation_name)
-    children = await run_async(plan.query, adapter) if plan.query is not None else []
+    children = (
+        cast(List["Model"], await run_async(plan.query, adapter))
+        if plan.query is not None
+        else []
+    )
     attach_eager_load(plan, parents, children)

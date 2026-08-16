@@ -12,7 +12,9 @@ from __future__ import annotations
 import queue
 import threading
 from contextlib import contextmanager
-from typing import Any, Callable, Iterator
+from typing import Callable, Iterator
+
+from sustained.types import Connection
 
 
 class PoolTimeout(RuntimeError):
@@ -27,7 +29,7 @@ class ConnectionPool:
 
     def __init__(
         self,
-        factory: Callable[[], Any],
+        factory: Callable[[], Connection],
         max_size: int = 5,
         timeout: float = 30.0,
     ) -> None:
@@ -36,7 +38,7 @@ class ConnectionPool:
         self._factory = factory
         self._max_size = max_size
         self._timeout = timeout
-        self._idle: "queue.Queue[Any]" = queue.Queue()
+        self._idle: "queue.Queue[Connection]" = queue.Queue()
         self._created = 0
         self._lock = threading.Lock()
         self._closed = False
@@ -46,7 +48,7 @@ class ConnectionPool:
         """The number of connections the pool has created."""
         return self._created
 
-    def acquire_raw(self) -> Any:
+    def acquire_raw(self) -> Connection:
         """
         Checks out a connection without a context manager. The caller must
         release() it; prefer connection() which guarantees the release.
@@ -76,7 +78,7 @@ class ConnectionPool:
                 f"(pool size {self._max_size})."
             ) from None
 
-    def release(self, connection: Any) -> None:
+    def release(self, connection: Connection) -> None:
         """Returns a checked-out connection to the pool."""
         if self._closed:
             self._close_connection(connection)
@@ -84,7 +86,7 @@ class ConnectionPool:
         self._idle.put(connection)
 
     @contextmanager
-    def connection(self) -> Iterator[Any]:
+    def connection(self) -> Iterator[Connection]:
         """Checks out a connection for the duration of the block."""
         conn = self.acquire_raw()
         try:
@@ -106,7 +108,5 @@ class ConnectionPool:
             self._close_connection(conn)
 
     @staticmethod
-    def _close_connection(connection: Any) -> None:
-        close = getattr(connection, "close", None)
-        if close is not None:
-            close()
+    def _close_connection(connection: Connection) -> None:
+        connection.close()

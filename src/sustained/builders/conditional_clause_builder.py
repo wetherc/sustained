@@ -4,10 +4,10 @@ import re
 from abc import ABC, abstractmethod
 from typing import (
     TYPE_CHECKING,
-    Any,
     Callable,
     List,
     Optional,
+    Sequence,
     Tuple,
     Type,
     Union,
@@ -15,12 +15,12 @@ from typing import (
 
 from ..dialects import Dialects
 from ..rendering import Renderable, RenderContext, render_part
-from ..types import DbReturnValue, Expression, QueryResolvable
+from ..types import DbReturnValue, Expression, QueryResolvable, SqlValue
 
 if TYPE_CHECKING:
-    from ..builder import QueryBuilder
     from ..compilers import Compiler
     from ..model import Model
+    from ..types import AnyQuery
 
 
 class ConditionalClauseBuilder(ABC):
@@ -100,7 +100,9 @@ class ConditionalClauseBuilder(ABC):
 
             internal_method = getattr(self, method_name)
 
-            def dynamic_caller(*args: Any) -> "ConditionalClauseBuilder":
+            # A pass-through to the internal handler resolved above. The
+            # typed overloads a caller sees live in the stub beside this file.
+            def dynamic_caller(*args: SqlValue) -> "ConditionalClauseBuilder":
                 if "not" in base_name.lower():
                     op_override = True  # Flag to indicate "NOT" version
                 else:
@@ -159,7 +161,7 @@ class ConditionalClauseBuilder(ABC):
 
         actual_op = "NOT EXISTS" if op_override else "EXISTS"
 
-        sub_builder: Optional["QueryBuilder[Any]"] = None
+        sub_builder: Optional["AnyQuery"] = None
         raw_sql: Optional[str] = None
         if isinstance(query, QueryBuilder):
             sub_builder = query
@@ -204,7 +206,7 @@ class ConditionalClauseBuilder(ABC):
         self,
         conjunction: str,
         sql: str,
-        params: Optional[List[Any]] = None,
+        params: Optional[Sequence[SqlValue]] = None,
         *,
         op_override: bool = False,
         op_like_override: Optional[str] = None,
@@ -335,7 +337,7 @@ class ConditionalClauseBuilder(ABC):
             self._clauses.append((conjunction, render))
             return
 
-        sub_builder: Optional["QueryBuilder[Any]"] = None
+        sub_builder: Optional["AnyQuery"] = None
         raw_sql: Optional[str] = None
         if isinstance(vals, QueryBuilder):
             sub_builder = vals

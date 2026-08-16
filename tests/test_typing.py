@@ -100,5 +100,39 @@ class TestQueryTypes(unittest.TestCase):
         )
 
 
+DRIVERS = """
+import sqlite3
+
+from sustained import Model
+from sustained.pool import ConnectionPool
+
+class Show(Model):
+    tableName = "shows"
+
+connection = sqlite3.connect(":memory:")
+Show.bind(connection)
+Show.query().run(connection)
+Show.bind(ConnectionPool(lambda: sqlite3.connect(":memory:")))
+Show.query().insert({"venue": "Bowery", "capacity": 575}).run()
+Show.query().where("capacity", ">", 100).to_dicts(connection)
+"""
+
+
+@unittest.skipUnless(
+    importlib.util.find_spec("mypy") is not None, "mypy is not installed"
+)
+class TestDriverTypes(unittest.TestCase):
+    """
+    A real driver connection has to satisfy the Connection protocol, or
+    every call that takes one rejects the thing users actually have.
+    """
+
+    def test_a_sqlite3_connection_is_a_connection(self):
+        import os
+
+        os.environ["MYPYPATH"] = SRC
+        self.assertNotIn("error:", run_mypy(DRIVERS))
+
+
 if __name__ == "__main__":
     unittest.main()

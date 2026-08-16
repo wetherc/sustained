@@ -36,16 +36,14 @@ class OnClauseBuilder:
         )
         self._conditions: List[Tuple[str, str]] = []
 
-    def on(
-        self, col1: str, op: str, col2: Union[str, "QueryBuilder[Any]"]
-    ) -> "OnClauseBuilder":
+    def on(self, col1: str, op: str, col2: Union[str, "AnyQuery"]) -> "OnClauseBuilder":
         """Adds an ON condition. If this is not the first condition, it's treated as AND ON."""
         conjunction = "AND" if self._conditions else ""
         self._add_condition(conjunction, col1, op, col2)
         return self
 
     def andOn(
-        self, col1: str, op: str, col2: Union[str, "QueryBuilder[Any]"]
+        self, col1: str, op: str, col2: Union[str, "AnyQuery"]
     ) -> "OnClauseBuilder":
         """Adds an AND ON condition."""
         if not self._conditions:
@@ -56,7 +54,7 @@ class OnClauseBuilder:
         return self
 
     def orOn(
-        self, col1: str, op: str, col2: Union[str, "QueryBuilder[Any]"]
+        self, col1: str, op: str, col2: Union[str, "AnyQuery"]
     ) -> "OnClauseBuilder":
         """Adds an OR ON condition."""
         if not self._conditions:
@@ -71,7 +69,7 @@ class OnClauseBuilder:
         conjunction: str,
         col1: str,
         op: str,
-        col2: Union[str, "QueryBuilder[Any]"],
+        col2: Union[str, "AnyQuery"],
     ) -> None:
         # Late import to avoid circular dependency
         from ..builder import QueryBuilder
@@ -155,6 +153,9 @@ class JoinClauseBuilder:
                 return dynamic_join_caller
             else:
                 # This is a raw ...join() call
+                # One name covers three call shapes, so the arguments are
+                # sorted out below rather than in the signature. The typed
+                # overloads a caller sees live in join_builder.pyi.
                 def dynamic_raw_join_caller(
                     table: str, *args: Any, **kwargs: Any
                 ) -> "JoinClauseBuilder":

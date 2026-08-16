@@ -1,28 +1,28 @@
 from __future__ import annotations
 
-from typing import Any, Callable, List, Optional, Type, Union, overload
+from typing import Callable, Dict, List, Optional, Type, Union, overload
 
-from ..builder import QueryBuilder
 from ..compilers import Compiler
 from ..model import Model
+from ..types import AnyQuery
 
-# The object a join lambda receives.
-OnLambda = Callable[[OnClauseBuilder], Any]
+# The object a join lambda receives. Whatever the lambda returns is
+# discarded, so the return type is left open.
+OnLambda = Callable[[OnClauseBuilder], object]
 
 class OnClauseBuilder:
     def __init__(self, compiler: Optional[Compiler] = None) -> None: ...
-    def on(
-        self, col1: str, op: str, col2: Union[str, QueryBuilder[Any]]
-    ) -> OnClauseBuilder: ...
+    def on(self, col1: str, op: str, col2: Union[str, AnyQuery]) -> OnClauseBuilder: ...
     def andOn(
-        self, col1: str, op: str, col2: Union[str, QueryBuilder[Any]]
+        self, col1: str, op: str, col2: Union[str, AnyQuery]
     ) -> OnClauseBuilder: ...
     def orOn(
-        self, col1: str, op: str, col2: Union[str, QueryBuilder[Any]]
+        self, col1: str, op: str, col2: Union[str, AnyQuery]
     ) -> OnClauseBuilder: ...
     def __str__(self) -> str: ...
 
 class JoinClauseBuilder:
+    _JOIN_METHOD_MAP: Dict[str, str]
     def __init__(
         self, model_class: Type[Model], compiler: Optional[Compiler] = None
     ) -> None: ...
@@ -31,7 +31,7 @@ class JoinClauseBuilder:
     # Raw form: an ON condition, a lambda, or a USING list.
     @overload
     def join(
-        self, table: str, col1: str, op: str, col2: Union[str, QueryBuilder[Any]], /
+        self, table: str, col1: str, op: str, col2: Union[str, AnyQuery], /
     ) -> JoinClauseBuilder: ...
     @overload
     def join(self, table: str, on: OnLambda, /) -> JoinClauseBuilder: ...
@@ -39,7 +39,7 @@ class JoinClauseBuilder:
     def join(self, table: str, /, *, using: List[str]) -> JoinClauseBuilder: ...
     @overload
     def innerJoin(
-        self, table: str, col1: str, op: str, col2: Union[str, QueryBuilder[Any]], /
+        self, table: str, col1: str, op: str, col2: Union[str, AnyQuery], /
     ) -> JoinClauseBuilder: ...
     @overload
     def innerJoin(self, table: str, on: OnLambda, /) -> JoinClauseBuilder: ...
@@ -47,7 +47,7 @@ class JoinClauseBuilder:
     def innerJoin(self, table: str, /, *, using: List[str]) -> JoinClauseBuilder: ...
     @overload
     def leftJoin(
-        self, table: str, col1: str, op: str, col2: Union[str, QueryBuilder[Any]], /
+        self, table: str, col1: str, op: str, col2: Union[str, AnyQuery], /
     ) -> JoinClauseBuilder: ...
     @overload
     def leftJoin(self, table: str, on: OnLambda, /) -> JoinClauseBuilder: ...
@@ -55,7 +55,7 @@ class JoinClauseBuilder:
     def leftJoin(self, table: str, /, *, using: List[str]) -> JoinClauseBuilder: ...
     @overload
     def leftOuterJoin(
-        self, table: str, col1: str, op: str, col2: Union[str, QueryBuilder[Any]], /
+        self, table: str, col1: str, op: str, col2: Union[str, AnyQuery], /
     ) -> JoinClauseBuilder: ...
     @overload
     def leftOuterJoin(self, table: str, on: OnLambda, /) -> JoinClauseBuilder: ...
@@ -65,7 +65,7 @@ class JoinClauseBuilder:
     ) -> JoinClauseBuilder: ...
     @overload
     def rightJoin(
-        self, table: str, col1: str, op: str, col2: Union[str, QueryBuilder[Any]], /
+        self, table: str, col1: str, op: str, col2: Union[str, AnyQuery], /
     ) -> JoinClauseBuilder: ...
     @overload
     def rightJoin(self, table: str, on: OnLambda, /) -> JoinClauseBuilder: ...
@@ -73,7 +73,7 @@ class JoinClauseBuilder:
     def rightJoin(self, table: str, /, *, using: List[str]) -> JoinClauseBuilder: ...
     @overload
     def rightOuterJoin(
-        self, table: str, col1: str, op: str, col2: Union[str, QueryBuilder[Any]], /
+        self, table: str, col1: str, op: str, col2: Union[str, AnyQuery], /
     ) -> JoinClauseBuilder: ...
     @overload
     def rightOuterJoin(self, table: str, on: OnLambda, /) -> JoinClauseBuilder: ...
@@ -83,7 +83,7 @@ class JoinClauseBuilder:
     ) -> JoinClauseBuilder: ...
     @overload
     def fullJoin(
-        self, table: str, col1: str, op: str, col2: Union[str, QueryBuilder[Any]], /
+        self, table: str, col1: str, op: str, col2: Union[str, AnyQuery], /
     ) -> JoinClauseBuilder: ...
     @overload
     def fullJoin(self, table: str, on: OnLambda, /) -> JoinClauseBuilder: ...
@@ -91,7 +91,7 @@ class JoinClauseBuilder:
     def fullJoin(self, table: str, /, *, using: List[str]) -> JoinClauseBuilder: ...
     @overload
     def fullOuterJoin(
-        self, table: str, col1: str, op: str, col2: Union[str, QueryBuilder[Any]], /
+        self, table: str, col1: str, op: str, col2: Union[str, AnyQuery], /
     ) -> JoinClauseBuilder: ...
     @overload
     def fullOuterJoin(self, table: str, on: OnLambda, /) -> JoinClauseBuilder: ...
@@ -101,7 +101,7 @@ class JoinClauseBuilder:
     ) -> JoinClauseBuilder: ...
     @overload
     def crossJoin(
-        self, table: str, col1: str, op: str, col2: Union[str, QueryBuilder[Any]], /
+        self, table: str, col1: str, op: str, col2: Union[str, AnyQuery], /
     ) -> JoinClauseBuilder: ...
     @overload
     def crossJoin(self, table: str, on: OnLambda, /) -> JoinClauseBuilder: ...

@@ -31,7 +31,6 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import (
     TYPE_CHECKING,
-    Any,
     Awaitable,
     Callable,
     Dict,
@@ -50,17 +49,24 @@ from typing import (
 
 from sustained.dialects import Dialects
 from sustained.execution import transaction
+from sustained.types import Connection
 
 if TYPE_CHECKING:
+    from sustained.aio import AsyncAdapter
+    from sustained.autogenerate import IntrospectedTable
     from sustained.compilers.base import Compiler
     from sustained.guards import Guard, Verdict
     from sustained.model import Model
-    from sustained.schema import ColumnDef
+    from sustained.schema import ColumnDef, TableOptions
 
-MigrationStep = Union[str, List[str], Callable[[Any], None]]
+CallbackTarget = Union[Connection, "AsyncAdapter"]
+"""What a step or a callback is handed: the connection for Migrator, the
+adapter for AsyncMigrator."""
 
 # A callback returns nothing, or an awaitable the async migrator awaits.
 CallbackResult = Optional[Awaitable[None]]
+
+MigrationStep = Union[str, List[str], Callable[[CallbackTarget], CallbackResult]]
 
 
 class Callbacks(NamedTuple):
@@ -79,10 +85,12 @@ class Callbacks(NamedTuple):
     that returns an awaitable.
     """
 
-    before_migrate: Optional[Callable[[Any], CallbackResult]] = None
-    after_migrate: Optional[Callable[[Any, List[str]], CallbackResult]] = None
+    before_migrate: Optional[Callable[[CallbackTarget], CallbackResult]] = None
+    after_migrate: Optional[Callable[[CallbackTarget, List[str]], CallbackResult]] = (
+        None
+    )
     on_error: Optional[
-        Callable[[Any, Optional[str], BaseException], CallbackResult]
+        Callable[[CallbackTarget, Optional[str], BaseException], CallbackResult]
     ] = None
 
 
@@ -365,7 +373,9 @@ def check_guards(
     _report_warnings(warned)
 
 
-def _call_on_error(callbacks: Callbacks, connection: Any, error: BaseException) -> None:
+def _call_on_error(
+    callbacks: Callbacks, connection: CallbackTarget, error: BaseException
+) -> None:
     """
     Hands a failed run to the on_error callback. A callback that raises
     must not replace the error it was told about, so its own failure is
@@ -530,7 +540,7 @@ def migration_sql(migration: Migration, direction: str = "up") -> List[str]:
     return [step] if isinstance(step, str) else list(step)
 
 
-def _run_step(connection: Any, step: MigrationStep) -> None:
+def _run_step(connection: Connection, step: MigrationStep) -> None:
     if callable(step):
         step(connection)
         return
@@ -732,11 +742,11 @@ class Migrator:
 
     def __init__(
         self,
-        connection: Any,
+        connection: Connection,
         migrations: List[Migration],
         table: str = "sustained_migrations",
         dialect: Dialects = Dialects.DEFAULT,
-        tracking_table_options: Optional[Any] = None,
+        tracking_table_options: Optional["TableOptions"] = None,
         rehearsal_table: str = "sustained_rehearsals",
         guards: Optional[Sequence["Guard"]] = None,
         callbacks: Optional[Callbacks] = None,
@@ -759,7 +769,7 @@ class Migrator:
         self._rehearsing = False
 
     @property
-    def connection(self) -> Any:
+    def connection(self) -> Connection:
         """The connection this migrator runs on."""
         return self._connection
 
@@ -1573,7 +1583,7 @@ class Migrator:
                 recorded = True
             return Rehearsal(results, key, recorded)
 
-    def _snapshot(self) -> Optional[Dict[str, Any]]:
+    def _snapshot(self) -> Optional[Dict[str, "IntrospectedTable"]]:
         """
         The live schema, without Sustained's own tables, or None when the
         database will not report it. A rehearsal compares two of these,

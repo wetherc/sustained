@@ -7,7 +7,9 @@ from typing import (
     Callable,
     Dict,
     List,
+    Mapping,
     Optional,
+    Sequence,
     Tuple,
     Type,
     Union,
@@ -34,9 +36,19 @@ from sustained.expressions import (
 )
 from sustained.functions import FunctionRegistry
 from sustained.rendering import RenderContext
-from sustained.types import CaseResult, DbReturnValue, Expression, Selectable
+from sustained.types import (
+    Binding,
+    CaseResult,
+    DbReturnValue,
+    Expression,
+    RowValue,
+    Selectable,
+    SqlValue,
+    WriteResult,
+)
 
 if TYPE_CHECKING:
+    from sustained.aio import AsyncAdapter
     from sustained.model import Model
 
 
@@ -96,8 +108,8 @@ class QueryBuilder:
         self._from_source: Optional[Union[str, Tuple["QueryBuilder", str]]] = None
         self._distinct = False
         self._stmt_type = "select"
-        self._insert_rows: List[Dict[str, Any]] = []
-        self._update_values: Dict[str, Any] = {}
+        self._insert_rows: List[Dict[str, SqlValue]] = []
+        self._update_values: Dict[str, SqlValue] = {}
         self._returning_columns: List[str] = []
         self._eager_relations: List[str] = []
         self._conflict_columns: Optional[List[str]] = None
@@ -230,7 +242,7 @@ class QueryBuilder:
         return self
 
     def select_func(
-        self, function_name: str, *args: Any, alias: Optional[str] = None
+        self, function_name: str, *args: SqlValue, alias: Optional[str] = None
     ) -> "QueryBuilder":
         """
         Adds a generic function call to the select clause.
@@ -254,7 +266,7 @@ class QueryBuilder:
         alias: str,
         partition_by: Optional[List[str]] = None,
         order_by: Optional[List[str]] = None,
-        args: Optional[List[Any]] = None,
+        args: Optional[List[SqlValue]] = None,
         frame: Optional[str] = None,
     ) -> "QueryBuilder":
         """
@@ -554,7 +566,7 @@ class QueryBuilder:
         """
         return self._render_sql(RenderContext(self._compiler))
 
-    def to_sql(self) -> Tuple[str, Tuple[DbReturnValue, ...]]:
+    def to_sql(self) -> Tuple[str, Tuple[SqlValue, ...]]:
         """
         Builds the query as a parameterized statement.
 
@@ -699,7 +711,7 @@ class QueryBuilder:
         self._locking_clause = (skip_locked, nowait)
         return self
 
-    def total(self, connection: Optional[Any] = None) -> int:
+    def total(self, connection: Optional[Binding] = None) -> int:
         """
         Executes SELECT COUNT(*) over this query with ORDER BY, LIMIT, and
         OFFSET stripped, and returns the row count. The query itself is
@@ -718,7 +730,7 @@ class QueryBuilder:
         return int(wrapper.to_dicts(connection)[0]["total"])
 
     def cursor_page(
-        self, column: str, page_size: int, after: Optional[Any] = None
+        self, column: str, page_size: int, after: Optional[SqlValue] = None
     ) -> "QueryBuilder":
         """
         Applies keyset pagination on a single column: orders by the column,
@@ -739,8 +751,8 @@ class QueryBuilder:
         return self
 
     def explain(
-        self, connection: Optional[Any] = None, analyze: bool = False
-    ) -> List[Tuple[Any, ...]]:
+        self, connection: Optional[Binding] = None, analyze: bool = False
+    ) -> List[Tuple[RowValue, ...]]:
         """
         Runs the dialect's EXPLAIN on this query and returns the plan rows.
         With analyze=True the statement actually executes, so do not use it
@@ -757,7 +769,7 @@ class QueryBuilder:
             started = time.perf_counter()
             cursor.execute(f"{prefix} {sql}", params)
             notify_statement(f"{prefix} {sql}", params, time.perf_counter() - started)
-            return list(cursor.fetchall())
+            return [tuple(row) for row in cursor.fetchall()]
 
     def offset(self, value: int) -> "QueryBuilder":
         """
@@ -792,7 +804,7 @@ class QueryBuilder:
         return ".".join(parts)
 
     def insert(
-        self, values: Union[Dict[str, Any], List[Dict[str, Any]]]
+        self, values: Union[Mapping[str, SqlValue], List[Mapping[str, SqlValue]]]
     ) -> "QueryBuilder":
         """
         Turns this query into an INSERT statement.
@@ -910,7 +922,7 @@ class QueryBuilder:
         self._conflict_action = ("ignore", None)
         return self
 
-    def update(self, values: Dict[str, Any]) -> "QueryBuilder":
+    def update(self, values: Mapping[str, SqlValue]) -> "QueryBuilder":
         """
         Turns this query into an UPDATE statement. Combine with where()
         clauses to target rows.
@@ -1082,7 +1094,9 @@ class QueryBuilder:
             self._eager_relations.append(name)
         return self
 
-    def _run_select_raw(self, connection: Optional[Any]) -> Tuple[List[str], List[Any]]:
+    def _run_select_raw(
+        self, connection: Optional[Binding]
+    ) -> Tuple[List[str], Sequence[Sequence[RowValue]]]:
         """Executes this SELECT and returns (column names, raw rows)."""
         import time
 
@@ -1103,7 +1117,9 @@ class QueryBuilder:
             )
             return columns, cursor.fetchall()
 
-    def to_dicts(self, connection: Optional[Any] = None) -> List[Dict[str, Any]]:
+    def to_dicts(
+        self, connection: Optional[Binding] = None
+    ) -> List[Dict[str, RowValue]]:
         """
         Executes the SELECT and returns rows as plain dicts keyed by column
         name. Eager loading is not applied; use run() for model instances.
@@ -1111,7 +1127,10 @@ class QueryBuilder:
         columns, rows = self._run_select_raw(connection)
         return [dict(zip(columns, row)) for row in rows]
 
-    def to_df(self, connection: Optional[Any] = None) -> Any:
+    # pandas and pyarrow are optional installs. Naming their types here
+    # would make Sustained fail to type check for anyone who skips them,
+    # so the DataFrame and Table types are left open.
+    def to_df(self, connection: Optional[Binding] = None) -> Any:
         """
         Executes the SELECT and returns a pandas DataFrame with the query's
         column names. Requires pandas to be installed.
@@ -1125,7 +1144,7 @@ class QueryBuilder:
         columns, rows = self._run_select_raw(connection)
         return pandas.DataFrame.from_records(list(rows), columns=columns)
 
-    def to_arrow(self, connection: Optional[Any] = None) -> Any:
+    def to_arrow(self, connection: Optional[Binding] = None) -> Any:
         """
         Executes the SELECT and returns a pyarrow Table with the query's
         column names. Requires pyarrow to be installed.
@@ -1140,7 +1159,9 @@ class QueryBuilder:
         data = {name: [row[i] for row in rows] for i, name in enumerate(columns)}
         return pyarrow.table(data)
 
-    def run(self, connection: Optional[Any] = None) -> Any:
+    def run(
+        self, connection: Optional[Binding] = None
+    ) -> Union[List["Model"], WriteResult]:
         """
         Executes the query against a DB-API 2.0 connection.
 
@@ -1200,7 +1221,9 @@ class QueryBuilder:
 
             if self._returning_columns and cursor.description is not None:
                 columns = [desc[0] for desc in cursor.description]
-                result: Any = [dict(zip(columns, row)) for row in cursor.fetchall()]
+                result: WriteResult = [
+                    dict(zip(columns, row)) for row in cursor.fetchall()
+                ]
             else:
                 result = cursor.rowcount
             # Inside a transaction() context the context manager owns the
@@ -1209,7 +1232,9 @@ class QueryBuilder:
                 conn.commit()
             return result
 
-    async def arun(self, adapter: Optional[Any] = None) -> Any:
+    async def arun(
+        self, adapter: Optional["AsyncAdapter"] = None
+    ) -> Union[List["Model"], WriteResult]:
         """
         Executes the query on an async adapter. Behaves like run(): SELECT
         statements return hydrated model instances with eager relations
@@ -1221,9 +1246,12 @@ class QueryBuilder:
         """
         from sustained.aio import run_async
 
-        return await run_async(self, adapter)
+        result: Union[List["Model"], WriteResult] = await run_async(self, adapter)
+        return result
 
-    async def afirst(self, adapter: Optional[Any] = None) -> Optional["Model"]:
+    async def afirst(
+        self, adapter: Optional["AsyncAdapter"] = None
+    ) -> Optional["Model"]:
         """
         Async first(): executes with LIMIT 1 and returns one instance or
         None. The query itself is left unmodified.
@@ -1231,10 +1259,12 @@ class QueryBuilder:
         query = self.clone()
         if query._limit_value is None and query._top_value is None:
             query.limit(1)
-        results = await query.arun(adapter)
+        results = cast(List["Model"], await query.arun(adapter))
         return results[0] if results else None
 
-    async def ato_dicts(self, adapter: Optional[Any] = None) -> List[Dict[str, Any]]:
+    async def ato_dicts(
+        self, adapter: Optional["AsyncAdapter"] = None
+    ) -> List[Dict[str, RowValue]]:
         """Async to_dicts(): rows as plain dicts keyed by column name."""
         import time
 
@@ -1250,7 +1280,7 @@ class QueryBuilder:
         notify_statement(sql, params, time.perf_counter() - started)
         return [dict(zip(columns, row)) for row in rows]
 
-    def first(self, connection: Optional[Any] = None) -> Optional["Model"]:
+    def first(self, connection: Optional[Binding] = None) -> Optional["Model"]:
         """
         Executes the query with LIMIT 1 and returns the first hydrated model
         instance, or None when the result set is empty. The query itself is
@@ -1266,7 +1296,7 @@ class QueryBuilder:
         query = self.clone()
         if query._limit_value is None and query._top_value is None:
             query.limit(1)
-        results = query.run(connection)
+        results = cast(List["Model"], query.run(connection))
         return results[0] if results else None
 
     def page(self, page: int, page_size: int) -> "QueryBuilder":
@@ -1290,6 +1320,10 @@ class QueryBuilder:
     def __getattr__(self, name: str) -> Callable[..., "QueryBuilder"]:
         """
         Dynamically handles method calls for joins, where clauses, and registered functions.
+
+        Every caller below passes its arguments straight through to the
+        clause builder that validates them, so the signatures stay open.
+        The typed overloads a caller sees live in builder.pyi.
         """
         # Never resolve private or dunder names dynamically. Protocols such as
         # copy and pickle probe for these before __init__ has populated the

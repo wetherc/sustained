@@ -45,7 +45,17 @@ import importlib
 import json
 import os
 import sys
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from types import ModuleType
+from typing import (
+    Callable,
+    Dict,
+    List,
+    Mapping,
+    Optional,
+    Sequence,
+    Tuple,
+    Union,
+)
 
 from sustained.analysis import (
     PendingSummary,
@@ -58,6 +68,7 @@ from sustained.exceptions import GuardBlocked, MigrationError
 from sustained.guards import Verdict, blocking, run_guards
 from sustained.migration_files import load_migrations
 from sustained.migrations import (
+    CallbackResult,
     Callbacks,
     Migration,
     Migrator,
@@ -67,9 +78,15 @@ from sustained.migrations import (
     receipt_key,
     rehearsal_failed,
 )
+from sustained.types import Connection
+
+JsonValue = Union[
+    str, int, float, bool, None, Sequence["JsonValue"], Mapping[str, "JsonValue"]
+]
+"""Anything --json prints: what json.dumps accepts, and nothing else."""
 
 
-def _resolve_dialect(value: Any) -> Dialects:
+def _resolve_dialect(value: object) -> Dialects:
     if value is None:
         return Dialects.DEFAULT
     if isinstance(value, Dialects):
@@ -82,7 +99,7 @@ def _resolve_dialect(value: Any) -> Dialects:
         raise ValueError(f"Unknown dialect {value!r}. Choose one of: {names}.")
 
 
-def _load_config(module_name: str) -> Any:
+def _load_config(module_name: str) -> ModuleType:
     sys.path.insert(0, os.getcwd())
     try:
         return importlib.import_module(module_name)
@@ -90,7 +107,7 @@ def _load_config(module_name: str) -> Any:
         sys.path.pop(0)
 
 
-def _close_quietly(connection: Any) -> None:
+def _close_quietly(connection: object) -> None:
     if hasattr(connection, "close"):
         try:
             connection.close()
@@ -98,7 +115,7 @@ def _close_quietly(connection: Any) -> None:
             pass
 
 
-def _migrator_on(connection: Any, config: Any) -> Migrator:
+def _migrator_on(connection: Connection, config: ModuleType) -> Migrator:
     """Builds a migrator for the config module on the given connection."""
     migrations: List[Migration] = list(getattr(config, "migrations", []))
     directory = getattr(config, "migrations_dir", None)
@@ -120,13 +137,13 @@ def _migrator_on(connection: Any, config: Any) -> Migrator:
     )
 
 
-def _callback(config: Any, name: str) -> Optional[Any]:
+def _callback(config: ModuleType, name: str) -> Optional[Callable[..., CallbackResult]]:
     """The named callback from the config module, or None when it has none."""
     hook = getattr(config, name, None)
     return hook if callable(hook) else None
 
 
-def _config_callbacks(config: Any) -> Callbacks:
+def _config_callbacks(config: ModuleType) -> Callbacks:
     """
     The config module's callbacks, in the shape the migrator takes. The
     module is how the CLI gathers them; the migrator is what calls them.
@@ -138,7 +155,7 @@ def _config_callbacks(config: Any) -> Callbacks:
     )
 
 
-def _build_migrator(config: Any) -> Tuple[Migrator, Any]:
+def _build_migrator(config: ModuleType) -> Tuple[Migrator, Connection]:
     if hasattr(config, "connection"):
         connection = config.connection
     elif hasattr(config, "get_connection"):
@@ -157,11 +174,13 @@ def _build_migrator(config: Any) -> Tuple[Migrator, Any]:
     return migrator, connection
 
 
-def _print_json(payload: Any) -> None:
+def _print_json(payload: JsonValue) -> None:
     print(json.dumps(payload, indent=2))
 
 
-def _cmd_status(migrator: Migrator, args: argparse.Namespace, config: Any) -> int:
+def _cmd_status(
+    migrator: Migrator, args: argparse.Namespace, config: ModuleType
+) -> int:
     states = migrator.statuses()
     if args.json:
         _print_json(
@@ -182,7 +201,7 @@ def _count(number: int, noun: str) -> str:
     return f"{number} {noun}" if number == 1 else f"{number} {noun}s"
 
 
-def _drift_statements(migrator: Migrator, config: Any) -> Optional[List[str]]:
+def _drift_statements(migrator: Migrator, config: ModuleType) -> Optional[List[str]]:
     """
     The statements that would close the gap between the config module's
     models and the database, or None when the module names no models.
@@ -218,7 +237,7 @@ def _print_pending(summaries: List[PendingSummary]) -> None:
 
 
 def _plan_verdicts(
-    config: Any,
+    config: ModuleType,
     summaries: List[PendingSummary],
     drift: Optional[List[str]],
     dialect: Dialects,
@@ -243,7 +262,7 @@ def _plan_verdicts(
 def _statement_json(
     statements: Optional[List[str]],
     verdicts: Dict[str, List[Verdict]],
-) -> Optional[List[Dict[str, Any]]]:
+) -> Optional[List[Dict[str, JsonValue]]]:
     """
     One JSON object per statement, the same shape everywhere a command
     reports SQL: the statement, whether it removes data, and the guard
@@ -306,7 +325,7 @@ def _print_guards(verdicts: List[Verdict]) -> None:
         print(f"  {verdict.verdict:<5}  {verdict.rule:<{width}}  {verdict.statement}")
 
 
-def _cmd_plan(migrator: Migrator, args: argparse.Namespace, config: Any) -> int:
+def _cmd_plan(migrator: Migrator, args: argparse.Namespace, config: ModuleType) -> int:
     states = dict(migrator.statuses())
     summaries = [summarize(m, states.get(m.id, "pending")) for m in migrator.pending()]
     problems = migrator.validate(raise_on_problems=False)
@@ -495,7 +514,9 @@ def _record_scratch_receipt(
     return key, "receipt recorded"
 
 
-def _cmd_rehearse(migrator: Migrator, args: argparse.Namespace, config: Any) -> int:
+def _cmd_rehearse(
+    migrator: Migrator, args: argparse.Namespace, config: ModuleType
+) -> int:
     models = list(getattr(config, "models", None) or []) or None
     factory = getattr(config, "get_rehearsal_connection", None)
     scratch = factory is not None
@@ -524,7 +545,9 @@ def _cmd_rehearse(migrator: Migrator, args: argparse.Namespace, config: Any) -> 
     return _report_rehearsal(results, scratch, note)
 
 
-def _cmd_migrate(migrator: Migrator, args: argparse.Namespace, config: Any) -> int:
+def _cmd_migrate(
+    migrator: Migrator, args: argparse.Namespace, config: ModuleType
+) -> int:
     models = list(getattr(config, "models", None) or []) or None
     if args.target is not None:
         # A generated migration always runs last, so a targeted run
@@ -552,7 +575,7 @@ def _cmd_migrate(migrator: Migrator, args: argparse.Namespace, config: Any) -> i
     return 0
 
 
-def _cmd_down(migrator: Migrator, args: argparse.Namespace, config: Any) -> int:
+def _cmd_down(migrator: Migrator, args: argparse.Namespace, config: ModuleType) -> int:
     if args.to is not None:
         reverted = migrator.down_to(args.to)
     else:
@@ -564,7 +587,9 @@ def _cmd_down(migrator: Migrator, args: argparse.Namespace, config: Any) -> int:
     return 0
 
 
-def _cmd_validate(migrator: Migrator, args: argparse.Namespace, config: Any) -> int:
+def _cmd_validate(
+    migrator: Migrator, args: argparse.Namespace, config: ModuleType
+) -> int:
     problems = migrator.validate(raise_on_problems=False)
     if args.json:
         _print_json({"ok": not problems, "problems": problems})
@@ -577,7 +602,9 @@ def _cmd_validate(migrator: Migrator, args: argparse.Namespace, config: Any) -> 
     return 1
 
 
-def _cmd_repair(migrator: Migrator, args: argparse.Namespace, config: Any) -> int:
+def _cmd_repair(
+    migrator: Migrator, args: argparse.Namespace, config: ModuleType
+) -> int:
     actions = migrator.repair()
     if not actions:
         print("Nothing to repair.")
@@ -586,12 +613,16 @@ def _cmd_repair(migrator: Migrator, args: argparse.Namespace, config: Any) -> in
     return 0
 
 
-def _cmd_script(migrator: Migrator, args: argparse.Namespace, config: Any) -> int:
+def _cmd_script(
+    migrator: Migrator, args: argparse.Namespace, config: ModuleType
+) -> int:
     print(migrator.script(args.direction))
     return 0
 
 
-def _cmd_baseline(migrator: Migrator, args: argparse.Namespace, config: Any) -> int:
+def _cmd_baseline(
+    migrator: Migrator, args: argparse.Namespace, config: ModuleType
+) -> int:
     recorded = migrator.baseline(args.target)
     if not recorded:
         print("Nothing to baseline.")

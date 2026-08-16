@@ -9,9 +9,9 @@ and collected in order so the caller can pass them to a database driver.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Callable, List, Union
+from typing import TYPE_CHECKING, Callable, List, Sequence, Union
 
-from sustained.types import Expression
+from sustained.types import Expression, SqlValue
 
 if TYPE_CHECKING:
     from sustained.compilers.base import Compiler
@@ -23,9 +23,9 @@ class RenderContext:
     def __init__(self, compiler: "Compiler", parameterize: bool = False) -> None:
         self.compiler = compiler
         self.parameterize = parameterize
-        self.params: List[Any] = []
+        self.params: List[SqlValue] = []
 
-    def value(self, value: Any) -> str:
+    def value(self, value: SqlValue) -> str:
         """
         Renders a user-supplied value.
 
@@ -45,7 +45,7 @@ Renderable = Union[str, Callable[[RenderContext], str]]
 """A clause fragment: either a fixed string or a deferred render function."""
 
 
-def bind_raw(sql: str, params: List[Any], ctx: RenderContext) -> str:
+def bind_raw(sql: str, params: Sequence[SqlValue], ctx: RenderContext) -> str:
     """
     Renders a raw SQL fragment with ? value markers. Each marker becomes the
     dialect placeholder in parameterized mode or an inlined literal in

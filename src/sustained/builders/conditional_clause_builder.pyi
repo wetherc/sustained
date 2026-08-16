@@ -1,12 +1,19 @@
 from __future__ import annotations
 
-from typing import Any, Callable, List, Optional, Tuple, Type, Union, overload
+from typing import Callable, Dict, List, Optional, Tuple, Type, Union, overload
 
+from ..compilers import Compiler
 from ..model import Model
+from ..rendering import RenderContext
 from ..types import DbReturnValue, Expression, QueryResolvable
 
 class ConditionalClauseBuilder:
-    def __init__(self, model_class: Type[Model]) -> None: ...
+    _WHERE_METHOD_MAP: Dict[str, str]
+    def __init__(
+        self, model_class: Type[Model], compiler: Optional[Compiler] = None
+    ) -> None: ...
+    def render(self, ctx: RenderContext) -> str: ...
+    def has_clauses(self) -> bool: ...
 
     # Where methods
     @overload

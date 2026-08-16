@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
-from sustained.types import Expression
+from sustained.types import Expression, SqlValue
 
 if TYPE_CHECKING:
     from sustained.compilers.base import Compiler
@@ -50,10 +50,10 @@ class ColumnDef:
         primary_key: bool = False,
         nullable: bool = True,
         unique: bool = False,
-        default: Any = None,
+        default: SqlValue = None,
         references: Optional[str] = None,
         autoincrement: bool = False,
-        backfill: Any = None,
+        backfill: SqlValue = None,
     ) -> None:
         if autoincrement and type_name not in ("INTEGER", "BIGINT"):
             raise ValueError("autoincrement requires an Integer or BigInteger column.")
@@ -120,6 +120,10 @@ class Index:
         self.unique = unique
 
 
+# Each factory forwards its keyword arguments to ColumnDef, which checks
+# them. Repeating the full parameter list ten times is what it would take
+# to name them here: PEP 692 typed **kwargs needs Python 3.11, and this
+# package supports 3.9.
 def Integer(**kwargs: Any) -> ColumnDef:
     """A 32-bit integer column."""
     return ColumnDef("INTEGER", **kwargs)

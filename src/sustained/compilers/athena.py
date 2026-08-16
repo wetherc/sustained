@@ -13,11 +13,14 @@ Upserts, UPDATE, DELETE, and in-place column changes only work on Iceberg
 tables (created with the table_type=ICEBERG property).
 """
 
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Optional
 
 from sustained.exceptions import DialectError
 
 from .presto import PrestoCompiler
+
+if TYPE_CHECKING:
+    from sustained.schema import ColumnDef, TableOptions
 
 
 class AthenaCompiler(PrestoCompiler):
@@ -38,13 +41,13 @@ class AthenaCompiler(PrestoCompiler):
         # pyathena uses the pyformat parameter style.
         return "%s"
 
-    def compile_column_type(self, column: Any) -> str:
+    def compile_column_type(self, column: "ColumnDef") -> str:
         # Athena DDL has no unbounded VARCHAR; STRING is the unbounded form.
         if column.type_name == "VARCHAR" and column.length is None:
             return "STRING"
         return super().compile_column_type(column)
 
-    def validate_column_def(self, column: Any) -> None:
+    def validate_column_def(self, column: "ColumnDef") -> None:
         problems = []
         if column.primary_key:
             problems.append("a primary key")
@@ -66,7 +69,7 @@ class AthenaCompiler(PrestoCompiler):
     def compile_identity(self) -> str:
         raise DialectError("Athena has no identity columns.")
 
-    def compile_table_options(self, options: Any) -> str:
+    def compile_table_options(self, options: Optional["TableOptions"]) -> str:
         if options is None:
             return ""
         parts = []

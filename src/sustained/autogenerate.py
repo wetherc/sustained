@@ -33,13 +33,13 @@ import re
 from types import MappingProxyType
 from typing import (
     TYPE_CHECKING,
-    Any,
     Dict,
     Generator,
     List,
     Mapping,
     NamedTuple,
     Optional,
+    Sequence,
     Tuple,
     Type,
     cast,
@@ -48,11 +48,13 @@ from typing import (
 from sustained.dialects import Dialects
 from sustained.migrations import Migration
 from sustained.schema import build_create_table_sql, render_column_sql
+from sustained.types import Connection, RowValue
 
 if TYPE_CHECKING:
+    from sustained.aio import AsyncAdapter
     from sustained.compilers.base import Compiler
     from sustained.model import Model
-    from sustained.schema import ColumnDef
+    from sustained.schema import ColumnDef, Index
 
 
 class IntrospectedColumn(NamedTuple):
@@ -161,7 +163,7 @@ def normalize_default(raw: Optional[str]) -> Optional[str]:
 # code serves a blocking connection and an async adapter. A statement
 # that fails is thrown back in, and the plan decides whether to degrade
 # or give up.
-SchemaPlan = Generator[str, List[Any], Dict[str, IntrospectedTable]]
+SchemaPlan = Generator[str, List[Sequence[RowValue]], Dict[str, IntrospectedTable]]
 
 
 def _finished(stop: StopIteration) -> Dict[str, IntrospectedTable]:
@@ -170,7 +172,7 @@ def _finished(stop: StopIteration) -> Dict[str, IntrospectedTable]:
 
 
 def introspect_schema(
-    connection: Any, dialect: Dialects = Dialects.DEFAULT
+    connection: Connection, dialect: Dialects = Dialects.DEFAULT
 ) -> Dict[str, IntrospectedTable]:
     """
     Reads tables, columns, primary keys, unique constraints, foreign keys,
@@ -182,7 +184,7 @@ def introspect_schema(
     plan = _schema_plan(dialect)
     cursor = connection.cursor()
 
-    def run(sql: str) -> List[Any]:
+    def run(sql: str) -> List[Sequence[RowValue]]:
         cursor.execute(sql)
         return list(cursor.fetchall())
 
@@ -203,7 +205,7 @@ def introspect_schema(
 
 
 async def async_introspect_schema(
-    adapter: Any, dialect: Dialects = Dialects.DEFAULT
+    adapter: "AsyncAdapter", dialect: Dialects = Dialects.DEFAULT
 ) -> Dict[str, IntrospectedTable]:
     """
     Reads the schema through an async adapter, returning what
@@ -425,9 +427,11 @@ class SchemaDiff:
         self.extra_tables: List[str] = []
         self.extra_columns: List[Tuple[str, str]] = []
         self.changed_columns: List[Tuple[str, str, str, str]] = []
-        self.new_indexes: List[Tuple[Type["Model"], Any]] = []
+        self.new_indexes: List[Tuple[Type["Model"], "Index"]] = []
         self.extra_indexes: List[Tuple[str, str, IntrospectedIndex]] = []
-        self.changed_indexes: List[Tuple[Type["Model"], Any, IntrospectedIndex]] = []
+        self.changed_indexes: List[Tuple[Type["Model"], "Index", IntrospectedIndex]] = (
+            []
+        )
         self.constraint_notes: List[str] = []
 
     def is_empty(self) -> bool:
@@ -546,7 +550,7 @@ def _apply_renames(
 
 
 def diff_schema(
-    connection: Any,
+    connection: Connection,
     models: List[Type["Model"]],
     dialect: Dialects = Dialects.DEFAULT,
     exclude_tables: Tuple[str, ...] = ("sustained_migrations",),
@@ -762,7 +766,7 @@ def _sqlite_rebuild_steps(
 
 
 def autogenerate(
-    connection: Any,
+    connection: Connection,
     models: List[Type["Model"]],
     id: str,
     dialect: Dialects = Dialects.DEFAULT,

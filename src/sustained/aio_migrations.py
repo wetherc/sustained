@@ -17,8 +17,8 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import (
     TYPE_CHECKING,
-    Any,
     AsyncIterator,
+    Callable,
     Dict,
     List,
     Optional,
@@ -35,6 +35,7 @@ from sustained.migrations import (
     RECEIPT_FAILED,
     RECEIPT_PASSED,
     AppliedRecord,
+    CallbackResult,
     Callbacks,
     Migration,
     MigrationStep,
@@ -61,7 +62,9 @@ from sustained.migrations import (
 )
 
 if TYPE_CHECKING:
+    from sustained.autogenerate import IntrospectedTable
     from sustained.guards import Guard
+    from sustained.schema import TableOptions
 
 
 class AsyncMigrator:
@@ -73,7 +76,7 @@ class AsyncMigrator:
         migrations: List[Migration],
         table: str = "sustained_migrations",
         dialect: Dialects = Dialects.DEFAULT,
-        tracking_table_options: Any = None,
+        tracking_table_options: Optional["TableOptions"] = None,
         rehearsal_table: str = "sustained_rehearsals",
         guards: Optional[Sequence["Guard"]] = None,
         callbacks: Optional[Callbacks] = None,
@@ -588,7 +591,9 @@ class AsyncMigrator:
             await self._fire(callbacks.after_migrate, self._adapter, applied)
         return applied
 
-    async def _fire(self, hook: Optional[Any], *args: Any) -> None:
+    async def _fire(
+        self, hook: Optional[Callable[..., CallbackResult]], *args: object
+    ) -> None:
         """Calls one callback and awaits it when it returns an awaitable."""
         if hook is None:
             return
@@ -803,7 +808,7 @@ class AsyncMigrator:
                 recorded = True
             return Rehearsal(results, key, recorded)
 
-    async def _snapshot(self) -> Optional[Dict[str, Any]]:
+    async def _snapshot(self) -> Optional[Dict[str, "IntrospectedTable"]]:
         """
         The live schema, without the tracking table, or None when the
         database will not report it. Mirrors Migrator._snapshot().

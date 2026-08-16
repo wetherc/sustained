@@ -31,10 +31,15 @@ from sustained.expressions import (
 from sustained.model import Model, create_model
 from sustained.types import (
     BasicJoinMapping,
+    Binding,
+    Connection,
+    Cursor,
     Join,
     JoinMappingWithThrough,
     RelationMapping,
     RelationType,
+    RowValue,
+    SqlValue,
     ThroughJoinMapping,
     ThroughJoinValue,
 )
@@ -57,6 +62,11 @@ __all__ = [
     "CaseExpression",
     # from types
     "RelationType",
+    "Connection",
+    "Cursor",
+    "Binding",
+    "SqlValue",
+    "RowValue",
     "BasicJoinMapping",
     "ThroughJoinValue",
     "ThroughJoinMapping",

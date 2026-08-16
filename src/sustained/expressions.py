@@ -2,12 +2,13 @@
 SQL expression classes.
 """
 
-from typing import TYPE_CHECKING, Any, Callable, List, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Callable, List, Optional, Sequence, Tuple, Union
+
+from .types import SqlValue
 
 if TYPE_CHECKING:
-    from .builder import QueryBuilder
     from .rendering import RenderContext
-    from .types import CaseResult
+    from .types import AnyQuery, CaseResult
 
 
 class Predicate:
@@ -68,7 +69,7 @@ class ColumnExpr:
     def _quoted(self, ctx: "RenderContext") -> str:
         return ctx.compiler.quote_column_reference(self.name)
 
-    def _compare(self, operator: str, value: Any) -> Predicate:
+    def _compare(self, operator: str, value: SqlValue) -> Predicate:
         if value is None:
             if operator == "=":
                 return self.is_null()
@@ -91,16 +92,16 @@ class ColumnExpr:
     def __ne__(self, value: object) -> Predicate:  # type: ignore[override]
         return self._compare("!=", value)
 
-    def __gt__(self, value: Any) -> Predicate:
+    def __gt__(self, value: SqlValue) -> Predicate:
         return self._compare(">", value)
 
-    def __ge__(self, value: Any) -> Predicate:
+    def __ge__(self, value: SqlValue) -> Predicate:
         return self._compare(">=", value)
 
-    def __lt__(self, value: Any) -> Predicate:
+    def __lt__(self, value: SqlValue) -> Predicate:
         return self._compare("<", value)
 
-    def __le__(self, value: Any) -> Predicate:
+    def __le__(self, value: SqlValue) -> Predicate:
         return self._compare("<=", value)
 
     def like(self, pattern: str) -> Predicate:
@@ -124,39 +125,43 @@ class ColumnExpr:
             )
         )
 
-    def in_(self, values: "Union[List[Any], QueryBuilder[Any]]") -> Predicate:
+    def in_(self, values: "Union[Sequence[SqlValue], AnyQuery]") -> Predicate:
         return self._in("IN", values)
 
-    def not_in(self, values: "Union[List[Any], QueryBuilder[Any]]") -> Predicate:
+    def not_in(self, values: "Union[Sequence[SqlValue], AnyQuery]") -> Predicate:
         return self._in("NOT IN", values)
 
     def _in(
-        self, operator: str, values: "Union[List[Any], QueryBuilder[Any]]"
+        self, operator: str, values: "Union[Sequence[SqlValue], AnyQuery]"
     ) -> Predicate:
-        if isinstance(values, list):
-            if not values:
-                raise ValueError("IN/NOT IN requires a non-empty list of values.")
-            items = list(values)
+        from .builder import QueryBuilder
 
-            def render(ctx: "RenderContext") -> str:
-                rendered = ", ".join(ctx.value(v) for v in items)
-                return f"{self._quoted(ctx)} {operator} ({rendered})"
+        if isinstance(values, QueryBuilder):
+            subquery = values
 
-            return Predicate(render)
+            def render_sub(ctx: "RenderContext") -> str:
+                return f"{self._quoted(ctx)} {operator} ({subquery._render_sql(ctx)})"
 
-        def render_sub(ctx: "RenderContext") -> str:
-            return f"{self._quoted(ctx)} {operator} ({values._render_sql(ctx)})"
+            return Predicate(render_sub)
 
-        return Predicate(render_sub)
+        if not values:
+            raise ValueError("IN/NOT IN requires a non-empty list of values.")
+        items = list(values)
 
-    def between(self, low: Any, high: Any) -> Predicate:
+        def render(ctx: "RenderContext") -> str:
+            rendered = ", ".join(ctx.value(v) for v in items)
+            return f"{self._quoted(ctx)} {operator} ({rendered})"
+
+        return Predicate(render)
+
+    def between(self, low: SqlValue, high: SqlValue) -> Predicate:
         return Predicate(
             lambda ctx: (
                 f"{self._quoted(ctx)} BETWEEN {ctx.value(low)} AND {ctx.value(high)}"
             )
         )
 
-    def not_between(self, low: Any, high: Any) -> Predicate:
+    def not_between(self, low: SqlValue, high: SqlValue) -> Predicate:
         return Predicate(
             lambda ctx: (
                 f"{self._quoted(ctx)} NOT BETWEEN "
@@ -197,7 +202,7 @@ class Literal:
     Literal('N/A')).
     """
 
-    def __init__(self, value: Any):
+    def __init__(self, value: SqlValue):
         self.value = value
 
 
@@ -206,7 +211,9 @@ class Func:
     Represents a generic SQL function call.
     """
 
-    def __init__(self, function_name: str, *args: Any, alias: Optional[str] = None):
+    def __init__(
+        self, function_name: str, *args: SqlValue, alias: Optional[str] = None
+    ):
         """
         Initializes the function expression.
 
@@ -225,7 +232,7 @@ class Subquery:
     Represents a subquery in a SELECT clause.
     """
 
-    def __init__(self, query: "QueryBuilder[Any]", alias: str):
+    def __init__(self, query: "AnyQuery", alias: str):
         """
         Initializes the subquery expression.
 
@@ -285,7 +292,7 @@ class WindowExpression:
         alias: str,
         partition_by: Optional[List[str]] = None,
         order_by: Optional[List[str]] = None,
-        args: Optional[List[Any]] = None,
+        args: Optional[List[SqlValue]] = None,
         frame: Optional[str] = None,
     ):
         """
