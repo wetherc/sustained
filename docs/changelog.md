@@ -10,6 +10,32 @@ Version numbers follow semantic versioning. A major version marks a change
 that can break working code. A minor version adds behaviour. A patch version
 fixes a defect without changing the surface.
 
+## 2.13.0 (2026-08-16)
+
+### Added
+
+- `Migrator.up(models=[...])` diffs the models against the database, applies the generated migration with everything else pending, and takes the diff options `plan()` takes. It replaces `sync()`, so the three verbs cover the whole job: `plan` tells the truth, `rehearse` proves it, `migrate` applies it. The diff is taken after the pending migrations have run, so it sees the schema they left. A target cannot be combined with models, since the generated migration always runs last.
+- `sustained migrate` and `sustained rehearse` pass the config module's `models` when it names any, so the model diff reaches the shell for the first time. A targeted `migrate` still applies the registered migrations only.
+- `Migrator.rehearse(models=[...])` rehearses the generated migration alongside the pending ones. It never registers it and the rollback still leaves the database untouched.
+- A rehearsal now reports what the schema said, not only that the statements ran. `landed` says the models arrived, for the generated migration only, since a hand-written migration may create objects no model declares. `reversed` compares the schema after the down sweep against a snapshot taken before the run, so a down step that runs without taking its change back is reported. Both appear on `RehearsalResult` as optional lists: `None` was not checked, `[]` was proved, and a non-empty list names the trouble. The rehearsal report prints the words and lists the objects underneath, and exits 1 when either check fails.
+- Tables and columns are compared for `reversed`. Indexes, constraints, and column defaults are not, so a leftover index after a down step is not detected yet. A database that will not report its schema leaves the check unchecked rather than failing the run.
+- `sustained rehearse --json`.
+- `sustained migrate` re-reads the schema after a successful run when the config module names models, and prints either that the schema matches them or the differences left. It is a report, never a gate.
+- `Migrator.drift(models)` returns those differences directly: what the models still ask for, one readable line each. Objects the database holds and the models do not are left out; use `plan()` for the full comparison, drops included.
+- `diff_snapshots(before, after)` in `sustained.autogenerate` compares two introspected schemas, and `async_introspect_schema(adapter, dialect)` reads a schema through an async adapter. `AsyncMigrator.rehearse()` uses both for its own `reversed` check. There is no models argument on the async side: diffing models against a database is a synchronous path.
+
+### Changed
+
+- `plan --json` reports each pending migration's `statements` as a list of objects carrying the SQL and whether it is destructive, rather than a count, and `drift` holds the same objects. A script reading the old count needs updating. `PendingSummary.statements` became `PendingSummary.sql`, the statement list.
+- The generated diff no longer refuses to run when the database holds objects the models do not declare. Hand-written migrations create such objects, and a mixed database is not a mistake. Drops still need `allow_drops=True`, and `ignore_undeclared=False` restores the refusal.
+- The tracking table gained a `generated` column, added in place to tables written by earlier versions on first use, marking the rows a model diff wrote. Nothing on disk carries a generated migration's id, so validation would otherwise report each one as unknown to the next migrator that ran.
+- `sustained plan` prints `run: sustained migrate` for both pending work and drift. A drift section holding only drops says instead that migrate does not generate drops, since it does not.
+- Schema introspection is written once as a query plan that the blocking cursor and the async adapter each drive. A query that fails is handed back to the plan, so the `information_schema` read still degrades to column-only data where the constraint views are missing.
+
+### Deprecated
+
+- `Migrator.sync()`. It raises a `DeprecationWarning` and delegates to `up(models=[...])`. It goes away in 3.0.
+
 ## 2.12.0 (2026-08-16)
 
 ### Added

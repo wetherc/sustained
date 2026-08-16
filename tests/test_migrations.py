@@ -974,6 +974,16 @@ class TestRehearsalProofs(MigrationTestCase):
         migrator.up(models=self.models())
         self.assertEqual(migrator.rehearse(models=self.models()), [])
 
+    def test_a_generated_statement_that_fails_stops_the_rehearsal(self):
+        # A view the models cannot see: introspection reports tables, so
+        # the diff asks for a table the name is already taken by.
+        self.conn.execute("CREATE TABLE rp_src (id INTEGER)")
+        self.conn.execute("CREATE VIEW rp_users AS SELECT id FROM rp_src")
+        migrator = Migrator(self.conn, [])
+        results = migrator.rehearse(models=self.models(), migration_id="drift")
+        self.assertEqual([(r.id, r.up_ok) for r in results], [("drift", False)])
+        self.assertIn("rp_users", results[0].error)
+
     def test_a_migration_id_names_the_generated_migration(self):
         migrator = Migrator(self.conn, [])
         results = migrator.rehearse(models=self.models(), migration_id="drift")

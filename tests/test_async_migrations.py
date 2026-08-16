@@ -278,6 +278,20 @@ class TestAsyncIntrospection(unittest.IsolatedAsyncioTestCase):
             introspect_schema(self.conn),
         )
 
+    async def test_the_async_driver_degrades_to_columns(self):
+        from sustained.autogenerate import async_introspect_schema
+        from sustained.dialects import Dialects
+
+        class Adapter:
+            async def fetch(self, sql, params):
+                if "table_constraints" in sql:
+                    raise RuntimeError("no constraint views here")
+                return [], [("shows", "id", "integer", "NO", None)]
+
+        schema = await async_introspect_schema(Adapter(), Dialects.POSTGRES)
+        self.assertEqual(list(schema), ["shows"])
+        self.assertEqual(schema["shows"].primary_key, ())
+
     async def test_a_failing_read_raises(self):
         from sustained.autogenerate import async_introspect_schema
         from sustained.dialects import Dialects

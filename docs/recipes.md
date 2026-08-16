@@ -406,18 +406,17 @@ savepoints, so an inner failure rolls back only the inner block.
 
 ## Add a column
 
-Add it to `tableColumns`, then let `sync()` work out the difference.
+Add it to `tableColumns`, then let the diff work out the difference.
 
 ```python
 Show.tableColumns['support_act'] = String(200)
 
-migrator.sync([Venue, Artist, Show, Ticket])
+migrator.up(models=[Venue, Artist, Show, Ticket])
 # ['auto_20260816133122_029439']
 ```
 
-Pass every model you manage, not only the changed one. `sync()` compares the
-whole database against the whole list, and a table missing from the list looks
-like one you want dropped.
+Pass every model you manage, not only the changed one. A table missing from the
+list is left alone, so nothing keeps it up to date.
 
 ## See the migration before it runs
 
@@ -429,11 +428,11 @@ if migration is not None:
 ```
 
 `plan()` returns `None` when the schema is current. It records nothing and
-applies nothing, so the migration it returns is not pending; `rehearse()` will
-not see it.
+applies nothing, so the migration it returns is not pending. To prove it before
+applying it, pass the same models to `rehearse(models=[...])`.
 
 For the differences without the SQL, `diff_schema()` reports every gap,
-including the drops `sync()` refuses to generate:
+including the drops a run does not generate:
 
 ```python
 from sustained.autogenerate import diff_schema
@@ -449,17 +448,17 @@ A database catalog cannot tell a rename from a drop plus an add, so pass the
 hint:
 
 ```python
-migrator.sync(models, renames={'shows.name': 'title'})
-migrator.sync(models, table_renames={'gigs': 'shows'})
+migrator.up(models=models, renames={'shows.name': 'title'})
+migrator.up(models=models, table_renames={'gigs': 'shows'})
 ```
 
-Without the hint, generation refuses, because closing that gap would mean
-dropping a column with rows in it.
+Without the hint, the old column is left alone and the new one is added beside
+it, because the catalog gives no reason to believe the rows should move.
 
 ## Drop a column
 
 ```python
-migrator.sync(models, allow_drops=True)
+migrator.up(models=models, allow_drops=True)
 ```
 
 A migration containing a drop has no down step. The data cannot come back, so

@@ -22,7 +22,7 @@ Guide: [Schema and Migrations](/schema#command-line).
 | --- | --- | --- |
 | `plan` | `--json` | Shows the pending migrations, the problems, and the model drift. |
 | `status` | `--json` | Shows every migration's state: applied, pending, or changed. |
-| `rehearse` | | Runs the pending migrations up and back down, then rolls it all back. |
+| `rehearse` | `--json` | Runs the pending migrations up and back down, then rolls it all back. |
 | `migrate` | `--target ID`, `--no-validate`, `--allow-out-of-order` | Applies pending migrations in order. |
 | `down` | `--steps N` (default 1) or `--to ID` | Reverts applied migrations, newest first. |
 | `validate` | `--json` | Checks the tracking table against the migrations. |
@@ -47,8 +47,9 @@ validation found problems. Problems outrank pending work.
 argparse also exits 2 on a usage error, so a script that treats 2 as "work is
 waiting" should check stderr for an `error:` line.
 
-`rehearse` exits 1 when an up or a down step failed. A migration with no down
-step is not a failure, so it exits 0.
+`rehearse` exits 1 when an up or a down step failed, when the models did not
+land, or when the schema did not come back. A migration with no down step is
+not a failure, so it exits 0.
 
 `validate` exits 1 when problems exist, 0 otherwise. Exit codes are the same
 with and without `--json`.
@@ -138,20 +139,25 @@ drift
 
 2 pending migrations, 1 drift statement
 run: sustained migrate
-run: Migrator.sync(models)
 ```
 
 The drift section appears only when the config names `models`. It reports
-every difference, drops included, unlike `sync()`, which refuses to generate
-them. The `run:` lines print only when there are no problems.
+every difference, drops included, while `migrate` never generates a drop; a
+drift section holding only drops says so instead of offering the command. The
+`run:` line prints only when there are no problems.
 
 ```console
 $ sustained rehearse
-rehearsed 003_sessions  up ok, down ok
-rehearsed 004_trim      up ok, down ok
+rehearsed 003_sessions  up ok, down ok, reversed
+rehearsed 004_trim      up ok, down ok, reversed
 rehearsed vw_active     up ok, no down step (repeatable)
 rollback complete, database unchanged
 ```
+
+The words after the id are the proofs, in order: `up ok`, `landed` for the
+migration generated from the config's `models`, `down ok`, and `reversed`. A
+check that failed reads `not landed` or `not reversed`, with the objects listed
+underneath and `run: sustained plan` at the end.
 
 A failure names the statement that failed and the migrations under it that
 never got their turn:
@@ -161,7 +167,12 @@ $ sustained rehearse
 rehearsed 003_sessions  up ok, down not rehearsed: the run stopped
 failed    004_trim      up: column "legacy" of relation "users" does not exist
 rollback complete, database unchanged
+run: sustained plan
 ```
+
+When the config names `models`, `migrate` reads the schema back after a
+successful run and prints `schema matches the models`, or one `drift    <gap>`
+line per difference left. It is a report; the exit code does not change.
 
 Other commands print `applied  <id>`, `reverted <id>`, `repaired <action>`, or
 `baselined <id>`, one per line, and `Nothing to apply.`, `Nothing to revert.`,
@@ -175,7 +186,8 @@ migration.
 
 ## JSON output
 
-`status`, `validate`, and `plan` take `--json` and print one object to stdout.
+`status`, `validate`, `plan`, and `rehearse` take `--json` and print one object
+to stdout.
 
 ```console
 $ sustained plan --json
@@ -185,7 +197,12 @@ $ sustained plan --json
       "id": "004_trim",
       "state": "pending",
       "repeatable": false,
-      "statements": 1,
+      "statements": [
+        {
+          "sql": "ALTER TABLE users DROP COLUMN legacy",
+          "destructive": true
+        }
+      ],
       "destructive": ["ALTER TABLE users DROP COLUMN legacy"]
     }
   ],
@@ -194,9 +211,34 @@ $ sustained plan --json
 }
 ```
 
-`drift` is `null`, not `[]`, when the config names no models, so a caller can
-tell "nothing was compared" from "compared and found no gap". `statements` is
-`null` for a callable step, which has no SQL to count.
+Every place a command reports SQL uses that statement object, `drift`
+included. `drift` is `null`, not `[]`, when the config names no models, so a
+caller can tell "nothing was compared" from "compared and found no gap".
+`statements` is `null` for a callable step, which renders no SQL. Before
+version 2.13.0 it was a count.
+
+`rehearse --json` prints:
+
+```console
+$ sustained rehearse --json
+{
+  "rehearsed": [
+    {
+      "id": "004_trim",
+      "up_ok": true,
+      "down_ok": true,
+      "error": null,
+      "landed": null,
+      "reversed": []
+    }
+  ],
+  "scratch": false,
+  "ok": true
+}
+```
+
+`landed` and `reversed` are `null` when the check did not run, `[]` when it
+passed, and the lines naming the trouble when it failed.
 
 `status --json` prints `{"migrations": [{"id": ..., "state": ...}]}`.
 `validate --json` prints `{"ok": ..., "problems": [...]}`.

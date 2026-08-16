@@ -111,8 +111,8 @@ travel as text inside SQL.
 
 ## Create the schema
 
-`Migrator.sync()` compares the models against the live database, generates the
-migration that closes the gap, records it, and applies it.
+`Migrator.up(models=[...])` compares the models against the live database,
+generates the migration that closes the gap, records it, and applies it.
 
 ```python
 import sqlite3
@@ -125,16 +125,16 @@ conn = sqlite3.connect('tour.db')
 Model.bind(conn)
 
 migrator = Migrator(conn, [])
-migrator.sync([Venue, Show])
+migrator.up(models=[Venue, Show])
 # ['auto_20260816133122_029439']
 ```
 
 `Model.bind()` on the base class shares one connection with every model. Bind
 a subclass instead to scope a connection to it.
 
-Pass every model you manage to `sync()`, not only the ones that changed. It
-compares the whole database against the whole list, and a table missing from
-the list looks like a table you want dropped.
+Pass every model you manage, not only the ones that changed. The diff compares
+the whole database against the whole list, and a table missing from the list
+is a table nothing will keep up to date.
 
 ## Write and read rows
 
@@ -224,8 +224,8 @@ for venue in Venue.query().withGraphFetched('shows').run():
 ## Change a model and migrate it
 
 Add a column to the model, then ask what a migration would do about it.
-`plan()` returns the migration `sync()` would generate, without recording or
-running anything.
+`plan()` returns the migration `up(models=[...])` would generate, without
+recording or running anything.
 
 ```python
 from sustained.schema import String
@@ -236,7 +236,7 @@ migration = migrator.plan([Venue, Show])
 print(migration.up)
 # ['ALTER TABLE shows ADD COLUMN support_act VARCHAR(200)']
 
-migrator.sync([Venue, Show])   # generate, record, apply
+migrator.up(models=[Venue, Show])   # generate, record, apply
 migrator.down()                # revert the newest applied migration
 ```
 

@@ -6,8 +6,8 @@ Your models declare their columns. Sustained diffs them against the live databas
 
 ```console
 $ sustained rehearse
-rehearsed 003_sessions  up ok, down ok
-rehearsed 004_trim      up ok, down ok
+rehearsed 003_sessions  up ok, down ok, reversed
+rehearsed 004_trim      up ok, down ok, reversed
 rollback complete, database unchanged
 ```
 
@@ -19,8 +19,8 @@ adults = User.query().where(User.c.age >= 18).orderBy('name').run()
 
 ## Migrations
 
-- **Generated from your models.** `Migrator.sync(models)` diffs the live database, generates the migration, records it, applies it, and `down()` rolls it back. Only the difference is applied on each run.
-- **Rehearsed before they land.** `sustained rehearse` applies every pending migration, runs the down steps back down, and rolls the whole thing back. A migration that does not run, or does not reverse, says so while the real schema is still untouched. Point it at a scratch database when the rollback cannot be trusted.
+- **Generated from your models.** `Migrator.up(models=[...])` diffs the live database, generates the migration, records it, applies it, and `down()` rolls it back. Only the difference is applied on each run. `sustained migrate` does the same from the shell.
+- **Rehearsed before they land.** `sustained rehearse` applies every pending migration, runs the down steps back down, and rolls the whole thing back. It reads the schema before and after, so a migration that does not run, that does not put the models in place, or that does not reverse says so while the real schema is still untouched. Point it at a scratch database when the rollback cannot be trusted.
 - **Planned in one screen.** `sustained plan` merges pending migrations, validation problems, and model drift, labels destructive statements, and exits 2 when work is waiting. `--json` for a pipeline.
 - **Checked, not trusted.** The tracking table holds a sequence number, a SHA-256 checksum, timing, and a success flag per migration. `validate()` blocks a run when a migration was edited after it ran, arrives out of order, or left a failed attempt; `repair()` fixes the bookkeeping.
 - **Safe by refusal.** Drops need `allow_drops=True`, renames need hints, NOT NULL changes need a `backfill`. Constraint drift is reported, never silently migrated.
@@ -106,11 +106,11 @@ class User(Model):
     }
 
 migrator = Migrator(conn, [])
-migrator.sync([User])              # creates the users table
+migrator.up(models=[User])         # creates the users table
 
 User.tableColumns['bio'] = Text()
-migrator.plan([User])              # the migration sync() would generate
-migrator.sync([User])              # adds only the bio column
+migrator.plan([User])              # the migration the next run would generate
+migrator.up(models=[User])         # adds only the bio column
 migrator.down()                    # rolls it back
 ```
 

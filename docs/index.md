@@ -20,7 +20,7 @@ adults = User.query().where(User.c.age >= 18).orderBy('name').run()
 
 A migration is the part of a schema change you cannot take back once it has run, so Sustained spends most of its safety budget there. See [Schema and Migrations](./schema) for all of it.
 
-- **Generated from your models.** `Migrator.sync()` diffs the live database against your models, generates the migration, records it, and applies it. Run it again after a model change and only the difference is applied. `down()` rolls it back.
+- **Generated from your models.** `Migrator.up(models=[...])` diffs the live database against your models, generates the migration, records it, and applies it. Run it again after a model change and only the difference is applied. `down()` rolls it back.
 - **Rehearsed before they land.** `sustained rehearse` applies every pending migration, runs the down steps back down, and rolls the whole thing back. A migration that does not run, or does not reverse, says so before it reaches the real schema. A config module can send the rehearsal to a scratch database instead.
 - **Planned in one screen.** `sustained plan` merges pending migrations, the problems `validate` would report, and the gap between your models and the database, labels destructive statements, and exits 2 when work is waiting. `status`, `validate`, and `plan` all take `--json`.
 - **Checked, not trusted.** The tracking table holds a sequence number, a SHA-256 checksum, an apply timestamp, execution time, and a success flag per migration. `validate()` refuses a run when a migration was edited after it ran, arrives out of order, or left a failed attempt behind. `repair()` fixes the bookkeeping.

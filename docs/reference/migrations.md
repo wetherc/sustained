@@ -55,7 +55,7 @@ Property: `connection`.
 
 | Signature | Returns | Description |
 | --- | --- | --- |
-| `up(target=None, validate=True, allow_out_of_order=False)` | `list[str]` | Validates, then applies pending migrations in order. `target` stops after that id and skips the repeatables. |
+| `up(target=None, validate=True, allow_out_of_order=False, models=None, ...)` | `list[str]` | Validates, then applies pending migrations in order. `target` stops after that id and skips the repeatables. With `models`, the diff against them runs after the versioned migrations and before the repeatables; it cannot be combined with `target`. The remaining options are the diff options below. |
 | `down(steps=1)` | `list[str]` | Reverts newest-first. Never touches repeatables. |
 | `down_to(target)` | `list[str]` | Reverts until `target` is the newest applied. |
 | `baseline(target)` | `list[str]` | Records migrations up to and including `target` as applied, without running them. Also records every repeatable at its current checksum. |
@@ -91,32 +91,41 @@ changed checksum is what schedules the re-run.
 
 | Signature | Returns | Description |
 | --- | --- | --- |
-| `plan(models, ...)` | `Migration` or `None` | The migration `sync()` would generate. Records nothing, applies nothing. `None` when the schema is current. |
-| `sync(models, ...)` | `list[str]` | Generates, registers, and applies it. |
+| `plan(models, ...)` | `Migration` or `None` | The migration `up(models=[...])` would generate. Records nothing, applies nothing. `None` when the schema is current. |
+| `up(models=[...], ...)` | `list[str]` | Generates, registers, and applies it, with everything else pending. |
+| `drift(models, renames=None, table_renames=None)` | `list[str]` | What the models still ask for, one readable line each. Empty when the database holds everything they declare. |
+| `sync(models, ...)` | `list[str]` | Deprecated since 2.13.0, removed in 3.0. Warns, then calls `up(models=...)`. |
 
 Both take the same options:
 
 | Option | Default | Meaning |
 | --- | --- | --- |
-| `allow_drops` | `False` | Generate drops for tables and columns the models do not declare. |
+| `allow_drops` | `False` | Generate drops for tables and columns the models do not declare. Without it, they are left alone. |
 | `ignore_changed_columns` | `False` | Skip type and nullability differences entirely. |
 | `migration_id` | generated | The id. Defaults to `auto_<UTC timestamp>`. |
 | `renames` | `None` | `{'table.old': 'new'}`, so a rename is a rename and not a drop plus an add. |
 | `table_renames` | `None` | `{'old': 'new'}`. |
 | `type_casts` | `None` | `{'table.col': 'col::integer'}`, a `USING` hint. Postgres only. |
+| `ignore_undeclared` | `True` | Leave objects the models do not declare alone. `False` refuses to generate while any exist. |
 
 Pass every model you manage. Both compare the whole database against the whole
-list, and a table missing from the list looks like one you want dropped. The
+list, and a table missing from the list is one nothing keeps up to date. The
 tracking table is always excluded.
 
 ### Rehearsing
 
 ```python
-rehearse(scratch=False) -> list[RehearsalResult]
+rehearse(scratch=False, models=None, ...) -> list[RehearsalResult]
 ```
 
 Applies every pending migration, runs the down steps back down, and rolls the
-whole thing back. Returns `[]` when nothing is pending.
+whole thing back. Returns `[]` when nothing is pending. With `models`, the
+migration generated from them joins the run without being registered, and the
+remaining arguments are the diff options above.
+
+The schema is read before the run and again after the down sweep, so a down
+step that runs without taking its change back is reported. Tables and columns
+are compared; indexes, constraints, and column defaults are not.
 
 Refuses, with `ValueError`, when:
 
@@ -141,16 +150,21 @@ Any direction other than `up` or `down` raises `ValueError`.
 
 ## Result types
 
-`AppliedRecord(id, seq, checksum, success)` holds one tracking row.
+`AppliedRecord(id, seq, checksum, success, generated)` holds one tracking row.
+`generated` marks a row a model diff wrote.
 
-`RehearsalResult(id, up_ok, down_ok, error)` holds what a rehearsal proved
-about one migration. `down_ok` is `None` when nothing was proved, and `error` then
-says why: `no down step`, `no down step (repeatable)`, `down not reached: ...`,
-or `down not rehearsed: the run stopped`.
+`RehearsalResult(id, up_ok, down_ok, error, landed, reversed)` holds what a
+rehearsal proved about one migration. `down_ok` is `None` when nothing was
+proved, and `error` then says why: `no down step`, `no down step (repeatable)`,
+`down not reached: ...`, or `down not rehearsed: the run stopped`.
+
+`landed` and `reversed` are `None` when the check did not run, `[]` when it
+passed, and a list of readable lines when it failed. `landed` is filled for the
+generated migration only; `reversed` for every migration whose down step ran.
 
 ## The tracking table
 
-Six columns, named by default `sustained_migrations`:
+Seven columns, named by default `sustained_migrations`:
 
 | Column | Type | Holds |
 | --- | --- | --- |
@@ -160,6 +174,7 @@ Six columns, named by default `sustained_migrations`:
 | `applied_at` | `TEXT` not null | When it ran |
 | `execution_ms` | `INTEGER` | How long it took. Null for a baselined row |
 | `success` | `BOOLEAN` not null | Whether it finished |
+| `generated` | `BOOLEAN` | Whether a model diff wrote it. Such a row is never reported as an unregistered migration |
 
 On Athena the same six columns are all plain and nullable, because Athena
 enforces no constraints. Tracking tables written by earlier versions, holding
@@ -189,9 +204,10 @@ Every method is a coroutine: `applied_records`, `applied`, `pending`,
 `status`, `statuses`, `validate`, `repair`, `baseline`, `up`, `rehearse`,
 `down`, `down_to`.
 
-Three methods are absent: **`plan()`, `sync()`, and `script()`**. There is no
-async autogeneration and no async offline rendering. Generate against a
-synchronous connection, then run the result here.
+Three methods are absent: **`plan()`, `drift()`, and `script()`**. There is no
+async autogeneration and no async offline rendering, so `rehearse()` takes no
+`models` here either. Generate against a synchronous connection, then run the
+result here.
 
 Callable steps receive the adapter, not a connection, and their return value
 is awaited when awaitable.
@@ -236,18 +252,23 @@ pieces.
 
 ## Autogeneration internals
 
-`sustained.autogenerate`. `plan()` and `sync()` sit on top of these.
+`sustained.autogenerate`. `plan()` and `up(models=[...])` sit on top of these.
 
 | Signature | Returns |
 | --- | --- |
 | `diff_schema(connection, models, dialect=Dialects.DEFAULT, exclude_tables=('sustained_migrations',), renames=None, table_renames=None)` | `SchemaDiff` |
-| `autogenerate(connection, models, id, dialect=..., allow_drops=False, ignore_changed_columns=False, exclude_tables=..., renames=None, table_renames=None, type_casts=None)` | `Migration` or `None` |
+| `autogenerate(connection, models, id, dialect=..., allow_drops=False, ignore_changed_columns=False, exclude_tables=..., renames=None, table_renames=None, type_casts=None, ignore_undeclared=False)` | `Migration` or `None` |
 | `introspect_schema(connection, dialect=Dialects.DEFAULT)` | `dict[str, IntrospectedTable]` |
+| `await async_introspect_schema(adapter, dialect=Dialects.DEFAULT)` | `dict[str, IntrospectedTable]` |
+| `diff_snapshots(before, after)` | `list[str]`, one line per difference between two introspected schemas. Tables and columns only. |
 | `normalize_type(raw)` | `str` |
 | `normalize_default(raw)` | `str` or `None` |
 
 `diff_schema()` touches nothing and reports every difference, drops included.
-`autogenerate()` refuses to generate the lossy ones.
+`autogenerate()` refuses to generate the lossy ones, and refuses to run at all
+while the database holds objects the models do not declare, unless
+`allow_drops=True` or `ignore_undeclared=True`. The migrator passes
+`ignore_undeclared=True`.
 
 ### `SchemaDiff`
 

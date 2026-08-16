@@ -9,7 +9,7 @@ A schema change is the one thing an application does that a retry cannot undo, s
 
 ## Automated Migration in One Call
 
-`Migrator.sync()` diffs the live database against your models, generates the migration, records it, and applies it. Run it again after changing a model and only the difference is applied. Nothing to hand-write for additive changes.
+`Migrator.up(models=[...])` diffs the live database against your models, generates the migration, records it, and applies it with everything else pending. Run it again after changing a model and only the difference is applied. Nothing to hand-write for additive changes.
 
 ```python
 from sustained import Model
@@ -24,11 +24,15 @@ class User(Model):
     }
 
 migrator = Migrator(conn, [])
-migrator.sync([User])          # creates the users table
+migrator.up(models=[User])     # creates the users table
 
 User.tableColumns['bio'] = Text()
-migrator.sync([User])          # adds only the bio column
+migrator.up(models=[User])     # adds only the bio column
 ```
+
+The diff is taken after the pending migrations have run, so it sees the schema they left. A generated migration always runs last of the versioned ones, which is why `models` cannot be combined with a `target`.
+
+`Migrator.sync()` did this before version 2.13.0. It still works, warns, and goes away in 3.0.
 
 ## Automated Rollback
 
@@ -87,7 +91,7 @@ migrator.up()                       # apply only the rest
 
 ## Inspecting Drift Before Applying
 
-`migrator.plan()` returns the migration `sync()` would generate, without registering or applying it, so its statements can be reviewed first. It returns `None` when the schema is current and takes the same options as `sync()`.
+`migrator.plan()` returns the migration `up(models=[...])` would generate, without registering or applying it, so its statements can be reviewed first. It returns `None` when the schema is current and takes the same diff options.
 
 ```python
 migration = migrator.plan([User])
@@ -113,12 +117,12 @@ print(migration.down)  # ['ALTER TABLE users DROP COLUMN bio']
 
 Autogeneration refuses to guess about anything that loses data or fails on populated tables:
 
-- **Drops are opt-in.** Extra tables and columns raise unless `allow_drops=True`. A migration containing drops has no down step, because the dropped data cannot come back.
+- **Drops are opt-in.** Extra tables and columns are left alone unless `allow_drops=True`, which generates the drops. A migration containing drops has no down step, because the dropped data cannot come back. `autogenerate()` called directly still raises on undeclared objects; the migrator passes `ignore_undeclared=True`, since a database that hand-written migrations also touch holds tables no model declares.
 - **Type and nullability changes migrate per dialect.** Postgres, MSSQL, and DuckDB alter in place with reversible down steps; Postgres casts take a hint through `type_casts={'table.col': 'col::integer'}`. SQLite rebuilds the table (create new, copy rows, replace), which is not reversible. Pass `ignore_changed_columns=True` to skip them entirely.
 - **NOT NULL needs a value for existing rows.** Adding or tightening to NOT NULL requires a `default` or a `backfill` value on the ColumnDef; generation emits add-nullable, UPDATE backfill, SET NOT NULL, or folds the backfill into a SQLite rebuild. New primary key or autoincrement columns cannot be added with ALTER TABLE.
 - The migration tracking table is excluded from diffing, and `exclude_tables` protects any other tables Sustained does not manage.
 
-Renames cannot be detected from the catalog, so pass hints: `sync(models, renames={'users.name': 'full_name'}, table_renames={'old': 'new'})` emits reversible RENAME statements instead of a destructive drop-plus-add.
+Renames cannot be detected from the catalog, so pass hints: `up(models=models, renames={'users.name': 'full_name'}, table_renames={'old': 'new'})` emits reversible RENAME statements instead of a destructive drop-plus-add.
 
 Primary key, foreign key, column-level unique, and default differences are reported as constraint notes in the diff but never auto-migrated.
 
@@ -203,7 +207,7 @@ migrator = Migrator(
 
 Reverting migrations deletes tracking rows, which requires the tracking table to be Iceberg.
 
-- **Column changes use Iceberg rules.** `sync()` adds columns with `ALTER TABLE ... ADD COLUMNS` and changes types with `CHANGE COLUMN`, which Iceberg only allows for widenings such as `INT` to `BIGINT`. Renames, nullability changes, and `type_casts` hints raise; write those by hand in a `Migration`.
+- **Column changes use Iceberg rules.** A generated migration adds columns with `ALTER TABLE ... ADD COLUMNS` and changes types with `CHANGE COLUMN`, which Iceberg only allows for widenings such as `INT` to `BIGINT`. Renames, nullability changes, and `type_casts` hints raise; write those by hand in a `Migration`.
 
 Upserts (`onConflict().merge()`), `UPDATE`, `DELETE`, and `down()` reverts all depend on Iceberg tables. Plain Hive external tables are read-and-append only.
 
@@ -315,6 +319,19 @@ $ sustained baseline 001_create_users
 
 Commands exit 0 on success and 1 on failure, with errors on stderr, so they slot into deploy pipelines.
 
+When the config module names `models`, `rehearse` and `migrate` use them: `rehearse` proves the generated migration alongside the pending ones, and `migrate` applies it after them. A targeted `migrate` applies the registered migrations only, since the generated migration always runs last.
+
+After a successful run, `migrate` reads the schema back and says what it found:
+
+```console
+$ sustained migrate
+applied  003_sessions
+applied  auto_20260816120000_001
+schema matches the models
+```
+
+A difference prints one `drift` line each. It is a report, not a gate: the run has already happened, and nothing about the exit code changes.
+
 ### Reading a plan
 
 `sustained plan` shows what a run would do, in one screen. It merges three sources: the migrations waiting to run, the problems `validate` would report, and the gap between the config module's `models` and the database.
@@ -332,12 +349,11 @@ drift
 
 2 pending migrations, 1 drift statement
 run: sustained migrate
-run: Migrator.sync(models)
 ```
 
 A statement that drops a table, drops a column, or truncates one is labelled `destructive`. A column drop written without the COLUMN keyword, as MySQL allows, is labelled too. The scan is textual, so a drop named inside a string literal is labelled too. The label informs the operator; nothing is blocked and there is no flag to gate it.
 
-The drift section appears only when the config module names `models`. It reports every difference, drops included, unlike `sync()`, which refuses to generate them. With no `models`, the plan says drift went unchecked rather than reporting none.
+The drift section appears only when the config module names `models`. It reports every difference, drops included, while `migrate` never generates a drop. When drops are all that is left, the footer says so instead of offering `sustained migrate`. With no `models`, the plan says drift went unchecked rather than reporting none.
 
 `plan` exits 0 when the database is current, 2 when work is waiting, and 1 when validation found problems, which win over pending work. Note that argparse also exits 2 on a usage error, so a script that treats 2 as "work is waiting" should check stderr for an `error:` line.
 
@@ -353,7 +369,12 @@ $ sustained plan --json
       "id": "004_trim",
       "state": "pending",
       "repeatable": false,
-      "statements": 1,
+      "statements": [
+        {
+          "sql": "ALTER TABLE users DROP COLUMN legacy",
+          "destructive": true
+        }
+      ],
       "destructive": ["ALTER TABLE users DROP COLUMN legacy"]
     }
   ],
@@ -362,7 +383,9 @@ $ sustained plan --json
 }
 ```
 
-`statements` is `null` for a callable step, which has no SQL to count. `drift` is `null`, not `[]`, when the config module names no models, so a caller can tell "nothing was compared" from "compared and found no gap". `status --json` prints `{"migrations": [{"id": ..., "state": ...}]}` and `validate --json` prints `{"ok": ..., "problems": [...]}`. Output is plain in both modes; nothing is coloured.
+Every command that reports SQL uses that statement object, `drift` included. `statements` is `null` for a callable step, which renders no SQL. `drift` is `null`, not `[]`, when the config module names no models, so a caller can tell "nothing was compared" from "compared and found no gap". `status --json` prints `{"migrations": [{"id": ..., "state": ...}]}` and `validate --json` prints `{"ok": ..., "problems": [...]}`. Output is plain in both modes; nothing is coloured.
+
+Before version 2.13.0, `statements` was a count. A script that read the number needs updating.
 
 ## Rehearsing a Migration
 
@@ -370,10 +393,28 @@ $ sustained plan --json
 
 ```console
 $ sustained rehearse
-rehearsed 003_sessions  up ok, down ok
-rehearsed 004_trim      up ok, down ok
-rehearsed vw_active     up ok, no down step (repeatable)
+rehearsed 003_sessions             up ok, down ok, reversed
+rehearsed 004_trim                 up ok, down ok, reversed
+rehearsed auto_20260816120000_001  up ok, landed, down ok, reversed
+rehearsed vw_active                up ok, no down step (repeatable)
 rollback complete, database unchanged
+```
+
+The words after the id are what the rehearsal proved, in the order it proved them.
+
+- `up ok`: the up statements ran.
+- `landed`: the schema then matched the models. Only the generated migration carries this, and only when the config module names `models`. A hand-written migration may create objects no model declares, so comparing it against the models would fail honest runs.
+- `down ok`: the down statements ran.
+- `reversed`: the schema after the down sweep matched a snapshot taken before the run.
+
+A check that fails says `not landed` or `not reversed` and lists what is wrong:
+
+```console
+$ sustained rehearse
+rehearsed 004_trim  up ok, down ok, not reversed
+    leftover     table 'users_audit' left behind
+rollback complete, database unchanged
+run: sustained plan
 ```
 
 A broken migration names the statement that failed and the migrations under it that never got their turn:
@@ -383,11 +424,18 @@ $ sustained rehearse
 rehearsed 003_sessions  up ok, down not rehearsed: the run stopped
 failed    004_trim      up: column "legacy" of relation "users" does not exist
 rollback complete, database unchanged
+run: sustained plan
 ```
 
-The run exits 1 when an up or a down step failed, and 0 otherwise. A migration with no down step is not a failure: the line says `no down step`, and the migrations older than it report `down not reached`, because they sit under changes that cannot be taken back. Repeatables run in their usual place, after the versioned migrations, and have no down step to prove.
+The run exits 1 when an up or a down step failed, when the models did not land, or when the schema did not come back, and 0 otherwise. A migration with no down step is not a failure: the line says `no down step`, and the migrations older than it report `down not reached`, because they sit under changes that cannot be taken back. Repeatables run in their usual place, after the versioned migrations, and have no down step to prove.
 
-A rehearsal proves that the statements are valid and that the down steps reverse them. It proves nothing about how long they take on a production-sized table, or what happens to the rows in it.
+A rehearsal proves that the statements are valid, that the models arrive, and that the down steps take the schema back. It proves nothing about how long they take on a production-sized table, or what happens to the rows in it.
+
+The `reversed` check compares tables and columns. Indexes, constraints, and column defaults are left out: engines report those in spellings that differ between an original object and a rebuilt one, and a check we cannot stand behind is worse than no check. A leftover index after a down step is not detected yet. Where the schema cannot be read at all, the check reports as not run instead of failing.
+
+`sustained rehearse` passes the config module's `models` when it names any, so the generated migration is rehearsed with the pending ones. It is never registered, and it rolls back with everything else.
+
+`rehearse --json` prints one object: `{"rehearsed": [...], "scratch": false, "ok": true}`. In each result, `landed` and `reversed` are `null` when the check did not run, `[]` when it passed, and the lines naming the trouble when it failed.
 
 The rehearsal creates the tracking table when the database has none, because it reads the applied rows before it opens its transaction. Nothing else survives: the tracking rows it writes roll back with everything else, and the migrations stay pending. A callable step that commits on its own is the exception, since that commit cannot be taken back.
 
@@ -404,7 +452,7 @@ def get_rehearsal_connection():
 
 The scratch database is usually empty, so the whole history replays rather than what is pending on the real one, which proves the migrations run from nothing. The dialect check does not apply, the changes may survive the rollback, and the footer says so. The connection closes when the command ends. On an engine whose schema changes do not roll back, the rehearsed objects stay behind, so recreate the scratch database before the next rehearsal.
 
-In Python, `migrator.rehearse()` returns a list of `RehearsalResult(id, up_ok, down_ok, error)`. `down_ok` is `None` when nothing was proved, and `error` then says why. Pass `rehearse(scratch=True)` for a connection to a database you can throw away. `AsyncMigrator.rehearse()` is the same on an adapter.
+In Python, `migrator.rehearse()` returns a list of `RehearsalResult(id, up_ok, down_ok, error, landed, reversed)`. `down_ok` is `None` when nothing was proved, and `error` then says why. `landed` and `reversed` follow the same rule as the JSON output: `None` not checked, `[]` proved, a list of lines when it failed. Pass `rehearse(models=[User, Show])` to rehearse the model diff too, and `rehearse(scratch=True)` for a connection to a database you can throw away. `AsyncMigrator.rehearse()` is the same on an adapter, apart from `models`: diffing models against a database is a synchronous path, so the async rehearsal covers registered migrations only.
 
 ## Callbacks Around a Run
 

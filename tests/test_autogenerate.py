@@ -670,3 +670,37 @@ class DiffSnapshotsTestCase(unittest.TestCase):
         self.conn.execute("DROP TABLE snap_flags")
         self.conn.execute("CREATE TABLE snap_flags (id INTEGER, on_ INTEGER DEFAULT 1)")
         self.assertEqual(diff_snapshots(before, self.snapshot()), [])
+
+
+class IntrospectionPlanTestCase(unittest.TestCase):
+    """
+    The information_schema read degrades to column-only data when the
+    constraint views are missing, on both the blocking and async drivers.
+    """
+
+    class Cursor:
+        def __init__(self, conn):
+            self.conn = conn
+            self.rows = []
+
+        def execute(self, sql, params=()):
+            self.conn.log.append(sql)
+            if "table_constraints" in sql:
+                raise RuntimeError("no constraint views here")
+            self.rows = [("shows", "id", "integer", "NO", None)]
+
+        def fetchall(self):
+            return self.rows
+
+    class Connection:
+        def __init__(self):
+            self.log = []
+
+        def cursor(self):
+            return IntrospectionPlanTestCase.Cursor(self)
+
+    def test_blocking_driver_degrades_to_columns(self):
+        schema = introspect_schema(self.Connection(), Dialects.POSTGRES)
+        self.assertEqual(list(schema), ["shows"])
+        self.assertEqual(schema["shows"].primary_key, ())
+        self.assertFalse(schema["shows"].columns["id"].nullable)
