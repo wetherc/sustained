@@ -237,7 +237,7 @@ main {
   max-width: 20ch;
   font-family: var(--font-display);
   font-weight: 700;
-  font-size: clamp(2.1rem, 1.4rem + 2.4vw, 3.1rem);
+  font-size: clamp(2.1rem, calc(1.4rem + 2.4vw), 3.1rem);
   line-height: 1.05;
   letter-spacing: -0.035em;
 }
