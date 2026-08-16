@@ -22,6 +22,8 @@
   --oxblood-wash: #f2e2e0;
   --indigo: #3f3d8f;
   --code-tint: rgba(19, 25, 34, 0.055);
+  --scroll-thumb: #b3bcc9;
+  --scroll-thumb-hover: #8b96a6;
 
   --font-display: "Familjen Grotesk", "Archivo", system-ui, sans-serif;
   --font-body: "Archivo", system-ui, -apple-system, sans-serif;
@@ -47,10 +49,71 @@
     --oxblood-wash: #33201f;
     --indigo: #9c9af0;
     --code-tint: rgba(148, 172, 205, 0.14);
+    --scroll-thumb: #333e4d;
+    --scroll-thumb-hover: #4a5768;
   }
 }
 
 *, *::before, *::after { box-sizing: border-box; }
+
+/* Every box that scrolls: the sidebar, code samples, and wide tables.
+   Firefox takes the two properties. Chromium and Safari ignore them and
+   paint a white track, which cuts a bright stripe across a dark page, so
+   they get the pseudo-elements below. */
+.masthead,
+.prose pre,
+.prose .table-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scroll-thumb) transparent;
+}
+
+.masthead::-webkit-scrollbar,
+.prose pre::-webkit-scrollbar,
+.prose .table-scroll::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+
+.masthead::-webkit-scrollbar-track,
+.prose pre::-webkit-scrollbar-track,
+.prose .table-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.masthead::-webkit-scrollbar-thumb,
+.prose pre::-webkit-scrollbar-thumb,
+.prose .table-scroll::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 5px;
+  background: var(--scroll-thumb);
+  background-clip: content-box;
+}
+
+.masthead::-webkit-scrollbar-thumb:hover,
+.prose pre::-webkit-scrollbar-thumb:hover,
+.prose .table-scroll::-webkit-scrollbar-thumb:hover {
+  background: var(--scroll-thumb-hover);
+  background-clip: content-box;
+}
+
+/* Console samples stay dark whatever the page theme is, so their scrollbar
+   has to lighten rather than darken. */
+.language-console pre,
+.language-bash pre {
+  scrollbar-color: #46525f transparent;
+}
+
+.language-console pre::-webkit-scrollbar-thumb,
+.language-bash pre::-webkit-scrollbar-thumb {
+  background: #46525f;
+  background-clip: content-box;
+}
+
+.language-console pre::-webkit-scrollbar-thumb:hover,
+.language-bash pre::-webkit-scrollbar-thumb:hover {
+  background: #64717f;
+  background-clip: content-box;
+}
 
 html { -webkit-text-size-adjust: 100%; }
 
@@ -93,7 +156,7 @@ body {
   gap: 0 3.5rem;
   max-width: 84rem;
   margin: 0 auto;
-  padding: 0 2rem 6rem;
+  padding: 0 2rem 2.5rem;
 }
 
 @media (min-width: 78rem) {
@@ -111,7 +174,6 @@ body {
   max-height: 100vh;
   overflow-y: auto;
   padding: 2.75rem 0 3rem;
-  scrollbar-width: thin;
 }
 
 .brand {
@@ -303,7 +365,7 @@ main {
   top: 0.85em;
   width: var(--rail-gap);
   height: var(--rail);
-  background: var(--ink);
+  background: var(--rule);
 }
 
 .prose h3 {
@@ -319,7 +381,7 @@ main {
   top: 0.8em;
   width: calc(var(--rail-gap) * 0.55);
   height: var(--rail);
-  background: var(--rule);
+  background: var(--rule-soft);
 }
 
 .prose h4 {
@@ -525,8 +587,6 @@ figure.highlight {
   position: sticky;
   top: 2.75rem;
   align-self: start;
-  max-height: calc(100vh - 5rem);
-  overflow-y: auto;
   padding-top: 6.5rem;
   font-size: 0.82rem;
 }
@@ -571,8 +631,8 @@ figure.highlight {
 
 .page-foot {
   max-width: var(--measure);
-  margin-top: 4rem;
-  padding-top: 1.25rem;
+  margin-top: 3rem;
+  padding-top: 1.1rem;
   border-top: 1px solid var(--rule);
   font-size: 0.82rem;
   color: var(--muted);
@@ -585,7 +645,7 @@ figure.highlight {
 @media (max-width: 60rem) {
   .shell {
     display: block;
-    padding: 0 1.25rem 4rem;
+    padding: 0 1.25rem 2.5rem;
   }
 
   .masthead {

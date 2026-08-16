@@ -14,6 +14,55 @@
     });
   }
 
+  /* Scroll a box so one of its children is visible, without moving the page
+     itself the way `scrollIntoView` does. */
+  function keepInView(box, child) {
+    var top = child.offsetTop;
+    var bottom = top + child.offsetHeight;
+    if (top < box.scrollTop) {
+      box.scrollTop = top;
+    } else if (bottom > box.scrollTop + box.clientHeight) {
+      box.scrollTop = bottom - box.clientHeight;
+    }
+  }
+
+  /* --- keep the reader's place in the sidebar ---------------------- */
+
+  /* Each page is a fresh document, so the sidebar starts back at the top and
+     a reader who clicked a link near the bottom of it loses their place.
+     Carry the scroll position across, and fall back to the current entry. */
+
+  var masthead = document.querySelector('.masthead');
+  var KEY = 'sustained:nav-scroll';
+
+  if (masthead) {
+    var saved = null;
+    try {
+      saved = sessionStorage.getItem(KEY);
+    } catch (e) {
+      saved = null;
+    }
+
+    var scrolls = masthead.scrollHeight > masthead.clientHeight;
+
+    if (saved !== null && scrolls) {
+      masthead.scrollTop = parseInt(saved, 10) || 0;
+    } else if (scrolls) {
+      var here = masthead.querySelector('.current a');
+      if (here) {
+        keepInView(masthead, here);
+      }
+    }
+
+    masthead.addEventListener('scroll', function () {
+      try {
+        sessionStorage.setItem(KEY, String(masthead.scrollTop));
+      } catch (e) {
+        /* private browsing, or storage is full. The sidebar still works. */
+      }
+    }, { passive: true });
+  }
+
   /* --- wide tables scroll inside the column ------------------------ */
 
   var tables = document.querySelectorAll('.prose table');
@@ -107,7 +156,6 @@
     aside.hidden = false;
 
     var links = list.querySelectorAll('a');
-    var current = null;
 
     var observer = new IntersectionObserver(function (entries) {
       entries.forEach(function (entry) {
@@ -116,16 +164,9 @@
         }
         var id = entry.target.id;
         Array.prototype.forEach.call(links, function (link) {
-          var active = link.getAttribute('href') === '#' + id;
-          link.classList.toggle('active', active);
-          if (active) {
-            current = link;
-          }
+          link.classList.toggle('active', link.getAttribute('href') === '#' + id);
         });
       });
-      if (current) {
-        current.scrollIntoView({ block: 'nearest' });
-      }
     }, { rootMargin: '0px 0px -70% 0px' });
 
     Array.prototype.forEach.call(headings, function (heading) {
