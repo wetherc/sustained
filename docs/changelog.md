@@ -10,7 +10,13 @@ Version numbers follow semantic versioning. A major version marks a change
 that can break working code. A minor version adds behaviour. A patch version
 fixes a defect without changing the surface.
 
-## Unreleased
+## 2.12.0 (2026-08-16)
+
+### Added
+
+- `withGraphFetched()` takes a dotted path, such as `'shows.tickets'`, and loads every level. Each relation costs one query per level, batched over every parent at that level with `WHERE fk IN (...)`, so a deeper graph never becomes a query per row. Paths that share a prefix load the prefix once. An unknown segment raises when the query is built, naming the segment, the model it was read from, and the full path. Writes through a graph path are still unsupported.
+- Async eager loading covers relations that run through a link table, and dotted paths beyond their first segment. The sync loader split into a planner and an attacher that both paths call, so the SQL and the row grouping are written once.
+- `async_transaction()` nests through ANSI savepoints, matching `transaction()`. An inner block that raises rolls back to its savepoint and leaves the outer block open.
 
 ### Fixed
 
