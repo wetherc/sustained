@@ -230,6 +230,23 @@ Eager loading matches rows on the join key, so both result sets need that
 column. Keep it in your `select()` or select every column. A relation through
 a link table loads with one query that joins the link table to the far table.
 
+A dotted path loads a relation of a relation:
+
+```python
+venues = Venue.query().withGraphFetched('shows.tickets').run()
+
+for venue in venues:
+    for show in venue.shows:
+        print(show.title, len(show.tickets))
+```
+
+Each level costs one query, batched over every instance at that level. Three
+venues holding twelve shows load their tickets with one query, not twelve.
+Paths that share a prefix load the prefix once, so
+`withGraphFetched('shows.tickets', 'shows.artists')` runs three queries after
+the first. An unknown segment raises `ValueError` when you build the query,
+naming the segment and the model it was read from.
+
 Compare this to a join, which flattens the related rows into the result and
 repeats the parent row once per child. Eager loading costs one extra query and
 keeps each instance whole; a join costs one query and gives you a wide,

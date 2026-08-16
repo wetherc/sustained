@@ -201,6 +201,103 @@ def _split_column_ref(ref: str, relation_name: str) -> Tuple[str, str]:
     return table, column
 
 
+def related_model(model_class: Type["Model"], relation_name: str) -> Type["Model"]:
+    """
+    Returns the model class on the far side of a relation.
+
+    Raises:
+        ValueError: If the model has no relation with that name.
+    """
+    relation = model_class.relationMappings.get(relation_name)
+    if not relation:
+        raise ValueError(
+            f"Relation '{relation_name}' not found in model '{model_class.__name__}'"
+        )
+    from sustained.model import resolve_model_reference
+
+    return resolve_model_reference(
+        relation["modelClass"], context_module=model_class.__module__
+    )
+
+
+def check_relation_path(model_class: Type["Model"], path: str) -> None:
+    """
+    Walks a dotted relation path and rejects the first unknown segment.
+
+    Raises:
+        ValueError: Naming the segment, the model that lacks it, and the
+            full path when the path has more than one segment.
+    """
+    current = model_class
+    for segment in path.split("."):
+        try:
+            current = related_model(current, segment)
+        except ValueError as exc:
+            if "." in path:
+                raise ValueError(f"{exc} (in relation path '{path}')") from None
+            raise
+
+
+def relation_tree(paths: List[str]) -> Dict[str, Any]:
+    """
+    Folds dotted relation paths into a nested dict, so paths sharing a
+    prefix load that prefix once.
+    """
+    tree: Dict[str, Any] = {}
+    for path in paths:
+        node = tree
+        for segment in path.split("."):
+            node = node.setdefault(segment, {})
+    return tree
+
+
+def _attached_children(parents: List["Model"], relation_name: str) -> List["Model"]:
+    """Flattens what an eager load attached, ready to be the next parents."""
+    children: List["Model"] = []
+    for parent in parents:
+        loaded = getattr(parent, relation_name, None)
+        if isinstance(loaded, list):
+            children.extend(loaded)
+        elif loaded is not None:
+            children.append(loaded)
+    return children
+
+
+def eager_load_paths(
+    model_class: Type["Model"],
+    connection: Any,
+    parents: List["Model"],
+    paths: List[str],
+) -> None:
+    """
+    Loads every dotted relation path for a list of parent instances. Each
+    relation costs one query per level, batched over all the parents at
+    that level.
+    """
+    _eager_load_tree(model_class, connection, parents, relation_tree(paths))
+
+
+def _eager_load_tree(
+    model_class: Type["Model"],
+    connection: Any,
+    parents: List["Model"],
+    tree: Dict[str, Any],
+) -> None:
+    """Loads one level of the relation tree, then recurses into each child."""
+    for relation_name, children in tree.items():
+        eager_load_relation(model_class, connection, parents, relation_name)
+        if not children:
+            continue
+        next_parents = _attached_children(parents, relation_name)
+        if next_parents:
+            _eager_load_tree(
+                related_model(model_class, relation_name),
+                connection,
+                next_parents,
+                children,
+            )
+
+
 def eager_load_relation(
     model_class: Type["Model"],
     connection: Any,

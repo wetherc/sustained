@@ -210,7 +210,7 @@ Presto, and Athena; `create_table_as` raises on MSSQL, and on Athena when
 | `to_arrow(connection=None)` | `pyarrow.Table` | Raises `RuntimeError` when pyarrow is missing. |
 | `total(connection=None)` | `int` | `SELECT COUNT(*)` over the query with ordering, LIMIT, OFFSET, and TOP stripped. The builder is unchanged. |
 | `explain(connection=None, analyze=False)` | `list[tuple]` | The query plan. `analyze=True` executes the statement. Raises `DialectError` on MSSQL. |
-| `withGraphFetched(*relation_names)` | builder | Eager loads relations, one extra query each. Raises `ValueError` for an unknown relation name. |
+| `withGraphFetched(*relation_names)` | builder | Eager loads relations, one query per relation per level. A name may be a dotted path such as `'shows.tickets'`. Raises `ValueError` for an unknown relation name or path segment. |
 
 `to_dicts`, `to_df`, `to_arrow`, and `total` raise `ValueError` on anything
 that is not a SELECT.

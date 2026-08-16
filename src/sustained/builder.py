@@ -1051,22 +1051,27 @@ class QueryBuilder:
 
     def withGraphFetched(self, *relation_names: str) -> "QueryBuilder":
         """
-        Eager loads the named relations when the query runs. Each relation
-        costs one extra query; results attach to the fetched instances under
-        the relation name. Through relations are not supported yet.
+        Eager loads the named relations when the query runs. A name may be
+        a dotted path such as 'shows.tickets', which loads the relation on
+        the loaded instances one level deeper. Each relation costs one
+        query per level, batched over every parent at that level. Results
+        attach to the fetched instances under the relation name.
 
         Args:
-            *relation_names: Relation names defined in relationMappings.
+            *relation_names: Relation names defined in relationMappings, or
+                dotted paths of them.
 
         Returns:
             The current QueryBuilder instance for chaining.
+
+        Raises:
+            ValueError: If a name, or a segment of a dotted path, is not a
+                relation on the model it is read from.
         """
+        from sustained.execution import check_relation_path
+
         for name in relation_names:
-            if name not in self._model_class.relationMappings:
-                raise ValueError(
-                    f"Relation '{name}' not found in model "
-                    f"'{self._model_class.__name__}'"
-                )
+            check_relation_path(self._model_class, name)
             self._eager_relations.append(name)
         return self
 
@@ -1149,7 +1154,7 @@ class QueryBuilder:
 
         from sustained.execution import (
             connection_scope,
-            eager_load_relation,
+            eager_load_paths,
             fetch_models,
             in_transaction,
             notify_statement,
@@ -1183,8 +1188,7 @@ class QueryBuilder:
 
             if self._stmt_type == "select":
                 models = fetch_models(self._model_class, cursor)
-                for relation_name in self._eager_relations:
-                    eager_load_relation(self._model_class, conn, models, relation_name)
+                eager_load_paths(self._model_class, conn, models, self._eager_relations)
                 return models
 
             if self._returning_columns and cursor.description is not None:

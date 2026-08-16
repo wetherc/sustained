@@ -7,6 +7,7 @@ import sqlite3
 import unittest
 
 from sustained import Model, RelationType
+from sustained.execution import set_statement_listener
 
 
 class ExecOwner(Model):
@@ -213,6 +214,114 @@ class TestEagerLoadEdgeCases(unittest.TestCase):
         with self.assertRaises(ValueError):
             Bad.query().withGraphFetched("pets").run()
         Bad.unbind()
+
+
+class NestOwner(Model):
+    tableName = "owners"
+    relationMappings = {
+        "pets": {
+            "relation": RelationType.HasManyRelation,
+            "modelClass": "NestPet",
+            "join": {"from": "owners.id", "to": "pets.owner_id"},
+        }
+    }
+
+
+class NestPet(Model):
+    tableName = "pets"
+    relationMappings = {
+        "toys": {
+            "relation": RelationType.HasManyRelation,
+            "modelClass": "NestToy",
+            "join": {"from": "pets.id", "to": "toys.pet_id"},
+        },
+        "owner": {
+            "relation": RelationType.BelongsToOneRelation,
+            "modelClass": NestOwner,
+            "join": {"from": "pets.owner_id", "to": "owners.id"},
+        },
+    }
+
+
+class NestToy(Model):
+    tableName = "toys"
+    relationMappings = {}
+
+
+class TestNestedEagerLoad(unittest.TestCase):
+    def setUp(self):
+        self.conn = sqlite3.connect(":memory:")
+        self.conn.executescript("""
+            CREATE TABLE owners (id INTEGER PRIMARY KEY, name TEXT);
+            CREATE TABLE pets (id INTEGER PRIMARY KEY, owner_id INTEGER, name TEXT);
+            CREATE TABLE toys (id INTEGER PRIMARY KEY, pet_id INTEGER, name TEXT);
+            INSERT INTO owners VALUES (1, 'Ada'), (2, 'Grace'), (3, 'Alan');
+            INSERT INTO pets VALUES (1, 1, 'Rex'), (2, 1, 'Mia'), (3, 2, 'Sam');
+            INSERT INTO toys VALUES (1, 1, 'Ball'), (2, 1, 'Rope'), (3, 3, 'Bone');
+            """)
+        for model in (NestOwner, NestPet, NestToy):
+            model.bind(self.conn)
+        self.statements = []
+        set_statement_listener(lambda sql, params, seconds: self.statements.append(sql))
+
+    def tearDown(self):
+        set_statement_listener(None)
+        for model in (NestOwner, NestPet, NestToy):
+            model.unbind()
+        self.conn.close()
+
+    def test_dotted_path_loads_two_levels(self):
+        owners = NestOwner.query().orderBy("id").withGraphFetched("pets.toys").run()
+        self.assertEqual([p.name for p in owners[0].pets], ["Rex", "Mia"])
+        self.assertEqual([t.name for t in owners[0].pets[0].toys], ["Ball", "Rope"])
+        self.assertEqual(owners[0].pets[1].toys, [])
+        self.assertEqual(owners[1].pets[0].toys[0].name, "Bone")
+
+    def test_one_query_per_relation_per_level(self):
+        NestOwner.query().withGraphFetched("pets.toys").run()
+        self.assertEqual(len(self.statements), 3)
+        self.assertIn("FROM toys", self.statements[2])
+
+    def test_shared_prefix_loads_the_prefix_once(self):
+        owners = (
+            NestOwner.query()
+            .orderBy("id")
+            .withGraphFetched("pets.toys", "pets.owner")
+            .run()
+        )
+        self.assertEqual(len(self.statements), 4)
+        self.assertEqual(owners[0].pets[0].owner.name, "Ada")
+        self.assertEqual(owners[0].pets[0].toys[0].name, "Ball")
+
+    def test_deeper_level_skipped_when_nothing_attached(self):
+        toys = NestToy.query().where("id", "=", 99).run()
+        self.assertEqual(toys, [])
+        self.statements.clear()
+        owners = (
+            NestOwner.query().where("id", "=", 3).withGraphFetched("pets.toys").run()
+        )
+        self.assertEqual(owners[0].pets, [])
+        self.assertEqual(len(self.statements), 2)
+
+    def test_to_one_middle_level_flattens(self):
+        pets = NestPet.query().orderBy("id").withGraphFetched("owner.pets").run()
+        self.assertEqual([p.name for p in pets[0].owner.pets], ["Rex", "Mia"])
+
+    def test_unknown_segment_names_model_and_path(self):
+        with self.assertRaises(ValueError) as caught:
+            NestOwner.query().withGraphFetched("pets.wheels")
+        message = str(caught.exception)
+        self.assertIn("'wheels'", message)
+        self.assertIn("NestPet", message)
+        self.assertIn("pets.wheels", message)
+
+    def test_unknown_first_segment_keeps_the_plain_message(self):
+        with self.assertRaises(ValueError) as caught:
+            NestOwner.query().withGraphFetched("wheels")
+        self.assertEqual(
+            str(caught.exception),
+            "Relation 'wheels' not found in model 'NestOwner'",
+        )
 
 
 if __name__ == "__main__":
