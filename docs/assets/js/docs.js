@@ -172,5 +172,33 @@
     Array.prototype.forEach.call(headings, function (heading) {
       observer.observe(heading);
     });
+
+    /* The list holds its place while the reader moves down the page, but
+       only while it fits. A list taller than the window keeps its last
+       entries below the fold, out of reach, so let that list scroll away
+       with the text. Measure with the class off, because the sticky offset
+       is only there in that state. */
+    function fitList() {
+      aside.classList.remove('is-tall');
+      var offset = parseFloat(window.getComputedStyle(aside).top) || 0;
+      if (aside.offsetHeight > window.innerHeight - offset) {
+        aside.classList.add('is-tall');
+      }
+    }
+
+    fitList();
+    /* A late web font changes the height of the list. Measure again. */
+    window.addEventListener('load', fitList);
+
+    var pending = null;
+    window.addEventListener('resize', function () {
+      if (pending !== null) {
+        return;
+      }
+      pending = window.requestAnimationFrame(function () {
+        pending = null;
+        fitList();
+      });
+    }, { passive: true });
   }
 })();

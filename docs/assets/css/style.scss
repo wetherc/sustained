@@ -591,6 +591,13 @@ figure.highlight {
   font-size: 0.82rem;
 }
 
+/* A list that is taller than the window cannot stay in place: the entries
+   below the fold become unreachable. Let those lists scroll with the page
+   instead. The script adds this class and takes it away again on resize. */
+.onthispage.is-tall {
+  position: static;
+}
+
 .onthispage h2 {
   margin: 0 0 0.6rem;
   font-family: var(--font-mono);
