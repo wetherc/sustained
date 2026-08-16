@@ -37,9 +37,9 @@ import importlib
 import json
 import os
 import sys
-from typing import Any, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from sustained.analysis import PendingSummary, summarize
+from sustained.analysis import PendingSummary, destructive_statements, summarize
 from sustained.dialects import Dialects
 from sustained.exceptions import MigrationError
 from sustained.migration_files import load_migrations
@@ -149,9 +149,9 @@ def _drift_statements(migrator: Migrator, config: Any) -> Optional[List[str]]:
     models and the database, or None when the module names no models.
 
     Drops are included: a preview reports every difference, including
-    tables and columns the models no longer declare, which sync() would
-    refuse to generate. The statements print in full, so a drop reads as
-    a drop without a separate label.
+    tables and columns the models no longer declare, which migrate does
+    not generate. The statements print in full, so a drop reads as a drop
+    without a separate label.
     """
     models = getattr(config, "models", None)
     if not models:
@@ -166,16 +166,32 @@ def _print_pending(summaries: List[PendingSummary]) -> None:
     print("pending")
     width = max(len(s.id) for s in summaries)
     for summary in summaries:
-        if summary.statements is None:
+        if summary.sql is None:
             size = "callable step"
         else:
-            size = _count(summary.statements, "statement")
+            size = _count(len(summary.sql), "statement")
         marker = ""
         if summary.repeatable:
             marker = "  repeat" + (" changed" if summary.state == "changed" else "")
         print(f"  {summary.id:<{width}}  {size}{marker}")
         for statement in summary.destructive:
             print(f"    destructive  {statement}")
+
+
+def _statement_json(
+    statements: Optional[List[str]],
+) -> Optional[List[Dict[str, Any]]]:
+    """
+    One JSON object per statement, the same shape everywhere a command
+    reports SQL: the statement and whether it removes data. None stays
+    None, for a callable step that renders no SQL.
+    """
+    if statements is None:
+        return None
+    return [
+        {"sql": statement, "destructive": bool(destructive_statements([statement]))}
+        for statement in statements
+    ]
 
 
 def _plan_json(
@@ -193,13 +209,13 @@ def _plan_json(
                     "id": summary.id,
                     "state": summary.state,
                     "repeatable": summary.repeatable,
-                    "statements": summary.statements,
+                    "statements": _statement_json(summary.sql),
                     "destructive": summary.destructive,
                 }
                 for summary in summaries
             ],
             "problems": problems,
-            "drift": drift,
+            "drift": _statement_json(drift),
         }
     )
 
@@ -252,31 +268,57 @@ def _cmd_plan(migrator: Migrator, args: argparse.Namespace, config: Any) -> int:
     print()
     print(", ".join(sections))
     if not problems:
-        if summaries:
+        # migrate never generates drops, so a drift section holding
+        # nothing else is not work it can do.
+        closable = [s for s in drift or [] if not destructive_statements([s])]
+        if summaries or closable:
             print("run: sustained migrate")
-        if drift:
-            print("run: Migrator.sync(models)")
+        elif drift:
+            print(
+                "migrate does not generate drops: write the migration by "
+                "hand, or call Migrator.up(models, allow_drops=True)."
+            )
     return exit_code
 
 
 def _rehearsal_line(result: RehearsalResult, width: int) -> str:
-    """One migration's line in the rehearsal report."""
+    """
+    One migration's line in the rehearsal report. The words after the id
+    are what the rehearsal proved, in the order it proved them: the up
+    step ran, the models landed, the down step ran, the schema came back.
+    """
     if not result.up_ok:
         return f"failed    {result.id:<{width}}  up: {result.error}"
+    proofs = ["up ok"]
+    if result.landed is not None:
+        proofs.append("landed" if not result.landed else "not landed")
     if result.down_ok:
-        outcome = "down ok"
+        proofs.append("down ok")
     elif result.down_ok is False:
-        outcome = f"down failed: {result.error}"
+        proofs.append(f"down failed: {result.error}")
     else:
-        outcome = str(result.error)
-    return f"rehearsed {result.id:<{width}}  up ok, {outcome}"
+        proofs.append(str(result.error))
+    if result.reversed is not None:
+        proofs.append("reversed" if not result.reversed else "not reversed")
+    return f"rehearsed {result.id:<{width}}  {', '.join(proofs)}"
+
+
+def _rehearsal_failed(result: RehearsalResult) -> bool:
+    """Whether one result stops the rehearsal from passing."""
+    return (
+        not result.up_ok
+        or result.down_ok is False
+        or bool(result.landed)
+        or bool(result.reversed)
+    )
 
 
 def _report_rehearsal(results: List[RehearsalResult], scratch: bool) -> int:
     """
     Prints the rehearsal and returns the exit code: 1 when any step
-    failed, 0 otherwise. A migration whose down step could not be proved
-    is not a failure; the line says so and the run still passes.
+    failed, when the models did not land, or when the schema did not come
+    back, 0 otherwise. A migration whose down step could not be proved is
+    not a failure; the line says so and the run still passes.
     """
     if not results:
         print("Nothing to rehearse.")
@@ -284,23 +326,63 @@ def _report_rehearsal(results: List[RehearsalResult], scratch: bool) -> int:
     width = max(len(r.id) for r in results)
     for result in results:
         print(_rehearsal_line(result, width))
+        for gap in result.landed or []:
+            print(f"    outstanding  {gap}")
+        for leftover in result.reversed or []:
+            print(f"    leftover     {leftover}")
     if scratch:
         print("rehearsal complete on the scratch database")
     else:
         print("rollback complete, database unchanged")
-    return 1 if any(not r.up_ok or r.down_ok is False for r in results) else 0
+    if not any(_rehearsal_failed(r) for r in results):
+        return 0
+    print("run: sustained plan")
+    return 1
+
+
+def _rehearsal_json(results: List[RehearsalResult], scratch: bool) -> None:
+    """
+    Prints the rehearsal as one JSON object. `landed` and `reversed` are
+    null when the check did not run, an empty list when it passed, and
+    the lines naming the trouble when it failed.
+    """
+    _print_json(
+        {
+            "rehearsed": [
+                {
+                    "id": result.id,
+                    "up_ok": result.up_ok,
+                    "down_ok": result.down_ok,
+                    "error": result.error,
+                    "landed": result.landed,
+                    "reversed": result.reversed,
+                }
+                for result in results
+            ],
+            "scratch": scratch,
+            "ok": not any(_rehearsal_failed(r) for r in results),
+        }
+    )
 
 
 def _cmd_rehearse(migrator: Migrator, args: argparse.Namespace, config: Any) -> int:
+    models = list(getattr(config, "models", None) or []) or None
     factory = getattr(config, "get_rehearsal_connection", None)
+    scratch = factory is not None
     if factory is None:
-        return _report_rehearsal(migrator.rehearse(), scratch=False)
-    scratch = factory()
-    try:
-        results = _migrator_on(scratch, config).rehearse(scratch=True)
-    finally:
-        _close_quietly(scratch)
-    return _report_rehearsal(results, scratch=True)
+        results = migrator.rehearse(models=models)
+    else:
+        connection = factory()
+        try:
+            results = _migrator_on(connection, config).rehearse(
+                scratch=True, models=models
+            )
+        finally:
+            _close_quietly(connection)
+    if args.json:
+        _rehearsal_json(results, scratch)
+        return 0 if not any(_rehearsal_failed(r) for r in results) else 1
+    return _report_rehearsal(results, scratch)
 
 
 def _callback(config: Any, name: str) -> Optional[Any]:
@@ -325,11 +407,17 @@ def _cmd_migrate(migrator: Migrator, args: argparse.Namespace, config: Any) -> i
     before = _callback(config, "before_migrate")
     if before is not None:
         before(migrator.connection)
+    models = list(getattr(config, "models", None) or []) or None
+    if args.target is not None:
+        # A generated migration always runs last, so a targeted run
+        # applies the registered migrations only.
+        models = None
     try:
         applied = migrator.up(
             target=args.target,
             validate=not args.no_validate,
             allow_out_of_order=args.allow_out_of_order,
+            models=models,
         )
     except Exception as error:
         hook = _callback(config, "on_error")
@@ -340,6 +428,14 @@ def _cmd_migrate(migrator: Migrator, args: argparse.Namespace, config: Any) -> i
         print("Nothing to apply.")
     for migration_id in applied:
         print(f"applied  {migration_id}")
+    if models is not None:
+        # Report only: the run has already happened, and a gap here is
+        # something for the operator to look at, not a failure to raise.
+        gaps = migrator.drift(models)
+        for gap in gaps:
+            print(f"drift    {gap}")
+        if not gaps:
+            print("schema matches the models")
     after = _callback(config, "after_migrate")
     if after is not None and applied:
         after(migrator.connection, applied)
@@ -432,6 +528,7 @@ def _build_parser() -> argparse.ArgumentParser:
     command(
         "rehearse",
         "Run the pending migrations up and back down, then roll it all back.",
+        machine_readable=True,
     )
 
     migrate = command("migrate", "Apply pending migrations in order.")

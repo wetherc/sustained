@@ -772,6 +772,7 @@ def autogenerate(
     renames: Optional[Dict[str, str]] = None,
     table_renames: Optional[Dict[str, str]] = None,
     type_casts: Optional[Dict[str, str]] = None,
+    ignore_undeclared: bool = False,
 ) -> Optional[Migration]:
     """
     Diffs the database against the models and builds a Migration for the
@@ -785,6 +786,10 @@ def autogenerate(
         allow_drops: Also drop extra tables, columns, and indexes.
         ignore_changed_columns: Skip type and nullability changes instead
             of migrating them.
+        ignore_undeclared: Leave objects the models do not declare alone
+            instead of refusing to generate. A database managed partly by
+            hand-written migrations holds tables no model declares, and
+            those are not a reason to stop.
     """
     compiler = Dialects.get_compiler(dialect)
     renames = renames or {}
@@ -797,8 +802,10 @@ def autogenerate(
     _apply_renames(actual, renames, table_renames)
     models_by_table = {m.tableName.lower(): m for m in models if m.tableName}
 
-    if (diff.extra_tables or diff.extra_columns or diff.extra_indexes) and (
-        not allow_drops
+    if (
+        (diff.extra_tables or diff.extra_columns or diff.extra_indexes)
+        and not allow_drops
+        and not ignore_undeclared
     ):
         dropped = (
             list(diff.extra_tables)

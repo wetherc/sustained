@@ -13,8 +13,10 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 from sustained.cli import main
+from sustained.migrations import Migrator
 
 CONFIG_TEMPLATE = """
 import os
@@ -379,7 +381,24 @@ class PlanCliTestCase(CliBase):
         self.assertIn("CREATE TABLE users", out)
         self.assertIn("2 pending migrations, 1 drift statement", out)
         self.assertIn("run: sustained migrate", out)
-        self.assertIn("run: Migrator.sync(models)", out)
+        self.assertNotIn("Migrator.sync", out)
+
+    def test_drift_that_only_drops_offers_no_migrate(self):
+        name = self._config(
+            "drops",
+            "\nfrom sustained import create_model\n"
+            "from sustained.schema import Integer\n"
+            "Users = create_model('Users', 'users')\n"
+            "Users.tableColumns = {'id': Integer()}\n"
+            "Users.columns = ('id',)\n"
+            "models = [Users]\n",
+        )
+        self._run(name, "migrate")
+        code, out, _ = self._run(name, "plan")
+        self.assertEqual(code, 2)
+        self.assertIn("DROP TABLE flags", out)
+        self.assertNotIn("run: sustained migrate", out)
+        self.assertIn("migrate does not generate drops", out)
 
     def test_changed_repeatable_is_marked(self):
         migrations = os.path.join(self.dir.name, "migrations")
@@ -428,15 +447,20 @@ class PlanCliTestCase(CliBase):
             "Drifted.columns = ('id', 'bio')\n"
             "models = [Drifted]\n",
         )
-        self._run(name, "migrate")
         code, out, _ = self._run(name, "plan")
         self.assertEqual(code, 2)
         self.assertIn("drift", out)
-        self.assertIn("ADD COLUMN bio", out)
+        self.assertIn("CREATE TABLE users", out)
+        self.assertIn("run: sustained migrate", out)
+
+        # migrate closes the drift it can generate; the drop it will not
+        # generate stays, and plan keeps reporting it.
+        self._run(name, "migrate")
+        code, out, _ = self._run(name, "plan")
+        self.assertEqual(code, 2)
+        self.assertNotIn("ADD COLUMN bio", out)
         self.assertIn("DROP TABLE flags", out)
-        self.assertIn("2 drift statements", out)
-        self.assertNotIn("run: sustained migrate", out)
-        self.assertIn("run: Migrator.sync(models)", out)
+        self.assertIn("1 drift statement", out)
 
     def test_no_drift_when_models_match(self):
         name = self._config(
@@ -513,7 +537,7 @@ class JsonOutputTestCase(CliBase):
                 "id": "003_cleanup",
                 "state": "pending",
                 "repeatable": False,
-                "statements": 1,
+                "statements": [{"sql": "DROP TABLE flags", "destructive": True}],
                 "destructive": ["DROP TABLE flags"],
             },
         )
@@ -574,8 +598,9 @@ class JsonOutputTestCase(CliBase):
         payload = json.loads(stdout.getvalue())
         self.assertEqual(code, 2)
         self.assertEqual(payload["pending"], [])
-        self.assertEqual(len(payload["drift"]), 2)
-        self.assertTrue(any("ADD COLUMN bio" in s for s in payload["drift"]))
+        self.assertEqual(len(payload["drift"]), 1)
+        self.assertEqual(payload["drift"][0]["destructive"], True)
+        self.assertIn("DROP TABLE flags", payload["drift"][0]["sql"])
         self.assertNotIn("Migrator.sync", stdout.getvalue())
         self.assertEqual(set(payload), {"pending", "problems", "drift"})
 
@@ -586,8 +611,8 @@ class RehearseCliTestCase(CliBase):
     def test_rehearse_reports_both_directions_and_changes_nothing(self):
         code, out, _ = self.run_cli("rehearse")
         self.assertEqual(code, 0)
-        self.assertIn("rehearsed 001_users  up ok, down ok", out)
-        self.assertIn("rehearsed 002_flag   up ok, down ok", out)
+        self.assertIn("rehearsed 001_users  up ok, down ok, reversed", out)
+        self.assertIn("rehearsed 002_flag   up ok, down ok, reversed", out)
         self.assertIn("rollback complete, database unchanged", out)
         self.assertEqual(self.table_names(), {"sustained_migrations"})
 
@@ -628,6 +653,64 @@ class RehearseCliTestCase(CliBase):
         code, out, _ = self.run_cli("rehearse")
         self.assertEqual(code, 0)
         self.assertIn("Nothing to rehearse.", out)
+
+    def test_a_down_step_that_leaves_an_object_behind_exits_1(self):
+        migrations = os.path.join(self.dir.name, "migrations")
+        self._write(migrations, "003_pair.up.sql", "CREATE TABLE kept (id INTEGER);")
+        self._write(
+            migrations, "004_extra.up.sql", "CREATE TABLE leftover (id INTEGER);"
+        )
+        self._write(migrations, "004_extra.down.sql", "SELECT 1;")
+        self._write(migrations, "003_pair.down.sql", "DROP TABLE kept;")
+        code, out, _ = self.run_cli("rehearse")
+        self.assertEqual(code, 1)
+        self.assertIn("up ok, down ok, not reversed", out)
+        self.assertIn("leftover     table 'leftover' left behind", out)
+        self.assertIn("run: sustained plan", out)
+        self.assertEqual(self.table_names(), {"sustained_migrations"})
+
+    def test_models_are_rehearsed_with_the_pending_migrations(self):
+        name = f"rehearse_models_{id(self)}"
+        with open(os.path.join(self.dir.name, f"{name}.py"), "w") as f:
+            f.write(
+                CONFIG_TEMPLATE + "\nfrom sustained import create_model\n"
+                "from sustained.schema import Integer, Text\n"
+                "Drifted = create_model('Drifted', 'users')\n"
+                "Drifted.tableColumns = {'id': Integer(primary_key=True), "
+                "'bio': Text()}\n"
+                "Drifted.columns = ('id', 'bio')\n"
+                "models = [Drifted]\n"
+            )
+        self.addCleanup(sys.modules.pop, name, None)
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            code = main(["rehearse", "--config", name])
+        out = stdout.getvalue()
+        self.assertEqual(code, 0)
+        self.assertIn("rehearsed 001_users", out)
+        self.assertIn("up ok, landed, down ok, reversed", out)
+        self.assertEqual(self.table_names(), {"sustained_migrations"})
+
+    def test_rehearse_json_reports_every_check(self):
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            code = main(["rehearse", "--json", "--config", self.config_name])
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(code, 0)
+        self.assertEqual(set(payload), {"rehearsed", "scratch", "ok"})
+        self.assertTrue(payload["ok"])
+        self.assertFalse(payload["scratch"])
+        self.assertEqual(
+            payload["rehearsed"][0],
+            {
+                "id": "001_users",
+                "up_ok": True,
+                "down_ok": True,
+                "error": None,
+                "landed": None,
+                "reversed": [],
+            },
+        )
 
     def test_a_dialect_that_cannot_roll_back_is_refused(self):
         name = f"athena_config_{id(self)}"
@@ -697,6 +780,75 @@ def after_migrate(connection, applied):
 def on_error(connection, migration_id, error):
     _note("error " + str(migration_id))
 """
+
+
+class MigrateModelsCliTestCase(CliBase):
+    """`sustained migrate` closes model drift and reports what it left."""
+
+    def _config(self, extra=""):
+        name = f"migrate_models_{id(self)}"
+        with open(os.path.join(self.dir.name, f"{name}.py"), "w") as f:
+            f.write(
+                CONFIG_TEMPLATE + "\nfrom sustained import create_model\n"
+                "from sustained.schema import Integer, Text\n"
+                "Drifted = create_model('Drifted', 'users')\n"
+                "Drifted.tableColumns = {'id': Integer(primary_key=True), "
+                "'bio': Text()}\n"
+                "Drifted.columns = ('id', 'bio')\n"
+                "models = [Drifted]\n" + extra
+            )
+        self.addCleanup(sys.modules.pop, name, None)
+        return name
+
+    def _run(self, name, *argv):
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            code = main([*argv, "--config", name])
+        return code, stdout.getvalue(), stderr.getvalue()
+
+    def test_migrate_applies_the_diff_and_verifies_the_schema(self):
+        name = self._config()
+        code, out, _ = self._run(name, "migrate")
+        self.assertEqual(code, 0)
+        self.assertIn("applied  001_users", out)
+        self.assertIn("applied  auto_", out)
+        self.assertIn("schema matches the models", out)
+        self.assertIn("users", self.table_names())
+
+    def test_a_second_run_applies_nothing_and_still_verifies(self):
+        name = self._config()
+        self._run(name, "migrate")
+        code, out, _ = self._run(name, "migrate")
+        self.assertEqual(code, 0)
+        self.assertIn("Nothing to apply.", out)
+        self.assertIn("schema matches the models", out)
+
+    def test_the_generated_migration_does_not_break_a_later_command(self):
+        name = self._config()
+        self._run(name, "migrate")
+        code, out, _ = self._run(name, "validate")
+        self.assertEqual(code, 0)
+        self.assertIn("OK", out)
+
+    def test_a_target_applies_the_registered_migrations_only(self):
+        name = self._config()
+        code, out, _ = self._run(name, "migrate", "--target", "001_users")
+        self.assertEqual(code, 0)
+        self.assertNotIn("auto_", out)
+        self.assertNotIn("schema matches the models", out)
+
+    def test_drift_the_run_could_not_close_is_reported(self):
+        # The verification runs after the migration, so a gap here means
+        # the generated statements did not do what the models asked. That
+        # is rare enough to stage rather than provoke.
+        name = self._config()
+        with mock.patch.object(
+            Migrator, "drift", return_value=["column 'users.bio' was not added"]
+        ):
+            code, out, _ = self._run(name, "migrate")
+        self.assertEqual(code, 0)
+        self.assertIn("drift    column 'users.bio' was not added", out)
+        self.assertNotIn("schema matches the models", out)
 
 
 class CallbackCliTestCase(CliBase):

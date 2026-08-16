@@ -102,7 +102,7 @@ class DestructiveStatementsTestCase(unittest.TestCase):
 
 
 class SummarizeTestCase(unittest.TestCase):
-    def test_counts_statements_and_labels_drops(self):
+    def test_carries_statements_and_labels_drops(self):
         migration = Migration(
             "003_cleanup",
             up=["CREATE TABLE keep (id INTEGER)", "DROP TABLE legacy"],
@@ -110,7 +110,13 @@ class SummarizeTestCase(unittest.TestCase):
         )
         self.assertEqual(
             summarize(migration, "pending"),
-            PendingSummary("003_cleanup", "pending", False, 2, ["DROP TABLE legacy"]),
+            PendingSummary(
+                "003_cleanup",
+                "pending",
+                False,
+                ["CREATE TABLE keep (id INTEGER)", "DROP TABLE legacy"],
+                ["DROP TABLE legacy"],
+            ),
         )
 
     def test_repeatable_carries_its_state(self):
@@ -120,12 +126,12 @@ class SummarizeTestCase(unittest.TestCase):
         summary = summarize(migration, "changed")
         self.assertEqual(summary.state, "changed")
         self.assertTrue(summary.repeatable)
-        self.assertEqual(summary.statements, 1)
+        self.assertEqual(summary.sql, ["CREATE VIEW v AS SELECT 1"])
 
     def test_callable_step_counts_nothing(self):
         migration = Migration("004_backfill", up=lambda connection: None)
         summary = summarize(migration, "pending")
-        self.assertIsNone(summary.statements)
+        self.assertIsNone(summary.sql)
         self.assertEqual(summary.destructive, [])
 
 

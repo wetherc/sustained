@@ -209,7 +209,10 @@ class AsyncMigrator:
             f"{_RECORDS_SELECT} {self._table_sql()} ORDER BY seq, applied_at, id",
             (),
         )
-        return [AppliedRecord(row[0], row[1], row[2], bool(row[3])) for row in rows]
+        return [
+            AppliedRecord(row[0], row[1], row[2], bool(row[3]), bool(row[4]))
+            for row in rows
+        ]
 
     async def applied(self) -> List[str]:
         """Returns the applied migration ids in application order."""
@@ -258,10 +261,10 @@ class AsyncMigrator:
 
     def _insert_sql(self) -> str:
         placeholder = self._compiler.placeholder()
-        values = ", ".join([placeholder] * 6)
+        values = ", ".join([placeholder] * 7)
         return (
             f"INSERT INTO {self._table_sql()} "
-            f"(id, seq, checksum, applied_at, execution_ms, success) "
+            f"(id, seq, checksum, applied_at, execution_ms, success, generated) "
             f"VALUES ({values})"
         )
 
@@ -270,7 +273,8 @@ class AsyncMigrator:
         return (
             f"UPDATE {self._table_sql()} "
             f"SET checksum = {placeholder}, applied_at = {placeholder}, "
-            f"execution_ms = {placeholder}, success = {placeholder} "
+            f"execution_ms = {placeholder}, success = {placeholder}, "
+            f"generated = {placeholder} "
             f"WHERE id = {placeholder}"
         )
 
@@ -370,6 +374,7 @@ class AsyncMigrator:
                         timestamp,
                         None,
                         True,
+                        False,
                     ),
                 )
                 next_seq += 1
@@ -395,12 +400,12 @@ class AsyncMigrator:
             if update:
                 await self._adapter.execute(
                     self._update_sql(),
-                    (checksum, timestamp, None, False, migration.id),
+                    (checksum, timestamp, None, False, False, migration.id),
                 )
             else:
                 await self._adapter.execute(
                     self._insert_sql(),
-                    (migration.id, seq, checksum, timestamp, None, False),
+                    (migration.id, seq, checksum, timestamp, None, False, False),
                 )
             await self._adapter.commit()
         except Exception:
@@ -486,12 +491,20 @@ class AsyncMigrator:
                 if update:
                     await self._adapter.execute(
                         self._update_sql(),
-                        (checksum, timestamp, elapsed_ms, True, migration.id),
+                        (checksum, timestamp, elapsed_ms, True, False, migration.id),
                     )
                 else:
                     await self._adapter.execute(
                         self._insert_sql(),
-                        (migration.id, seq, checksum, timestamp, elapsed_ms, True),
+                        (
+                            migration.id,
+                            seq,
+                            checksum,
+                            timestamp,
+                            elapsed_ms,
+                            True,
+                            False,
+                        ),
                     )
         except Exception as error:
             await self._record_failure(migration, seq, update=update)

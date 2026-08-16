@@ -109,12 +109,17 @@ def migration_checksum(migration: Migration) -> Optional[str]:
 
 
 class AppliedRecord(NamedTuple):
-    """One row of the tracking table."""
+    """
+    One row of the tracking table. `generated` marks a migration written
+    by the diff against the models rather than registered by hand, which
+    is why nothing on disk carries its id.
+    """
 
     id: str
     seq: Optional[int]
     checksum: Optional[str]
     success: bool
+    generated: bool = False
 
 
 class RehearsalResult(NamedTuple):
@@ -173,9 +178,9 @@ def _check_rehearsable(dialect: Dialects) -> None:
 
 # Columns added when upgrading a tracking table written by an earlier
 # version, which held only id and applied_at.
-_UPGRADE_COLUMNS = ("seq", "checksum", "execution_ms", "success")
+_UPGRADE_COLUMNS = ("seq", "checksum", "execution_ms", "success", "generated")
 
-_RECORDS_SELECT = "SELECT id, seq, checksum, success FROM"
+_RECORDS_SELECT = "SELECT id, seq, checksum, success, generated FROM"
 
 
 def _tracking_column_defs(constraints: bool) -> Dict[str, "ColumnDef"]:
@@ -194,6 +199,7 @@ def _tracking_column_defs(constraints: bool) -> Dict[str, "ColumnDef"]:
             "applied_at": Text(nullable=False),
             "execution_ms": Integer(),
             "success": Boolean(nullable=False),
+            "generated": Boolean(),
         }
     return {
         "id": String(255),
@@ -202,6 +208,7 @@ def _tracking_column_defs(constraints: bool) -> Dict[str, "ColumnDef"]:
         "applied_at": Text(),
         "execution_ms": Integer(),
         "success": Boolean(),
+        "generated": Boolean(),
     }
 
 
@@ -214,6 +221,7 @@ def _upgrade_column_def(name: str) -> "ColumnDef":
         "checksum": String(64),
         "execution_ms": Integer(),
         "success": Boolean(),
+        "generated": Boolean(),
     }
     return defs[name]
 
@@ -368,8 +376,11 @@ def _validation_problems(
     describes every inconsistency: failed attempts, applied migrations the
     migrator does not know, edited migrations whose checksum no longer
     matches, and pending migrations ordered before applied ones. Passing
-    require_registered=False skips the unknown-id check, for sync() runs
-    whose registry holds only the migration generated from the diff.
+    require_registered=False skips the unknown-id check.
+
+    A row marked generated is never reported as unknown. It was written
+    by a diff against the models, so no file or list carries its id, and
+    a later run regenerates whatever difference is left.
     """
     problems: List[str] = []
     registered = {m.id: m for m in migrations}
@@ -386,7 +397,7 @@ def _validation_problems(
             continue
         migration = registered.get(record.id)
         if migration is None:
-            if require_registered:
+            if require_registered and not record.generated:
                 problems.append(
                     f"applied migration '{record.id}' is not registered "
                     "with this migrator"
@@ -604,7 +615,7 @@ class Migrator:
             f"{_RECORDS_SELECT} {self._table_sql()} ORDER BY seq, applied_at, id"
         )
         return [
-            AppliedRecord(row[0], row[1], row[2], bool(row[3]))
+            AppliedRecord(row[0], row[1], row[2], bool(row[3]), bool(row[4]))
             for row in cursor.fetchall()
         ]
 
@@ -655,10 +666,10 @@ class Migrator:
 
     def _insert_sql(self) -> str:
         placeholder = self._compiler.placeholder()
-        values = ", ".join([placeholder] * 6)
+        values = ", ".join([placeholder] * 7)
         return (
             f"INSERT INTO {self._table_sql()} "
-            f"(id, seq, checksum, applied_at, execution_ms, success) "
+            f"(id, seq, checksum, applied_at, execution_ms, success, generated) "
             f"VALUES ({values})"
         )
 
@@ -667,7 +678,8 @@ class Migrator:
         return (
             f"UPDATE {self._table_sql()} "
             f"SET checksum = {placeholder}, applied_at = {placeholder}, "
-            f"execution_ms = {placeholder}, success = {placeholder} "
+            f"execution_ms = {placeholder}, success = {placeholder}, "
+            f"generated = {placeholder} "
             f"WHERE id = {placeholder}"
         )
 
@@ -730,7 +742,11 @@ class Migrator:
         return actions
 
     def _record_failure(
-        self, migration: Migration, seq: int, update: bool = False
+        self,
+        migration: Migration,
+        seq: int,
+        update: bool = False,
+        generated: bool = False,
     ) -> None:
         """
         Writes a failed-attempt row after a migration step raised on an
@@ -748,12 +764,12 @@ class Migrator:
             if update:
                 cursor.execute(
                     self._update_sql(),
-                    (checksum, timestamp, None, False, migration.id),
+                    (checksum, timestamp, None, False, generated, migration.id),
                 )
             else:
                 cursor.execute(
                     self._insert_sql(),
-                    (migration.id, seq, checksum, timestamp, None, False),
+                    (migration.id, seq, checksum, timestamp, None, False, generated),
                 )
             self._commit_quietly()
         except Exception:
@@ -788,13 +804,16 @@ class Migrator:
         and the next full up() runs it. The target must name a versioned
         migration.
 
-        With models, the run first diffs them against the database and
-        registers the generated migration, which then applies last with
-        everything else pending. Additive changes generate reversible
-        steps, so down() takes them back. Drops need allow_drops=True and
-        do not reverse. A generated migration always sorts last, so it
-        cannot be combined with a target, and the remaining arguments are
-        the diff options plan() takes.
+        With models, the run applies the versioned migrations first, then
+        diffs the models against the database and applies the generated
+        migration, then the repeatables. The diff is taken after the
+        pending migrations have run, so it sees the schema they left and
+        never regenerates a table one of them just created. Additive
+        changes generate reversible steps, so down() takes them back.
+        Drops need allow_drops=True and do not reverse. A generated
+        migration always runs last of the versioned ones, so it cannot be
+        combined with a target, and the remaining arguments are the diff
+        options plan() takes.
         """
         from sustained.exceptions import MigrationError
 
@@ -808,17 +827,6 @@ class Migrator:
         with self._lock_scope():
             if models is not None:
                 self._ensure_tracking_table()
-                generated = self.plan(
-                    models,
-                    allow_drops=allow_drops,
-                    ignore_changed_columns=ignore_changed_columns,
-                    migration_id=migration_id,
-                    renames=renames,
-                    table_renames=table_renames,
-                    type_casts=type_casts,
-                )
-                if generated is not None:
-                    self._migrations.append(generated)
                 # A generated id carries the moment it was generated, which
                 # sorts after every applied migration but not necessarily
                 # after every registered one.
@@ -856,6 +864,21 @@ class Migrator:
                 self._apply(migration, next_seq, update=False)
                 next_seq += 1
                 applied_now.append(migration.id)
+            if models is not None:
+                generated = self.plan(
+                    models,
+                    allow_drops=allow_drops,
+                    ignore_changed_columns=ignore_changed_columns,
+                    migration_id=migration_id,
+                    renames=renames,
+                    table_renames=table_renames,
+                    type_casts=type_casts,
+                )
+                if generated is not None:
+                    self._migrations.append(generated)
+                    self._apply(generated, next_seq, update=False, generated=True)
+                    next_seq += 1
+                    applied_now.append(generated.id)
             for migration in self._repeatables() if target is None else []:
                 record = records_by_id.get(migration.id)
                 if _is_current(record, migration_checksum(migration), True):
@@ -866,11 +889,14 @@ class Migrator:
                 applied_now.append(migration.id)
             return applied_now
 
-    def _apply(self, migration: Migration, seq: int, update: bool) -> None:
+    def _apply(
+        self, migration: Migration, seq: int, update: bool, generated: bool = False
+    ) -> None:
         """
         Runs one migration's up step and records it: an INSERT for a
         first run, an UPDATE in place when a repeatable re-runs, keeping
-        its original seq.
+        its original seq. `generated` marks a migration the diff against
+        the models produced, whose id nothing on disk carries.
         """
         try:
             with self._migration_scope():
@@ -883,15 +909,30 @@ class Migrator:
                 if update:
                     cursor.execute(
                         self._update_sql(),
-                        (checksum, timestamp, elapsed_ms, True, migration.id),
+                        (
+                            checksum,
+                            timestamp,
+                            elapsed_ms,
+                            True,
+                            generated,
+                            migration.id,
+                        ),
                     )
                 else:
                     cursor.execute(
                         self._insert_sql(),
-                        (migration.id, seq, checksum, timestamp, elapsed_ms, True),
+                        (
+                            migration.id,
+                            seq,
+                            checksum,
+                            timestamp,
+                            elapsed_ms,
+                            True,
+                            generated,
+                        ),
                     )
         except Exception as error:
-            self._record_failure(migration, seq, update=update)
+            self._record_failure(migration, seq, update=update, generated=generated)
             _tag_migration(error, migration.id)
             raise
 
@@ -963,25 +1004,10 @@ class Migrator:
         with self._lock_scope():
             self.validate()
             pending = self.pending()
-            drift: Optional[Migration] = None
+            if not pending and models is None:
+                return []
             if models is not None:
                 self._ensure_tracking_table()
-                drift = self.plan(
-                    models,
-                    allow_drops=allow_drops,
-                    ignore_changed_columns=ignore_changed_columns,
-                    migration_id=migration_id,
-                    renames=renames,
-                    table_renames=table_renames,
-                    type_casts=type_casts,
-                )
-                if drift is not None:
-                    # The generated migration joins the run without being
-                    # registered: nothing outside the rehearsal should see
-                    # a migration the rollback is about to take back.
-                    pending = pending + [drift]
-            if not pending:
-                return []
             records = {r.id: r for r in self.applied_records()}
             seq = _next_seq(list(records.values()))
             before = self._snapshot()
@@ -1004,10 +1030,34 @@ class Migrator:
                     seq += 1
                     ran.append(migration)
                 landed: Dict[str, List[str]] = {}
-                if drift is not None and up_error is None and models is not None:
-                    landed[drift.id] = self._landed(
-                        models, renames=renames, table_renames=table_renames
+                if models is not None and up_error is None:
+                    # The diff is taken here, inside the rehearsal, so it
+                    # sees the schema the pending migrations just left. The
+                    # generated migration joins the run without being
+                    # registered: nothing outside the rehearsal should see a
+                    # migration the rollback is about to take back.
+                    drift = self.plan(
+                        models,
+                        allow_drops=allow_drops,
+                        ignore_changed_columns=ignore_changed_columns,
+                        migration_id=migration_id,
+                        renames=renames,
+                        table_renames=table_renames,
+                        type_casts=type_casts,
                     )
+                    if drift is not None:
+                        try:
+                            self._apply(drift, seq, update=False, generated=True)
+                        except Exception as error:
+                            up_error = (drift.id, str(error))
+                        else:
+                            seq += 1
+                            ran.append(drift)
+                            landed[drift.id] = self.drift(
+                                models,
+                                renames=renames,
+                                table_renames=table_renames,
+                            )
                 outcomes = {} if up_error else self._rehearse_down(ran)
                 reverted = None
                 if before is not None and any(
@@ -1043,16 +1093,20 @@ class Migrator:
         schema.pop(self._table.lower(), None)
         return dict(schema)
 
-    def _landed(
+    def drift(
         self,
         models: List[Type["Model"]],
         renames: Optional[dict[str, str]] = None,
         table_renames: Optional[dict[str, str]] = None,
     ) -> List[str]:
         """
-        What the models still ask for after the generated migration ran,
-        empty when everything landed. Read inside the rehearsal
-        transaction, which sees the uncommitted DDL on this connection.
+        What the models still ask for, one readable line each, empty when
+        the database holds everything they declare.
+
+        Objects the database holds and the models do not are left out. A
+        generated migration leaves those alone unless drops are allowed,
+        so a schema built partly by hand does not read as drift here. Use
+        plan() for the full comparison, drops included.
         """
         from sustained.autogenerate import diff_schema
 
@@ -1155,6 +1209,7 @@ class Migrator:
                         timestamp,
                         None,
                         True,
+                        False,
                     ),
                 )
                 next_seq += 1
@@ -1171,12 +1226,18 @@ class Migrator:
         renames: Optional[dict[str, str]] = None,
         table_renames: Optional[dict[str, str]] = None,
         type_casts: Optional[dict[str, str]] = None,
+        ignore_undeclared: bool = True,
     ) -> Optional[Migration]:
         """
         Diffs the database against the models and returns the migration
-        sync() would generate, without registering or applying it. Returns
-        None when the schema is already up to date. The tracking table is
-        excluded from the diff.
+        up(models=[...]) would generate, without registering or applying
+        it. Returns None when the schema is already up to date. The
+        tracking table is excluded from the diff.
+
+        Objects the models do not declare are left alone, since a
+        database may hold tables that hand-written migrations created.
+        Pass allow_drops=True to generate the drops instead, or
+        ignore_undeclared=False to refuse to generate while they exist.
         """
         from sustained.autogenerate import autogenerate
 
@@ -1194,6 +1255,7 @@ class Migrator:
             renames=renames,
             table_renames=table_renames,
             type_casts=type_casts,
+            ignore_undeclared=ignore_undeclared,
         )
 
     def sync(

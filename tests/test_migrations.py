@@ -169,7 +169,15 @@ class TestTrackingTable(MigrationTestCase):
         Migrator(self.conn, []).up()
         self.assertEqual(
             self.columns(),
-            {"id", "seq", "checksum", "applied_at", "execution_ms", "success"},
+            {
+                "id",
+                "seq",
+                "checksum",
+                "applied_at",
+                "execution_ms",
+                "success",
+                "generated",
+            },
         )
 
     def test_apply_records_checksum_seq_timing_and_success(self):
@@ -812,6 +820,42 @@ class TestRehearse(MigrationTestCase):
             results = migrator.rehearse()
         self.assertFalse(results[0].up_ok)
         self.assertEqual(migrator.applied_records(), [])
+
+
+class TestGeneratedRows(MigrationTestCase):
+    """
+    A migration generated from the models is recorded as generated, so a
+    later migrator does not report an id nothing on disk carries.
+    """
+
+    def models(self):
+        return [
+            type(
+                "GenUser",
+                (Model,),
+                {
+                    "tableName": "gen_users",
+                    "tableColumns": {"id": Integer(primary_key=True)},
+                },
+            )
+        ]
+
+    def test_a_generated_row_is_marked_and_validates_elsewhere(self):
+        Migrator(self.conn, []).up(models=self.models())
+        record = Migrator(self.conn, []).applied_records()[0]
+        self.assertTrue(record.generated)
+        self.assertEqual(Migrator(self.conn, []).validate(), [])
+
+    def test_a_registered_migration_is_not_marked(self):
+        migrator = Migrator(
+            self.conn, [Migration("001_t", up="CREATE TABLE gt (id INTEGER)")]
+        )
+        migrator.up()
+        self.assertFalse(migrator.applied_records()[0].generated)
+        self.assertEqual(
+            Migrator(self.conn, []).validate(raise_on_problems=False),
+            ["applied migration '001_t' is not registered with this migrator"],
+        )
 
 
 class TestRehearsalProofs(MigrationTestCase):

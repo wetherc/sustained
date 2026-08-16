@@ -57,22 +57,22 @@ class PendingSummary(NamedTuple):
     """
     What a preview says about one migration that has not run yet.
 
-    `statements` is None for a callable step, which has no SQL to count
-    or scan.
+    `sql` holds the statements the up step would run, and is None for a
+    callable step, which has no SQL to render or scan.
     """
 
     id: str
     state: str
     repeatable: bool
-    statements: Optional[int]
+    sql: Optional[List[str]]
     destructive: List[str]
 
 
 def summarize(migration: Migration, state: str) -> PendingSummary:
     """
     Reduces one migration to its id, its state ('pending' or, for a
-    repeatable whose contents changed, 'changed'), its statement count,
-    and the statements that remove data.
+    repeatable whose contents changed, 'changed'), the statements its up
+    step would run, and the ones that remove data.
     """
     if callable(migration.up):
         return PendingSummary(migration.id, state, migration.repeatable, None, [])
@@ -81,6 +81,6 @@ def summarize(migration: Migration, state: str) -> PendingSummary:
         migration.id,
         state,
         migration.repeatable,
-        len(statements),
+        statements,
         destructive_statements(statements),
     )
