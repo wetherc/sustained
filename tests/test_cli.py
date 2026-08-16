@@ -830,6 +830,49 @@ class ReceiptCliTestCase(CliBase):
         self.assertEqual(code, 1)
         self.assertIn("no rehearsal has proved these statements", err)
 
+    def test_a_scratch_run_that_misses_a_pending_migration_records_nothing(self):
+        name = f"scratch_partial_{id(self)}"
+        with open(os.path.join(self.dir.name, f"{name}.py"), "w") as f:
+            f.write(
+                CONFIG_TEMPLATE + "\n"
+                "def get_rehearsal_connection():\n"
+                "    return sqlite3.connect(\n"
+                "        os.path.join(os.path.dirname(__file__), 'scratch.db')\n"
+                "    )\n"
+            )
+        self.addCleanup(sys.modules.pop, name, None)
+        self._write(
+            os.path.join(self.dir.name, "migrations"),
+            "004_extra.up.sql",
+            "CREATE TABLE extras (id INTEGER);",
+        )
+        # The scratch database already holds 003_trim, so the rehearsal
+        # there runs 004_extra alone while both are pending on the real
+        # database. The receipt would cover a drop nothing proved.
+        seed = f"scratch_seed_{id(self)}"
+        with open(os.path.join(self.dir.name, f"{seed}.py"), "w") as f:
+            f.write(CONFIG_TEMPLATE.replace('"cli.db"', '"scratch.db"'))
+        self.addCleanup(sys.modules.pop, seed, None)
+        with contextlib.redirect_stdout(io.StringIO()):
+            main(
+                [
+                    "migrate",
+                    "--unrehearsed",
+                    "--target",
+                    "003_trim",
+                    "--config",
+                    seed,
+                ]
+            )
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            code = main(["rehearse", "--config", name])
+        out = stdout.getvalue()
+        self.assertEqual(code, 0)
+        self.assertIn("rehearsed 004_extra", out)
+        self.assertIn("receipt not recorded", out)
+        self.assertNotIn("sustained_rehearsals", self.table_names())
+
     def test_a_scratch_rehearsal_records_on_the_real_database(self):
         name = f"scratch_receipt_{id(self)}"
         with open(os.path.join(self.dir.name, f"{name}.py"), "w") as f:

@@ -1173,6 +1173,36 @@ class TestDestructiveGate(MigrationTestCase):
         self.assertIn("mig_users", table_names(self.conn))
         self.assertNotIn("gate_old", table_names(self.conn))
 
+    def test_a_targeted_run_uses_the_prefix_the_rehearsal_proved(self):
+        later = Migration(
+            "002_add",
+            up="CREATE TABLE gate_new (id INTEGER)",
+            down="DROP TABLE gate_new",
+        )
+        migrator = Migrator(self.conn, [self.drop, later])
+        self.assertTrue(migrator.rehearse().ok)
+        self.assertEqual(migrator.up(target="001_drop"), ["001_drop"])
+        self.assertNotIn("gate_old", table_names(self.conn))
+        self.assertNotIn("gate_new", table_names(self.conn))
+
+    def test_a_targeted_run_past_an_unrehearsed_drop_is_refused(self):
+        later = Migration("002_trim", up="DROP TABLE gate_old")
+        first = Migration(
+            "001_add",
+            up="CREATE TABLE gate_new (id INTEGER)",
+            down="DROP TABLE gate_new",
+        )
+        migrator = Migrator(self.conn, [first, later])
+        # The rehearsal covers both. Editing the second voids the prefix
+        # that includes it, while the first still applies on its own.
+        self.assertTrue(migrator.rehearse().ok)
+        edited = Migrator(
+            self.conn, [first, Migration("002_trim", up="DROP TABLE gate_old;")]
+        )
+        self.assertEqual(edited.up(target="001_add"), ["001_add"])
+        with self.assertRaises(RehearsalRequired):
+            edited.up(target="002_trim")
+
     def test_a_rehearsal_with_models_also_covers_the_registered_set(self):
         migrator = Migrator(self.conn, [self.drop])
         rehearsal = migrator.rehearse(models=[MigUser])

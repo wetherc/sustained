@@ -30,6 +30,7 @@ from sustained.migrations import (
     RehearsalResult,
     _check_rehearsable,
     _destructive_in,
+    _destructive_prefix_keys,
     _down_sweep,
     _is_current,
     _migration_state,
@@ -717,6 +718,9 @@ class AsyncMigrator:
                 await self.record_rehearsal(
                     key, RECEIPT_PASSED if passed else RECEIPT_FAILED
                 )
+                if passed:
+                    for prefix_key in _destructive_prefix_keys(record_list, pending):
+                        await self.record_rehearsal(prefix_key)
                 recorded = True
             return Rehearsal(results, key, recorded)
 

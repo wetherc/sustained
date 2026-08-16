@@ -532,6 +532,18 @@ class TestAsyncReceipts(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(await migrator.rehearsal_outcome("0" * 64))
         self.assertFalse(await migrator.rehearsed("0" * 64))
 
+    async def test_a_targeted_run_uses_the_prefix_the_rehearsal_proved(self):
+        later = Migration(
+            "002_add",
+            up="CREATE TABLE gate_new (id INTEGER)",
+            down="DROP TABLE gate_new",
+        )
+        migrator = AsyncMigrator(self.adapter, [self.drop, later])
+        self.assertTrue((await migrator.rehearse()).ok)
+        self.assertEqual(await migrator.up(target="001_drop"), ["001_drop"])
+        self.assertNotIn("gate_old", table_names(self.conn))
+        self.assertNotIn("gate_new", table_names(self.conn))
+
     async def test_a_key_recorded_by_the_sync_migrator_is_accepted(self):
         from sustained.migrations import Migrator, receipt_key
 

@@ -261,15 +261,18 @@ class FakeAthenaCursor:
             ]
         elif sql.startswith("SELECT id FROM"):
             self._rows = [(i,) for i in self._conn.applied]
-        elif sql.startswith("INSERT INTO"):
+        elif sql.startswith("INSERT INTO") and "sustained_migrations" in sql:
             self._conn.applied.append(params[0])
-        elif sql.startswith("DELETE FROM"):
+        elif sql.startswith("DELETE FROM") and "sustained_migrations" in sql:
             self._conn.applied.remove(params[0])
         else:
             self._rows = []
 
     def fetchall(self):
         return self._rows
+
+    def fetchone(self):
+        return self._rows[0] if self._rows else None
 
 
 class FakeAthenaConnection:
@@ -310,6 +313,16 @@ class TestAthenaMigrator(unittest.TestCase):
         self.assertNotIn("NOT NULL", create)
         self.assertIn("LOCATION 's3://bucket/meta/'", create)
         self.assertIn("TBLPROPERTIES ('table_type'='ICEBERG')", create)
+
+    def test_receipt_table_has_no_constraints_either(self):
+        conn = FakeAthenaConnection()
+        self._migrator(conn, []).record_rehearsal("0" * 64)
+        create = next(
+            s for s in conn.log if s.startswith('CREATE TABLE IF NOT EXISTS "sus')
+        )
+        self.assertIn("sustained_rehearsals", create)
+        self.assertNotIn("PRIMARY KEY", create)
+        self.assertNotIn("NOT NULL", create)
 
     def test_up_and_down_run_without_transactions(self):
         conn = FakeAthenaConnection()

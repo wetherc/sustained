@@ -261,6 +261,29 @@ def _destructive_in(run: Sequence[Migration]) -> List[Tuple[str, str]]:
     return found
 
 
+def _destructive_prefix_keys(
+    applied: Sequence[AppliedRecord], pending: Sequence[Migration]
+) -> List[str]:
+    """
+    The keys a targeted run would look for.
+
+    up(target=...) applies the versioned migrations up to the target and
+    skips the repeatables, so its run set is a prefix of the versioned
+    pending list. A rehearsal applied every one of those prefixes on its
+    way up and took them all back on the way down, so it proved them too.
+
+    Only prefixes that remove data get a key: nothing else ever reads the
+    receipt table, and a row per prefix on every rehearsal would be waste.
+    """
+    versioned = [m for m in pending if not m.repeatable]
+    keys = []
+    for size in range(1, len(versioned) + 1):
+        prefix = versioned[:size]
+        if _destructive_in(prefix):
+            keys.append(receipt_key(applied, prefix))
+    return keys
+
+
 def _receipt_message(destructive: List[Tuple[str, str]], outcome: Optional[str]) -> str:
     """
     Why a run stopped, which statements stopped it, and the two ways
@@ -1382,6 +1405,9 @@ class Migrator:
                     # migrations and stops there, which this rehearsal
                     # also proved.
                     self.record_rehearsal(receipt_key(record_list, pending))
+                if passed:
+                    for prefix_key in _destructive_prefix_keys(record_list, pending):
+                        self.record_rehearsal(prefix_key)
                 recorded = True
             return Rehearsal(results, key, recorded)
 
