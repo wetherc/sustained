@@ -30,11 +30,13 @@ the diff into a Migration:
 from __future__ import annotations
 
 import re
+from types import MappingProxyType
 from typing import (
     TYPE_CHECKING,
     Any,
     Dict,
     List,
+    Mapping,
     NamedTuple,
     Optional,
     Tuple,
@@ -67,13 +69,20 @@ class IntrospectedIndex(NamedTuple):
     unique: bool
 
 
+# Defaults for tables introspected without keys or indexes. A NamedTuple
+# shares one default object across every instance, so these are read-only
+# to keep one table's empty mapping from ever becoming another's.
+_NO_FOREIGN_KEYS: Mapping[str, str] = MappingProxyType({})
+_NO_INDEXES: Mapping[str, IntrospectedIndex] = MappingProxyType({})
+
+
 class IntrospectedTable(NamedTuple):
     """One table as reported by the database."""
 
     columns: Dict[str, IntrospectedColumn]
     primary_key: Tuple[str, ...] = ()
-    foreign_keys: Dict[str, str] = {}
-    indexes: Dict[str, IntrospectedIndex] = {}
+    foreign_keys: Mapping[str, str] = _NO_FOREIGN_KEYS
+    indexes: Mapping[str, IntrospectedIndex] = _NO_INDEXES
 
 
 # Engine type spellings mapped to Sustained's logical types. Both sides of

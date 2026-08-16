@@ -15,11 +15,11 @@ from typing import (
 from .builders import (
     GroupByClauseBuilder,
     HavingClauseBuilder,
-    JoinClauseBuilder,
     OrderByClauseBuilder,
     SelectClauseBuilder,
     WhereClauseBuilder,
 )
+from .builders.join_builder import OnLambda
 from .dialects import Dialects
 from .expressions import (
     AggregateExpression,
@@ -156,42 +156,108 @@ class QueryBuilder:
     ) -> List[Dict[str, Any]]: ...
     def first(self, connection: Optional[Any] = None) -> Optional[Model]: ...
 
-    # Join methods
+    # Join methods, raw form: an ON condition, a lambda, or a USING list.
+    @overload
     def join(
-        self,
-        table: Union[str, Type[Model]],
-        on: Union[str, Callable[[JoinClauseBuilder], None]],
-        operator: Optional[str] = None,
-        to: Optional[str] = None,
+        self, table: str, col1: str, op: str, col2: Union[str, QueryBuilder], /
     ) -> QueryBuilder: ...
+    @overload
+    def join(self, table: str, on: OnLambda, /) -> QueryBuilder: ...
+    @overload
+    def join(self, table: str, /, *, using: List[str]) -> QueryBuilder: ...
+    @overload
     def innerJoin(
-        self,
-        table: Union[str, Type[Model]],
-        on: Union[str, Callable[[JoinClauseBuilder], None]],
-        operator: Optional[str] = None,
-        to: Optional[str] = None,
+        self, table: str, col1: str, op: str, col2: Union[str, QueryBuilder], /
     ) -> QueryBuilder: ...
+    @overload
+    def innerJoin(self, table: str, on: OnLambda, /) -> QueryBuilder: ...
+    @overload
+    def innerJoin(self, table: str, /, *, using: List[str]) -> QueryBuilder: ...
+    @overload
     def leftJoin(
-        self,
-        table: Union[str, Type[Model]],
-        on: Union[str, Callable[[JoinClauseBuilder], None]],
-        operator: Optional[str] = None,
-        to: Optional[str] = None,
+        self, table: str, col1: str, op: str, col2: Union[str, QueryBuilder], /
     ) -> QueryBuilder: ...
+    @overload
+    def leftJoin(self, table: str, on: OnLambda, /) -> QueryBuilder: ...
+    @overload
+    def leftJoin(self, table: str, /, *, using: List[str]) -> QueryBuilder: ...
+    @overload
+    def leftOuterJoin(
+        self, table: str, col1: str, op: str, col2: Union[str, QueryBuilder], /
+    ) -> QueryBuilder: ...
+    @overload
+    def leftOuterJoin(self, table: str, on: OnLambda, /) -> QueryBuilder: ...
+    @overload
+    def leftOuterJoin(self, table: str, /, *, using: List[str]) -> QueryBuilder: ...
+    @overload
     def rightJoin(
-        self,
-        table: Union[str, Type[Model]],
-        on: Union[str, Callable[[JoinClauseBuilder], None]],
-        operator: Optional[str] = None,
-        to: Optional[str] = None,
+        self, table: str, col1: str, op: str, col2: Union[str, QueryBuilder], /
     ) -> QueryBuilder: ...
-    def crossJoin(self, table: Union[str, Type[Model]]) -> QueryBuilder: ...
+    @overload
+    def rightJoin(self, table: str, on: OnLambda, /) -> QueryBuilder: ...
+    @overload
+    def rightJoin(self, table: str, /, *, using: List[str]) -> QueryBuilder: ...
+    @overload
+    def rightOuterJoin(
+        self, table: str, col1: str, op: str, col2: Union[str, QueryBuilder], /
+    ) -> QueryBuilder: ...
+    @overload
+    def rightOuterJoin(self, table: str, on: OnLambda, /) -> QueryBuilder: ...
+    @overload
+    def rightOuterJoin(self, table: str, /, *, using: List[str]) -> QueryBuilder: ...
+    @overload
+    def fullJoin(
+        self, table: str, col1: str, op: str, col2: Union[str, QueryBuilder], /
+    ) -> QueryBuilder: ...
+    @overload
+    def fullJoin(self, table: str, on: OnLambda, /) -> QueryBuilder: ...
+    @overload
+    def fullJoin(self, table: str, /, *, using: List[str]) -> QueryBuilder: ...
+    @overload
+    def fullOuterJoin(
+        self, table: str, col1: str, op: str, col2: Union[str, QueryBuilder], /
+    ) -> QueryBuilder: ...
+    @overload
+    def fullOuterJoin(self, table: str, on: OnLambda, /) -> QueryBuilder: ...
+    @overload
+    def fullOuterJoin(self, table: str, /, *, using: List[str]) -> QueryBuilder: ...
+    @overload
+    def crossJoin(
+        self, table: str, col1: str, op: str, col2: Union[str, QueryBuilder], /
+    ) -> QueryBuilder: ...
+    @overload
+    def crossJoin(self, table: str, on: OnLambda, /) -> QueryBuilder: ...
+    @overload
+    def crossJoin(self, table: str, /, *, using: List[str]) -> QueryBuilder: ...
+
+    # Relation form: the ON condition comes from relationMappings.
     def joinRelated(
-        self, relation_name: str, join_type: str = "inner"
+        self, relation_name: str, alias: Optional[str] = None
     ) -> QueryBuilder: ...
-    def innerJoinRelated(self, relation_name: str) -> QueryBuilder: ...
-    def leftJoinRelated(self, relation_name: str) -> QueryBuilder: ...
-    def rightJoinRelated(self, relation_name: str) -> QueryBuilder: ...
+    def innerJoinRelated(
+        self, relation_name: str, alias: Optional[str] = None
+    ) -> QueryBuilder: ...
+    def leftJoinRelated(
+        self, relation_name: str, alias: Optional[str] = None
+    ) -> QueryBuilder: ...
+    def leftOuterJoinRelated(
+        self, relation_name: str, alias: Optional[str] = None
+    ) -> QueryBuilder: ...
+    def rightJoinRelated(
+        self, relation_name: str, alias: Optional[str] = None
+    ) -> QueryBuilder: ...
+    def rightOuterJoinRelated(
+        self, relation_name: str, alias: Optional[str] = None
+    ) -> QueryBuilder: ...
+    def fullJoinRelated(
+        self, relation_name: str, alias: Optional[str] = None
+    ) -> QueryBuilder: ...
+    def fullOuterJoinRelated(
+        self, relation_name: str, alias: Optional[str] = None
+    ) -> QueryBuilder: ...
+    def crossJoinRelated(
+        self, relation_name: str, alias: Optional[str] = None
+    ) -> QueryBuilder: ...
 
     # Order By methods
     def orderBy(self, column: str, direction: str = "ASC") -> QueryBuilder: ...
@@ -288,6 +354,18 @@ class QueryBuilder:
     def andWhereNotNull(self, col: str) -> QueryBuilder: ...
     def orWhereNotNull(self, col: str) -> QueryBuilder: ...
 
+    # Raw predicates. The fragment marks each value with ?, and the values
+    # travel as parameters. Both arguments are positional.
+    def whereRaw(
+        self, sql: str, params: Optional[List[DbReturnValue]] = None, /
+    ) -> QueryBuilder: ...
+    def andWhereRaw(
+        self, sql: str, params: Optional[List[DbReturnValue]] = None, /
+    ) -> QueryBuilder: ...
+    def orWhereRaw(
+        self, sql: str, params: Optional[List[DbReturnValue]] = None, /
+    ) -> QueryBuilder: ...
+
     # Having methods
     @overload
     def having(
@@ -379,3 +457,12 @@ class QueryBuilder:
     def havingNotNull(self, col: str) -> QueryBuilder: ...
     def andHavingNotNull(self, col: str) -> QueryBuilder: ...
     def orHavingNotNull(self, col: str) -> QueryBuilder: ...
+    def havingRaw(
+        self, sql: str, params: Optional[List[DbReturnValue]] = None, /
+    ) -> QueryBuilder: ...
+    def andHavingRaw(
+        self, sql: str, params: Optional[List[DbReturnValue]] = None, /
+    ) -> QueryBuilder: ...
+    def orHavingRaw(
+        self, sql: str, params: Optional[List[DbReturnValue]] = None, /
+    ) -> QueryBuilder: ...
