@@ -505,6 +505,13 @@ class AsyncMigrator:
         per migration that ran; an empty list means nothing was pending.
         Mirrors Migrator.rehearse(), including the dialect check and the
         scratch=True waiver for a database that can be thrown away.
+
+        The schema is read before the run and again after the down sweep,
+        and a difference between the two means a down step ran without
+        taking its change back. Tables and columns are compared; indexes,
+        constraints, and defaults are not. There is no models argument
+        here: schema diffing against models is a synchronous path, so the
+        async rehearsal covers registered migrations only.
         """
         from sustained.aio import in_async_transaction
 
@@ -533,6 +540,7 @@ class AsyncMigrator:
                 return []
             records = {r.id: r for r in await self.applied_records()}
             seq = _next_seq(list(records.values()))
+            before = await self._snapshot()
             self._rehearsing = True
             try:
                 # Close whatever transaction the reads above opened, so the
@@ -554,10 +562,33 @@ class AsyncMigrator:
                     seq += 1
                     ran.append(migration)
                 outcomes = {} if up_error else await self._rehearse_down(ran)
-                return _rehearsal_results(ran, up_error, outcomes)
+                reverted = None
+                if before is not None and any(
+                    down_ok for down_ok, _ in outcomes.values()
+                ):
+                    from sustained.autogenerate import diff_snapshots
+
+                    after = await self._snapshot()
+                    if after is not None:
+                        reverted = diff_snapshots(before, after)
+                return _rehearsal_results(ran, up_error, outcomes, None, reverted)
             finally:
                 self._rehearsing = False
                 await self._roll_back_rehearsal()
+
+    async def _snapshot(self) -> Optional[Dict[str, Any]]:
+        """
+        The live schema, without the tracking table, or None when the
+        database will not report it. Mirrors Migrator._snapshot().
+        """
+        from sustained.autogenerate import async_introspect_schema
+
+        try:
+            schema = await async_introspect_schema(self._adapter, self._dialect)
+        except Exception:
+            return None
+        schema.pop(self._table.lower(), None)
+        return dict(schema)
 
     async def _roll_back_rehearsal(self) -> None:
         """

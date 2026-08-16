@@ -257,6 +257,35 @@ class TestAsyncRepeatableMigrations(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await migrator.up(), [])
 
 
+class TestAsyncIntrospection(unittest.IsolatedAsyncioTestCase):
+    """The async schema read returns what the blocking one returns."""
+
+    def setUp(self):
+        self.conn = sqlite3.connect(":memory:", check_same_thread=False)
+        self.adapter = DbApiAsyncAdapter(self.conn)
+
+    def tearDown(self):
+        self.conn.close()
+
+    async def test_both_paths_report_the_same_schema(self):
+        from sustained.autogenerate import async_introspect_schema, introspect_schema
+
+        self.conn.execute("CREATE TABLE ai_users (id INTEGER PRIMARY KEY, bio TEXT)")
+        self.conn.execute("CREATE INDEX ai_users_bio ON ai_users (bio)")
+        self.conn.commit()
+        self.assertEqual(
+            await async_introspect_schema(self.adapter),
+            introspect_schema(self.conn),
+        )
+
+    async def test_a_failing_read_raises(self):
+        from sustained.autogenerate import async_introspect_schema
+        from sustained.dialects import Dialects
+
+        with self.assertRaises(sqlite3.OperationalError):
+            await async_introspect_schema(self.adapter, Dialects.POSTGRES)
+
+
 class TestAsyncRehearse(unittest.IsolatedAsyncioTestCase):
     """The async mirror of Migrator.rehearse()."""
 
@@ -283,6 +312,28 @@ class TestAsyncRehearse(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(table_names(self.conn), {"sustained_migrations"})
         self.assertEqual(await migrator.applied_records(), [])
+
+    async def test_a_clean_sweep_proves_the_schema_came_back(self):
+        migrator = AsyncMigrator(self.adapter, self.migrations())
+        results = await migrator.rehearse()
+        self.assertEqual([r.reversed for r in results], [[], [], None])
+
+    async def test_a_down_step_that_leaves_an_object_behind_is_reported(self):
+        migrator = AsyncMigrator(
+            self.adapter,
+            [
+                Migration(
+                    "001_a",
+                    up=[
+                        "CREATE TABLE ra (id INTEGER)",
+                        "CREATE TABLE ra_leftover (id INTEGER)",
+                    ],
+                    down="DROP TABLE ra",
+                )
+            ],
+        )
+        results = await migrator.rehearse()
+        self.assertEqual(results[0].reversed, ["table 'ra_leftover' left behind"])
 
     async def test_nothing_pending_rehearses_nothing(self):
         migrator = AsyncMigrator(self.adapter, self.migrations())

@@ -35,12 +35,14 @@ from typing import (
     TYPE_CHECKING,
     Any,
     Dict,
+    Generator,
     List,
     Mapping,
     NamedTuple,
     Optional,
     Tuple,
     Type,
+    cast,
 )
 
 from sustained.dialects import Dialects
@@ -154,6 +156,19 @@ def normalize_default(raw: Optional[str]) -> Optional[str]:
     return value.upper()
 
 
+# A schema read expressed as a sequence of queries. The plan yields one
+# statement at a time and receives its rows back, so the same reading
+# code serves a blocking connection and an async adapter. A statement
+# that fails is thrown back in, and the plan decides whether to degrade
+# or give up.
+SchemaPlan = Generator[str, List[Any], Dict[str, IntrospectedTable]]
+
+
+def _finished(stop: StopIteration) -> Dict[str, IntrospectedTable]:
+    """The schema a finished plan carried on its StopIteration."""
+    return cast(Dict[str, IntrospectedTable], stop.value)
+
+
 def introspect_schema(
     connection: Any, dialect: Dialects = Dialects.DEFAULT
 ) -> Dict[str, IntrospectedTable]:
@@ -164,24 +179,73 @@ def introspect_schema(
     degrade to column-only data when constraint views are unavailable.
     Names are keyed lowercase.
     """
-    if dialect == Dialects.DEFAULT:
-        return _introspect_sqlite(connection)
-    return _introspect_information_schema(connection, dialect)
-
-
-def _introspect_sqlite(connection: Any) -> Dict[str, IntrospectedTable]:
+    plan = _schema_plan(dialect)
     cursor = connection.cursor()
-    cursor.execute(
+
+    def run(sql: str) -> List[Any]:
+        cursor.execute(sql)
+        return list(cursor.fetchall())
+
+    sql = next(plan)
+    while True:
+        try:
+            rows = run(sql)
+        except Exception as error:
+            try:
+                sql = plan.throw(error)
+            except StopIteration as stop:
+                return _finished(stop)
+            continue
+        try:
+            sql = plan.send(rows)
+        except StopIteration as stop:
+            return _finished(stop)
+
+
+async def async_introspect_schema(
+    adapter: Any, dialect: Dialects = Dialects.DEFAULT
+) -> Dict[str, IntrospectedTable]:
+    """
+    Reads the schema through an async adapter, returning what
+    introspect_schema() returns. Both run the same reading code, so a
+    dialect behaves the same on either path.
+    """
+    plan = _schema_plan(dialect)
+    sql = next(plan)
+    while True:
+        try:
+            _, rows = await adapter.fetch(sql, ())
+        except Exception as error:
+            try:
+                sql = plan.throw(error)
+            except StopIteration as stop:
+                return _finished(stop)
+            continue
+        try:
+            sql = plan.send(list(rows))
+        except StopIteration as stop:
+            return _finished(stop)
+
+
+def _schema_plan(dialect: Dialects) -> SchemaPlan:
+    if dialect == Dialects.DEFAULT:
+        return _sqlite_plan()
+    return _information_schema_plan()
+
+
+def _sqlite_plan() -> SchemaPlan:
+    rows = yield (
         "SELECT name FROM sqlite_master WHERE type = 'table' "
         "AND name NOT LIKE 'sqlite_%'"
     )
-    tables = [row[0] for row in cursor.fetchall()]
+    tables = [row[0] for row in rows]
     schema: Dict[str, IntrospectedTable] = {}
     for table in tables:
         columns: Dict[str, IntrospectedColumn] = {}
         primary_key: List[str] = []
-        cursor.execute(f"PRAGMA table_info({table})")
-        for _, name, raw_type, notnull, default, pk in cursor.fetchall():
+        for _, name, raw_type, notnull, default, pk in (
+            yield f"PRAGMA table_info({table})"
+        ):
             columns[name.lower()] = IntrospectedColumn(
                 raw_type=raw_type or "",
                 nullable=not notnull,
@@ -192,19 +256,18 @@ def _introspect_sqlite(connection: Any) -> Dict[str, IntrospectedTable]:
                 primary_key.append(name.lower())
 
         foreign_keys: Dict[str, str] = {}
-        cursor.execute(f"PRAGMA foreign_key_list({table})")
-        for row in cursor.fetchall():
-            _, _, ref_table, from_col, to_col = row[0], row[1], row[2], row[3], row[4]
+        for row in (yield f"PRAGMA foreign_key_list({table})"):
+            ref_table, from_col, to_col = row[2], row[3], row[4]
             foreign_keys[from_col.lower()] = f"{ref_table}.{to_col}".lower()
 
         indexes: Dict[str, IntrospectedIndex] = {}
-        cursor.execute(f"PRAGMA index_list({table})")
-        for row in cursor.fetchall():
+        index_rows = yield f"PRAGMA index_list({table})"
+        for row in index_rows:
             index_name, unique, origin = row[1], bool(row[2]), row[3]
             if origin == "pk":
                 continue
-            cursor.execute(f"PRAGMA index_info({index_name})")
-            index_columns = tuple(r[2].lower() for r in cursor.fetchall())
+            info = yield f"PRAGMA index_info({index_name})"
+            index_columns = tuple(r[2].lower() for r in info)
             indexes[index_name.lower()] = IntrospectedIndex(index_columns, unique)
 
         schema[table.lower()] = IntrospectedTable(
@@ -225,19 +288,16 @@ _SYSTEM_SCHEMAS = (
 )
 
 
-def _introspect_information_schema(
-    connection: Any, dialect: Dialects
-) -> Dict[str, IntrospectedTable]:
-    cursor = connection.cursor()
+def _information_schema_plan() -> SchemaPlan:
     schema_filter = f"table_schema NOT IN ({', '.join(_SYSTEM_SCHEMAS)})"
 
     columns_by_table: Dict[str, Dict[str, IntrospectedColumn]] = {}
-    cursor.execute(
+    column_rows = yield (
         "SELECT table_name, column_name, data_type, is_nullable, column_default "
         f"FROM information_schema.columns WHERE {schema_filter} "
         "ORDER BY table_name, ordinal_position"
     )
-    for table, name, data_type, is_nullable, default in cursor.fetchall():
+    for table, name, data_type, is_nullable, default in column_rows:
         columns_by_table.setdefault(table.lower(), {})[name.lower()] = (
             IntrospectedColumn(
                 raw_type=data_type or "",
@@ -251,7 +311,7 @@ def _introspect_information_schema(
     unique_indexes: Dict[str, Dict[str, IntrospectedIndex]] = {}
     foreign_keys: Dict[str, Dict[str, str]] = {}
     try:
-        cursor.execute(
+        constraint_rows = yield (
             "SELECT tc.table_name, tc.constraint_type, tc.constraint_name, "
             "kcu.column_name "
             "FROM information_schema.table_constraints tc "
@@ -262,7 +322,7 @@ def _introspect_information_schema(
             "ORDER BY kcu.ordinal_position"
         )
         constraint_columns: Dict[Tuple[str, str, str], List[str]] = {}
-        for table, ctype, cname, column in cursor.fetchall():
+        for table, ctype, cname, column in constraint_rows:
             key = (table.lower(), ctype.upper(), cname.lower())
             constraint_columns.setdefault(key, []).append(column.lower())
         for (table, ctype, cname), cols in constraint_columns.items():
@@ -281,7 +341,7 @@ def _introspect_information_schema(
         # The engine does not expose constraint views; degrade to columns.
         pass
 
-    schema: Dict[str, IntrospectedTable] = {}
+    schema = {}
     for table, columns in columns_by_table.items():
         pk = tuple(primary_keys.get(table, ()))
         for pk_col in pk:
