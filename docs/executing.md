@@ -3,181 +3,323 @@ layout: default
 title: Executing Queries
 ---
 
-Sustained can execute the queries it builds. It works with any DB-API 2.0 connection, such as `sqlite3`, `psycopg`, or `pyodbc`. Every statement runs parameterized: user values travel as parameters, never as text inside the SQL.
-
-The connection's parameter style must match the dialect. The default and MSSQL dialects use `?` (qmark). The Postgres and Athena dialects use `%s` (format), matching psycopg and pyathena. [SQL Dialects](./dialects) pairs every dialect with its recommended driver and shows how to connect.
-
-## Binding a Connection
-
-Bind a connection once with `Model.bind()`. Every query on that model can then run without passing the connection each time.
+Bind a connection to a model and its queries can run themselves:
 
 ```python
 import sqlite3
+
+Show.bind(sqlite3.connect('app.db'))
+
+shows = Show.query().where('sold_out', '=', False).orderBy('starts_at').run()
+# [Show(id=1, title='Nightcrawler', ...), ...]
+```
+
+Sustained works with any DB-API 2.0 connection and never opens one itself. It
+reads no connection strings and no config files; you build the connection and
+hand it over.
+
+Every statement runs parameterized. Values travel as parameters and never as
+text inside the SQL, which is why `str(query)` and the string that actually
+reaches the database are different by design.
+
+The examples use the venue booking schema from
+[Getting Started](./getting-started).
+
+## Matching the driver to the dialect
+
+The connection's parameter style has to match the dialect's placeholder.
+`to_sql()` renders the placeholder and `run()` hands the parameters straight
+to the driver, so a mismatch fails at execution time with a driver error
+rather than at build time:
+
+| Dialect | Placeholder | Driver |
+| --- | --- | --- |
+| `DEFAULT`, `MSSQL`, `PRESTO`, `DUCKDB` | `?` | `sqlite3`, `pyodbc`, `trino`, `duckdb` |
+| `POSTGRES`, `ATHENA` | `%s` | `psycopg`, `pyathena` |
+
+[SQL Dialects](./dialects) pairs each dialect with its driver and shows a
+connection for each.
+
+## Binding a connection
+
+`Model.bind()` sets the connection as a class attribute, which subclasses
+inherit:
+
+```python
 from sustained import Model
 
-class User(Model):
-    tableName = 'users'
-
-conn = sqlite3.connect('app.db')
-User.bind(conn)
+Model.bind(conn)     # every model in the process
+Show.bind(conn)      # only Show
+Show.unbind()        # remove it again
 ```
 
-Bind on `Model` itself to share one connection across all models. Bind on a subclass to scope it. Call `Model.unbind()` to remove a binding. You can also pass a connection directly to `run()` or `first()`, which overrides any binding.
+A connection passed to `run()` or `first()` overrides any binding, which is
+how one query reaches a replica while the rest use the primary.
 
-## Running SELECT Queries
+The resolution order is the connection you passed, then the model's own
+binding, then a binding inherited from a parent class. Running with none of
+those raises `RuntimeError`.
 
-`run()` executes the query and hydrates each row into a model instance. Column names come from the cursor description.
+## Reading rows
+
+`run()` executes the query and hydrates each row into a model instance, using
+the column names from the cursor description:
 
 ```python
-users = User.query().where('active', '=', True).orderBy('name').run()
-
-for user in users:
-    print(user.name)
+for show in Show.query().where('venue_id', '=', 1).run():
+    print(show.title, show.starts_at)
 ```
 
-`first()` runs the query with `LIMIT 1` and returns one instance, or `None` when there is no match. The original query is not changed.
+`first()` adds `LIMIT 1` and returns one instance, or `None` when nothing
+matches. It leaves the original query alone, so a builder you keep around is
+still safe to reuse:
 
 ```python
-user = User.query().where('email', '=', 'ada@example.com').first()
+show = Show.query().where('title', '=', 'Nightcrawler').first()
 ```
 
-## Writing Data
+### Other result shapes
 
-`insert()`, `update()`, and `delete()` turn the builder into a write statement. They use the same `where()` methods as SELECT and the same parameterized rendering.
+`run()` gives you instances. Three methods give you the same rows in other
+forms:
+
+| Method | Returns |
+| --- | --- |
+| `to_dicts()` | plain dicts keyed by column name |
+| `to_df()` | a pandas DataFrame, keeping the column names even when empty |
+| `to_arrow()` | a pyarrow Table |
+
+pandas and pyarrow are optional dependencies. The methods raise `RuntimeError`
+naming the install command when the library is missing.
+
+## Writing rows
+
+`insert()`, `update()`, and `delete()` turn the builder into a write
+statement. They take the same `where()` methods and the same parameterized
+rendering as a SELECT:
 
 ```python
-# INSERT INTO users (name, email) VALUES (?, ?)
-User.query().insert({'name': 'Ada', 'email': 'ada@example.com'}).run()
+Show.query().insert({'venue_id': 1, 'title': 'Nightcrawler'}).run()
+# INSERT INTO shows (venue_id, title) VALUES (?, ?)
 
-# Multi-row insert. All rows must have the same columns.
-User.query().insert([
-    {'name': 'Ada'},
-    {'name': 'Grace'},
+Show.query().update({'sold_out': True}).where('id', '=', 1).run()
+# UPDATE shows SET sold_out = ? WHERE id = ?
+
+Ticket.query().delete().where('sold_at', 'IS', None).run()
+# DELETE FROM tickets WHERE sold_at IS NULL
+```
+
+A write commits when it finishes, unless it is inside a transaction, and
+returns the affected row count.
+
+A multi-row insert takes a list. Every row must have the same columns, so the
+statement has one template:
+
+```python
+Ticket.query().insert([
+    {'show_id': 1, 'price': 45},
+    {'show_id': 1, 'price': 65},
 ]).run()
-
-# UPDATE users SET active = ? WHERE id = ?
-User.query().update({'active': False}).where('id', '=', 1).run()
-
-# DELETE FROM users WHERE active = ?
-User.query().delete().where('active', '=', False).run()
 ```
 
-Write statements commit after they run and return the affected row count. Multi-row inserts without a RETURNING clause execute through the driver's `executemany()` with a single-row template, which is the fast path for bulk loads.
+Without a RETURNING clause, a multi-row insert goes through the driver's
+`executemany()` with a single-row template, which is the fast path for bulk
+loads.
 
-### Transactions
+### UPDATE and DELETE need a WHERE
 
-`Model.transaction()` opens a context that commits when the block finishes and rolls back when it raises. Statements inside the block share one transaction; `run()` stops committing per statement. Nested blocks use savepoints, so an inner failure rolls back only the inner block.
+An `update()` or `delete()` with no `where()` raises `ValueError` before it
+reaches the database. An unfiltered write is nearly always a filter someone
+forgot rather than a table someone meant to rewrite.
+
+To write every row deliberately, say so with a predicate that is true:
 
 ```python
-with User.transaction():
-    Account.query().update({'balance': 0}).where('id', '=', 1).run()
-    AuditLog.query().insert({'event': 'reset', 'account_id': 1}).run()
+from sustained.builder import QueryBuilder
+
+Show.query().update({'sold_out': False}).where(QueryBuilder.raw('1'), '=', 1).run()
 ```
 
 ### Upserts
 
-Chain `onConflict(columns)` after `insert()`, then choose `merge()` to update the existing row or `ignore()` to skip it. `merge()` updates every inserted column except the conflict columns, or an explicit list.
+Chain `onConflict(columns)` after `insert()`, then `merge()` to update the
+existing row or `ignore()` to leave it:
 
 ```python
-User.query().insert({'email': 'a@x.com', 'name': 'Ada'}) \
-    .onConflict('email').merge().run()
+Artist.query().insert({'name': 'Low', 'country': 'US'}).onConflict('name').merge().run()
 ```
 
-Postgres, SQLite, and DuckDB render `ON CONFLICT`; MSSQL renders a `MERGE` statement; Presto raises.
+`merge()` updates every inserted column except the conflict columns, or an
+explicit list you pass it. Two things will bite you here. The conflict columns
+need a unique constraint or primary key in the database, or the engine rejects
+the statement. And `merge()` with nothing left to update raises `ValueError`,
+which happens when every inserted column is also a conflict column.
 
-### INSERT ... SELECT and CREATE TABLE AS
-
-`insert_from(columns, query)` inserts the result of another query. `create_table_as(name, temporary=False)` turns a SELECT into a CTAS statement. MSSQL raises for CTAS; use `SELECT INTO` through raw SQL there.
-
-```python
-inactive = User.query().select('id', 'name').where('active', '=', False)
-Archive.query().insert_from(['id', 'name'], inactive).run()
-
-User.query().select('id').where('active', '=', True).create_table_as('active_ids').run()
-```
-
-### Safety Rule for UPDATE and DELETE
-
-An `update()` or `delete()` without a `where()` clause raises a `ValueError`, because an unfiltered write usually means a missing filter. To write every row on purpose, add an always-true raw predicate:
-
-```python
-User.query().update({'active': True}).where(QueryBuilder.raw('1'), '=', 1).run()
-```
+Postgres, SQLite, and DuckDB render `ON CONFLICT`. MSSQL renders a `MERGE`
+statement. Presto raises `DialectError`.
 
 ### RETURNING
 
-`returning()` adds a `RETURNING` clause on dialects that support it. The statement then returns a list of dicts instead of a row count. MSSQL and Presto raise a `DialectError`.
+`returning()` adds the clause on dialects that have it. The statement then
+returns a list of dicts instead of a row count:
 
 ```python
-rows = User.query().insert({'name': 'Ada'}).returning('id').run()
+rows = Show.query().insert({'venue_id': 1, 'title': 'Nightcrawler'}).returning('id').run()
 # [{'id': 42}]
 ```
 
-## Eager Loading Relations
+MSSQL and Presto raise `DialectError`. Use `OUTPUT` through raw SQL on MSSQL.
 
-`withGraphFetched()` loads relations from `relationMappings` when the query runs. Each relation costs one extra query. `HasManyRelation` attaches a list to each instance. The to-one relation types attach a single instance or `None`.
+### INSERT ... SELECT and CREATE TABLE AS
+
+`insert_from(columns, query)` inserts another query's result.
+`create_table_as(name, temporary=False)` turns a SELECT into a CTAS statement:
 
 ```python
-owners = Owner.query().withGraphFetched('pets').run()
+class ShowArchive(Model):
+    tableName = 'show_archive'
 
-for owner in owners:
-    for pet in owner.pets:
-        print(owner.name, pet.name)
+past = Show.query().select('id', 'title').where('starts_at', '<', '2026-01-01')
+
+ShowArchive.query().insert_from(['id', 'title'], past).run()
+# INSERT INTO show_archive (id, title)
+# SELECT id, title FROM shows WHERE starts_at < ?
+
+Show.query().select('id').where('sold_out', '=', True).create_table_as('sellouts').run()
+# CREATE TABLE sellouts AS SELECT id FROM shows WHERE sold_out = ?
 ```
 
-Eager loading needs the join key columns in both result sets, so keep them in your `select()` or select all columns. Through relations (`ManyToManyRelation`) load with one query that joins the related table to the through table.
+`insert_from()` writes to the table of the model it is called on, so the
+target is the model in front of `.query()` and the source is the query you
+pass in.
 
-## Result Formats
+MSSQL raises for CTAS; use `SELECT INTO` through raw SQL there.
 
-`run()` returns model instances. For other shapes:
+## Transactions
 
-*   **`to_dicts()`**: rows as plain dicts keyed by column name.
-*   **`to_df()`**: a pandas DataFrame, keeping the query's column names even when empty. Requires pandas.
-*   **`to_arrow()`**: a pyarrow Table. Requires pyarrow.
+`Model.transaction()` opens a block that commits at the end and rolls back on
+an exception. Statements inside share one transaction, and `run()` stops
+committing per statement:
 
-pandas and pyarrow are optional; the methods raise a clear error when the library is missing.
+```python
+with Show.transaction():
+    Show.query().update({'sold_out': True}).where('id', '=', 1).run()
+    Ticket.query().delete().where('show_id', '=', 1).andWhere('sold_at', 'IS', None).run()
+```
 
-## Connection Pooling
+Nested blocks use savepoints, so a failure inside an inner block rolls back
+only that block and the outer transaction carries on.
 
-`ConnectionPool` creates connections lazily from a factory up to `max_size` and reuses released ones. Bind it like a connection; every statement checks a connection out for its duration.
+## Eager loading relations
+
+`withGraphFetched()` loads the relations named in `relationMappings` when the
+query runs, one extra query per relation:
+
+```python
+venues = Venue.query().withGraphFetched('shows').run()
+
+for venue in venues:
+    for show in venue.shows:
+        print(venue.name, show.title)
+```
+
+A `HasManyRelation` or `ManyToManyRelation` attaches a list. The to-one types
+attach a single instance or `None`.
+
+Eager loading matches rows on the join key, so both result sets need that
+column. Keep it in your `select()` or select every column. A relation through
+a link table loads with one query that joins the link table to the far table.
+
+Compare this to a join, which flattens the related rows into the result and
+repeats the parent row once per child. Eager loading costs one extra query and
+keeps each instance whole; a join costs one query and gives you a wide,
+repeated result. On Athena, where every execution has its own scan cost, that
+extra query is worth counting.
+
+## Connection pooling
+
+`ConnectionPool` creates connections from a factory, up to `max_size`, and
+reuses released ones. Bind it exactly like a connection:
 
 ```python
 from sustained.pool import ConnectionPool
 
-pool = ConnectionPool(lambda: psycopg2.connect(DSN), max_size=10)
-User.bind(pool)
+pool = ConnectionPool(lambda: psycopg.connect(DSN), max_size=10)
+Show.bind(pool)
 
-users = User.query().where('active', '=', True).run()
-
-with User.transaction():
-    # One connection is pinned to this thread for the whole block.
-    User.query().insert({...}).run()
-    Account.query().update({...}).where(...).run()
+shows = Show.query().where('sold_out', '=', False).run()
 ```
 
-An exhausted pool raises `PoolTimeout` after the configured timeout. `pool.close()` closes idle connections.
+Each statement checks a connection out for its duration and releases it after.
+A transaction pins one connection to the thread for the whole block, so the
+savepoints and the commit land on the same session:
 
-## Async Execution
+```python
+with Show.transaction():
+    Show.query().update({'sold_out': True}).where('id', '=', 1).run()
+    Ticket.query().insert({'show_id': 1, 'price': 45}).run()
+```
 
-Queries run asynchronously through an adapter. `DbApiAsyncAdapter` wraps any synchronous DB-API connection in a worker thread; `AiosqliteAdapter` and `AsyncpgAdapter` wrap their native drivers. The asyncpg adapter converts `%s` placeholders to `$1..$n`.
+An exhausted pool raises `PoolTimeout` after the configured timeout, rather
+than blocking forever. `pool.close()` closes the idle connections.
+
+## Async execution
+
+Async queries run through an adapter, which is the async equivalent of a
+connection. There are three:
+
+| Adapter | Wraps |
+| --- | --- |
+| `AsyncpgAdapter` | asyncpg, converting `%s` placeholders to `$1..$n` |
+| `AiosqliteAdapter` | aiosqlite |
+| `DbApiAsyncAdapter` | any synchronous DB-API connection, in a worker thread |
+
+Bind one with `bind_async()`, then use the `a`-prefixed methods:
 
 ```python
 from sustained.aio import DbApiAsyncAdapter
 
-adapter = DbApiAsyncAdapter(sqlite3.connect('app.db', check_same_thread=False))
-User.bind_async(adapter)
+Show.bind_async(DbApiAsyncAdapter(sqlite3.connect('app.db', check_same_thread=False)))
 
-users = await User.query().where('active', '=', True).arun()
-user = await User.query().where('id', '=', 1).afirst()
-rows = await User.query().ato_dicts()
+shows = await Show.query().where('sold_out', '=', False).arun()
+show = await Show.query().where('id', '=', 1).afirst()
+rows = await Show.query().ato_dicts()
 
-async with User.async_transaction():
-    await User.query().insert({...}).arun()
-    await Account.query().update({...}).where(...).arun()
+async with Show.async_transaction():
+    await Show.query().update({'sold_out': True}).where('id', '=', 1).arun()
 ```
 
-`arun()` mirrors `run()`: hydration, RETURNING rows, batched multi-row inserts, and eager loading of basic relations. Async eager loading of through relations is not supported yet, and async transactions do not nest.
+`arun()` mirrors `run()`: hydration, RETURNING rows, batched multi-row
+inserts, and eager loading of direct relations. Two limits are worth knowing
+before you build on it. Async eager loading of relations through a link table
+is not supported yet, and async transactions do not nest, so there is no
+savepoint equivalent.
 
-## Statement Logging
+## Watching what runs
 
-`sustained.execution.set_statement_listener(fn)` registers an observer called after every executed statement with the SQL text, the parameter tuple, and the duration in seconds. Pass `None` to remove it.
+`set_statement_listener()` registers a function called after every executed
+statement, with the SQL text, the parameter tuple, and the duration in
+seconds:
+
+```python
+from sustained.execution import set_statement_listener
+
+def log(sql, params, seconds):
+    if seconds > 0.1:
+        print(f'{seconds:.3f}s  {sql}')
+
+set_statement_listener(log)
+set_statement_listener(None)   # remove it
+```
+
+One listener is registered at a time, and it sees every statement in the
+process, including the migrator's.
+
+## Where to go next
+
+| You want to | Read |
+| --- | --- |
+| Pick a driver for your engine | [SQL Dialects](./dialects) |
+| Create the tables you are querying | [Schema and Migrations](./schema) |
+| Find the code for a specific task | [Recipes](./recipes) |
+| See every method and what it raises | [Execution reference](./reference/execution) |
