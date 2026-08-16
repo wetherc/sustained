@@ -120,7 +120,8 @@ Autogeneration refuses to guess about anything that loses data or fails on popul
 - **Drops are opt-in.** Extra tables and columns are left alone unless `allow_drops=True`, which generates the drops. A migration containing drops has no down step, because the dropped data cannot come back. `autogenerate()` called directly still raises on undeclared objects; the migrator passes `ignore_undeclared=True`, since a database that hand-written migrations also touch holds tables no model declares.
 - **Type and nullability changes migrate per dialect.** Postgres, MSSQL, and DuckDB alter in place with reversible down steps; Postgres casts take a hint through `type_casts={'table.col': 'col::integer'}`. SQLite rebuilds the table (create new, copy rows, replace), which is not reversible. Pass `ignore_changed_columns=True` to skip them entirely.
 - **NOT NULL needs a value for existing rows.** Adding or tightening to NOT NULL requires a `default` or a `backfill` value on the ColumnDef; generation emits add-nullable, UPDATE backfill, SET NOT NULL, or folds the backfill into a SQLite rebuild. New primary key or autoincrement columns cannot be added with ALTER TABLE.
-- The migration tracking table is excluded from diffing, and `exclude_tables` protects any other tables Sustained does not manage.
+- **Statements that remove data need a rehearsal.** `up()` refuses to run a DROP, a column drop, or a TRUNCATE until a passing rehearsal has proved that exact set of statements. `up(unrehearsed=True)` applies them anyway. See [The receipt a rehearsal leaves](#the-receipt-a-rehearsal-leaves).
+- The tracking table and the receipt table are excluded from diffing, and `exclude_tables` protects any other tables Sustained does not manage.
 
 Renames cannot be detected from the catalog, so pass hints: `up(models=models, renames={'users.name': 'full_name'}, table_renames={'old': 'new'})` emits reversible RENAME statements instead of a destructive drop-plus-add.
 
@@ -301,7 +302,7 @@ def get_connection():
 migrations_dir = 'migrations'
 # optional: migrations = [...], placeholders = {...},
 # models = [User, Post], dialect = 'postgres', table = '...',
-# tracking_table_options = TableOptions(...),
+# rehearsal_table = '...', tracking_table_options = TableOptions(...),
 # get_rehearsal_connection(), before_migrate(), after_migrate(), on_error()
 ```
 
@@ -309,7 +310,7 @@ migrations_dir = 'migrations'
 $ sustained plan                    # what a run would do; exits 2 when work is waiting
 $ sustained status
 $ sustained rehearse                # run it all, forwards and back, then roll back
-$ sustained migrate                 # --target ID, --no-validate, --allow-out-of-order
+$ sustained migrate                 # --target ID, --no-validate, --allow-out-of-order, --unrehearsed
 $ sustained down                    # --steps N or --to ID
 $ sustained validate                # exits 1 when problems exist
 $ sustained repair
@@ -348,10 +349,12 @@ drift
   ALTER TABLE users ADD COLUMN bio TEXT
 
 2 pending migrations, 1 drift statement
-run: sustained migrate
+run: sustained rehearse
 ```
 
-A statement that drops a table, drops a column, or truncates one is labelled `destructive`. A column drop written without the COLUMN keyword, as MySQL allows, is labelled too. The scan is textual, so a drop named inside a string literal is labelled too. The label informs the operator; nothing is blocked and there is no flag to gate it.
+A statement that drops a table, drops a column, or truncates one is labelled `destructive`. A column drop written without the COLUMN keyword, as MySQL allows, is labelled too. The scan is textual, so a drop named inside a string literal is labelled too.
+
+The footer points at `rehearse` rather than `migrate` when a pending migration carries one of these labels, because `migrate` will refuse it until a rehearsal has proved it. With nothing destructive waiting, the footer reads `run: sustained migrate`.
 
 The drift section appears only when the config module names `models`. It reports every difference, drops included, while `migrate` never generates a drop. When drops are all that is left, the footer says so instead of offering `sustained migrate`. With no `models`, the plan says drift went unchecked rather than reporting none.
 
@@ -359,7 +362,7 @@ The drift section appears only when the config module names `models`. It reports
 
 ### Machine-readable output
 
-`status`, `validate`, and `plan` take `--json`, which prints one JSON object to stdout instead of the plain lines. Exit codes are the same either way.
+`status`, `validate`, `plan`, and `rehearse` take `--json`, which prints one JSON object to stdout instead of the plain lines. Exit codes are the same either way.
 
 ```console
 $ sustained plan --json
@@ -435,11 +438,72 @@ The `reversed` check compares tables and columns. Indexes, constraints, and colu
 
 `sustained rehearse` passes the config module's `models` when it names any, so the generated migration is rehearsed with the pending ones. It is never registered, and it rolls back with everything else.
 
-`rehearse --json` prints one object: `{"rehearsed": [...], "scratch": false, "ok": true}`. In each result, `landed` and `reversed` are `null` when the check did not run, `[]` when it passed, and the lines naming the trouble when it failed.
+`rehearse --json` prints one object: `{"rehearsed": [...], "scratch": false, "key": "...", "recorded": true, "ok": true}`. In each result, `landed` and `reversed` are `null` when the check did not run, `[]` when it passed, and the lines naming the trouble when it failed. `key` and `recorded` are the receipt, described next.
 
-The rehearsal creates the tracking table when the database has none, because it reads the applied rows before it opens its transaction. Nothing else survives: the tracking rows it writes roll back with everything else, and the migrations stay pending. A callable step that commits on its own is the exception, since that commit cannot be taken back.
+The rehearsal creates the tracking table when the database has none, because it reads the applied rows before it opens its transaction. It also creates the receipt table and writes one row there after the rollback, described below. Nothing else survives: the tracking rows the rehearsal writes roll back with everything else, and the migrations stay pending. A callable step that commits on its own is the exception, since that commit cannot be taken back.
 
 Only databases whose schema changes roll back can rehearse: SQLite, Postgres, and DuckDB. The rest are refused, and so is a connection in autocommit mode or one inside an open `transaction()` block, because none of them could take the changes back. The check reads the declared dialect. The default dialect passes it, since the generic compiler usually serves SQLite; a config that leaves the dialect unset while pointing at an engine like MySQL would rehearse for real, so declare the dialect or use a scratch database.
+
+### The receipt a rehearsal leaves
+
+A rehearsal that passes writes one row into a second table, `sustained_rehearsals`, created on first use like the tracking table. The row is the receipt: a key, whether the run passed, and when.
+
+`migrate` reads it. A run that would drop a table, drop a column, or truncate one stops unless a passing receipt covers it:
+
+```console
+$ sustained migrate
+error: This run removes data, and no rehearsal has proved these statements:
+  004_trim  ALTER TABLE users DROP COLUMN legacy
+Prove them first: sustained rehearse
+Or apply them without proof: sustained migrate --unrehearsed
+```
+
+Rehearse, and the same command goes through:
+
+```console
+$ sustained rehearse
+rehearsed 004_trim  up ok, down ok, reversed
+rollback complete, database unchanged
+receipt recorded
+
+$ sustained migrate
+applied  004_trim
+```
+
+A run that only adds is never gated and never reads the table.
+
+The key is a SHA-256 over two ordered lists: the checksums of the migrations already applied, and the checksums of the migrations about to run. So a receipt proves content, not names.
+
+- **Editing a migration voids its receipt.** The statements changed, so the key changed, and the gate closes again.
+- **A different history voids it too.** A rehearsal proves a set of statements against one starting schema. A database that has applied a different set of migrations gets its own key and its own rehearsal.
+
+Ids are not part of the key, only statements. A generated migration takes a new timestamped id every time the diff runs, and its receipt survives that. A model edit that leaves the generated SQL unchanged keeps the receipt too.
+
+`migrate --target` runs a shorter set, which has its own key. A rehearsal applied every one of those shorter sets on its way up and took them all back on the way down, so it records a receipt for each one that removes data. One rehearsal covers the whole run and every target within it.
+
+`--unrehearsed` is the override, named so a shell history records what was done. There is no config setting that turns the gate off.
+
+Two limits, both shared with the `destructive` labels in `plan`:
+
+- A callable step has no SQL to read, so it never triggers the gate. A callable that drops a table applies without a receipt.
+- The scan is textual. `DROP` inside a string literal counts.
+
+In Python the same rules apply through the API. `rehearse()` returns a `Rehearsal`, which is a list of results carrying `key`, `recorded`, and `ok`:
+
+```python
+rehearsal = migrator.rehearse()
+if rehearsal.ok:
+    migrator.up()                              # the receipt opens the gate
+migrator.up(unrehearsed=True)                  # or skip the proof
+
+migrator.rehearsed(rehearsal.key)              # True
+migrator.rehearsal_outcome(rehearsal.key)      # 'passed', 'failed', or None
+migrator.record_rehearsal(rehearsal.key)       # write one by hand
+```
+
+A failing rehearsal records its failure under the same key, so the refusal reads `The last rehearsal of these statements failed` rather than reporting no rehearsal at all.
+
+`AsyncMigrator` has the same three methods, the same flag on `up()`, and the same key function, so a receipt written by either migrator opens the gate for the other on the same database. The async rehearsal covers registered migrations only, so its receipt never includes a generated migration.
 
 ### Rehearsing on a scratch database
 
@@ -452,7 +516,19 @@ def get_rehearsal_connection():
 
 The scratch database is usually empty, so the whole history replays rather than what is pending on the real one, which proves the migrations run from nothing. The dialect check does not apply, the changes may survive the rollback, and the footer says so. The connection closes when the command ends. On an engine whose schema changes do not roll back, the rehearsed objects stay behind, so recreate the scratch database before the next rehearsal.
 
-In Python, `migrator.rehearse()` returns a list of `RehearsalResult(id, up_ok, down_ok, error, landed, reversed)`. `down_ok` is `None` when nothing was proved, and `error` then says why. `landed` and `reversed` follow the same rule as the JSON output: `None` not checked, `[]` proved, a list of lines when it failed. Pass `rehearse(models=[User, Show])` to rehearse the model diff too, and `rehearse(scratch=True)` for a connection to a database you can throw away. `AsyncMigrator.rehearse()` is the same on an adapter, apart from `models`: diffing models against a database is a synchronous path, so the async rehearsal covers registered migrations only.
+The receipt belongs on the database `migrate` will read, not on the throwaway one, so the CLI writes it there after the scratch run passes. The key is computed against the real database's history and pending set. It is written only when the scratch run applied every migration pending on the real database; otherwise the output says the receipt was not recorded. A scratch rehearsal cannot cover a generated migration, because the diff it runs against the throwaway schema is not the diff the real run will produce.
+
+Through the API, `rehearse(scratch=True)` writes nothing at all. Take the key off the result and record it yourself on a migrator bound to the real database:
+
+```python
+rehearsal = scratch_migrator.rehearse(scratch=True)
+if rehearsal.ok:
+    real_migrator.record_rehearsal(receipt_key(
+        real_migrator.applied_records(), real_migrator.pending()
+    ))
+```
+
+In Python, `migrator.rehearse()` returns a `Rehearsal`: a list of `RehearsalResult(id, up_ok, down_ok, error, landed, reversed)` with `key`, `recorded`, and `ok` on it. `down_ok` is `None` when nothing was proved, and `error` then says why. `landed` and `reversed` follow the same rule as the JSON output: `None` not checked, `[]` proved, a list of lines when it failed. Pass `rehearse(models=[User, Show])` to rehearse the model diff too, and `rehearse(scratch=True)` for a connection to a database you can throw away. `AsyncMigrator.rehearse()` is the same on an adapter, apart from `models`: diffing models against a database is a synchronous path, so the async rehearsal covers registered migrations only.
 
 ## Callbacks Around a Run
 

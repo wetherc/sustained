@@ -23,7 +23,7 @@ Guide: [Schema and Migrations](/schema#command-line).
 | `plan` | `--json` | Shows the pending migrations, the problems, and the model drift. |
 | `status` | `--json` | Shows every migration's state: applied, pending, or changed. |
 | `rehearse` | `--json` | Runs the pending migrations up and back down, then rolls it all back. |
-| `migrate` | `--target ID`, `--no-validate`, `--allow-out-of-order` | Applies pending migrations in order. |
+| `migrate` | `--target ID`, `--no-validate`, `--allow-out-of-order`, `--unrehearsed` | Applies pending migrations in order. |
 | `down` | `--steps N` (default 1) or `--to ID` | Reverts applied migrations, newest first. |
 | `validate` | `--json` | Checks the tracking table against the migrations. |
 | `repair` | | Fixes tracking rows after failures or intentional edits. |
@@ -51,6 +51,9 @@ waiting" should check stderr for an `error:` line.
 land, or when the schema did not come back. A migration with no down step is
 not a failure, so it exits 0.
 
+`migrate` exits 1 when the run would remove data and no passing rehearsal
+covers those statements. The message names them and both ways forward.
+
 `validate` exits 1 when problems exist, 0 otherwise. Exit codes are the same
 with and without `--json`.
 
@@ -66,6 +69,7 @@ with and without `--json`.
 | `models` | no | List of model classes | `None` |
 | `dialect` | no | A `Dialects` member, or its name: `'postgres'`, `'MSSQL'` | `Dialects.DEFAULT` |
 | `table` | no | Tracking table name | `'sustained_migrations'` |
+| `rehearsal_table` | no | Receipt table name | `'sustained_rehearsals'` |
 | `tracking_table_options` | no | `TableOptions` | `None` |
 | `get_rehearsal_connection` | no | `() -> Connection`, a scratch database | `None` |
 | `before_migrate` | no | `(connection) -> None` | not called |
@@ -115,6 +119,11 @@ second migrator on that connection and rehearses there instead. The dialect
 check does not apply, the changes may survive the rollback, and the footer
 says so. The scratch connection closes when the command ends.
 
+The receipt goes on the real database, not the scratch one, keyed against the
+real database's applied history and pending set. It is written only when the
+scratch run applied every migration pending there; otherwise the output says
+the receipt was not recorded.
+
 ## Output
 
 Plain text, one record per line, nothing coloured.
@@ -138,8 +147,11 @@ drift
   ALTER TABLE users ADD COLUMN bio TEXT
 
 2 pending migrations, 1 drift statement
-run: sustained migrate
+run: sustained rehearse
 ```
+
+The footer points at `rehearse` when a pending migration removes data, since
+`migrate` refuses those without a receipt, and at `migrate` otherwise.
 
 The drift section appears only when the config names `models`. It reports
 every difference, drops included, while `migrate` never generates a drop; a
@@ -152,8 +164,10 @@ rehearsed 003_sessions  up ok, down ok, reversed
 rehearsed 004_trim      up ok, down ok, reversed
 rehearsed vw_active     up ok, no down step (repeatable)
 rollback complete, database unchanged
+receipt recorded
 ```
 
+`receipt recorded` means the proof was written where `migrate` will read it.
 The words after the id are the proofs, in order: `up ok`, `landed` for the
 migration generated from the config's `models`, `down ok`, and `reversed`. A
 check that failed reads `not landed` or `not reversed`, with the objects listed
@@ -233,12 +247,16 @@ $ sustained rehearse --json
     }
   ],
   "scratch": false,
+  "key": "9c1f...",
+  "recorded": true,
   "ok": true
 }
 ```
 
 `landed` and `reversed` are `null` when the check did not run, `[]` when it
-passed, and the lines naming the trouble when it failed.
+passed, and the lines naming the trouble when it failed. `key` names the
+content the run covered; `recorded` says whether the receipt was written where
+`migrate` will read it.
 
 `status --json` prints `{"migrations": [{"id": ..., "state": ...}]}`.
 `validate --json` prints `{"ok": ..., "problems": [...]}`.

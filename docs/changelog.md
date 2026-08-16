@@ -10,6 +10,26 @@ Version numbers follow semantic versioning. A major version marks a change
 that can break working code. A minor version adds behaviour. A patch version
 fixes a defect without changing the surface.
 
+## 2.14.0 (2026-08-16)
+
+### Added
+
+- A passing rehearsal writes a receipt: one row in a new table, `sustained_rehearsals`, created on first use like the tracking table. The row is keyed by a SHA-256 over the checksums of the applied migrations the run started from and the checksums of the migrations it ran. A failing rehearsal records the failure under the same key.
+- `Migrator.up()` and `AsyncMigrator.up()` refuse to apply a statement that removes data, meaning a DROP TABLE, a column drop, or a TRUNCATE, unless a passing receipt covers that exact set. The error names the migration and the statement. `up(unrehearsed=True)` applies them anyway, and `sustained migrate --unrehearsed` is the same door from the shell. A run that only adds is never gated and never reads the table.
+- A rehearsal also records a receipt for each shorter run a `--target` would produce that removes data, since it applied and reverted those on its way through. One rehearsal covers the whole run and every target within it.
+- `RehearsalRequired`, in `sustained.exceptions` and re-exported at the package root, is what the refusal raises.
+- `record_rehearsal(key, outcome)`, `rehearsal_outcome(key)`, and `rehearsed(key)` on both migrators, and `receipt_key(applied, run)` in `sustained.migrations`, for recording and reading a receipt directly.
+- `rehearse --json` gains `key` and `recorded`, and the plain report prints `receipt recorded` when the proof lands.
+- The `Migrator` and `AsyncMigrator` constructors take `rehearsal_table`, and the CLI config module takes the same name.
+
+### Changed
+
+- `rehearse()` returns a `Rehearsal` rather than a plain list. It subclasses `list`, so iterating and indexing are unchanged, and it carries `key`, `recorded`, and `ok`.
+- `rehearse(scratch=True)` records nothing through the API, since a receipt belongs on the database the next run will read rather than on a throwaway one. The key comes back on the result. The CLI writes it on the real database after a passing scratch run, keyed against that database's applied history and pending set, and only when the scratch run applied every migration pending there.
+- `sustained plan` prints `run: sustained rehearse` instead of `run: sustained migrate` when a pending migration removes data, since migrate would refuse it.
+- Both Sustained tables are excluded from every diff against the models, so the new one never reads as drift or as an object a down step left behind.
+- `rehearsal_failed(result)` moved from `sustained.cli` to `sustained.migrations`, so the rule that decides whether a rehearsal passed lives with the API.
+
 ## 2.13.0 (2026-08-16)
 
 ### Added

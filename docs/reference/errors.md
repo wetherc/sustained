@@ -11,7 +11,8 @@ Every exception Sustained raises, and the condition behind it.
 Exception
 ├── SustainedError              sustained.exceptions
 │   ├── DialectError
-│   └── MigrationError
+│   ├── MigrationError
+│   └── RehearsalRequired
 ├── RuntimeError
 │   └── PoolTimeout             sustained.pool
 ├── ValueError
@@ -19,7 +20,7 @@ Exception
 └── AttributeError
 ```
 
-`SustainedError` is the base for the two errors Sustained defines itself.
+`SustainedError` is the base for the three errors Sustained defines itself.
 `PoolTimeout` sits outside that tree, on `RuntimeError`, so an
 `except RuntimeError` around connection handling catches it.
 
@@ -62,6 +63,28 @@ The four problems:
 | An applied id is not registered with this migrator | Register it, or you are pointing at the wrong migration set |
 | A checksum no longer matches | Restore the migration, or `repair()` to accept the new contents |
 | A pending migration is ordered before an applied one | `up(allow_out_of_order=True)` |
+
+## `RehearsalRequired`
+
+A run would apply SQL that removes data, and no passing rehearsal covers that
+exact set of statements.
+
+Raised by `Migrator.up()` and `AsyncMigrator.up()` before any statement runs.
+The message names the migration and the statement, then both ways forward:
+
+```
+This run removes data, and no rehearsal has proved these statements:
+  004_trim  ALTER TABLE users DROP COLUMN legacy
+Prove them first: sustained rehearse
+Or apply them without proof: sustained migrate --unrehearsed
+```
+
+When a rehearsal of the same content ran and failed, the first line reads
+`The last rehearsal of these statements failed` instead.
+
+`up(unrehearsed=True)` waives the check. A run that only adds never triggers
+it, and neither does a callable step, which renders no SQL to scan. See
+[The receipt a rehearsal leaves](/schema#the-receipt-a-rehearsal-leaves).
 
 ## `PoolTimeout`
 

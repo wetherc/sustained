@@ -33,7 +33,8 @@ step, or when a repeatable has a callable step and no explicit `checksum`.
 
 ```python
 Migrator(connection, migrations, table='sustained_migrations',
-         dialect=Dialects.DEFAULT, tracking_table_options=None)
+         dialect=Dialects.DEFAULT, tracking_table_options=None,
+         rehearsal_table='sustained_rehearsals')
 ```
 
 Applies and reverts migrations, records them in a tracking table, and runs
@@ -55,13 +56,14 @@ Property: `connection`.
 
 | Signature | Returns | Description |
 | --- | --- | --- |
-| `up(target=None, validate=True, allow_out_of_order=False, models=None, ...)` | `list[str]` | Validates, then applies pending migrations in order. `target` stops after that id and skips the repeatables. With `models`, the diff against them runs after the versioned migrations and before the repeatables; it cannot be combined with `target`. The remaining options are the diff options below. |
+| `up(target=None, validate=True, allow_out_of_order=False, models=None, unrehearsed=False, ...)` | `list[str]` | Validates, then applies pending migrations in order. `target` stops after that id and skips the repeatables. With `models`, the diff against them runs after the versioned migrations and before the repeatables; it cannot be combined with `target`. `unrehearsed=True` waives the receipt gate below. The remaining options are the diff options below. |
 | `down(steps=1)` | `list[str]` | Reverts newest-first. Never touches repeatables. |
 | `down_to(target)` | `list[str]` | Reverts until `target` is the newest applied. |
 | `baseline(target)` | `list[str]` | Records migrations up to and including `target` as applied, without running them. Also records every repeatable at its current checksum. |
 
-`up` raises `MigrationError` when validation finds problems, and `ValueError`
-for an unknown target or a target naming a repeatable. `down` and `down_to`
+`up` raises `MigrationError` when validation finds problems, `RehearsalRequired`
+when the run would remove data and no passing receipt covers it, and
+`ValueError` for an unknown target or a target naming a repeatable. `down` and `down_to`
 raise `ValueError` when an applied migration is not registered, or has no down
 step.
 
@@ -115,13 +117,13 @@ tracking table is always excluded.
 ### Rehearsing
 
 ```python
-rehearse(scratch=False, models=None, ...) -> list[RehearsalResult]
+rehearse(scratch=False, models=None, ...) -> Rehearsal
 ```
 
 Applies every pending migration, runs the down steps back down, and rolls the
-whole thing back. Returns `[]` when nothing is pending. With `models`, the
-migration generated from them joins the run without being registered, and the
-remaining arguments are the diff options above.
+whole thing back. Returns an empty `Rehearsal` when nothing is pending. With
+`models`, the migration generated from them joins the run without being
+registered, and the remaining arguments are the diff options above.
 
 The schema is read before the run and again after the down sweep, so a down
 step that runs without taking its change back is reported. Tables and columns
@@ -138,6 +140,32 @@ Refuses, with `ValueError`, when:
 
 The check reads the declared dialect, not the engine. A config that leaves the
 dialect unset while pointing at, say, MySQL would rehearse for real.
+
+### Receipts
+
+| Signature | Returns | Description |
+| --- | --- | --- |
+| `record_rehearsal(key, outcome='passed')` | `None` | Writes the receipt for one key, replacing any earlier row. `outcome` is `'passed'` or `'failed'`; anything else raises `ValueError`. |
+| `rehearsal_outcome(key)` | `str` or `None` | What the recorded rehearsal proved, or `None` when none covers the key. |
+| `rehearsed(key)` | `bool` | Whether a passing rehearsal covers the key. |
+
+A passing `rehearse()` records its own receipt and returns the key on the
+result. It also records one for each shorter run a `target` would produce that
+removes data, since the rehearsal applied and reverted those on its way
+through. `rehearse(scratch=True)` records nothing, because the receipt belongs
+on the database the next run will read; record it there yourself.
+
+`up()` reads a receipt before it applies any statement that removes data, and
+raises `RehearsalRequired` when none covers the content. A callable step
+renders no SQL, so it never triggers the check.
+
+```python
+receipt_key(applied, run) -> str
+```
+
+The key both sides compute: a SHA-256 over the checksums of the successful
+rows in `applied`, then the checksums of the migrations in `run`. Ids are
+hashed only for a callable step with no checksum, as the token `id:<id>`.
 
 ### Rendering without running
 
@@ -162,6 +190,20 @@ proved, and `error` then says why: `no down step`, `no down step (repeatable)`,
 passed, and a list of readable lines when it failed. `landed` is filled for the
 generated migration only; `reversed` for every migration whose down step ran.
 
+`Rehearsal` is what `rehearse()` returns: a `list` of those results, so it
+iterates and indexes like one, with three additions.
+
+| Attribute | Type | Meaning |
+| --- | --- | --- |
+| `key` | `str` | The receipt key for the set the rehearsal ran. |
+| `recorded` | `bool` | Whether the receipt was written. `False` after `scratch=True`. |
+| `ok` | `bool` | Whether every result passed. |
+
+`rehearsal_failed(result)` is the module function behind `ok`: a result fails
+when its up step raised, its down step failed, the models did not land, or the
+schema did not come back. A down step that could not be proved is not a
+failure.
+
 ## The tracking table
 
 Seven columns, named by default `sustained_migrations`:
@@ -180,6 +222,19 @@ On Athena the same six columns are all plain and nullable, because Athena
 enforces no constraints. Tracking tables written by earlier versions, holding
 only `id` and `applied_at`, upgrade in place on first use.
 
+## The receipt table
+
+Three columns, named by default `sustained_rehearsals`, created on first use:
+
+| Column | Type | Holds |
+| --- | --- | --- |
+| `rehearsal_key` | `VARCHAR(64)` primary key | The key `receipt_key()` computes |
+| `outcome` | `VARCHAR(16)` not null | `passed` or `failed` |
+| `rehearsed_at` | `TEXT` not null | When the rehearsal ran |
+
+Both tables are excluded from every diff against the models, so neither reads
+as drift or as an object a down step left behind.
+
 ## Module functions
 
 | Signature | Returns | Description |
@@ -187,6 +242,8 @@ only `id` and `applied_at`, upgrade in place on first use.
 | `migration_checksum(migration)` | `str` or `None` | The checksum validation compares. `None` for a callable step with no explicit checksum. |
 | `create_table_migration(model)` | `Migration` | A create/drop pair derived from a model. |
 | `migration_sql(migration, direction='up')` | `list[str]` | One migration's statements, for offline review. A callable step renders as a comment. Raises `ValueError` when that step is `None`. |
+| `receipt_key(applied, run)` | `str` | The key a receipt is stored under. |
+| `rehearsal_failed(result)` | `bool` | Whether one result stops a rehearsal from passing. |
 
 ## `AsyncMigrator`
 
@@ -194,7 +251,8 @@ In `sustained.aio_migrations`.
 
 ```python
 AsyncMigrator(adapter, migrations, table='sustained_migrations',
-              dialect=Dialects.DEFAULT, tracking_table_options=None)
+              dialect=Dialects.DEFAULT, tracking_table_options=None,
+              rehearsal_table='sustained_rehearsals')
 ```
 
 The same runner on an `AsyncAdapter`. Same tracking table, same `Migration`
@@ -202,7 +260,10 @@ objects, same validation rules and refusal messages. Property: `adapter`.
 
 Every method is a coroutine: `applied_records`, `applied`, `pending`,
 `status`, `statuses`, `validate`, `repair`, `baseline`, `up`, `rehearse`,
-`down`, `down_to`.
+`down`, `down_to`, `record_rehearsal`, `rehearsal_outcome`, `rehearsed`.
+
+Both migrators compute the key the same way, so a receipt written by one
+opens the gate for the other on the same database.
 
 Three methods are absent: **`plan()`, `drift()`, and `script()`**. There is no
 async autogeneration and no async offline rendering, so `rehearse()` takes no
