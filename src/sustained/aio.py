@@ -201,7 +201,9 @@ _pinned_adapter: ContextVar[Optional[AsyncAdapter]] = ContextVar(
     "sustained_pinned_adapter", default=None
 )
 # Adapters with an open transaction; arun() skips per-statement commits.
-_active_async_transactions: Dict[int, AsyncAdapter] = {}
+# The value holds a strong reference to the adapter, so the id cannot be
+# reused while the entry exists, plus the current savepoint nesting depth.
+_active_async_transactions: Dict[int, Tuple[AsyncAdapter, int]] = {}
 
 
 def resolve_adapter(
@@ -224,7 +226,8 @@ def resolve_adapter(
 
 def in_async_transaction(adapter: AsyncAdapter) -> bool:
     """Reports whether the adapter has an open async_transaction() block."""
-    return _active_async_transactions.get(id(adapter)) is adapter
+    entry = _active_async_transactions.get(id(adapter))
+    return entry is not None and entry[0] is adapter
 
 
 @asynccontextmanager
@@ -232,15 +235,33 @@ async def async_transaction(adapter: AsyncAdapter) -> AsyncIterator[AsyncAdapter
     """
     Runs the block atomically on the adapter: commit on success, rollback
     on exception. The adapter pins to the current task context, so arun()
-    calls inside the block use it without passing it around. Savepoint
-    nesting is not supported; nested blocks raise.
+    calls inside the block use it without passing it around.
+
+    Nested blocks on the same adapter use ANSI savepoints, so an inner
+    failure rolls back only the inner block.
     """
-    if in_async_transaction(adapter):
-        raise RuntimeError(
-            "async_transaction() does not support nesting on one adapter."
-        )
     key = id(adapter)
-    _active_async_transactions[key] = adapter
+    entry = _active_async_transactions.get(key)
+
+    if entry is not None and entry[0] is adapter:
+        depth = entry[1] + 1
+        _active_async_transactions[key] = (adapter, depth)
+        savepoint = f"sustained_sp_{depth}"
+        token = _pinned_adapter.set(adapter)
+        try:
+            await adapter.execute(f"SAVEPOINT {savepoint}", ())
+            try:
+                yield adapter
+            except BaseException:
+                await adapter.execute(f"ROLLBACK TO SAVEPOINT {savepoint}", ())
+                raise
+            await adapter.execute(f"RELEASE SAVEPOINT {savepoint}", ())
+        finally:
+            _pinned_adapter.reset(token)
+            _active_async_transactions[key] = (adapter, depth - 1)
+        return
+
+    _active_async_transactions[key] = (adapter, 0)
     token = _pinned_adapter.set(adapter)
     try:
         # Explicit statements rather than adapter.commit(), because drivers

@@ -123,7 +123,7 @@ which driver is underneath.
 
 | Signature | Description |
 | --- | --- |
-| `async_transaction(adapter)` | An async context manager issuing `BEGIN`, `COMMIT`, and `ROLLBACK`. Raises `RuntimeError` on nesting: there are no savepoints. |
+| `async_transaction(adapter)` | An async context manager issuing `BEGIN`, `COMMIT`, and `ROLLBACK`. Nested blocks on one adapter use `SAVEPOINT sustained_sp_<depth>`. |
 | `in_async_transaction(adapter)` | Whether one is open. |
 | `resolve_adapter(explicit, model_class)` | Resolves argument, then the open transaction, then `Model.bind_async()`. Raises `RuntimeError` with none. |
 | `await run_async(query, adapter=None)` | What `arun()` calls. |
@@ -133,7 +133,7 @@ The transaction pin lives in a `ContextVar`, so it follows the task tree
 rather than the thread.
 
 Async eager loading shares the sync planner, so it covers dotted paths and
-`through` relations. One gap remains: async transactions do not nest.
+`through` relations.
 
 ## Rendering
 

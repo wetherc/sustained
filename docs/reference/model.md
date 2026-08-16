@@ -68,7 +68,7 @@ starts with `_`, or when `columns` is declared and the name is not in it.
 | `Model.bind_async(adapter)` | Attaches an `AsyncAdapter`. |
 | `Model.unbind_async()` | Removes it. |
 | `Model.transaction(connection=None)` | A context that commits on success and rolls back on any exception. Nested blocks use savepoints. Raises `RuntimeError` when no connection resolves. |
-| `Model.async_transaction(adapter=None)` | The async equivalent. Does not nest: a second block raises `RuntimeError`. |
+| `Model.async_transaction(adapter=None)` | The async equivalent. Nested blocks use savepoints. |
 
 The connection's parameter style must match the dialect's placeholder. See
 [Dialect support](/reference/dialects).

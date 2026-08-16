@@ -756,9 +756,9 @@ shows = await Show.query().where('sold_out', '=', True).arun()
 ```
 
 `DbApiAsyncAdapter` runs a synchronous driver in a worker thread.
-`AiosqliteAdapter` and `AsyncpgAdapter` use their native drivers instead. Two
-gaps to know: async transactions do not nest, and async eager loading of
-`through` relations raises `NotImplementedError`.
+`AiosqliteAdapter` and `AsyncpgAdapter` use their native drivers instead. The
+async path matches the sync one: eager loading covers dotted paths and
+`through` relations, and nested transactions use savepoints.
 
 ## Take the SQL and run it yourself
 

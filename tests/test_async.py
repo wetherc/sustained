@@ -81,6 +81,18 @@ class AioTagged(Model):
     }
 
 
+class RecordingAdapter(DbApiAsyncAdapter):
+    """Keeps the SQL text of every statement, for transaction-control tests."""
+
+    def __init__(self, connection):
+        super().__init__(connection)
+        self.statements = []
+
+    async def execute(self, sql, params):
+        self.statements.append(sql)
+        return await super().execute(sql, params)
+
+
 class AsyncTestCase(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.conn = sqlite3.connect(":memory:", check_same_thread=False)
@@ -171,11 +183,59 @@ class TestAsyncTransactions(AsyncTestCase):
         owners = await AioOwner.query().arun()
         self.assertEqual(owners, [])
 
-    async def test_nesting_rejected(self):
+    async def test_nested_block_commits_with_the_outer_one(self):
         async with AioOwner.async_transaction():
+            await AioOwner.query().insert({"id": 1, "name": "Ada"}).arun()
+            async with AioOwner.async_transaction():
+                await AioOwner.query().insert({"id": 2, "name": "Grace"}).arun()
+        owners = await AioOwner.query().orderBy("id").arun()
+        self.assertEqual([o.name for o in owners], ["Ada", "Grace"])
+
+    async def test_inner_failure_rolls_back_only_the_inner_block(self):
+        async with AioOwner.async_transaction():
+            await AioOwner.query().insert({"id": 1, "name": "Ada"}).arun()
             with self.assertRaises(RuntimeError):
                 async with AioOwner.async_transaction():
+                    await AioOwner.query().insert({"id": 2, "name": "Grace"}).arun()
+                    raise RuntimeError("boom")
+        owners = await AioOwner.query().arun()
+        self.assertEqual([o.name for o in owners], ["Ada"])
+
+    async def test_outer_failure_rolls_back_a_released_inner_block(self):
+        with self.assertRaises(RuntimeError):
+            async with AioOwner.async_transaction():
+                async with AioOwner.async_transaction():
+                    await AioOwner.query().insert({"id": 1, "name": "Ada"}).arun()
+                raise RuntimeError("boom")
+        owners = await AioOwner.query().arun()
+        self.assertEqual(owners, [])
+
+    async def test_savepoint_names_follow_the_nesting_depth(self):
+        spy = RecordingAdapter(self.conn)
+        async with async_transaction(spy):
+            async with async_transaction(spy):
+                async with async_transaction(spy):
                     pass
+        self.assertEqual(
+            spy.statements,
+            [
+                "BEGIN",
+                "SAVEPOINT sustained_sp_1",
+                "SAVEPOINT sustained_sp_2",
+                "RELEASE SAVEPOINT sustained_sp_2",
+                "RELEASE SAVEPOINT sustained_sp_1",
+                "COMMIT",
+            ],
+        )
+
+    async def test_depth_resets_so_a_later_block_reuses_the_first_name(self):
+        spy = RecordingAdapter(self.conn)
+        async with async_transaction(spy):
+            async with async_transaction(spy):
+                pass
+            async with async_transaction(spy):
+                pass
+        self.assertEqual(spy.statements.count("SAVEPOINT sustained_sp_1"), 2)
 
     async def test_pinned_adapter_used_inside_block(self):
         AioOwner.unbind_async()

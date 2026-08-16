@@ -309,8 +309,8 @@ async with Show.async_transaction():
 `arun()` mirrors `run()`: hydration, RETURNING rows, batched multi-row
 inserts, and eager loading. Both paths share the same loader, so dotted paths,
 per-level batching, and relations through a link table behave the same way.
-One limit is worth knowing before you build on it: async transactions do not
-nest, so there is no savepoint equivalent.
+`async_transaction()` mirrors `transaction()` as well: nested blocks open a
+savepoint, so an inner failure rolls back only the inner block.
 
 ## Watching what runs
 

@@ -235,8 +235,8 @@ class Model(metaclass=ModelMeta):
         """
         Opens an async transaction context on the bound adapter, or the one
         passed in. Statements inside the block share one transaction that
-        commits on success and rolls back on an exception. Nesting is not
-        supported.
+        commits on success and rolls back on an exception. Nested blocks
+        use savepoints, so an inner failure rolls back only the inner block.
         """
         from sustained.aio import async_transaction
 
