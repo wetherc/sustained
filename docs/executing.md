@@ -124,8 +124,42 @@ never reads a row count as a list of models. `isinstance(query, WriteBuilder)`
 is true for any builder, so do not test with it.
 
 What is not typed is the columns. A `select()` does not narrow the model, and
-`to_dicts()` values stay `Any`, because Python has no way to read the shape of
-a row back out of the SQL string.
+`to_dicts()` values stay `RowValue`, which is `Any`, because Python has no way
+to read the shape of a row back out of the SQL string.
+
+### Names for what you pass in
+
+Five names cover the untyped edges of the library. Import them from
+`sustained`:
+
+```python
+from sustained import Binding, Connection, Cursor, RowValue, SqlValue
+```
+
+`Connection` and `Cursor` describe the DB-API 2.0 methods Sustained calls.
+They are protocols, so a `sqlite3.Connection`, a `psycopg` connection, and a
+`pyodbc` connection all match without subclassing anything. Annotate a config
+module's factory with `Connection` and a checker holds you to a real driver:
+
+```python
+# sustained_config.py
+import sqlite3
+
+from sustained import Connection
+
+def get_connection() -> Connection:
+    return sqlite3.connect('app.db')
+```
+
+`Binding` is what `Model.bind()` takes and what every `connection=` argument
+accepts: one `Connection`, or a `ConnectionPool` that hands them out.
+
+The last two split values by direction. `SqlValue` is a value on its way into
+the database, bound as a parameter or rendered as a literal. It is `object`,
+not `Any`, so passing a query value where a column name belongs is still an
+error. `RowValue` is a value read back, and it stays `Any`: the driver decides
+whether a `NUMERIC` arrives as `Decimal` or `float`, and making you cast every
+row value would buy nothing.
 
 ## Writing rows
 

@@ -19,6 +19,22 @@ Every execution method resolves a connection in the same order:
 With none of the three, `RuntimeError`. A `ConnectionPool` found at step 1 or
 3 is checked out for the duration of the statement and released after.
 
+## Connection types
+
+In `sustained.types`, re-exported from `sustained`.
+
+| Name | What it is |
+| --- | --- |
+| `Connection` | Protocol: `cursor()`, `commit()`, `rollback()`, `close()`. |
+| `Cursor` | Protocol: `execute()`, `executemany()`, `fetchone()`, `fetchall()`, `close()`, plus `description` and `rowcount`. |
+| `Binding` | `Union[Connection, ConnectionPool]`. What `bind()` and every `connection=` argument take. |
+| `SqlValue` | A value going into the database. Alias for `object`. |
+| `RowValue` | A value read back out. Alias for `Any`. |
+
+The two protocols list only the methods Sustained calls, so a driver
+connection matches by having them. Nothing subclasses them, and nothing
+registers with them.
+
 ## Transactions
 
 In `sustained.execution`. Reach these through `Model.transaction()` rather

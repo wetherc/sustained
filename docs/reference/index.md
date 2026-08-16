@@ -32,6 +32,7 @@ from sustained import Model, QueryBuilder, create_model, col
 from sustained import Column, ColumnExpr, Literal, Func, Predicate
 from sustained import AggregateExpression, WindowExpression, CaseExpression
 from sustained import RelationType, RelationMapping, Join
+from sustained import Connection, Cursor, Binding, SqlValue, RowValue
 from sustained import DialectError, GuardBlocked, MigrationError, RehearsalRequired
 
 # from submodules

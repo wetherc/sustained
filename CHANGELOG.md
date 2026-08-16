@@ -1,5 +1,23 @@
 # Changelog
 
+## 2.16.1 (2026-08-16)
+
+### Added
+
+- `Connection` and `Cursor` in `sustained.types`, re-exported from `sustained`. They are protocols listing the DB-API 2.0 methods Sustained calls, so a `sqlite3`, `psycopg`, or `pyodbc` connection matches by having those methods. Annotating a config module's `get_connection()` with `Connection` now checks.
+- `Binding`, the `Union[Connection, ConnectionPool]` that `Model.bind()` and every `connection=` argument take.
+- `SqlValue` and `RowValue`, splitting database values by direction. `SqlValue` is a value going in and is an alias for `object`, so a value passed where a column name belongs is an error. `RowValue` is a value read back and stays `Any`, because the driver decides the Python type.
+- `ColumnDescription` and `RelationTree` in `sustained.types`, and `JsonValue` in `sustained.cli`.
+- `AsyncpgConnection`, `AsyncpgRecord`, `AiosqliteConnection`, and `AiosqliteCursor` protocols in `sustained.aio`, describing what each shipped adapter calls on its driver.
+
+### Changed
+
+- Roughly 180 `Any` annotations across the package were replaced with the types above, with model, schema, and introspection types where those apply: `Model.tableColumns` is a `Dict[str, ColumnDef]`, `Model.indexes` a `List[Index]`, `Model.tableOptions` a `TableOptions`, the compilers take a `ColumnDef`, and the CLI takes a `ModuleType` for its config module. The `Any` annotations that remain each carry a comment giving the reason.
+- Migration callbacks and callable migration steps are typed `Callable[[CallbackTarget], CallbackResult]`, where `CallbackTarget` is the connection for `Migrator` and the adapter for `AsyncMigrator`. A callable step may now return an awaitable on the async path, which `AsyncMigrator` already awaited.
+- `ColumnExpr.in_()` and `not_in()` accept any sequence of values, not only a `list`. A tuple used to fall through to the subquery branch and fail.
+- `ConnectionPool` closes connections by calling `close()` rather than probing for the attribute first. The DB-API requires the method.
+- The builder stubs declare `render()`, `has_clauses()`, the `compiler` argument, and the method maps that `QueryBuilder` reaches for, so a checker pointed at `builder.py` sees the same surface the runtime has.
+
 ## 2.16.0 (2026-08-16)
 
 ### Added
