@@ -30,6 +30,13 @@ repos:
 
   - repo: local
     hooks:
+      - id: sync-changelog
+        name: Check the docs changelog matches CHANGELOG.md
+        entry: python3 sync_changelog.py --check
+        language: system
+        files: ^(CHANGELOG\.md|docs/changelog\.md|sync_changelog\.py)$
+        pass_filenames: false
+
       - id: unit-tests
         name: Run unit tests with coverage
         entry: >
