@@ -591,7 +591,7 @@ Every one is a factory, so they all read the same at the call site. `no_table_re
 
 Guards read every SQL statement the run would apply: SQL file migrations, Python migrations with string steps, and the diff against your models. A callable step renders no SQL, so guards cannot see inside it, the same limit the destructive labels carry.
 
-`migrate` checks twice. The registered migrations are checked before anything runs. The diff against the models cannot be generated until those have run, so its statements are checked the moment they exist, together with the ones already applied, so a rule about the whole run counts the whole run. A warning already printed is not printed again.
+`migrate` checks twice. The registered migrations are checked before anything runs. The diff against the models cannot be generated until those have run, so its statements are checked the moment they exist, alongside the registered statements from the same run, so a rule about the whole run counts the whole run. A warning already printed is not printed again.
 
 `rehearse` does not enforce guards. It runs against a database it is about to roll back, and stopping it there would stop you from testing the statement you are trying to fix.
 

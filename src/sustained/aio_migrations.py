@@ -570,6 +570,10 @@ class AsyncMigrator:
         blocking verdict raises GuardBlocked and nothing is applied; a
         warning prints on stderr. The migrator's callbacks fire around
         the run, and each is awaited when it returns an awaitable.
+
+        There is no models argument here. Diffing models against a
+        database is a synchronous path, so this run covers the
+        registered migrations only.
         """
         callbacks = self._callbacks
         await self._fire(callbacks.before_migrate, self._adapter)
