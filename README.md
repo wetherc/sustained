@@ -35,7 +35,7 @@ adults = User.query().where(User.c.age >= 18).orderBy('name').run()
 - **Safe execution**: every statement runs parameterized. Transactions nest through savepoints. `update()` and `delete()` refuse to run without a WHERE clause.
 - **Writes**: `insert()`, `update()`, `delete()`, upserts with `onConflict()`, `INSERT ... SELECT`, CTAS, and RETURNING.
 - **Typed filters**: `User.query().where((User.c.age > 21) & User.c.name.like('A%'))`.
-- **Results as** model instances, dicts, pandas DataFrames, or pyarrow Tables, with `withGraphFetched()` eager loading.
+- **Results as** model instances, dicts, pandas DataFrames, or pyarrow Tables, with `withGraphFetched()` eager loading. The builder carries its model, so `Show.query().run()` types as `List[Show]`.
 - **Async**: the same queries run through driver adapters (`asyncpg`, `aiosqlite`, or any sync driver in a worker thread) with `await query.arun()`, including an `AsyncMigrator`.
 
 ## What it does not do

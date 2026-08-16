@@ -92,6 +92,41 @@ forms:
 pandas and pyarrow are optional dependencies. The methods raise `RuntimeError`
 naming the install command when the library is missing.
 
+### What a type checker sees
+
+The builder carries the model with it. `Show.query()` is a
+`QueryBuilder[Show]`, and the model survives every clause you chain, so
+mypy and Pyright read the results without a cast or an annotation:
+
+```python
+shows = Show.query().where('sold_out', '=', False).orderBy('starts_at').run()
+# shows: List[Show]
+
+show = Show.query().first()
+# show: Optional[Show]
+
+rows = Show.query().to_dicts()
+# rows: List[Dict[str, Any]]
+```
+
+A write is a different statement, and it returns a different thing.
+`insert()`, `insert_from()`, `create_table_as()`, `update()`, and
+`delete()` hand back a `WriteBuilder[Show]`, whose `run()` is the affected
+row count, or the RETURNING rows as dicts:
+
+```python
+removed = Show.query().delete().where('starts_at', '<', cutoff).run()
+# removed: Union[int, List[Dict[str, Any]]]
+```
+
+Both names are one class at run time. The split is only there so a checker
+never reads a row count as a list of models. `isinstance(query, WriteBuilder)`
+is true for any builder, so do not test with it.
+
+What is not typed is the columns. A `select()` does not narrow the model, and
+`to_dicts()` values stay `Any`, because Python has no way to read the shape of
+a row back out of the SQL string.
+
 ## Writing rows
 
 `insert()`, `update()`, and `delete()` turn the builder into a write
