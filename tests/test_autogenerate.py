@@ -165,21 +165,44 @@ class TestAutogenerate(AutogenTestCase):
 
 
 class TestMigratorSync(AutogenTestCase):
-    def test_sync_creates_and_is_idempotent(self):
+    def test_up_with_models_creates_and_is_idempotent(self):
         migrator = Migrator(self.conn, [])
-        applied = migrator.sync([self.User])
+        applied = migrator.up(models=[self.User])
         self.assertEqual(len(applied), 1)
         self.assertTrue(diff_schema(self.conn, [self.User]).is_empty())
-        self.assertEqual(migrator.sync([self.User]), [])
+        self.assertEqual(migrator.up(models=[self.User]), [])
 
-    def test_sync_then_down_rolls_back(self):
+    def test_up_with_models_then_down_rolls_back(self):
         migrator = Migrator(self.conn, [])
-        migrator.sync([self.User])
+        migrator.up(models=[self.User])
         self.User.tableColumns["bio"] = Text()
-        migrator.sync([self.User])
+        migrator.up(models=[self.User])
         migrator.down()
         columns = introspect_schema(self.conn)["ag_users"]
         self.assertNotIn("bio", columns)
+
+    def test_up_rejects_models_with_a_target(self):
+        migrator = Migrator(self.conn, [])
+        with self.assertRaises(ValueError) as caught:
+            migrator.up(models=[self.User], target="whatever")
+        self.assertIn("always runs last", str(caught.exception))
+
+    def test_up_with_models_applies_registered_migrations_too(self):
+        migrator = Migrator(
+            self.conn,
+            [Migration("hand", up="CREATE TABLE hand_written (id INTEGER)")],
+        )
+        applied = migrator.up(models=[self.User])
+        self.assertEqual(applied[0], "hand")
+        self.assertEqual(len(applied), 2)
+
+    def test_sync_still_works_and_warns(self):
+        migrator = Migrator(self.conn, [])
+        with self.assertWarns(DeprecationWarning) as caught:
+            applied = migrator.sync([self.User])
+        self.assertEqual(len(applied), 1)
+        self.assertIn("up(models=[...])", str(caught.warning))
+        self.assertTrue(diff_schema(self.conn, [self.User]).is_empty())
 
     def test_down_to_target(self):
         migrator = Migrator(

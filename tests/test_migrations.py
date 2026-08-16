@@ -476,7 +476,7 @@ class TestPlan(MigrationTestCase):
 
     def test_plan_returns_none_when_schema_is_current(self):
         migrator = Migrator(self.conn, [])
-        migrator.sync([MigUser])
+        migrator.up(models=[MigUser])
         self.assertIsNone(migrator.plan([MigUser]))
 
 

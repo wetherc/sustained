@@ -367,7 +367,7 @@ class TestAthenaMigrator(unittest.TestCase):
         )
         conn = FakeAthenaConnection([("ath_events", "id", "integer", "YES", None)])
         migrator = self._migrator(conn, [])
-        applied = migrator.sync([model], migration_id="add_note")
+        applied = migrator.up(models=[model], migration_id="add_note")
         self.assertEqual(applied, ["add_note"])
         adds = [s for s in conn.log if "ADD COLUMNS" in s]
         self.assertEqual(adds, ['ALTER TABLE "ath_events" ADD COLUMNS ("note" STRING)'])

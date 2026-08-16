@@ -14,13 +14,14 @@ the id and the timestamp, are upgraded in place on first use.
 
 Migrations are written by hand, generated from a model with
 create_table_migration(), or produced by schema diffing through
-sustained.autogenerate and Migrator.sync().
+sustained.autogenerate and Migrator.up(models=[...]).
 """
 
 from __future__ import annotations
 
 import hashlib
 import time
+import warnings
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import (
@@ -734,6 +735,13 @@ class Migrator:
         target: Optional[str] = None,
         validate: bool = True,
         allow_out_of_order: bool = False,
+        models: Optional[List[Type["Model"]]] = None,
+        allow_drops: bool = False,
+        ignore_changed_columns: bool = False,
+        migration_id: Optional[str] = None,
+        renames: Optional[dict[str, str]] = None,
+        table_renames: Optional[dict[str, str]] = None,
+        type_casts: Optional[dict[str, str]] = None,
     ) -> List[str]:
         """
         Applies pending migrations in order, stopping after the target id
@@ -750,26 +758,62 @@ class Migrator:
         repeatable may depend on a versioned migration past the target,
         and the next full up() runs it. The target must name a versioned
         migration.
+
+        With models, the run first diffs them against the database and
+        registers the generated migration, which then applies last with
+        everything else pending. Additive changes generate reversible
+        steps, so down() takes them back. Drops need allow_drops=True and
+        do not reverse. A generated migration always sorts last, so it
+        cannot be combined with a target, and the remaining arguments are
+        the diff options plan() takes.
         """
         from sustained.exceptions import MigrationError
 
-        migrations = self._versioned()
-        if target is not None:
-            ids = [m.id for m in migrations]
-            if target not in ids:
-                if any(m.id == target for m in self._repeatables()):
-                    raise ValueError(
-                        f"Migration target {target!r} is repeatable; a "
-                        "target must name a versioned migration."
-                    )
-                raise ValueError(f"Unknown migration target: {target!r}.")
-            migrations = migrations[: ids.index(target) + 1]
+        if models is not None and target is not None:
+            raise ValueError(
+                "up() cannot take both models and a target: the generated "
+                "migration always runs last, so a target would leave it out."
+            )
+        require_registered = models is None
 
         with self._lock_scope():
+            if models is not None:
+                self._ensure_tracking_table()
+                generated = self.plan(
+                    models,
+                    allow_drops=allow_drops,
+                    ignore_changed_columns=ignore_changed_columns,
+                    migration_id=migration_id,
+                    renames=renames,
+                    table_renames=table_renames,
+                    type_casts=type_casts,
+                )
+                if generated is not None:
+                    self._migrations.append(generated)
+                # A generated id carries the moment it was generated, which
+                # sorts after every applied migration but not necessarily
+                # after every registered one.
+                allow_out_of_order = True
+
+            migrations = self._versioned()
+            if target is not None:
+                ids = [m.id for m in migrations]
+                if target not in ids:
+                    if any(m.id == target for m in self._repeatables()):
+                        raise ValueError(
+                            f"Migration target {target!r} is repeatable; a "
+                            "target must name a versioned migration."
+                        )
+                    raise ValueError(f"Unknown migration target: {target!r}.")
+                migrations = migrations[: ids.index(target) + 1]
+
             records = self.applied_records()
             if validate:
                 problems = _validation_problems(
-                    self._migrations, records, allow_out_of_order
+                    self._migrations,
+                    records,
+                    allow_out_of_order,
+                    require_registered=require_registered,
                 )
                 if problems:
                     raise MigrationError(problems)
@@ -1036,45 +1080,25 @@ class Migrator:
         type_casts: Optional[dict[str, str]] = None,
     ) -> List[str]:
         """
-        Diffs the database against the models, registers the generated
-        migration, and applies everything pending. Returns the applied ids;
-        an empty list means the schema was already up to date.
-
-        Additive changes generate reversible steps, so down() rolls the
-        sync back. Drops require allow_drops=True and are not reversible.
+        Deprecated since 2.13.0, removed in 3.0: call
+        up(models=[...]) instead, which does the same work under the verb
+        the CLI and the docs already use.
         """
-        from sustained.autogenerate import autogenerate
-
-        with self._lock_scope():
-            self._ensure_tracking_table()
-            generated_id = migration_id or datetime.now(timezone.utc).strftime(
-                "auto_%Y%m%d%H%M%S_%f"
-            )
-            migration: Optional[Migration] = autogenerate(
-                self._connection,
-                models,
-                id=generated_id,
-                dialect=self._dialect,
-                allow_drops=allow_drops,
-                ignore_changed_columns=ignore_changed_columns,
-                exclude_tables=(self._table,),
-                renames=renames,
-                table_renames=table_renames,
-                type_casts=type_casts,
-            )
-            if migration is not None:
-                self._migrations.append(migration)
-            problems = _validation_problems(
-                self._migrations,
-                self.applied_records(),
-                allow_out_of_order=True,
-                require_registered=False,
-            )
-            if problems:
-                from sustained.exceptions import MigrationError
-
-                raise MigrationError(problems)
-            return self.up(validate=False)
+        warnings.warn(
+            "Migrator.sync() is deprecated and will be removed in 3.0. "
+            "Call up(models=[...]) instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.up(
+            models=models,
+            allow_drops=allow_drops,
+            ignore_changed_columns=ignore_changed_columns,
+            migration_id=migration_id,
+            renames=renames,
+            table_renames=table_renames,
+            type_casts=type_casts,
+        )
 
     def script(self, direction: str = "up") -> str:
         """
