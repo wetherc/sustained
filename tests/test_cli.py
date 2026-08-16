@@ -537,7 +537,9 @@ class JsonOutputTestCase(CliBase):
                 "id": "003_cleanup",
                 "state": "pending",
                 "repeatable": False,
-                "statements": [{"sql": "DROP TABLE flags", "destructive": True}],
+                "statements": [
+                    {"sql": "DROP TABLE flags", "destructive": True, "guards": []}
+                ],
                 "destructive": ["DROP TABLE flags"],
             },
         )
@@ -1058,6 +1060,107 @@ class CallbackCliTestCase(CliBase):
 
     def test_a_config_without_callbacks_still_migrates(self):
         code, out, _ = self.run_cli("migrate")
+        self.assertEqual(code, 0)
+        self.assertIn("applied  001_users", out)
+
+
+class GuardCliTestCase(CliBase):
+    """The config module's guards, through plan and migrate."""
+
+    def _config(self, guards):
+        name = f"guards_{id(self)}_{guards.replace(' ', '')[:20]}"
+        with open(os.path.join(self.dir.name, f"{name}.py"), "w") as f:
+            f.write(
+                CONFIG_TEMPLATE + "\nfrom sustained.guards import (\n"
+                "    max_statements,\n"
+                "    no_drops,\n"
+                "    no_table_rewrite,\n"
+                ")\n"
+                f"guards = [{guards}]\n"
+            )
+        self.addCleanup(sys.modules.pop, name, None)
+        return name
+
+    def _run(self, name, *argv):
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            code = main([*argv, "--config", name])
+        return code, stdout.getvalue(), stderr.getvalue()
+
+    def _add_drop(self):
+        self._write(
+            os.path.join(self.dir.name, "migrations"),
+            "003_cleanup.up.sql",
+            "DROP TABLE flags;",
+        )
+
+    def test_plan_reports_a_blocked_statement_and_exits_3(self):
+        self._add_drop()
+        name = self._config("no_drops()")
+        code, out, _ = self._run(name, "plan")
+        self.assertEqual(code, 3)
+        self.assertIn("guards", out)
+        self.assertIn("block  no_drops  DROP TABLE flags", out)
+        self.assertIn("1 guard verdict", out)
+        self.assertIn("blocked: fix the statement", out)
+        self.assertNotIn("run: sustained migrate", out)
+
+    def test_plan_json_attaches_the_verdict_to_its_statement(self):
+        self._add_drop()
+        name = self._config("no_drops()")
+        code, out, _ = self._run(name, "plan", "--json")
+        self.assertEqual(code, 3)
+        payload = json.loads(out)
+        statements = payload["pending"][2]["statements"]
+        self.assertEqual(
+            statements[0]["guards"], [{"rule": "no_drops", "verdict": "block"}]
+        )
+        self.assertEqual(payload["pending"][0]["statements"][0]["guards"], [])
+
+    def test_a_problem_outranks_a_blocked_statement(self):
+        self.run_cli("migrate")
+        self._write(
+            os.path.join(self.dir.name, "migrations"),
+            "001_users.up.sql",
+            "CREATE TABLE users (id BIGINT);",
+        )
+        self._add_drop()
+        name = self._config("no_drops()")
+        code, _, _ = self._run(name, "plan")
+        self.assertEqual(code, 1)
+
+    def test_plan_without_guards_reports_no_section(self):
+        self._add_drop()
+        code, out, _ = self.run_cli("plan")
+        self.assertEqual(code, 2)
+        self.assertNotIn("guards", out)
+
+    def test_migrate_refuses_a_blocked_run_with_exit_3(self):
+        self._add_drop()
+        name = self._config("no_drops()")
+        code, _, err = self._run(name, "migrate", "--unrehearsed")
+        self.assertEqual(code, 3)
+        self.assertIn("A guard blocked this run", err)
+        self.assertIn("no_drops  DROP TABLE flags", err)
+        # Nothing ran: only the tracking table the migrator creates on
+        # first use is there.
+        self.assertEqual(self.table_names(), {"sustained_migrations"})
+
+    def test_migrate_prints_a_warning_and_applies(self):
+        self._write(
+            os.path.join(self.dir.name, "migrations"),
+            "003_bio.up.sql",
+            "ALTER TABLE users ADD COLUMN bio TEXT NOT NULL DEFAULT 'x';\n"
+            "ALTER TABLE users ALTER COLUMN bio TYPE TEXT;",
+        )
+        name = self._config("no_table_rewrite()")
+        code, out, err = self._run(name, "plan")
+        self.assertEqual(code, 2)
+        self.assertIn("warn   no_table_rewrite", out)
+
+    def test_a_run_inside_the_statement_limit_applies(self):
+        name = self._config("max_statements(10)")
+        code, out, _ = self._run(name, "migrate")
         self.assertEqual(code, 0)
         self.assertIn("applied  001_users", out)
 

@@ -18,13 +18,17 @@ The config module names the pieces the migrator needs:
 - `tracking_table_options`: TableOptions for the tracking table (optional)
 - `get_rehearsal_connection()`: a connection to a scratch database, which
   `rehearse` then uses instead of the real one (optional)
+- `guards`: a list of rules over the statements a run would apply; see
+  sustained.guards (optional)
 - `before_migrate(connection)`, `after_migrate(connection, applied)`, and
   `on_error(connection, migration_id, error)`: callbacks around the
   `migrate` command (optional)
 
 Commands: status, plan, migrate, rehearse, down, validate, repair,
 script, baseline. Every command exits 0 on success and 1 on failure.
-`plan` exits 2 when work is waiting.
+`plan` exits 2 when work is waiting. `plan` and `migrate` exit 3 when a
+guard blocked a statement. A run with problems exits 1 even when a guard
+also blocked: a plan that cannot be trusted outranks the rest.
 
 `migrate` refuses to apply statements that remove data until a passing
 rehearsal has covered them. `--unrehearsed` applies them anyway.
@@ -43,11 +47,18 @@ import os
 import sys
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from sustained.analysis import PendingSummary, destructive_statements, summarize
+from sustained.analysis import (
+    PendingSummary,
+    destructive_statements,
+    normalize_statement,
+    summarize,
+)
 from sustained.dialects import Dialects
-from sustained.exceptions import MigrationError
+from sustained.exceptions import GuardBlocked, MigrationError
+from sustained.guards import Verdict, blocking, run_guards
 from sustained.migration_files import load_migrations
 from sustained.migrations import (
+    Callbacks,
     Migration,
     Migrator,
     Rehearsal,
@@ -104,6 +115,26 @@ def _migrator_on(connection: Any, config: Any) -> Migrator:
         rehearsal_table=getattr(config, "rehearsal_table", "sustained_rehearsals"),
         dialect=_resolve_dialect(getattr(config, "dialect", None)),
         tracking_table_options=getattr(config, "tracking_table_options", None),
+        guards=list(getattr(config, "guards", None) or []),
+        callbacks=_config_callbacks(config),
+    )
+
+
+def _callback(config: Any, name: str) -> Optional[Any]:
+    """The named callback from the config module, or None when it has none."""
+    hook = getattr(config, name, None)
+    return hook if callable(hook) else None
+
+
+def _config_callbacks(config: Any) -> Callbacks:
+    """
+    The config module's callbacks, in the shape the migrator takes. The
+    module is how the CLI gathers them; the migrator is what calls them.
+    """
+    return Callbacks(
+        before_migrate=_callback(config, "before_migrate"),
+        after_migrate=_callback(config, "after_migrate"),
+        on_error=_callback(config, "on_error"),
     )
 
 
@@ -186,24 +217,60 @@ def _print_pending(summaries: List[PendingSummary]) -> None:
             print(f"    destructive  {statement}")
 
 
+def _plan_verdicts(
+    config: Any,
+    summaries: List[PendingSummary],
+    drift: Optional[List[str]],
+    dialect: Dialects,
+) -> Dict[str, List[Verdict]]:
+    """
+    The guards' verdicts on the statements the plan would apply, keyed by
+    the statement they flag.
+
+    The guards read the whole run at once, pending migrations and drift
+    together, so a rule over the run as a whole sees what migrate will
+    see.
+    """
+    guards = list(getattr(config, "guards", None) or [])
+    statements = [s for summary in summaries for s in summary.sql or []]
+    statements.extend(drift or [])
+    by_statement: Dict[str, List[Verdict]] = {}
+    for verdict in run_guards(guards, statements, dialect):
+        by_statement.setdefault(verdict.statement, []).append(verdict)
+    return by_statement
+
+
 def _statement_json(
     statements: Optional[List[str]],
+    verdicts: Dict[str, List[Verdict]],
 ) -> Optional[List[Dict[str, Any]]]:
     """
     One JSON object per statement, the same shape everywhere a command
-    reports SQL: the statement and whether it removes data. None stays
-    None, for a callable step that renders no SQL.
+    reports SQL: the statement, whether it removes data, and the guard
+    verdicts on it. None stays None, for a callable step that renders no
+    SQL. A verdict is reported on the statement it flags and nowhere
+    else.
     """
     if statements is None:
         return None
     return [
-        {"sql": statement, "destructive": bool(destructive_statements([statement]))}
+        {
+            "sql": statement,
+            "destructive": bool(destructive_statements([statement])),
+            "guards": [
+                {"rule": v.rule, "verdict": v.verdict}
+                for v in verdicts.get(normalize_statement(statement), [])
+            ],
+        }
         for statement in statements
     ]
 
 
 def _plan_json(
-    summaries: List[PendingSummary], problems: List[str], drift: Optional[List[str]]
+    summaries: List[PendingSummary],
+    problems: List[str],
+    drift: Optional[List[str]],
+    verdicts: Dict[str, List[Verdict]],
 ) -> None:
     """
     Prints the plan as one JSON object. `drift` is null, not an empty
@@ -217,15 +284,26 @@ def _plan_json(
                     "id": summary.id,
                     "state": summary.state,
                     "repeatable": summary.repeatable,
-                    "statements": _statement_json(summary.sql),
+                    "statements": _statement_json(summary.sql, verdicts),
                     "destructive": summary.destructive,
                 }
                 for summary in summaries
             ],
             "problems": problems,
-            "drift": _statement_json(drift),
+            "drift": _statement_json(drift, verdicts),
         }
     )
+
+
+def _print_guards(verdicts: List[Verdict]) -> None:
+    """
+    The guards section: one line per verdict, the rule that objected and
+    the statement it read.
+    """
+    print("guards")
+    width = max(len(v.rule) for v in verdicts)
+    for verdict in verdicts:
+        print(f"  {verdict.verdict:<5}  {verdict.rule:<{width}}  {verdict.statement}")
 
 
 def _cmd_plan(migrator: Migrator, args: argparse.Namespace, config: Any) -> int:
@@ -233,16 +311,23 @@ def _cmd_plan(migrator: Migrator, args: argparse.Namespace, config: Any) -> int:
     summaries = [summarize(m, states.get(m.id, "pending")) for m in migrator.pending()]
     problems = migrator.validate(raise_on_problems=False)
     drift = _drift_statements(migrator, config)
+    by_statement = _plan_verdicts(config, summaries, drift, migrator.dialect)
+    verdicts = [v for group in by_statement.values() for v in group]
+    blockers = blocking(verdicts)
 
+    # Problems mean the plan itself cannot be trusted, so they outrank a
+    # blocked statement, which outranks work merely waiting.
     if problems:
         exit_code = 1
+    elif blockers:
+        exit_code = 3
     elif summaries or drift:
         exit_code = 2
     else:
         exit_code = 0
 
     if args.json:
-        _plan_json(summaries, problems, drift)
+        _plan_json(summaries, problems, drift, by_statement)
         return exit_code
 
     sections: List[str] = []
@@ -263,6 +348,11 @@ def _cmd_plan(migrator: Migrator, args: argparse.Namespace, config: Any) -> int:
         for statement in drift:
             print(f"  {statement}")
         sections.append(_count(len(drift), "drift statement"))
+    if verdicts:
+        if sections:
+            print()
+        _print_guards(verdicts)
+        sections.append(_count(len(verdicts), "guard verdict"))
 
     if not sections:
         if drift is None:
@@ -275,7 +365,11 @@ def _cmd_plan(migrator: Migrator, args: argparse.Namespace, config: Any) -> int:
         return exit_code
     print()
     print(", ".join(sections))
-    if not problems:
+    if blockers and not problems:
+        # migrate refuses a blocked statement, so there is one thing to do
+        # and it is not running migrate.
+        print("blocked: fix the statement, or take the rule out of guards")
+    elif not problems:
         # migrate never generates drops, so a drift section holding
         # nothing else is not work it can do.
         closable = [s for s in drift or [] if not destructive_statements([s])]
@@ -430,46 +524,19 @@ def _cmd_rehearse(migrator: Migrator, args: argparse.Namespace, config: Any) -> 
     return _report_rehearsal(results, scratch, note)
 
 
-def _callback(config: Any, name: str) -> Optional[Any]:
-    """The named callback from the config module, or None when it has none."""
-    hook = getattr(config, name, None)
-    return hook if callable(hook) else None
-
-
-def _call_on_error(hook: Any, connection: Any, error: BaseException) -> None:
-    """
-    Hands a failed run to the config module's on_error callback. A callback
-    that raises is reported on stderr and then set aside, so the migration
-    error is the one that reaches the operator.
-    """
-    try:
-        hook(connection, getattr(error, "migration_id", None), error)
-    except Exception as callback_error:
-        print(f"error: on_error raised {callback_error!r}", file=sys.stderr)
-
-
 def _cmd_migrate(migrator: Migrator, args: argparse.Namespace, config: Any) -> int:
-    before = _callback(config, "before_migrate")
-    if before is not None:
-        before(migrator.connection)
     models = list(getattr(config, "models", None) or []) or None
     if args.target is not None:
         # A generated migration always runs last, so a targeted run
         # applies the registered migrations only.
         models = None
-    try:
-        applied = migrator.up(
-            target=args.target,
-            validate=not args.no_validate,
-            allow_out_of_order=args.allow_out_of_order,
-            models=models,
-            unrehearsed=args.unrehearsed,
-        )
-    except Exception as error:
-        hook = _callback(config, "on_error")
-        if hook is not None:
-            _call_on_error(hook, migrator.connection, error)
-        raise
+    applied = migrator.up(
+        target=args.target,
+        validate=not args.no_validate,
+        allow_out_of_order=args.allow_out_of_order,
+        models=models,
+        unrehearsed=args.unrehearsed,
+    )
     if not applied:
         print("Nothing to apply.")
     for migration_id in applied:
@@ -482,9 +549,6 @@ def _cmd_migrate(migrator: Migrator, args: argparse.Namespace, config: Any) -> i
             print(f"drift    {gap}")
         if not gaps:
             print("schema matches the models")
-    after = _callback(config, "after_migrate")
-    if after is not None and applied:
-        after(migrator.connection, applied)
     return 0
 
 
@@ -643,6 +707,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 1
     try:
         return _COMMANDS[args.command](migrator, args, config)
+    except GuardBlocked as error:
+        # Exit 3 says a guard blocked the run, which plan reports the same
+        # way. Nothing ran.
+        print(f"error: {error}", file=sys.stderr)
+        return 3
     except MigrationError as error:
         print(f"error: {error}", file=sys.stderr)
         return 1

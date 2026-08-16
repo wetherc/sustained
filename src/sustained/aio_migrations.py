@@ -100,6 +100,11 @@ class AsyncMigrator:
         """The adapter this migrator runs on."""
         return self._adapter
 
+    @property
+    def dialect(self) -> Dialects:
+        """The dialect this migrator compiles for."""
+        return self._dialect
+
     def _table_sql(self) -> str:
         return self._compiler.quote_identifier(self._table)
 
