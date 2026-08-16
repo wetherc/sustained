@@ -14,6 +14,7 @@ The config module names the pieces the migrator needs:
   between the models and the database (optional)
 - `dialect`: a Dialects member or its name, such as 'postgres' (optional)
 - `table`: the tracking table name (optional)
+- `rehearsal_table`: the receipt table name (optional)
 - `tracking_table_options`: TableOptions for the tracking table (optional)
 - `get_rehearsal_connection()`: a connection to a scratch database, which
   `rehearse` then uses instead of the real one (optional)
@@ -25,9 +26,12 @@ Commands: status, plan, migrate, rehearse, down, validate, repair,
 script, baseline. Every command exits 0 on success and 1 on failure.
 `plan` exits 2 when work is waiting.
 
-`status`, `validate`, and `plan` take `--json`, which prints one JSON
-object instead of the plain lines. The exit code stays the same either
-way.
+`migrate` refuses to apply statements that remove data until a passing
+rehearsal has covered them. `--unrehearsed` applies them anyway.
+
+`status`, `validate`, `plan`, and `rehearse` take `--json`, which prints
+one JSON object instead of the plain lines. The exit code stays the same
+either way.
 """
 
 from __future__ import annotations
@@ -46,8 +50,11 @@ from sustained.migration_files import load_migrations
 from sustained.migrations import (
     Migration,
     Migrator,
+    Rehearsal,
     RehearsalResult,
     migration_sql,
+    receipt_key,
+    rehearsal_failed,
 )
 
 
@@ -94,6 +101,7 @@ def _migrator_on(connection: Any, config: Any) -> Migrator:
         connection,
         migrations,
         table=getattr(config, "table", "sustained_migrations"),
+        rehearsal_table=getattr(config, "rehearsal_table", "sustained_rehearsals"),
         dialect=_resolve_dialect(getattr(config, "dialect", None)),
         tracking_table_options=getattr(config, "tracking_table_options", None),
     )
@@ -271,7 +279,10 @@ def _cmd_plan(migrator: Migrator, args: argparse.Namespace, config: Any) -> int:
         # migrate never generates drops, so a drift section holding
         # nothing else is not work it can do.
         closable = [s for s in drift or [] if not destructive_statements([s])]
-        if summaries or closable:
+        if any(s.destructive for s in summaries):
+            # migrate refuses these until a rehearsal has proved them.
+            print("run: sustained rehearse")
+        elif summaries or closable:
             print("run: sustained migrate")
         elif drift:
             print(
@@ -303,17 +314,7 @@ def _rehearsal_line(result: RehearsalResult, width: int) -> str:
     return f"rehearsed {result.id:<{width}}  {', '.join(proofs)}"
 
 
-def _rehearsal_failed(result: RehearsalResult) -> bool:
-    """Whether one result stops the rehearsal from passing."""
-    return (
-        not result.up_ok
-        or result.down_ok is False
-        or bool(result.landed)
-        or bool(result.reversed)
-    )
-
-
-def _report_rehearsal(results: List[RehearsalResult], scratch: bool) -> int:
+def _report_rehearsal(results: Rehearsal, scratch: bool, note: Optional[str]) -> int:
     """
     Prints the rehearsal and returns the exit code: 1 when any step
     failed, when the models did not land, or when the schema did not come
@@ -334,17 +335,23 @@ def _report_rehearsal(results: List[RehearsalResult], scratch: bool) -> int:
         print("rehearsal complete on the scratch database")
     else:
         print("rollback complete, database unchanged")
-    if not any(_rehearsal_failed(r) for r in results):
-        return 0
-    print("run: sustained plan")
-    return 1
+    if not results.ok:
+        print("run: sustained plan")
+        return 1
+    if note is not None:
+        print(note)
+    return 0
 
 
-def _rehearsal_json(results: List[RehearsalResult], scratch: bool) -> None:
+def _rehearsal_json(
+    results: Rehearsal, scratch: bool, recorded: bool, key: str
+) -> None:
     """
     Prints the rehearsal as one JSON object. `landed` and `reversed` are
     null when the check did not run, an empty list when it passed, and
-    the lines naming the trouble when it failed.
+    the lines naming the trouble when it failed. `key` names the content
+    the run covered, and `recorded` says whether the receipt reached the
+    database migrate will read.
     """
     _print_json(
         {
@@ -360,17 +367,50 @@ def _rehearsal_json(results: List[RehearsalResult], scratch: bool) -> None:
                 for result in results
             ],
             "scratch": scratch,
-            "ok": not any(_rehearsal_failed(r) for r in results),
+            "key": key,
+            "recorded": recorded,
+            "ok": results.ok,
         }
     )
+
+
+def _record_scratch_receipt(
+    migrator: Migrator, results: Rehearsal
+) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Writes the receipt a passing scratch rehearsal earned onto the real
+    database, where migrate will look for it. Returns the key and the
+    line to print about it, either of which may be None.
+
+    The scratch run starts from its own schema, so the key is computed
+    against the real database's applied history and pending set. Nothing
+    is written when the scratch run did not run every pending migration,
+    since the receipt would then cover statements nothing proved.
+    """
+    pending = migrator.pending()
+    if not pending:
+        return None, None
+    proved = {r.id for r in results if r.up_ok}
+    if any(m.id not in proved for m in pending):
+        return None, (
+            "receipt not recorded: the scratch run did not cover every "
+            "pending migration"
+        )
+    key = receipt_key(migrator.applied_records(), pending)
+    migrator.record_rehearsal(key)
+    return key, "receipt recorded"
 
 
 def _cmd_rehearse(migrator: Migrator, args: argparse.Namespace, config: Any) -> int:
     models = list(getattr(config, "models", None) or []) or None
     factory = getattr(config, "get_rehearsal_connection", None)
     scratch = factory is not None
+    note: Optional[str] = None
     if factory is None:
         results = migrator.rehearse(models=models)
+        key, recorded = results.key, results.recorded
+        if recorded and results.ok:
+            note = "receipt recorded"
     else:
         connection = factory()
         try:
@@ -379,10 +419,15 @@ def _cmd_rehearse(migrator: Migrator, args: argparse.Namespace, config: Any) -> 
             )
         finally:
             _close_quietly(connection)
+        key, recorded = results.key, False
+        if results.ok:
+            target_key, note = _record_scratch_receipt(migrator, results)
+            if target_key is not None:
+                key, recorded = target_key, True
     if args.json:
-        _rehearsal_json(results, scratch)
-        return 0 if not any(_rehearsal_failed(r) for r in results) else 1
-    return _report_rehearsal(results, scratch)
+        _rehearsal_json(results, scratch, recorded, key)
+        return 0 if results.ok else 1
+    return _report_rehearsal(results, scratch, note)
 
 
 def _callback(config: Any, name: str) -> Optional[Any]:
@@ -418,6 +463,7 @@ def _cmd_migrate(migrator: Migrator, args: argparse.Namespace, config: Any) -> i
             validate=not args.no_validate,
             allow_out_of_order=args.allow_out_of_order,
             models=models,
+            unrehearsed=args.unrehearsed,
         )
     except Exception as error:
         hook = _callback(config, "on_error")
@@ -540,6 +586,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "--allow-out-of-order",
         action="store_true",
         help="Accept a pending migration ordered before an applied one.",
+    )
+    migrate.add_argument(
+        "--unrehearsed",
+        action="store_true",
+        help="Apply statements that remove data without a passing rehearsal.",
     )
 
     down = command("down", "Revert applied migrations, newest first.")

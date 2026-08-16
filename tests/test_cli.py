@@ -709,7 +709,11 @@ class RehearseCliTestCase(CliBase):
             code = main(["rehearse", "--json", "--config", self.config_name])
         payload = json.loads(stdout.getvalue())
         self.assertEqual(code, 0)
-        self.assertEqual(set(payload), {"rehearsed", "scratch", "ok"})
+        self.assertEqual(
+            set(payload), {"rehearsed", "scratch", "key", "recorded", "ok"}
+        )
+        self.assertTrue(payload["recorded"])
+        self.assertEqual(len(payload["key"]), 64)
         self.assertTrue(payload["ok"])
         self.assertFalse(payload["scratch"])
         self.assertEqual(
@@ -767,6 +771,86 @@ class RehearseCliTestCase(CliBase):
                 "SELECT name FROM sqlite_master WHERE type = 'table'"
             ).fetchall()
         self.assertEqual({r[0] for r in rows}, {"sustained_migrations"})
+
+
+class ReceiptCliTestCase(CliBase):
+    """`migrate` asks for the proof `rehearse` left behind."""
+
+    def setUp(self):
+        super().setUp()
+        self.run_cli("migrate")
+        self._write(
+            os.path.join(self.dir.name, "migrations"),
+            "003_trim.up.sql",
+            "DROP TABLE flags;",
+        )
+        self._write(
+            os.path.join(self.dir.name, "migrations"),
+            "003_trim.down.sql",
+            "CREATE TABLE flags (id INTEGER);",
+        )
+
+    def test_migrate_refuses_an_unrehearsed_drop(self):
+        code, out, err = self.run_cli("migrate")
+        self.assertEqual(code, 1)
+        self.assertIn("no rehearsal has proved these statements", err)
+        self.assertIn("003_trim  DROP TABLE flags", err)
+        self.assertIn("--unrehearsed", err)
+        self.assertIn("flags", self.table_names())
+
+    def test_rehearse_then_migrate_applies_it(self):
+        code, out, _ = self.run_cli("rehearse")
+        self.assertEqual(code, 0)
+        self.assertIn("receipt recorded", out)
+        code, out, _ = self.run_cli("migrate")
+        self.assertEqual(code, 0)
+        self.assertIn("applied  003_trim", out)
+        self.assertNotIn("flags", self.table_names())
+
+    def test_the_override_applies_it_without_a_rehearsal(self):
+        code, out, _ = self.run_cli("migrate", "--unrehearsed")
+        self.assertEqual(code, 0)
+        self.assertNotIn("flags", self.table_names())
+
+    def test_plan_points_at_rehearse_when_a_drop_is_waiting(self):
+        code, out, _ = self.run_cli("plan")
+        self.assertEqual(code, 2)
+        self.assertIn("destructive  DROP TABLE flags", out)
+        self.assertIn("run: sustained rehearse", out)
+        self.assertNotIn("run: sustained migrate", out)
+
+    def test_an_edit_after_the_rehearsal_voids_the_receipt(self):
+        self.run_cli("rehearse")
+        self._write(
+            os.path.join(self.dir.name, "migrations"),
+            "003_trim.up.sql",
+            "DROP TABLE flags;\nDROP TABLE users;",
+        )
+        code, _, err = self.run_cli("migrate")
+        self.assertEqual(code, 1)
+        self.assertIn("no rehearsal has proved these statements", err)
+
+    def test_a_scratch_rehearsal_records_on_the_real_database(self):
+        name = f"scratch_receipt_{id(self)}"
+        with open(os.path.join(self.dir.name, f"{name}.py"), "w") as f:
+            f.write(
+                CONFIG_TEMPLATE + "\n"
+                "def get_rehearsal_connection():\n"
+                "    return sqlite3.connect(\n"
+                "        os.path.join(os.path.dirname(__file__), 'scratch.db')\n"
+                "    )\n"
+            )
+        self.addCleanup(sys.modules.pop, name, None)
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            code = main(["rehearse", "--config", name])
+        self.assertEqual(code, 0)
+        self.assertIn("receipt recorded", stdout.getvalue())
+        # The receipt landed on the real database, so the gate opens
+        # there even though the proving happened elsewhere.
+        code, out, _ = self.run_cli("migrate")
+        self.assertEqual(code, 0)
+        self.assertIn("applied  003_trim", out)
 
 
 CALLBACK_CONFIG = """
