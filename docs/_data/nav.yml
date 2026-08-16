@@ -1,0 +1,57 @@
+- title: Start here
+  items:
+    - text: Overview
+      url: /
+    - text: Getting Started
+      url: /getting-started
+    - text: Recipes
+      url: /recipes
+
+- title: Guides
+  items:
+    - text: Models
+      url: /models
+    - text: Building Queries
+      url: /queries
+    - text: Filtering
+      url: /filtering
+    - text: Grouping
+      url: /grouping
+    - text: Relations and Joins
+      url: /relations
+    - text: Executing Queries
+      url: /executing
+    - text: SQL Dialects
+      url: /dialects
+    - text: Schema and Migrations
+      url: /schema
+
+- title: API reference
+  items:
+    - text: How to read it
+      url: /reference/
+    - text: Model
+      url: /reference/model
+    - text: QueryBuilder
+      url: /reference/query-builder
+    - text: Predicates and expressions
+      url: /reference/predicates
+    - text: Schema types
+      url: /reference/schema
+    - text: Migrations
+      url: /reference/migrations
+    - text: Execution and pooling
+      url: /reference/execution
+    - text: Command line
+      url: /reference/cli
+    - text: Dialect support
+      url: /reference/dialects
+    - text: Errors
+      url: /reference/errors
+
+- title: Project
+  items:
+    - text: Changelog
+      url: /changelog
+    - text: Source on GitHub
+      url: https://github.com/wetherc/sustained

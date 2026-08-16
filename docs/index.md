@@ -50,6 +50,20 @@ These are design decisions, not roadmap gaps. Knowing them up front saves you a 
 
 ## Finding your way
 
+**New here?** [Getting Started](./getting-started) builds a working
+application in one sitting: a schema Sustained creates, queries that join
+across tables, a generated migration, and the same migrations run from the
+shell. It needs nothing but SQLite from the standard library.
+
+**Have a task in mind?** [Recipes](./recipes) is a task, the code that does it,
+and the thing that will bite you, about fifty times over.
+
+**Looking up a method?** The [API Reference](./reference/) gives every public
+name its signature, its return type, and the conditions that raise.
+
+The guides sit between those. Each explains one area in depth, and they build
+on each other in this order:
+
 | You want to | Read |
 | --- | --- |
 | Map classes to tables, catch column typos | [Models](./models) |
@@ -60,9 +74,8 @@ These are design decisions, not roadmap gaps. Knowing them up front saves you a 
 | Join tables and define relations | [Relations and Joins](./relations) |
 | Run queries, write data, transactions, pooling, async | [Executing Queries](./executing) |
 | Create tables, rehearse, generate and roll back migrations | [Schema and Migrations](./schema) |
-| Look up any method by name | [API Reference](./reference) |
 
-New to Sustained? Read the pages in the order above. Each builds on the one before it.
+Released versions are listed in the [Changelog](./changelog).
 
 ## Installing
 

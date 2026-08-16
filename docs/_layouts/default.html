@@ -24,18 +24,24 @@
         <p>{{ site.description | default: site.github.project_tagline }}</p>
 
         <nav>
+          {% comment %}
+            Page URLs carry a .html suffix, nav entries do not. Normalise both
+            to a trailing slash so the current page matches either spelling.
+          {% endcomment %}
+          {% assign here = page.url | remove: '.html' | append: '/' | replace: '//', '/' %}
+          {% for group in site.data.nav %}
+          <h2 class="nav-group">{{ group.title }}</h2>
           <ul>
-            <li><a href="index">Home</a></li>
-            <li><a href="models">Models</a></li>
-            <li><a href="queries">Building Queries</a></li>
-            <li><a href="dialects">SQL Dialects</a></li>
-            <li><a href="filtering">Filtering Queries</a></li>
-            <li><a href="grouping">Grouping</a></li>
-            <li><a href="relations">Relations and Joins</a></li>
-            <li><a href="executing">Executing Queries</a></li>
-            <li><a href="schema">Schema and Migrations</a></li>
-            <li><a href="reference">API Reference</a></li>
+            {% for item in group.items %}
+            {% if item.url contains '://' %}
+            <li><a href="{{ item.url }}">{{ item.text }}</a></li>
+            {% else %}
+            {% assign there = item.url | append: '/' | replace: '//', '/' %}
+            <li{% if here == there %} class="current"{% endif %}><a href="{{ item.url | relative_url }}">{{ item.text }}</a></li>
+            {% endif %}
+            {% endfor %}
           </ul>
+          {% endfor %}
         </nav>
 
         {% if site.github.is_project_page %}

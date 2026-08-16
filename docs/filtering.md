@@ -184,7 +184,7 @@ Movie.query().whereLike("title", "The %")
 
 ### `whereILike`
 
-This filters with case-insensitive matching. On Postgres it renders native `ILIKE`. On every other dialect it compiles to `LOWER(col) LIKE LOWER(pattern)`.
+This filters with case-insensitive matching. On Postgres and DuckDB it renders native `ILIKE`. On every other dialect it compiles to `LOWER(col) LIKE LOWER(pattern)`.
 
 ```python
 # Postgres: SELECT * FROM "movies" WHERE "title" ILIKE 'the %'

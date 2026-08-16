@@ -138,7 +138,14 @@ See [Schema and Migrations](https://sustained.tbmh.org/schema) for SQL file migr
 
 ## Documentation
 
-The [documentation](https://sustained.tbmh.org/) covers [schema and migrations](https://sustained.tbmh.org/schema) at length, plus [models](https://sustained.tbmh.org/models), [queries](https://sustained.tbmh.org/queries), [dialects and drivers](https://sustained.tbmh.org/dialects), [filtering](https://sustained.tbmh.org/filtering), [grouping](https://sustained.tbmh.org/grouping), [relations and joins](https://sustained.tbmh.org/relations), [execution, pooling, and async](https://sustained.tbmh.org/executing), and [schema and migrations](https://sustained.tbmh.org/schema). The [API reference](https://sustained.tbmh.org/reference) lists every public method by task.
+The [documentation](https://sustained.tbmh.org/) has four parts:
+
+- [Getting Started](https://sustained.tbmh.org/getting-started) builds a working application in one sitting, against SQLite from the standard library.
+- [Recipes](https://sustained.tbmh.org/recipes) pairs a task with the code that does it and the thing that will bite you.
+- The guides cover one area each: [models](https://sustained.tbmh.org/models), [queries](https://sustained.tbmh.org/queries), [dialects and drivers](https://sustained.tbmh.org/dialects), [filtering](https://sustained.tbmh.org/filtering), [grouping](https://sustained.tbmh.org/grouping), [relations and joins](https://sustained.tbmh.org/relations), [execution, pooling, and async](https://sustained.tbmh.org/executing), and [schema and migrations](https://sustained.tbmh.org/schema) at length.
+- The [API reference](https://sustained.tbmh.org/reference/) gives every public name its signature, return type, and the conditions that raise.
+
+Released versions are listed in the [changelog](https://sustained.tbmh.org/changelog).
 
 ## Development
 

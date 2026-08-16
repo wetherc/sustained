@@ -1,0 +1,202 @@
+---
+layout: default
+title: Command line reference
+---
+
+The `sustained` console script, installed with the package. It also runs as
+`python -m sustained`.
+
+```
+sustained <command> [--config MODULE] [command options]
+```
+
+Every command imports a config module, `sustained_config` by default, from the
+current directory. Every command accepts `--config MODULE` to name another
+one.
+
+Guide: [Schema and Migrations](/schema#command-line).
+
+## Commands
+
+| Command | Options | Does |
+| --- | --- | --- |
+| `plan` | `--json` | Shows the pending migrations, the problems, and the model drift. |
+| `status` | `--json` | Shows every migration's state: applied, pending, or changed. |
+| `rehearse` | | Runs the pending migrations up and back down, then rolls it all back. |
+| `migrate` | `--target ID`, `--no-validate`, `--allow-out-of-order` | Applies pending migrations in order. |
+| `down` | `--steps N` (default 1) or `--to ID` | Reverts applied migrations, newest first. |
+| `validate` | `--json` | Checks the tracking table against the migrations. |
+| `repair` | | Fixes tracking rows after failures or intentional edits. |
+| `script` | `up` or `down` (default `up`) | Prints the SQL a run would execute, without running it. |
+| `baseline` | `TARGET` (required) | Records migrations as applied without running them. |
+
+`--steps` and `--to` are mutually exclusive.
+
+## Exit codes
+
+| Code | Means |
+| --- | --- |
+| 0 | Success, or nothing to do. |
+| 1 | A failure: config, connection, validation problems, or a migration error. Details on stderr. |
+| 2 | `plan` only: work is waiting. |
+
+`plan` is the one command with three outcomes: 0 when the database is current,
+2 when migrations are pending or the models have drifted, and 1 when
+validation found problems. Problems outrank pending work.
+
+argparse also exits 2 on a usage error, so a script that treats 2 as "work is
+waiting" should check stderr for an `error:` line.
+
+`rehearse` exits 1 when an up or a down step failed. A migration with no down
+step is not a failure, so it exits 0.
+
+`validate` exits 1 when problems exist, 0 otherwise. Exit codes are the same
+with and without `--json`.
+
+## The config module
+
+| Attribute | Required | Shape | Default |
+| --- | --- | --- | --- |
+| `connection` | one of the two | A DB-API 2.0 connection | checked first |
+| `get_connection` | one of the two | `() -> Connection` | used when `connection` is absent |
+| `migrations` | no | `list[Migration]` | `[]` |
+| `migrations_dir` | no | Path to `.up.sql` / `.down.sql` / `.repeat.sql` files | `None` |
+| `placeholders` | no | `dict[str, str]` filling `${key}` markers | `None` |
+| `models` | no | List of model classes | `None` |
+| `dialect` | no | A `Dialects` member, or its name: `'postgres'`, `'MSSQL'` | `Dialects.DEFAULT` |
+| `table` | no | Tracking table name | `'sustained_migrations'` |
+| `tracking_table_options` | no | `TableOptions` | `None` |
+| `get_rehearsal_connection` | no | `() -> Connection`, a scratch database | `None` |
+| `before_migrate` | no | `(connection) -> None` | not called |
+| `after_migrate` | no | `(connection, applied) -> None` | not called |
+| `on_error` | no | `(connection, migration_id, error) -> None` | not called |
+
+Defining neither `connection` nor `get_connection` raises `ValueError`. An
+unknown dialect name raises `ValueError` listing the six valid ones.
+
+Migrations from `migrations_dir` are appended after `migrations`, so both
+sources can coexist.
+
+```python
+# sustained_config.py
+import psycopg
+
+from models import Show, Venue
+
+
+def get_connection():
+    return psycopg.connect('postgresql://localhost/app')
+
+
+migrations_dir = 'migrations'
+models = [Venue, Show]
+dialect = 'postgres'
+```
+
+### Callbacks
+
+Only `migrate` calls them. `rehearse` does not, because nothing real happened.
+
+`before_migrate` runs before the run starts, which is before validation and
+before the advisory lock. `after_migrate` runs only when at least one
+migration applied, so a run with nothing to do stays quiet. `on_error` runs
+after a failure and before it reaches the shell; `migration_id` is `None` when
+the run failed before reaching a migration.
+
+A callback that is not callable is skipped. An `on_error` that raises has its
+own error printed to stderr, and the original migration error still decides
+the exit code.
+
+### Rehearsal connection
+
+When the config defines `get_rehearsal_connection()`, `rehearse` builds a
+second migrator on that connection and rehearses there instead. The dialect
+check does not apply, the changes may survive the rollback, and the footer
+says so. The scratch connection closes when the command ends.
+
+## Output
+
+Plain text, one record per line, nothing coloured.
+
+```console
+$ sustained status
+applied  001_create_venues
+pending  002_create_shows
+changed  upcoming_shows
+```
+
+```console
+$ sustained plan
+pending
+  003_sessions  2 statements
+  004_trim      1 statement
+    destructive  ALTER TABLE users DROP COLUMN legacy
+  vw_active     1 statement  repeat changed
+
+drift
+  ALTER TABLE users ADD COLUMN bio TEXT
+
+2 pending migrations, 1 drift statement
+run: sustained migrate
+run: Migrator.sync(models)
+```
+
+The drift section appears only when the config names `models`. It reports
+every difference, drops included, unlike `sync()`, which refuses to generate
+them. The `run:` lines print only when there are no problems.
+
+```console
+$ sustained rehearse
+rehearsed 003_sessions  up ok, down ok
+rehearsed 004_trim      up ok, down ok
+rehearsed vw_active     up ok, no down step (repeatable)
+rollback complete, database unchanged
+```
+
+A failure names the statement that failed and the migrations under it that
+never got their turn:
+
+```console
+$ sustained rehearse
+rehearsed 003_sessions  up ok, down not rehearsed: the run stopped
+failed    004_trim      up: column "legacy" of relation "users" does not exist
+rollback complete, database unchanged
+```
+
+Other commands print `applied  <id>`, `reverted <id>`, `repaired <action>`, or
+`baselined <id>`, one per line, and `Nothing to apply.`, `Nothing to revert.`,
+`Nothing to repair.`, `Nothing to baseline.`, or `Nothing to rehearse.` when
+there was nothing to do. `validate` prints `OK` or one `problem  <text>` line
+per problem.
+
+Errors go to stderr as `error: <message>`, or
+`error in '<migration id>': <message>` when the failure came from a known
+migration.
+
+## JSON output
+
+`status`, `validate`, and `plan` take `--json` and print one object to stdout.
+
+```console
+$ sustained plan --json
+{
+  "pending": [
+    {
+      "id": "004_trim",
+      "state": "pending",
+      "repeatable": false,
+      "statements": 1,
+      "destructive": ["ALTER TABLE users DROP COLUMN legacy"]
+    }
+  ],
+  "problems": [],
+  "drift": null
+}
+```
+
+`drift` is `null`, not `[]`, when the config names no models, so a caller can
+tell "nothing was compared" from "compared and found no gap". `statements` is
+`null` for a callable step, which has no SQL to count.
+
+`status --json` prints `{"migrations": [{"id": ..., "state": ...}]}`.
+`validate --json` prints `{"ok": ..., "problems": [...]}`.

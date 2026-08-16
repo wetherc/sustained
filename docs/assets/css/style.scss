@@ -3,13 +3,13 @@
 @import "minimal";
 
 .wrapper {
-  max-width: 1060px;
-  width: 1060px;
+  max-width: 1160px;
+  width: 1160px;
   padding: 2rem;
 }
 
 section {
-  width:700px;
+  width: 800px;
 }
 
 nav {
@@ -37,6 +37,46 @@ nav ul li a {
 
 nav ul li a:hover {
   text-decoration: underline;
+}
+
+/* Group headings separate the tutorial, the guides, and the reference, so a
+   sidebar of thirty links still reads as four short lists. */
+nav .nav-group {
+  font-size: 12px;
+  font-weight: bold;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #7a7a7a;
+  margin: 18px 0 6px;
+  padding: 0;
+  border: 0;
+}
+
+nav .nav-group:first-child {
+  margin-top: 0;
+}
+
+nav ul li.current > a {
+  color: #333;
+}
+
+nav ul li.current {
+  border-left: 3px solid #007bff;
+  padding-left: 8px;
+  margin-left: -11px;
+}
+
+/* Reference tables carry signatures, so they outgrow a fixed column. Let a
+   wide table scroll inside the page instead of pushing the page sideways. */
+section table {
+  display: block;
+  width: 100%;
+  overflow-x: auto;
+}
+
+section table td,
+section table th {
+  vertical-align: top;
 }
 
 /* The minimal theme bolds links on hover. Bold text is wider, so table
