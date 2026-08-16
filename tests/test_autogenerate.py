@@ -10,6 +10,7 @@ from sustained import Model, create_model
 from sustained.autogenerate import (
     autogenerate,
     diff_schema,
+    diff_snapshots,
     introspect_schema,
     normalize_type,
 )
@@ -553,3 +554,96 @@ class TestAlterGeneration(unittest.TestCase):
             migration.down,
             ['ALTER TABLE "pg_users" DROP COLUMN "status"'],
         )
+
+
+class DiffSnapshotsTestCase(unittest.TestCase):
+    """
+    diff_snapshots() compares two introspected schemas, which is how a
+    rehearsal checks that the down steps put the schema back.
+    """
+
+    def setUp(self):
+        self.conn = sqlite3.connect(":memory:")
+        self.conn.execute(
+            "CREATE TABLE snap_users (id INTEGER PRIMARY KEY, email TEXT)"
+        )
+
+    def tearDown(self):
+        self.conn.close()
+
+    def snapshot(self):
+        return introspect_schema(self.conn)
+
+    def test_unchanged_schema_reports_nothing(self):
+        before = self.snapshot()
+        self.assertEqual(diff_snapshots(before, self.snapshot()), [])
+
+    def test_left_behind_table(self):
+        before = self.snapshot()
+        self.conn.execute("CREATE TABLE snap_audit (id INTEGER)")
+        self.assertEqual(
+            diff_snapshots(before, self.snapshot()),
+            ["table 'snap_audit' left behind"],
+        )
+
+    def test_missing_table(self):
+        before = self.snapshot()
+        self.conn.execute("DROP TABLE snap_users")
+        self.assertEqual(
+            diff_snapshots(before, self.snapshot()),
+            ["table 'snap_users' missing"],
+        )
+
+    def test_left_behind_column(self):
+        before = self.snapshot()
+        self.conn.execute("ALTER TABLE snap_users ADD COLUMN bio TEXT")
+        self.assertEqual(
+            diff_snapshots(before, self.snapshot()),
+            ["column 'snap_users.bio' left behind"],
+        )
+
+    def test_missing_column(self):
+        self.conn.execute("ALTER TABLE snap_users ADD COLUMN bio TEXT")
+        before = self.snapshot()
+        self.conn.execute("ALTER TABLE snap_users DROP COLUMN bio")
+        self.assertEqual(
+            diff_snapshots(before, self.snapshot()),
+            ["column 'snap_users.bio' missing"],
+        )
+
+    def test_changed_column_names_both_shapes(self):
+        before = self.snapshot()
+        self.conn.execute("DROP TABLE snap_users")
+        self.conn.execute(
+            "CREATE TABLE snap_users (id INTEGER PRIMARY KEY, "
+            "email VARCHAR(120) NOT NULL)"
+        )
+        self.assertEqual(
+            diff_snapshots(before, self.snapshot()),
+            ["column 'snap_users.email' changed: TEXT became " "VARCHAR(120) NOT NULL"],
+        )
+
+    def test_type_parameters_alone_count_as_a_change(self):
+        self.conn.execute("CREATE TABLE snap_tags (name VARCHAR(10))")
+        before = self.snapshot()
+        self.conn.execute("DROP TABLE snap_tags")
+        self.conn.execute("CREATE TABLE snap_tags (name VARCHAR(20))")
+        self.assertEqual(
+            diff_snapshots(before, self.snapshot()),
+            ["column 'snap_tags.name' changed: VARCHAR(10) became VARCHAR(20)"],
+        )
+
+    def test_type_synonyms_are_not_a_change(self):
+        self.conn.execute("CREATE TABLE snap_counts (total INT)")
+        before = self.snapshot()
+        self.conn.execute("DROP TABLE snap_counts")
+        self.conn.execute("CREATE TABLE snap_counts (total INTEGER)")
+        self.assertEqual(diff_snapshots(before, self.snapshot()), [])
+
+    def test_defaults_and_indexes_are_out_of_scope(self):
+        self.conn.execute("CREATE TABLE snap_flags (id INTEGER, on_ INTEGER DEFAULT 0)")
+        before = self.snapshot()
+        self.conn.execute("CREATE INDEX snap_users_email ON snap_users (email)")
+        self.conn.execute("DROP TABLE snap_flags")
+        self.conn.execute("CREATE TABLE snap_flags (id INTEGER, on_ INTEGER DEFAULT 1)")
+        self.assertEqual(diff_snapshots(before, self.snapshot()), [])
