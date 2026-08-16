@@ -1,88 +1,637 @@
 ---
 ---
-@import "minimal";
 
-.wrapper {
-  max-width: 1160px;
-  width: 1160px;
-  padding: 2rem;
+/* Sustained documentation.
+
+   The design has one idea: a migration runs up and it runs back down, and
+   some of what it does cannot be taken back. A rail runs down the left of
+   every page. Headings hang off it, and anything destructive is marked in
+   oxblood while anything additive is marked in pine. Colour carries meaning
+   here, so it is spent nowhere else. */
+
+:root {
+  --ground: #e4e8ed;
+  --surface: #f8f9fb;
+  --ink: #131922;
+  --ink-soft: #3c4655;
+  --muted: #59637a;
+  --rule: #c4cbd6;
+  --rule-soft: #d7dce4;
+  --pine: #15594a;
+  --oxblood: #7c2f2c;
+  --oxblood-wash: #f2e2e0;
+  --indigo: #3f3d8f;
+  --code-tint: rgba(19, 25, 34, 0.055);
+
+  --font-display: "Familjen Grotesk", "Archivo", system-ui, sans-serif;
+  --font-body: "Archivo", system-ui, -apple-system, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+  --rail: 2px;
+  --rail-gap: 1.75rem;
+  --sidebar: 17rem;
+  --measure: 44rem;
 }
 
-section {
-  width: 800px;
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ground: #10151c;
+    --surface: #161c25;
+    --ink: #e4e9f0;
+    --ink-soft: #c3ccd9;
+    --muted: #93a0b4;
+    --rule: #2a3340;
+    --rule-soft: #212936;
+    --pine: #58c3a2;
+    --oxblood: #e58c84;
+    --oxblood-wash: #33201f;
+    --indigo: #9c9af0;
+    --code-tint: rgba(148, 172, 205, 0.14);
+  }
 }
 
-nav {
-  margin-bottom: 20px;
-  border-bottom: 1px solid #ccc;
-  padding-bottom: 10px;
+*, *::before, *::after { box-sizing: border-box; }
+
+html { -webkit-text-size-adjust: 100%; }
+
+body {
+  margin: 0;
+  background: var(--ground);
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-size: 16.5px;
+  line-height: 1.65;
+  font-feature-settings: "kern", "liga";
+  -webkit-font-smoothing: antialiased;
 }
+
+.skip {
+  position: absolute;
+  left: -9999px;
+  top: 0;
+  z-index: 10;
+  padding: 0.6rem 1rem;
+  background: var(--ink);
+  color: var(--surface);
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+}
+
+.skip:focus { left: 0; }
+
+:focus-visible {
+  outline: 2px solid var(--indigo);
+  outline-offset: 3px;
+  border-radius: 1px;
+}
+
+/* ---------------------------------------------------------------- shell */
+
+.shell {
+  display: grid;
+  grid-template-columns: var(--sidebar) minmax(0, 1fr);
+  gap: 0 3.5rem;
+  max-width: 84rem;
+  margin: 0 auto;
+  padding: 0 2rem 6rem;
+}
+
+@media (min-width: 78rem) {
+  .shell {
+    grid-template-columns: var(--sidebar) minmax(0, 1fr) 12rem;
+  }
+}
+
+/* ------------------------------------------------------------- masthead */
+
+.masthead {
+  position: sticky;
+  top: 0;
+  align-self: start;
+  max-height: 100vh;
+  overflow-y: auto;
+  padding: 2.75rem 0 3rem;
+  scrollbar-width: thin;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  text-decoration: none;
+  color: var(--ink);
+}
+
+.brand-name {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 1.35rem;
+  letter-spacing: -0.02em;
+}
+
+.brand-line {
+  flex: 1;
+  height: var(--rail);
+  background: var(--ink);
+}
+
+.brand:hover .brand-line { background: var(--pine); }
+
+.brand-tagline {
+  margin: 0.6rem 0 2rem;
+  color: var(--muted);
+  font-size: 0.85rem;
+  line-height: 1.5;
+  max-width: 15rem;
+}
+
+.nav-toggle { display: none; }
 
 nav ul {
   list-style: none;
+  margin: 0 0 0.25rem;
   padding: 0;
-  margin: 0;
 }
 
-nav ul li {
+nav li { margin: 0; }
+
+nav a {
   display: block;
-  margin-bottom: 5px;
-}
-
-nav ul li a {
+  padding: 0.28rem 0 0.28rem 0.85rem;
+  border-left: var(--rail) solid var(--rule-soft);
+  color: var(--ink-soft);
+  font-size: 0.92rem;
   text-decoration: none;
-  color: #007bff;
-  font-weight: bold;
 }
 
-nav ul li a:hover {
-  text-decoration: underline;
+nav a:hover {
+  border-left-color: var(--muted);
+  color: var(--ink);
 }
 
-/* Group headings separate the tutorial, the guides, and the reference, so a
-   sidebar of thirty links still reads as four short lists. */
-nav .nav-group {
-  font-size: 12px;
-  font-weight: bold;
+nav .current > a {
+  border-left-color: var(--pine);
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.nav-group {
+  margin: 1.8rem 0 0.55rem;
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  font-weight: 500;
+  letter-spacing: 0.14em;
   text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: #7a7a7a;
-  margin: 18px 0 6px;
+  color: var(--muted);
+}
+
+.nav-group:first-child { margin-top: 0; }
+
+.nav-out {
+  margin-left: 0.35rem;
+  color: var(--muted);
+  font-size: 0.8em;
+}
+
+/* ------------------------------------------------------------ page head */
+
+main {
+  min-width: 0;
+  padding: 2.75rem 0 0;
+}
+
+.page-head { margin-bottom: 2.5rem; }
+
+.head-band {
+  display: flex;
+  align-items: center;
+  gap: 0.9rem;
+  margin-bottom: 0.9rem;
+}
+
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  font-weight: 500;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.head-rule {
+  flex: 1;
+  height: var(--rail);
+  background: var(--rule);
+  transform-origin: left center;
+  animation: draw 0.5s cubic-bezier(0.2, 0.7, 0.3, 1) both;
+}
+
+@keyframes draw {
+  from { transform: scaleX(0); }
+  to { transform: scaleX(1); }
+}
+
+.page-title {
+  margin: 0;
+  max-width: 20ch;
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: clamp(2.1rem, 1.4rem + 2.4vw, 3.1rem);
+  line-height: 1.05;
+  letter-spacing: -0.035em;
+}
+
+/* ---------------------------------------------------------------- prose */
+
+.prose {
+  position: relative;
+  max-width: var(--measure);
+  padding-left: var(--rail-gap);
+  border-left: var(--rail) solid var(--rule-soft);
+}
+
+.prose > *:first-child { margin-top: 0; }
+
+.prose p,
+.prose ul,
+.prose ol {
+  color: var(--ink-soft);
+  margin: 0 0 1.15rem;
+}
+
+.prose li { margin-bottom: 0.4rem; }
+
+.prose ul { padding-left: 1.1rem; list-style: none; }
+
+.prose ul > li::before {
+  content: "";
+  display: inline-block;
+  width: 0.45rem;
+  height: var(--rail);
+  margin: 0.5rem 0.65rem 0 -1.1rem;
+  vertical-align: top;
+  background: var(--rule);
+}
+
+.prose ol { padding-left: 1.4rem; }
+
+.prose ol::marker { font-family: var(--font-mono); }
+
+.prose h2,
+.prose h3,
+.prose h4 {
+  font-family: var(--font-display);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+  color: var(--ink);
+}
+
+/* Every heading hangs off the rail on a short tick, so the page reads as one
+   run of statements rather than a stack of separate blocks. */
+.prose h2 {
+  position: relative;
+  margin: 3rem 0 1rem;
+  font-size: 1.6rem;
+}
+
+.prose h2::before {
+  content: "";
+  position: absolute;
+  left: calc(var(--rail-gap) * -1 - var(--rail));
+  top: 0.85em;
+  width: var(--rail-gap);
+  height: var(--rail);
+  background: var(--ink);
+}
+
+.prose h3 {
+  position: relative;
+  margin: 2.25rem 0 0.75rem;
+  font-size: 1.16rem;
+}
+
+.prose h3::before {
+  content: "";
+  position: absolute;
+  left: calc(var(--rail-gap) * -1 - var(--rail));
+  top: 0.8em;
+  width: calc(var(--rail-gap) * 0.55);
+  height: var(--rail);
+  background: var(--rule);
+}
+
+.prose h4 {
+  margin: 1.75rem 0 0.6rem;
+  font-size: 1rem;
+}
+
+.prose a {
+  color: var(--pine);
+  text-decoration: underline;
+  text-underline-offset: 0.18em;
+  text-decoration-thickness: 1px;
+  text-decoration-color: var(--rule);
+}
+
+.prose a:hover { text-decoration-color: var(--pine); }
+
+.prose strong { font-weight: 600; color: var(--ink); }
+
+.prose hr {
+  margin: 3rem 0;
+  border: 0;
+  border-top: var(--rail) solid var(--rule-soft);
+}
+
+/* A blockquote in these pages is always a caution, so it takes the
+   destructive colour. */
+.prose blockquote {
+  margin: 1.5rem 0;
+  padding: 0.85rem 1.1rem;
+  border-left: 3px solid var(--oxblood);
+  background: var(--oxblood-wash);
+  color: var(--ink);
+}
+
+.prose blockquote p:last-child { margin-bottom: 0; }
+
+/* ---------------------------------------------------------------- code */
+
+code,
+kbd,
+pre,
+samp { font-family: var(--font-mono); }
+
+/* These pages name a method every second sentence. A boxed chip around each
+   one turns a paragraph into a ladder, so inline code keeps only a tint. */
+.prose :not(pre) > code {
+  padding: 0.05em 0.25em;
+  border-radius: 2px;
+  background: var(--code-tint);
+  font-size: 0.85em;
+  color: var(--ink);
+  word-break: break-word;
+}
+
+.prose a > code { color: inherit; }
+
+div.highlighter-rouge,
+figure.highlight {
+  margin: 1.35rem 0;
+}
+
+.prose pre {
+  margin: 0;
+  padding: 1rem 1.15rem;
+  overflow-x: auto;
+  background: var(--surface);
+  border: 1px solid var(--rule-soft);
+  border-radius: 3px;
+  font-size: 0.83rem;
+  line-height: 1.6;
+  color: var(--ink);
+}
+
+.prose pre code {
   padding: 0;
   border: 0;
+  background: none;
+  font-size: inherit;
 }
 
-nav .nav-group:first-child {
-  margin-top: 0;
+/* Console transcripts read as output, not as source, so they invert. */
+.language-console .highlight,
+.language-bash .highlight { position: relative; }
+
+.language-console pre,
+.language-bash pre {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: #e9edf3;
 }
 
-nav ul li.current > a {
-  color: #333;
+@media (prefers-color-scheme: dark) {
+  .language-console pre,
+  .language-bash pre {
+    background: #0a0e13;
+    border-color: var(--rule);
+  }
 }
 
-nav ul li.current {
-  border-left: 3px solid #007bff;
-  padding-left: 8px;
-  margin-left: -11px;
+/* --------------------------------------------------------- highlighting */
+
+.highlight .c, .highlight .c1, .highlight .cm, .highlight .cs {
+  color: var(--muted);
+  font-style: italic;
 }
 
-/* Reference tables carry signatures, so they outgrow a fixed column. Let a
-   wide table scroll inside the page instead of pushing the page sideways. */
-section table {
-  display: block;
+.highlight .k, .highlight .kd, .highlight .kn, .highlight .kp,
+.highlight .kr, .highlight .kt {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.highlight .kc, .highlight .no { color: var(--indigo); }
+.highlight .s, .highlight .s1, .highlight .s2, .highlight .sb,
+.highlight .sd, .highlight .se, .highlight .si, .highlight .sr,
+.highlight .ss { color: var(--pine); }
+.highlight .m, .highlight .mi, .highlight .mf, .highlight .mh,
+.highlight .il { color: var(--indigo); }
+.highlight .nf, .highlight .nc { color: var(--indigo); font-weight: 500; }
+.highlight .nb, .highlight .bp { color: var(--ink-soft); }
+.highlight .nd { color: var(--oxblood); }
+.highlight .o, .highlight .ow, .highlight .p { color: var(--muted); }
+.highlight .nn, .highlight .nv, .highlight .n { color: var(--ink); }
+.highlight .err { color: var(--oxblood); }
+
+.language-console .highlight .gp,
+.language-bash .highlight .gp {
+  color: #6fd0ae;
+  font-weight: 500;
+  user-select: none;
+}
+
+.language-console .highlight .go,
+.language-bash .highlight .go { color: #9fb0c4; }
+
+.language-console .highlight .k,
+.language-console .highlight .n,
+.language-console .highlight .nb,
+.language-bash .highlight .k,
+.language-bash .highlight .n,
+.language-bash .highlight .nb { color: #e9edf3; font-weight: 400; }
+
+/* SQL keywords that change data or drop objects are the ones a reader has to
+   see. `docs.js` marks them; everything else stays plain. */
+.sql-destructive {
+  color: var(--oxblood);
+  font-weight: 600;
+  box-shadow: inset 0 -1px 0 var(--oxblood);
+}
+
+.sql-additive { color: var(--pine); font-weight: 600; }
+
+.language-console .sql-destructive,
+.language-bash .sql-destructive { color: #f0938b; box-shadow: inset 0 -1px 0 #f0938b; }
+
+.language-console .sql-additive,
+.language-bash .sql-additive { color: #6fd0ae; }
+
+/* --------------------------------------------------------------- tables */
+
+.prose table {
   width: 100%;
+  margin: 1.5rem 0;
+  border-collapse: collapse;
+  font-size: 0.88rem;
+}
+
+.prose .table-scroll {
+  margin: 1.5rem 0;
   overflow-x: auto;
 }
 
-section table td,
-section table th {
-  vertical-align: top;
+.prose .table-scroll table { margin: 0; }
+
+.prose th {
+  padding: 0.5rem 0.9rem 0.5rem 0;
+  border-bottom: var(--rail) solid var(--ink);
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  font-weight: 500;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  text-align: left;
+  color: var(--muted);
+  white-space: nowrap;
 }
 
-/* The minimal theme bolds links on hover. Bold text is wider, so table
-   columns jitter as the pointer moves over them. Underline instead. */
-section a:hover,
-section a:focus {
-  font-weight: normal;
-  text-decoration: underline;
+.prose td {
+  padding: 0.6rem 0.9rem 0.6rem 0;
+  border-bottom: 1px solid var(--rule-soft);
+  vertical-align: top;
+  color: var(--ink-soft);
+}
+
+.prose td:last-child, .prose th:last-child { padding-right: 0; }
+
+.prose td code { white-space: nowrap; }
+
+/* --------------------------------------------------------- on this page */
+
+.onthispage {
+  position: sticky;
+  top: 2.75rem;
+  align-self: start;
+  max-height: calc(100vh - 5rem);
+  overflow-y: auto;
+  padding-top: 6.5rem;
+  font-size: 0.82rem;
+}
+
+.onthispage h2 {
+  margin: 0 0 0.6rem;
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.onthispage ol {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.onthispage a {
+  display: block;
+  padding: 0.2rem 0 0.2rem 0.7rem;
+  border-left: var(--rail) solid var(--rule-soft);
+  color: var(--muted);
+  text-decoration: none;
+  line-height: 1.35;
+}
+
+.onthispage a:hover { color: var(--ink); }
+
+.onthispage .active {
+  border-left-color: var(--ink);
+  color: var(--ink);
+}
+
+@media (max-width: 77.99rem) {
+  .onthispage { display: none; }
+}
+
+/* --------------------------------------------------------------- footer */
+
+.page-foot {
+  max-width: var(--measure);
+  margin-top: 4rem;
+  padding-top: 1.25rem;
+  border-top: 1px solid var(--rule);
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+
+.page-foot a { color: var(--muted); }
+
+/* --------------------------------------------------------------- mobile */
+
+@media (max-width: 60rem) {
+  .shell {
+    display: block;
+    padding: 0 1.25rem 4rem;
+  }
+
+  .masthead {
+    position: static;
+    max-height: none;
+    overflow: visible;
+    padding: 1.75rem 0 1.25rem;
+    border-bottom: 1px solid var(--rule);
+  }
+
+  .brand-tagline { margin-bottom: 1.25rem; }
+
+  .nav-toggle {
+    display: inline-block;
+    padding: 0.45rem 0.9rem;
+    border: var(--rail) solid var(--ink);
+    background: none;
+    color: var(--ink);
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    cursor: pointer;
+  }
+
+  .nav-toggle-close { display: none; }
+  .nav-toggle[aria-expanded="true"] .nav-toggle-open { display: none; }
+  .nav-toggle[aria-expanded="true"] .nav-toggle-close { display: inline; }
+
+  nav { display: none; margin-top: 1.5rem; }
+  .nav-toggle[aria-expanded="true"] + nav { display: block; }
+
+  main { padding-top: 2rem; }
+
+  .prose {
+    padding-left: 1.1rem;
+  }
+
+  .prose h2::before, .prose h3::before { display: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

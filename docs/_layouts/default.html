@@ -2,76 +2,99 @@
 <html lang="{{ site.lang | default: "en-US" }}">
   <head>
     <meta charset="UTF-8">
-    <meta http-equiv="X-UA-Compatible" content="IE=edge">
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#e7eaee" media="(prefers-color-scheme: light)">
+    <meta name="theme-color" content="#12161c" media="(prefers-color-scheme: dark)">
 
 {% seo %}
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600&family=Familjen+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
     <link rel="stylesheet" href="{{ "/assets/css/style.css?v=" | append: site.github.build_revision | relative_url }}">
-    <!--[if lt IE 9]>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/html5shiv/3.7.3/html5shiv.min.js"></script>
-    <![endif]-->
-    {% include head-custom.html %}
   </head>
   <body>
-    <div class="wrapper">
-      <header>
-        <h1><a href="{{ "/" | absolute_url }}">{{ site.title | default: site.github.repository_name }}</a></h1>
+    <a class="skip" href="#content">Skip to content</a>
 
-        {% if site.logo %}
-          <img src="{{site.logo | relative_url}}" alt="Logo" />
-        {% endif %}
+    {% comment %}
+      Page URLs carry a .html suffix, nav entries do not. Normalise both to a
+      trailing slash so the current page matches either spelling.
+    {% endcomment %}
+    {% assign here = page.url | remove: '.html' | append: '/' | replace: '//', '/' %}
 
-        <p>{{ site.description | default: site.github.project_tagline }}</p>
+    {% comment %}
+      Find which nav group holds this page. The group title becomes the
+      eyebrow above the page heading, so a reader always knows which part of
+      the documentation they are standing in.
+    {% endcomment %}
+    {% assign eyebrow = '' %}
+    {% for group in site.data.nav %}
+      {% for item in group.items %}
+        {% assign there = item.url | append: '/' | replace: '//', '/' %}
+        {% if here == there %}{% assign eyebrow = group.title %}{% endif %}
+      {% endfor %}
+    {% endfor %}
 
-        <nav>
-          {% comment %}
-            Page URLs carry a .html suffix, nav entries do not. Normalise both
-            to a trailing slash so the current page matches either spelling.
-          {% endcomment %}
-          {% assign here = page.url | remove: '.html' | append: '/' | replace: '//', '/' %}
+    <div class="shell">
+      <header class="masthead">
+        <a class="brand" href="{{ "/" | absolute_url }}">
+          <span class="brand-name">{{ site.title | default: site.github.repository_name }}</span>
+          <span class="brand-line" aria-hidden="true"></span>
+        </a>
+        <p class="brand-tagline">{{ site.description | default: site.github.project_tagline }}</p>
+
+        <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="nav">
+          <span class="nav-toggle-open">Contents</span>
+          <span class="nav-toggle-close">Close</span>
+        </button>
+
+        <nav id="nav" aria-label="Documentation">
           {% for group in site.data.nav %}
           <h2 class="nav-group">{{ group.title }}</h2>
           <ul>
             {% for item in group.items %}
             {% if item.url contains '://' %}
-            <li><a href="{{ item.url }}">{{ item.text }}</a></li>
+            <li><a href="{{ item.url }}">{{ item.text }}<span class="nav-out" aria-hidden="true">&#8599;</span></a></li>
             {% else %}
             {% assign there = item.url | append: '/' | replace: '//', '/' %}
-            <li{% if here == there %} class="current"{% endif %}><a href="{{ item.url | relative_url }}">{{ item.text }}</a></li>
+            <li{% if here == there %} class="current"{% endif %}>
+              <a href="{{ item.url | relative_url }}"{% if here == there %} aria-current="page"{% endif %}>{{ item.text }}</a>
+            </li>
             {% endif %}
             {% endfor %}
           </ul>
           {% endfor %}
         </nav>
-
-        {% if site.github.is_project_page %}
-        <p class="view"><a href="{{ site.github.repository_url }}">View the Project on GitHub <small>{{ site.github.repository_nwo }}</small></a></p>
-        {% endif %}
-
-        {% if site.github.is_user_page %}
-        <p class="view"><a href="{{ site.github.owner_url }}">View My GitHub Profile</a></p>
-        {% endif %}
-
-        {% if site.show_downloads %}
-        <ul class="downloads">
-          <li><a href="{{ site.github.zip_url }}">Download <strong>ZIP File</strong></a></li>
-          <li><a href="{{ site.github.tar_url }}">Download <strong>TAR Ball</strong></a></li>
-          <li><a href="{{ site.github.repository_url }}">View On <strong>GitHub</strong></a></li>
-        </ul>
-        {% endif %}
       </header>
-      <section>
 
-      {{ content }}
+      <main id="content">
+        <div class="page-head">
+          <div class="head-band">
+            {% if eyebrow != '' %}<span class="eyebrow">{{ eyebrow }}</span>{% endif %}
+            <span class="head-rule" aria-hidden="true"></span>
+          </div>
+          <h1 class="page-title">{{ page.title | default: site.title }}</h1>
+        </div>
 
-      </section>
-      <footer>
-        {% if site.github.is_project_page %}
-        <p>This project is maintained by <a href="{{ site.github.owner_url }}">{{ site.github.owner_name }}</a></p>
-        {% endif %}
-        <p><small>Hosted on GitHub Pages &mdash; Theme by <a href="https://github.com/orderedlist">orderedlist</a></small></p>
-      </footer>
+        <article class="prose">
+          {{ content }}
+        </article>
+
+        <footer class="page-foot">
+          <p>
+            {% if site.github.is_project_page %}
+            Maintained by <a href="{{ site.github.owner_url }}">{{ site.github.owner_name }}</a>.
+            <a href="{{ site.github.repository_url }}">Source on GitHub</a>.
+            {% endif %}
+          </p>
+        </footer>
+      </main>
+
+      <aside class="onthispage" hidden>
+        <h2>On this page</h2>
+        <ol></ol>
+      </aside>
     </div>
-    <script src="{{ "/assets/js/scale.fix.js" | relative_url }}"></script>
+
+    <script src="{{ "/assets/js/docs.js" | relative_url }}" defer></script>
   </body>
 </html>
