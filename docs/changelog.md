@@ -10,6 +10,24 @@ Version numbers follow semantic versioning. A major version marks a change
 that can break working code. A minor version adds behaviour. A patch version
 fixes a defect without changing the surface.
 
+## 2.16.0 (2026-08-16)
+
+### Added
+
+- The query builder is generic over its model. `Show.query()` is a `QueryBuilder[Show]`, and the model rides along through every clause, so `run()` is a `List[Show]`, `first()` is an `Optional[Show]`, and `arun()` and `afirst()` match. No cast and no annotation needed.
+- `WriteBuilder[Model]`, returned by `insert()`, `insert_from()`, `create_table_as()`, `update()`, and `delete()`. Its `run()` is the affected row count or the RETURNING rows as dicts, which is what a write has always returned. At run time it is the same class as `QueryBuilder`, so `isinstance()` cannot tell the two apart; the split is for the type checker.
+- `WriteResult` in `sustained.types`, the `Union[int, List[Dict[str, Any]]]` a write returns.
+- `QueryBuilder[Show]` works in a run-time annotation: the class accepts the subscript and returns itself.
+
+### Changed
+
+- Argument positions that take any query are declared `QueryBuilder[Any]`, since the builder is invariant in its model. This includes `from_()`, `with_()`, `insert_from()`, the join `col2` argument, and `QueryResolvable`.
+- The generic types live in `builder.pyi` only. Nothing about the running code changed, so an untyped codebase sees no difference.
+
+### Not covered
+
+- The select list does not narrow the result. `select('id')` still types as the whole model, and `to_dicts()` values stay `Any`. Reading a row's shape back out of the SQL is not something Python's type system can do.
+
 ## 2.15.0 (2026-08-16)
 
 ### Added
