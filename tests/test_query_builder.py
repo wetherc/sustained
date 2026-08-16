@@ -528,3 +528,16 @@ class TestFuncRendering(unittest.TestCase):
         self.assertEqual(
             str(query), "SELECT FORMAT('User count: %s', COUNT(*)) FROM users"
         )
+
+
+class TestSubscript(unittest.TestCase):
+    """
+    QueryBuilder[User] is a stub construct. At runtime the subscript has to
+    resolve to the class itself so a runtime annotation does not raise.
+    """
+
+    def test_subscript_returns_the_class(self):
+        from sustained.builder import WriteBuilder
+
+        self.assertIs(QueryBuilder[Model], QueryBuilder)
+        self.assertIs(WriteBuilder, QueryBuilder)

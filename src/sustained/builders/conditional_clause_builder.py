@@ -159,7 +159,7 @@ class ConditionalClauseBuilder(ABC):
 
         actual_op = "NOT EXISTS" if op_override else "EXISTS"
 
-        sub_builder: Optional["QueryBuilder"] = None
+        sub_builder: Optional["QueryBuilder[Any]"] = None
         raw_sql: Optional[str] = None
         if isinstance(query, QueryBuilder):
             sub_builder = query
@@ -335,7 +335,7 @@ class ConditionalClauseBuilder(ABC):
             self._clauses.append((conjunction, render))
             return
 
-        sub_builder: Optional["QueryBuilder"] = None
+        sub_builder: Optional["QueryBuilder[Any]"] = None
         raw_sql: Optional[str] = None
         if isinstance(vals, QueryBuilder):
             sub_builder = vals

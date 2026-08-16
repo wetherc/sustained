@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import TYPE_CHECKING, Callable, Dict, Type, TypedDict, Union
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Type, TypedDict, Union
 
 if TYPE_CHECKING:
     from .builder import QueryBuilder
@@ -29,7 +29,11 @@ Selectable = Union[
     "Subquery",
 ]
 CaseResult = Union[DbReturnValue, "Column"]
-QueryResolvable = Union[Callable[..., "QueryBuilder"], str, "QueryBuilder"]
+QueryResolvable = Union[Callable[..., "QueryBuilder[Any]"], str, "QueryBuilder[Any]"]
+"""A subquery in argument position: a builder, a callable returning one, or SQL."""
+
+WriteResult = Union[int, List[Dict[str, Any]]]
+"""What a write returns: the affected row count, or the RETURNING rows."""
 
 
 class RelationType(Enum):

@@ -284,7 +284,7 @@ async def async_transaction(adapter: AsyncAdapter) -> AsyncIterator[AsyncAdapter
 
 
 async def run_async(
-    query: "QueryBuilder", adapter: Optional[AsyncAdapter] = None
+    query: "QueryBuilder[Any]", adapter: Optional[AsyncAdapter] = None
 ) -> Any:
     """
     Executes a built query on an async adapter. SELECT statements return

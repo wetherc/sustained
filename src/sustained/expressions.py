@@ -124,13 +124,15 @@ class ColumnExpr:
             )
         )
 
-    def in_(self, values: "Union[List[Any], QueryBuilder]") -> Predicate:
+    def in_(self, values: "Union[List[Any], QueryBuilder[Any]]") -> Predicate:
         return self._in("IN", values)
 
-    def not_in(self, values: "Union[List[Any], QueryBuilder]") -> Predicate:
+    def not_in(self, values: "Union[List[Any], QueryBuilder[Any]]") -> Predicate:
         return self._in("NOT IN", values)
 
-    def _in(self, operator: str, values: "Union[List[Any], QueryBuilder]") -> Predicate:
+    def _in(
+        self, operator: str, values: "Union[List[Any], QueryBuilder[Any]]"
+    ) -> Predicate:
         if isinstance(values, list):
             if not values:
                 raise ValueError("IN/NOT IN requires a non-empty list of values.")
@@ -223,7 +225,7 @@ class Subquery:
     Represents a subquery in a SELECT clause.
     """
 
-    def __init__(self, query: "QueryBuilder", alias: str):
+    def __init__(self, query: "QueryBuilder[Any]", alias: str):
         """
         Initializes the subquery expression.
 

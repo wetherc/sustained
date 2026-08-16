@@ -60,6 +60,13 @@ class QueryBuilder:
     the `query()` class method on a `Model` subclass.
     """
 
+    def __class_getitem__(cls, item: object) -> Type["QueryBuilder"]:
+        """
+        Accepts the subscript a type checker reads from builder.pyi, so
+        QueryBuilder[User] in a runtime annotation does not raise.
+        """
+        return cls
+
     def __init__(self, model_class: Type["Model"], dialect: Optional[Dialects] = None):
         """
         Initializes the QueryBuilder.
@@ -1396,3 +1403,14 @@ class QueryBuilder:
         raise AttributeError(
             f"'{type(self).__name__}' object has no attribute '{name}'"
         )
+
+
+WriteBuilder = QueryBuilder
+"""
+The write-position name for the same class. insert(), update(), delete(),
+and create_table_as() move a query into write position, where run() returns
+a row count or the RETURNING rows instead of model instances. A type checker
+reads WriteBuilder from builder.pyi as its own class and holds writes to
+that return type; at runtime the two names are one class, so isinstance()
+cannot tell them apart.
+"""

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple, Type, Union
+from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple, Type, TypeVar, Union
 
 from sustained.builder import QueryBuilder
 from sustained.dialects import Dialects
@@ -11,6 +11,8 @@ if TYPE_CHECKING:
 
 
 _MODEL_REGISTRY: Dict[str, Type["Model"]] = {}
+
+TModel = TypeVar("TModel", bound="Model")
 
 
 def get_registered_model(name: str) -> Optional[Type["Model"]]:
@@ -365,12 +367,13 @@ class Model(metaclass=ModelMeta):
         return transaction(conn)
 
     @classmethod
-    def query(cls) -> "QueryBuilder":
+    def query(cls: Type[TModel]) -> "QueryBuilder[TModel]":
         """
         Starts a new query for this model.
 
         Returns:
-            QueryBuilder: A new QueryBuilder instance for this model.
+            QueryBuilder: A new QueryBuilder for this model. A type checker
+                reads it as QueryBuilder[cls], so run() gives List[cls].
         """
         return QueryBuilder(cls, dialect=cls._dialect)
 

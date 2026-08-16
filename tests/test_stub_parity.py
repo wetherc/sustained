@@ -21,18 +21,44 @@ class StubModel(Model):
     tableName = "stub_parity"
 
 
+def base_names(node):
+    """
+    The names of the classes one stub class inherits from, in the same file.
+    A base written as _Clauses["QueryBuilder[TModel]"] is a Subscript, so the
+    subscript is peeled off first.
+    """
+    for base in node.bases:
+        if isinstance(base, ast.Subscript):
+            base = base.value
+        if isinstance(base, ast.Name):
+            yield base.id
+
+
 def stub_methods(relative_path, class_name):
-    """Every method name declared for one class in one stub file."""
+    """
+    Every method name a stub class offers, its own and its bases'. Generic
+    is skipped: it comes from typing, not from the stub.
+    """
     tree = ast.parse((SRC / relative_path).read_text())
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ClassDef) and node.name == class_name:
-            return {
-                item.name
-                for item in node.body
-                if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
-                and not item.name.startswith("__")
-            }
-    raise AssertionError(f"{class_name} is not declared in {relative_path}")
+    classes = {
+        node.name: node for node in ast.walk(tree) if isinstance(node, ast.ClassDef)
+    }
+    if class_name not in classes:
+        raise AssertionError(f"{class_name} is not declared in {relative_path}")
+
+    names, pending = set(), [class_name]
+    while pending:
+        node = classes.get(pending.pop())
+        if node is None:
+            continue
+        names.update(
+            item.name
+            for item in node.body
+            if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and not item.name.startswith("__")
+        )
+        pending.extend(base_names(node))
+    return names
 
 
 def resolves(obj, name):
@@ -59,6 +85,17 @@ class TestStubsMatchRuntime(unittest.TestCase):
         self.assert_all_resolve(
             StubModel.query(),
             stub_methods("builder.pyi", "QueryBuilder"),
+            "builder.pyi",
+        )
+
+    def test_write_builder_stub(self):
+        """
+        WriteBuilder is a stub-only view of the same runtime class, so its
+        methods have to resolve on an ordinary query builder.
+        """
+        self.assert_all_resolve(
+            StubModel.query().delete(),
+            stub_methods("builder.pyi", "WriteBuilder"),
             "builder.pyi",
         )
 
