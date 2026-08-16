@@ -2,9 +2,14 @@
 Central registry for SQL functions and their dialect-specific support.
 """
 
-from typing import Dict, List, NamedTuple
+from types import MappingProxyType
+from typing import Dict, List, Mapping, NamedTuple
 
 from sustained.dialects import Dialects
+
+# The default for functions with one name everywhere. A NamedTuple shares
+# one default object across every instance, so this is read-only.
+_NO_ALTERNATE_NAMES: Mapping[Dialects, str] = MappingProxyType({})
 
 
 class FunctionMetadata(NamedTuple):
@@ -20,7 +25,7 @@ class FunctionMetadata(NamedTuple):
     """
 
     supported_dialects: List[Dialects]
-    dialect_names: Dict[Dialects, str] = {}
+    dialect_names: Mapping[Dialects, str] = _NO_ALTERNATE_NAMES
 
 
 class _FunctionRegistry:
@@ -56,7 +61,6 @@ class _FunctionRegistry:
             "CONCAT",
             "SUBSTRING",
             "TRIM",
-            "LENGTH",
             "ROUND",
             "ABS",
             "CEILING",
@@ -101,7 +105,8 @@ class _FunctionRegistry:
                 dialect_names={Dialects.MSSQL: "GETDATE"},
             ),
         )
-        # LENGTH is spelled LEN in T-SQL.
+        # LENGTH is a common scalar, but it is spelled LEN in T-SQL, so it
+        # needs an alternate name instead of a place in the list above.
         self.register(
             "LENGTH",
             FunctionMetadata(
