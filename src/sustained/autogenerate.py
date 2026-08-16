@@ -383,6 +383,32 @@ class SchemaDiff:
             or self.constraint_notes
         )
 
+    def outstanding(self) -> List[str]:
+        """
+        The differences a generated migration was supposed to close, one
+        readable line each, empty when the models all landed.
+
+        Only objects the models declare are reported. A table, column, or
+        index the database holds and the models do not is left out: a
+        generated migration leaves those alone unless drops are allowed,
+        so counting them would report a schema built partly by hand as a
+        failure.
+        """
+        lines: List[str] = []
+        for model in self.missing_tables:
+            lines.append(f"table '{model.tableName}' was not created")
+        for model, name, _ in self.new_columns:
+            lines.append(f"column '{model.tableName}.{name}' was not added")
+        for table, name, actual, expected in self.changed_columns:
+            lines.append(
+                f"column '{table}.{name}' is {actual}, the models declare {expected}"
+            )
+        for model, index in self.new_indexes:
+            lines.append(f"index '{index.name}' on '{model.tableName}' was not created")
+        for model, index, _ in self.changed_indexes:
+            lines.append(f"index '{index.name}' on '{model.tableName}' was not rebuilt")
+        return lines
+
     def summary(self) -> str:
         """A human-readable description of every difference."""
         lines: List[str] = []

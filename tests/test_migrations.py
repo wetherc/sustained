@@ -814,5 +814,127 @@ class TestRehearse(MigrationTestCase):
         self.assertEqual(migrator.applied_records(), [])
 
 
+class TestRehearsalProofs(MigrationTestCase):
+    """
+    A rehearsal reports what the schema said: whether the models landed,
+    and whether the down steps put the schema back.
+    """
+
+    def models(self, **columns):
+        model = type(
+            "RpUser",
+            (Model,),
+            {
+                "tableName": "rp_users",
+                "tableColumns": {
+                    "id": Integer(primary_key=True),
+                    "email": String(120),
+                    **columns,
+                },
+            },
+        )
+        return [model]
+
+    def test_a_clean_sweep_proves_the_schema_came_back(self):
+        migrator = Migrator(
+            self.conn,
+            [
+                Migration(
+                    "001_t",
+                    up="CREATE TABLE rp_t (id INTEGER)",
+                    down="DROP TABLE rp_t",
+                )
+            ],
+        )
+        results = migrator.rehearse()
+        self.assertEqual(results[0].reversed, [])
+        self.assertIsNone(results[0].landed)
+
+    def test_a_down_step_that_leaves_an_object_behind_is_reported(self):
+        migrator = Migrator(
+            self.conn,
+            [
+                Migration(
+                    "001_t",
+                    up=[
+                        "CREATE TABLE rp_t (id INTEGER)",
+                        "CREATE TABLE rp_leftover (id INTEGER)",
+                    ],
+                    down="DROP TABLE rp_t",
+                )
+            ],
+        )
+        results = migrator.rehearse()
+        self.assertTrue(results[0].down_ok)
+        self.assertEqual(results[0].reversed, ["table 'rp_leftover' left behind"])
+
+    def test_a_column_left_behind_is_reported(self):
+        self.conn.execute("CREATE TABLE rp_users (id INTEGER)")
+        migrator = Migrator(
+            self.conn,
+            [
+                Migration(
+                    "001_c",
+                    up="ALTER TABLE rp_users ADD COLUMN bio TEXT",
+                    down="SELECT 1",
+                )
+            ],
+        )
+        results = migrator.rehearse()
+        self.assertEqual(results[0].reversed, ["column 'rp_users.bio' left behind"])
+
+    def test_no_down_step_leaves_the_comparison_unchecked(self):
+        migrator = Migrator(
+            self.conn, [Migration("001_t", up="CREATE TABLE rp_t (id INTEGER)")]
+        )
+        results = migrator.rehearse()
+        self.assertIsNone(results[0].reversed)
+
+    def test_models_rehearse_as_a_migration_of_their_own(self):
+        migrator = Migrator(self.conn, [])
+        results = migrator.rehearse(models=self.models())
+        self.assertEqual(len(results), 1)
+        self.assertTrue(results[0].id.startswith("auto_"))
+        self.assertEqual(results[0].landed, [])
+        self.assertEqual(results[0].reversed, [])
+        self.assertNotIn("rp_users", table_names(self.conn))
+        self.assertEqual(migrator.applied_records(), [])
+
+    def test_the_generated_migration_runs_after_the_registered_ones(self):
+        migrator = Migrator(
+            self.conn,
+            [
+                Migration(
+                    "001_t",
+                    up="CREATE TABLE rp_t (id INTEGER)",
+                    down="DROP TABLE rp_t",
+                )
+            ],
+        )
+        results = migrator.rehearse(models=self.models())
+        self.assertEqual(results[0].id, "001_t")
+        self.assertTrue(results[1].id.startswith("auto_"))
+        self.assertIsNone(results[0].landed)
+
+    def test_a_change_the_diff_skipped_is_reported_as_not_landed(self):
+        self.conn.execute("CREATE TABLE rp_users (id INTEGER, email BOOLEAN)")
+        migrator = Migrator(self.conn, [])
+        results = migrator.rehearse(
+            models=self.models(bio=String(20)), ignore_changed_columns=True
+        )
+        self.assertEqual(len(results[0].landed), 1)
+        self.assertIn("column 'rp_users.email'", results[0].landed[0])
+
+    def test_models_that_match_the_database_rehearse_nothing(self):
+        migrator = Migrator(self.conn, [])
+        migrator.up(models=self.models())
+        self.assertEqual(migrator.rehearse(models=self.models()), [])
+
+    def test_a_migration_id_names_the_generated_migration(self):
+        migrator = Migrator(self.conn, [])
+        results = migrator.rehearse(models=self.models(), migration_id="drift")
+        self.assertEqual(results[0].id, "drift")
+
+
 if __name__ == "__main__":
     unittest.main()

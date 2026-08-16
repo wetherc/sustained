@@ -126,12 +126,24 @@ class RehearsalResult(NamedTuple):
     why: the migration has no down step, the sweep never reached it, or it
     is a repeatable, which has no down step to prove. When a step raised,
     `error` holds the database error.
+
+    `landed` and `reversed` carry what the schema itself said. Each is
+    None when it was not checked, an empty list when it was checked and
+    proved, and a list of readable lines when it failed. `landed` is only
+    checked for the migration generated from the models, since a
+    hand-written migration may create objects no model declares.
+    `reversed` compares the schema after the down sweep against the
+    snapshot taken before the rehearsal, so it is shared by every
+    migration in the run: a leftover object names the whole sweep, not
+    one step of it.
     """
 
     id: str
     up_ok: bool
     down_ok: Optional[bool]
     error: Optional[str]
+    landed: Optional[List[str]] = None
+    reversed: Optional[List[str]] = None
 
 
 # Dialects whose schema changes roll back, so a rehearsal can undo itself.
@@ -296,18 +308,35 @@ def _rehearsal_results(
     ran: List[Migration],
     up_error: Optional[Tuple[str, str]],
     down_outcomes: Dict[str, Tuple[Optional[bool], Optional[str]]],
+    landed: Optional[Dict[str, List[str]]] = None,
+    reverted: Optional[List[str]] = None,
 ) -> List[RehearsalResult]:
     """
     Merges the up and down outcomes into one result per migration, in the
     order the up steps ran. `up_error` is the (id, message) pair of the
     migration that stopped the rehearsal, if one did.
+
+    `landed` holds the outstanding differences per migration id, for the
+    migrations whose landing was checked. `reverted` holds the schema
+    left over after the down sweep, and goes on every migration whose
+    down step ran, since one sweep proves them together.
     """
+    landed = landed or {}
     unfinished: Tuple[Optional[bool], Optional[str]] = (
         None,
         "down not rehearsed: the run stopped",
     )
     results = [
-        RehearsalResult(m.id, True, *down_outcomes.get(m.id, unfinished)) for m in ran
+        RehearsalResult(
+            m.id,
+            True,
+            *down_outcomes.get(m.id, unfinished),
+            landed=landed.get(m.id),
+            reversed=(
+                reverted if down_outcomes.get(m.id, unfinished)[0] is True else None
+            ),
+        )
+        for m in ran
     ]
     if up_error is not None:
         results.append(RehearsalResult(up_error[0], False, None, up_error[1]))
@@ -866,23 +895,46 @@ class Migrator:
             _tag_migration(error, migration.id)
             raise
 
-    def rehearse(self, scratch: bool = False) -> List[RehearsalResult]:
+    def rehearse(
+        self,
+        scratch: bool = False,
+        models: Optional[List[Type["Model"]]] = None,
+        allow_drops: bool = False,
+        ignore_changed_columns: bool = False,
+        migration_id: Optional[str] = None,
+        renames: Optional[dict[str, str]] = None,
+        table_renames: Optional[dict[str, str]] = None,
+        type_casts: Optional[dict[str, str]] = None,
+    ) -> List[RehearsalResult]:
         """
         Runs every pending migration up, then back down, inside one
         transaction, and rolls that transaction back. Returns one result
         per migration that ran; an empty list means nothing was pending.
 
-        A rehearsal proves that the SQL is valid and that the down steps
-        take the schema back. It does not prove anything about data on a
-        production-sized table. The tracking table is created if it does
-        not exist yet; nothing else survives. A callable step that commits
-        on its own is the exception: that commit cannot be taken back.
+        A rehearsal proves that the SQL is valid, that the schema moved,
+        and that the down steps take it back. It does not prove anything
+        about data on a production-sized table. The tracking table is
+        created if it does not exist yet; nothing else survives. A
+        callable step that commits on its own is the exception: that
+        commit cannot be taken back.
+
+        With models, the run rehearses what up(models=[...]) would apply:
+        the generated migration joins the pending list for this run only,
+        and its result reports whether the schema then matched the models.
+        The remaining arguments are the diff options up() takes, and they
+        should match the ones the real run will use.
 
         The up steps run in order. Repeatables run after them, as in up().
         The down steps then run newest-first, skipping the repeatables,
         which have none. The first migration without a down step stops the
         sweep, since everything older sits under changes that cannot be
         taken back. The first step that raises stops the rehearsal.
+
+        The schema is read before the run and again after the down sweep.
+        A difference between the two means a down step ran without taking
+        its change back. Tables and columns are compared; indexes,
+        constraints, and defaults are not, so a leftover index is not
+        reported yet.
 
         Only dialects whose schema changes roll back may rehearse. Pass
         scratch=True when the connection points at a database that can be
@@ -911,10 +963,28 @@ class Migrator:
         with self._lock_scope():
             self.validate()
             pending = self.pending()
+            drift: Optional[Migration] = None
+            if models is not None:
+                self._ensure_tracking_table()
+                drift = self.plan(
+                    models,
+                    allow_drops=allow_drops,
+                    ignore_changed_columns=ignore_changed_columns,
+                    migration_id=migration_id,
+                    renames=renames,
+                    table_renames=table_renames,
+                    type_casts=type_casts,
+                )
+                if drift is not None:
+                    # The generated migration joins the run without being
+                    # registered: nothing outside the rehearsal should see
+                    # a migration the rollback is about to take back.
+                    pending = pending + [drift]
             if not pending:
                 return []
             records = {r.id: r for r in self.applied_records()}
             seq = _next_seq(list(records.values()))
+            before = self._snapshot()
             self._rehearsing = True
             try:
                 # Close whatever transaction the reads above opened, so the
@@ -933,11 +1003,68 @@ class Migrator:
                         break
                     seq += 1
                     ran.append(migration)
+                landed: Dict[str, List[str]] = {}
+                if drift is not None and up_error is None and models is not None:
+                    landed[drift.id] = self._landed(
+                        models, renames=renames, table_renames=table_renames
+                    )
                 outcomes = {} if up_error else self._rehearse_down(ran)
-                return _rehearsal_results(ran, up_error, outcomes)
+                reverted = None
+                if before is not None and any(
+                    down_ok for down_ok, _ in outcomes.values()
+                ):
+                    from sustained.autogenerate import diff_snapshots
+
+                    after = self._snapshot()
+                    if after is not None:
+                        reverted = diff_snapshots(before, after)
+                return _rehearsal_results(ran, up_error, outcomes, landed, reverted)
             finally:
                 self._rehearsing = False
                 self._roll_back_rehearsal()
+
+    def _snapshot(self) -> Optional[Dict[str, Any]]:
+        """
+        The live schema, without the tracking table, or None when the
+        database will not report it. A rehearsal compares two of these,
+        and the tracking table is created by the rehearsal itself, so
+        leaving it in would report it as an object left behind.
+
+        A read that raises leaves the rehearsal's other proofs standing
+        and reports the comparison as not checked, which is what a
+        scratch database on an engine Sustained cannot introspect gives.
+        """
+        from sustained.autogenerate import introspect_schema
+
+        try:
+            schema = introspect_schema(self._connection, self._dialect)
+        except Exception:
+            return None
+        schema.pop(self._table.lower(), None)
+        return dict(schema)
+
+    def _landed(
+        self,
+        models: List[Type["Model"]],
+        renames: Optional[dict[str, str]] = None,
+        table_renames: Optional[dict[str, str]] = None,
+    ) -> List[str]:
+        """
+        What the models still ask for after the generated migration ran,
+        empty when everything landed. Read inside the rehearsal
+        transaction, which sees the uncommitted DDL on this connection.
+        """
+        from sustained.autogenerate import diff_schema
+
+        diff = diff_schema(
+            self._connection,
+            models,
+            dialect=self._dialect,
+            exclude_tables=(self._table,),
+            renames=renames,
+            table_renames=table_renames,
+        )
+        return diff.outstanding()
 
     def _roll_back_rehearsal(self) -> None:
         """
