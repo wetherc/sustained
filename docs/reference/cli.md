@@ -39,10 +39,12 @@ Guide: [Schema and Migrations](/schema#command-line).
 | 0 | Success, or nothing to do. |
 | 1 | A failure: config, connection, validation problems, or a migration error. Details on stderr. |
 | 2 | `plan` only: work is waiting. |
+| 3 | `plan` and `migrate`: a guard blocked a statement. Nothing ran. |
 
-`plan` is the one command with three outcomes: 0 when the database is current,
-2 when migrations are pending or the models have drifted, and 1 when
-validation found problems. Problems outrank pending work.
+`plan` is the one command with four outcomes: 0 when the database is current,
+2 when migrations are pending or the models have drifted, 3 when a guard
+blocked a statement, and 1 when validation found problems. Problems outrank a
+blocked statement, which outranks pending work.
 
 argparse also exits 2 on a usage error, so a script that treats 2 as "work is
 waiting" should check stderr for an `error:` line.
@@ -71,6 +73,7 @@ with and without `--json`.
 | `table` | no | Tracking table name | `'sustained_migrations'` |
 | `rehearsal_table` | no | Receipt table name | `'sustained_rehearsals'` |
 | `tracking_table_options` | no | `TableOptions` | `None` |
+| `guards` | no | `list[Guard]` from `sustained.guards` | `[]` |
 | `get_rehearsal_connection` | no | `() -> Connection`, a scratch database | `None` |
 | `before_migrate` | no | `(connection) -> None` | not called |
 | `after_migrate` | no | `(connection, applied) -> None` | not called |
@@ -98,15 +101,32 @@ models = [Venue, Show]
 dialect = 'postgres'
 ```
 
+### Guards
+
+`plan` runs the guards over every statement it lists, the pending migrations
+and the drift together, and prints a `guards` section beside the others. In
+`--json`, each verdict appears on the statement object it flags, as
+`{"rule", "verdict"}`.
+
+`migrate` refuses a blocked run before any statement executes and exits 3, with
+the rule and the statement on stderr. A warning prints on stderr and the run
+goes on. `rehearse` does not enforce guards.
+
+There is no flag to skip a guard for one run. Fix the statement, or take the
+rule out of the config module.
+
 ### Callbacks
 
 Only `migrate` calls them. `rehearse` does not, because nothing real happened.
+The CLI collects them into a `Callbacks` object and hands them to the migrator,
+which is what calls them, so the same hooks are available through the API.
 
 `before_migrate` runs before the run starts, which is before validation and
 before the advisory lock. `after_migrate` runs only when at least one
 migration applied, so a run with nothing to do stays quiet. `on_error` runs
 after a failure and before it reaches the shell; `migration_id` is `None` when
-the run failed before reaching a migration.
+the run failed before reaching a migration, which is what a guard block or a
+validation problem looks like.
 
 A callback that is not callable is skipped. An `on_error` that raises has its
 own error printed to stderr, and the original migration error still decides
@@ -151,7 +171,18 @@ run: sustained rehearse
 ```
 
 The footer points at `rehearse` when a pending migration removes data, since
-`migrate` refuses those without a receipt, and at `migrate` otherwise.
+`migrate` refuses those without a receipt, and at `migrate` otherwise. A
+blocked statement replaces it with
+`blocked: fix the statement, or take the rule out of guards`.
+
+A `guards` section follows the others when the config names `guards`, one line
+per verdict:
+
+```console
+guards
+  block  no_drops          ALTER TABLE users DROP COLUMN legacy
+  warn   no_table_rewrite  ALTER TABLE users ALTER COLUMN age TYPE BIGINT
+```
 
 The drift section appears only when the config names `models`. It reports
 every difference, drops included, while `migrate` never generates a drop; a
@@ -214,7 +245,8 @@ $ sustained plan --json
       "statements": [
         {
           "sql": "ALTER TABLE users DROP COLUMN legacy",
-          "destructive": true
+          "destructive": true,
+          "guards": [{"rule": "no_drops", "verdict": "block"}]
         }
       ],
       "destructive": ["ALTER TABLE users DROP COLUMN legacy"]
@@ -229,7 +261,9 @@ Every place a command reports SQL uses that statement object, `drift`
 included. `drift` is `null`, not `[]`, when the config names no models, so a
 caller can tell "nothing was compared" from "compared and found no gap".
 `statements` is `null` for a callable step, which renders no SQL. Before
-version 2.13.0 it was a count.
+version 2.13.0 it was a count. A guard verdict appears on the statement it
+flags, as `{"rule", "verdict"}`, and an unflagged statement carries `[]`. The
+key is present from 2.15.0 onward.
 
 `rehearse --json` prints:
 

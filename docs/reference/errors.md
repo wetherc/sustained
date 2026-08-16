@@ -11,6 +11,7 @@ Every exception Sustained raises, and the condition behind it.
 Exception
 ├── SustainedError              sustained.exceptions
 │   ├── DialectError
+│   ├── GuardBlocked
 │   ├── MigrationError
 │   └── RehearsalRequired
 ├── RuntimeError
@@ -20,7 +21,7 @@ Exception
 └── AttributeError
 ```
 
-`SustainedError` is the base for the three errors Sustained defines itself.
+`SustainedError` is the base for the four errors Sustained defines itself.
 `PoolTimeout` sits outside that tree, on `RuntimeError`, so an
 `except RuntimeError` around connection handling catches it.
 
@@ -85,6 +86,24 @@ When a rehearsal of the same content ran and failed, the first line reads
 `up(unrehearsed=True)` waives the check. A run that only adds never triggers
 it, and neither does a callable step, which renders no SQL to scan. See
 [The receipt a rehearsal leaves](/schema#the-receipt-a-rehearsal-leaves).
+
+## `GuardBlocked`
+
+A guard returned a blocking verdict on a statement the run would apply.
+
+Raised by `Migrator.up()` and `AsyncMigrator.up()` before any statement runs.
+`verdicts` holds the blocking verdicts, in the order the guards returned them.
+The message names each rule and the statement it read:
+
+```
+A guard blocked this run:
+  no_drops  ALTER TABLE users DROP COLUMN legacy
+Fix the statement, or take the rule out of the guard list to run it anyway.
+```
+
+There is no flag that waives it. `sustained plan` and `sustained migrate` exit
+3 when it is raised. A warning verdict prints on stderr and raises nothing.
+See [Guards](/schema#guards).
 
 ## `PoolTimeout`
 

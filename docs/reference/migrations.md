@@ -34,13 +34,18 @@ step, or when a repeatable has a callable step and no explicit `checksum`.
 ```python
 Migrator(connection, migrations, table='sustained_migrations',
          dialect=Dialects.DEFAULT, tracking_table_options=None,
-         rehearsal_table='sustained_rehearsals')
+         rehearsal_table='sustained_rehearsals', guards=None,
+         callbacks=None)
 ```
 
 Applies and reverts migrations, records them in a tracking table, and runs
 each inside a transaction. Duplicate ids raise `ValueError`.
 
-Property: `connection`.
+`guards` is a list of rules over the statements a run would apply; see
+[Guards](#guards) below. `callbacks` is a `Callbacks` object, whose functions
+`up()` calls around the run.
+
+Properties: `connection`, `dialect`.
 
 ### Inspecting
 
@@ -244,6 +249,48 @@ as drift or as an object a down step left behind.
 | `migration_sql(migration, direction='up')` | `list[str]` | One migration's statements, for offline review. A callable step renders as a comment. Raises `ValueError` when that step is `None`. |
 | `receipt_key(applied, run)` | `str` | The key a receipt is stored under. |
 | `rehearsal_failed(result)` | `bool` | Whether one result stops a rehearsal from passing. |
+| `run_statements(run)` | `list[str]` | Every up statement a run would apply, callable steps skipped. |
+| `check_guards(guards, run, dialect, reported=None)` | `None` | Runs the guards over a run. Raises `GuardBlocked` on a blocking verdict, prints warnings on stderr. |
+
+### `Callbacks`
+
+```python
+Callbacks(before_migrate=None, after_migrate=None, on_error=None)
+```
+
+A NamedTuple of three optional functions, given to either migrator.
+`before_migrate(connection)` runs before validation and before the advisory
+lock. `after_migrate(connection, applied)` runs only when at least one
+migration applied. `on_error(connection, migration_id, error)` runs after a
+failure; `migration_id` is `None` when the run failed before reaching a
+migration. An `on_error` that raises has its own error printed on stderr, and
+the run's error still propagates. A `before_migrate` or `after_migrate` that
+raises stops the caller.
+
+## Guards
+
+In `sustained.guards`. A guard is
+`Callable[[Sequence[str], Dialects], list[Verdict]]`: it reads the statements a
+run would apply and returns one `Verdict(rule, verdict, statement)` per
+objection. `verdict` is `BLOCK` (`'block'`) or `WARN` (`'warn'`).
+
+`up()` raises `GuardBlocked` on a blocking verdict, before any statement runs,
+and prints warnings on stderr. Callable steps render no SQL, so guards cannot
+read them.
+
+| Signature | Returns | Description |
+| --- | --- | --- |
+| `no_drops()` | `Guard` | Blocks a table, column, view, schema, or database drop. Constraint, index, and key drops pass. |
+| `index_must_be_concurrent()` | `Guard` | Blocks `CREATE INDEX` without `CONCURRENTLY`. Postgres only; silent elsewhere. |
+| `no_table_rewrite()` | `Guard` | Warns on a column type change, or a NOT NULL with no default for existing rows. |
+| `no_lock_without_timeout()` | `Guard` | Blocks a run that alters or drops a table with no `SET lock_timeout` anywhere in it. |
+| `max_statements(limit)` | `Guard` | Blocks every statement past `limit`. A limit below 1 raises `ValueError`. |
+| `run_guards(guards, statements, dialect)` | `list[Verdict]` | Every guard's verdicts, in guard order. |
+| `blocking(verdicts)` | `list[Verdict]` | The verdicts that stop a run. |
+| `warnings_only(verdicts)` | `list[Verdict]` | The verdicts that only report. |
+
+The scan is textual, like the destructive labels: comments are stripped and
+whitespace collapsed, and nothing parses SQL.
 
 ## `AsyncMigrator`
 
@@ -252,11 +299,14 @@ In `sustained.aio_migrations`.
 ```python
 AsyncMigrator(adapter, migrations, table='sustained_migrations',
               dialect=Dialects.DEFAULT, tracking_table_options=None,
-              rehearsal_table='sustained_rehearsals')
+              rehearsal_table='sustained_rehearsals', guards=None,
+              callbacks=None)
 ```
 
 The same runner on an `AsyncAdapter`. Same tracking table, same `Migration`
-objects, same validation rules and refusal messages. Property: `adapter`.
+objects, same validation rules and refusal messages. Guards and callbacks work
+the same way, except that a callback receives the adapter and is awaited when
+it returns an awaitable. Properties: `adapter`, `dialect`.
 
 Every method is a coroutine: `applied_records`, `applied`, `pending`,
 `status`, `statuses`, `validate`, `repair`, `baseline`, `up`, `rehearse`,

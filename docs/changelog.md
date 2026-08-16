@@ -10,6 +10,25 @@ Version numbers follow semantic versioning. A major version marks a change
 that can break working code. A minor version adds behaviour. A patch version
 fixes a defect without changing the surface.
 
+## 2.15.0 (2026-08-16)
+
+### Added
+
+- Guards: rules over the statements a run would apply. A guard reads the statement list and the dialect and returns a `Verdict(rule, verdict, statement)` for each statement it objects to, where the verdict is `block` or `warn`. `Migrator(..., guards=[...])` and `AsyncMigrator(..., guards=[...])` take them, and the CLI config module names them as `guards = [...]`.
+- `sustained.guards` ships five rules, all factories: `no_drops()`, `index_must_be_concurrent()` (Postgres only, silent elsewhere), `no_table_rewrite()`, `no_lock_without_timeout()`, and `max_statements(n)`. `no_table_rewrite()` warns where the others block, since whether a change rewrites a table depends on the engine, its version, and whether the types coerce. `run_guards()`, `blocking()`, and `warnings_only()` are there for code that runs rules itself.
+- `up()` raises `GuardBlocked` on a blocking verdict, before any statement runs, and prints warning verdicts on stderr. `GuardBlocked` is in `sustained.exceptions` and re-exported at the package root; `verdicts` holds what blocked the run. There is no flag that waives a guard: fix the statement, or take the rule out of the list.
+- `sustained plan` runs the guards over the pending migrations and the drift statements together and prints a `guards` section beside the others, one line per verdict. In `--json`, a verdict rides on the statement object it flags, as `{"rule", "verdict"}`, and an unflagged statement carries an empty list.
+- Exit code 3 means a guard blocked a statement, from `plan` and from `migrate`. Precedence is 1 (problems) over 3 (blocked) over 2 (pending work), since a plan that cannot be trusted outranks a statement that will be refused.
+- `Migrator(..., callbacks=Callbacks(...))` and the same on `AsyncMigrator`, closing a parity gap: `before_migrate`, `after_migrate`, and `on_error` were reachable only through the CLI config module. `up()` calls them, the async migrator awaits a callback that returns an awaitable, and the config module keeps working the way it did.
+- `dialect` property on both migrators, and `run_statements()` and `check_guards()` in `sustained.migrations` for code that reads or checks a run itself.
+
+### Changed
+
+- `sustained migrate` no longer calls the config module's callbacks itself: it collects them into a `Callbacks` object and the migrator calls them. The one visible difference is that `after_migrate` now fires before the post-run drift report rather than after it.
+- `plan --json` statement objects gained a `guards` key, present and empty when no rule flagged the statement.
+- The guards run twice on a run that includes the diff against the models, since the generated statements are not known until the registered migrations have run. The second pass reads the whole run, so a rule about the run as a whole counts all of it, and a warning already printed is not printed again.
+- `rehearse` does not enforce guards. It runs against a database it is about to roll back, and blocking there would stop an operator from testing the statement they are fixing.
+
 ## 2.14.0 (2026-08-16)
 
 ### Added

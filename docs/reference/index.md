@@ -15,7 +15,7 @@ If you are looking for how to do something rather than what a method takes,
 | [QueryBuilder](/reference/query-builder) | Every query method: SELECT, joins, filters, groups, paging, writes, execution |
 | [Predicates and expressions](/reference/predicates) | `col`, `Predicate`, `Column`, `Literal`, `Func`, `Subquery`, the function registry |
 | [Schema types](/reference/schema) | Column types, `ColumnDef` options, `Index`, `TableOptions`, DDL rendering |
-| [Migrations](/reference/migrations) | `Migration`, `Migrator`, `AsyncMigrator`, autogeneration, SQL files, analysis |
+| [Migrations](/reference/migrations) | `Migration`, `Migrator`, `AsyncMigrator`, autogeneration, guards, SQL files, analysis |
 | [Execution and pooling](/reference/execution) | Transactions, `ConnectionPool`, async adapters, the statement listener |
 | [Command line](/reference/cli) | Every subcommand, flag, exit code, and config-module attribute |
 | [Dialect support](/reference/dialects) | What each of the six dialects supports, and what it refuses |
@@ -32,7 +32,7 @@ from sustained import Model, QueryBuilder, create_model, col
 from sustained import Column, ColumnExpr, Literal, Func, Predicate
 from sustained import AggregateExpression, WindowExpression, CaseExpression
 from sustained import RelationType, RelationMapping, Join
-from sustained import DialectError, MigrationError
+from sustained import DialectError, GuardBlocked, MigrationError, RehearsalRequired
 
 # from submodules
 from sustained.dialects import Dialects
@@ -42,6 +42,7 @@ from sustained.aio_migrations import AsyncMigrator
 from sustained.migration_files import load_migrations
 from sustained.autogenerate import autogenerate, diff_schema
 from sustained.analysis import destructive_statements, summarize
+from sustained.guards import no_drops, max_statements, Verdict
 from sustained.execution import set_statement_listener
 from sustained.pool import ConnectionPool, PoolTimeout
 from sustained.aio import DbApiAsyncAdapter, AiosqliteAdapter, AsyncpgAdapter

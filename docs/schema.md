@@ -121,6 +121,7 @@ Autogeneration refuses to guess about anything that loses data or fails on popul
 - **Type and nullability changes migrate per dialect.** Postgres, MSSQL, and DuckDB alter in place with reversible down steps; Postgres casts take a hint through `type_casts={'table.col': 'col::integer'}`. SQLite rebuilds the table (create new, copy rows, replace), which is not reversible. Pass `ignore_changed_columns=True` to skip them entirely.
 - **NOT NULL needs a value for existing rows.** Adding or tightening to NOT NULL requires a `default` or a `backfill` value on the ColumnDef; generation emits add-nullable, UPDATE backfill, SET NOT NULL, or folds the backfill into a SQLite rebuild. New primary key or autoincrement columns cannot be added with ALTER TABLE.
 - **Statements that remove data need a rehearsal.** `up()` refuses to run a DROP, a column drop, or a TRUNCATE until a passing rehearsal has proved that exact set of statements. `up(unrehearsed=True)` applies them anyway. See [The receipt a rehearsal leaves](#the-receipt-a-rehearsal-leaves).
+- **Your own rules run too.** Guards read every statement a run would apply, generated or hand-written, and can block it. See [Guards](#guards).
 - The tracking table and the receipt table are excluded from diffing, and `exclude_tables` protects any other tables Sustained does not manage.
 
 Renames cannot be detected from the catalog, so pass hints: `up(models=models, renames={'users.name': 'full_name'}, table_renames={'old': 'new'})` emits reversible RENAME statements instead of a destructive drop-plus-add.
@@ -303,7 +304,8 @@ migrations_dir = 'migrations'
 # optional: migrations = [...], placeholders = {...},
 # models = [User, Post], dialect = 'postgres', table = '...',
 # rehearsal_table = '...', tracking_table_options = TableOptions(...),
-# get_rehearsal_connection(), before_migrate(), after_migrate(), on_error()
+# guards = [no_drops()], get_rehearsal_connection(),
+# before_migrate(), after_migrate(), on_error()
 ```
 
 ```console
@@ -318,7 +320,7 @@ $ sustained script down             # print the SQL without running it
 $ sustained baseline 001_create_users
 ```
 
-Commands exit 0 on success and 1 on failure, with errors on stderr, so they slot into deploy pipelines.
+Commands exit 0 on success and 1 on failure, with errors on stderr, so they slot into deploy pipelines. `plan` exits 2 when work is waiting, and `plan` and `migrate` exit 3 when a [guard](#guards) blocked a statement.
 
 When the config module names `models`, `rehearse` and `migrate` use them: `rehearse` proves the generated migration alongside the pending ones, and `migrate` applies it after them. A targeted `migrate` applies the registered migrations only, since the generated migration always runs last.
 
@@ -358,7 +360,9 @@ The footer points at `rehearse` rather than `migrate` when a pending migration c
 
 The drift section appears only when the config module names `models`. It reports every difference, drops included, while `migrate` never generates a drop. When drops are all that is left, the footer says so instead of offering `sustained migrate`. With no `models`, the plan says drift went unchecked rather than reporting none.
 
-`plan` exits 0 when the database is current, 2 when work is waiting, and 1 when validation found problems, which win over pending work. Note that argparse also exits 2 on a usage error, so a script that treats 2 as "work is waiting" should check stderr for an `error:` line.
+When the config module names `guards`, `plan` runs them over every statement it just listed and prints a fourth section. See [Guards](#guards).
+
+`plan` exits 0 when the database is current, 2 when work is waiting, 3 when a guard blocked a statement, and 1 when validation found problems. Problems win over everything: a plan that cannot be trusted is worse news than a statement that will be refused. A blocked statement in turn wins over work merely waiting. Note that argparse also exits 2 on a usage error, so a script that treats 2 as "work is waiting" should check stderr for an `error:` line.
 
 ### Machine-readable output
 
@@ -375,7 +379,8 @@ $ sustained plan --json
       "statements": [
         {
           "sql": "ALTER TABLE users DROP COLUMN legacy",
-          "destructive": true
+          "destructive": true,
+          "guards": [{"rule": "no_drops", "verdict": "block"}]
         }
       ],
       "destructive": ["ALTER TABLE users DROP COLUMN legacy"]
@@ -386,7 +391,7 @@ $ sustained plan --json
 }
 ```
 
-Every command that reports SQL uses that statement object, `drift` included. `statements` is `null` for a callable step, which renders no SQL. `drift` is `null`, not `[]`, when the config module names no models, so a caller can tell "nothing was compared" from "compared and found no gap". `status --json` prints `{"migrations": [{"id": ..., "state": ...}]}` and `validate --json` prints `{"ok": ..., "problems": [...]}`. Output is plain in both modes; nothing is coloured.
+Every command that reports SQL uses that statement object, `drift` included. `statements` is `null` for a callable step, which renders no SQL. A guard verdict rides on the statement it flags and appears nowhere else, so there is one place to read what a statement will do. Statements no rule flagged carry an empty `guards` list. `drift` is `null`, not `[]`, when the config module names no models, so a caller can tell "nothing was compared" from "compared and found no gap". `status --json` prints `{"migrations": [{"id": ..., "state": ...}]}` and `validate --json` prints `{"ok": ..., "problems": [...]}`. Output is plain in both modes; nothing is coloured.
 
 Before version 2.13.0, `statements` was a count. A script that read the number needs updating.
 
@@ -530,9 +535,100 @@ if rehearsal.ok:
 
 In Python, `migrator.rehearse()` returns a `Rehearsal`: a list of `RehearsalResult(id, up_ok, down_ok, error, landed, reversed)` with `key`, `recorded`, and `ok` on it. `down_ok` is `None` when nothing was proved, and `error` then says why. `landed` and `reversed` follow the same rule as the JSON output: `None` not checked, `[]` proved, a list of lines when it failed. Pass `rehearse(models=[User, Show])` to rehearse the model diff too, and `rehearse(scratch=True)` for a connection to a database you can throw away. `AsyncMigrator.rehearse()` is the same on an adapter, apart from `models`: diffing models against a database is a synchronous path, so the async rehearsal covers registered migrations only.
 
+## Guards
+
+A rehearsal proves a migration works. A guard decides whether you want it to run at all. Guards are your team's rules about SQL: no drops in a deploy, every index built concurrently, no run longer than fifty statements.
+
+Give them to the migrator, or name them in the config module:
+
+```python
+from sustained.guards import index_must_be_concurrent, max_statements, no_drops
+
+guards = [no_drops(), index_must_be_concurrent(), max_statements(50)]
+
+migrator = Migrator(conn, migrations, dialect=Dialects.POSTGRES, guards=guards)
+```
+
+Each rule returns a verdict on each statement it objects to: `block` or `warn`. A `block` stops `up()` before a single statement runs, and raises `GuardBlocked`. A `warn` prints on stderr and the run goes on.
+
+```console
+$ sustained plan
+pending
+  003_sessions  2 statements
+  004_trim      1 statement
+    destructive  ALTER TABLE users DROP COLUMN legacy
+
+guards
+  block  no_drops          ALTER TABLE users DROP COLUMN legacy
+  warn   no_table_rewrite  ALTER TABLE users ALTER COLUMN age TYPE BIGINT
+
+2 pending migrations, 2 guard verdicts
+blocked: fix the statement, or take the rule out of guards
+
+$ sustained migrate
+error: A guard blocked this run:
+  no_drops  ALTER TABLE users DROP COLUMN legacy
+Fix the statement, or take the rule out of the guard list to run it anyway.
+```
+
+Both commands exit 3. There is no `--force`: a rule you can wave away on the day is not a rule. Fix the statement, or take the rule out of the list.
+
+### The rules
+
+| Rule | Verdict | Flags |
+| --- | --- | --- |
+| `no_drops()` | block | A statement that drops a table, column, view, schema, or database |
+| `index_must_be_concurrent()` | block | `CREATE INDEX` without `CONCURRENTLY`, on Postgres only |
+| `no_table_rewrite()` | warn | A column type change, or a NOT NULL with nothing to fill existing rows |
+| `no_lock_without_timeout()` | block | A run that alters or drops a table with no `SET lock_timeout` in it |
+| `max_statements(n)` | block | Every statement past the limit |
+
+Every one is a factory, so they all read the same at the call site. `no_table_rewrite()` warns where the others block, because whether a change rewrites the table depends on the engine, its version, and whether the two types coerce. Read it against your own engine rather than trusting it.
+
+`index_must_be_concurrent()` is silent on every dialect but Postgres, which is the only one with the keyword. A rule that does not apply says nothing rather than guessing.
+
+### What guards read, and when
+
+Guards read every SQL statement the run would apply: SQL file migrations, Python migrations with string steps, and the diff against your models. A callable step renders no SQL, so guards cannot see inside it, the same limit the destructive labels carry.
+
+`migrate` checks twice. The registered migrations are checked before anything runs. The diff against the models cannot be generated until those have run, so its statements are checked the moment they exist, together with the ones already applied, so a rule about the whole run counts the whole run. A warning already printed is not printed again.
+
+`rehearse` does not enforce guards. It runs against a database it is about to roll back, and stopping it there would stop you from testing the statement you are trying to fix.
+
+Writing your own rule takes a function of two arguments:
+
+```python
+from sustained.guards import BLOCK, Verdict
+
+def no_seed_data():
+    def guard(statements, dialect):
+        return [
+            Verdict('no_seed_data', BLOCK, s)
+            for s in statements
+            if s.upper().startswith('INSERT')
+        ]
+    return guard
+```
+
+There is no rule language and no severity beyond the two verdicts. A guard is a Python function, so the rest is Python.
+
 ## Callbacks Around a Run
 
-The config module can name three functions, and `migrate` calls whichever ones it finds:
+The migrator calls three functions around `up()`, whichever ones you give it:
+
+```python
+from sustained.migrations import Callbacks, Migrator
+
+migrator = Migrator(conn, migrations, callbacks=Callbacks(
+    before_migrate=lambda connection: notify('migration starting'),
+    after_migrate=lambda connection, applied: notify(f'applied {len(applied)}'),
+    on_error=lambda connection, migration_id, error: page_someone(
+        f'{migration_id} failed: {error}'
+    ),
+))
+```
+
+From the shell, the config module names them as plain functions and the CLI collects them:
 
 ```python
 def before_migrate(connection):
@@ -545,9 +641,9 @@ def on_error(connection, migration_id, error):
     page_someone(f'{migration_id} failed: {error}')
 ```
 
-`before_migrate` runs before the run starts, which is before validation and before the advisory lock. `after_migrate` runs only when at least one migration applied, so a run with nothing to do stays quiet. `on_error` runs after the failure and before it reaches the shell; if the callback itself raises, its error prints on stderr and the migration error is the one that decides the exit code. `migration_id` names the migration that failed, or is `None` when the run failed before reaching one.
+`before_migrate` runs before the run starts, which is before validation and before the advisory lock. `after_migrate` runs only when at least one migration applied, so a run with nothing to do stays quiet. `on_error` runs after the failure and before it reaches the caller; if the callback itself raises, its error prints on stderr and the migration error is the one that propagates. `migration_id` names the migration that failed, or is `None` when the run failed before reaching one, which is what a guard block or a validation problem looks like.
 
-Only `migrate` calls them. `rehearse` does not, since nothing real happened. Code calling `Migrator` directly already controls what runs around `up()`.
+Only `up()` calls them. `rehearse` does not, since nothing real happened. `AsyncMigrator` takes the same `Callbacks`, receives the adapter as the first argument, and awaits a callback that returns an awaitable, so `async def before_migrate(adapter)` works.
 
 ## Offline Review and Async
 
