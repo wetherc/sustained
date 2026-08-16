@@ -132,8 +132,8 @@ which driver is underneath.
 The transaction pin lives in a `ContextVar`, so it follows the task tree
 rather than the thread.
 
-Two gaps: async transactions do not nest, and async eager loading of `through`
-relations raises `NotImplementedError`.
+Async eager loading shares the sync planner, so it covers dotted paths and
+`through` relations. One gap remains: async transactions do not nest.
 
 ## Rendering
 

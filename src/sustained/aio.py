@@ -26,7 +26,6 @@ from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any, AsyncIterator, Dict, List, Optional, Tuple, Type
 
 from sustained.execution import notify_statement
-from sustained.types import RelationType
 
 if TYPE_CHECKING:
     from sustained.builder import QueryBuilder
@@ -279,8 +278,9 @@ async def run_async(
         columns, rows = await resolved.fetch(sql, params)
         notify_statement(sql, params, time.perf_counter() - started)
         models = [query._model_class(**dict(zip(columns, row))) for row in rows]
-        for relation_name in query._eager_relations:
-            await _eager_load_async(query._model_class, resolved, models, relation_name)
+        await eager_load_paths_async(
+            query._model_class, resolved, models, query._eager_relations
+        )
         return models
 
     if use_executemany:
@@ -306,51 +306,60 @@ async def run_async(
     return result
 
 
+async def eager_load_paths_async(
+    model_class: Type["Model"],
+    adapter: AsyncAdapter,
+    parents: List["Model"],
+    paths: List[str],
+) -> None:
+    """
+    Loads every dotted relation path for a list of parent instances. Each
+    relation costs one query per level, batched over all the parents at
+    that level, exactly as the sync loader does.
+    """
+    from sustained.execution import relation_tree
+
+    await _eager_load_tree_async(model_class, adapter, parents, relation_tree(paths))
+
+
+async def _eager_load_tree_async(
+    model_class: Type["Model"],
+    adapter: AsyncAdapter,
+    parents: List["Model"],
+    tree: Dict[str, Any],
+) -> None:
+    """Loads one level of the relation tree, then recurses into each child."""
+    from sustained.execution import _attached_children, related_model
+
+    for relation_name, children in tree.items():
+        await _eager_load_async(model_class, adapter, parents, relation_name)
+        if not children:
+            continue
+        next_parents = _attached_children(parents, relation_name)
+        if next_parents:
+            await _eager_load_tree_async(
+                related_model(model_class, relation_name),
+                adapter,
+                next_parents,
+                children,
+            )
+
+
 async def _eager_load_async(
     model_class: Type["Model"],
     adapter: AsyncAdapter,
     parents: List["Model"],
     relation_name: str,
 ) -> None:
-    """Async mirror of the sync eager loader for basic relations."""
-    from sustained.execution import _collect_parent_keys, _split_column_ref
-    from sustained.model import resolve_model_reference
+    """
+    Async mirror of the sync eager loader. It shares the sync planner, so
+    both paths build the same query and group the rows the same way,
+    including relations that run through a link table.
+    """
+    from sustained.execution import attach_eager_load, plan_eager_load
 
     if not parents:
         return
-    relation = model_class.relationMappings[relation_name]
-    join_info = relation["join"]
-    if "through" in join_info:
-        raise NotImplementedError(
-            "Async eager loading of through relations is not supported yet."
-        )
-    related_cls = resolve_model_reference(
-        relation["modelClass"], context_module=model_class.__module__
-    )
-    from_table, from_col = _split_column_ref(join_info["from"], relation_name)
-    to_table, to_col = _split_column_ref(join_info["to"], relation_name)
-    if from_table == model_class.tableName:
-        parent_col, child_col = from_col, to_col
-    else:
-        parent_col, child_col = to_col, from_col
-
-    parent_keys = _collect_parent_keys(parents, parent_col, relation_name)
-    unique_keys = [k for k in dict.fromkeys(parent_keys) if k is not None]
-    is_many = relation["relation"] == RelationType.HasManyRelation
-    if not unique_keys:
-        for parent in parents:
-            setattr(parent, relation_name, [] if is_many else None)
-        return
-
-    children = await run_async(
-        related_cls.query().whereIn(child_col, unique_keys), adapter
-    )
-    grouped: Dict[Any, List["Model"]] = {}
-    for child in children:
-        grouped.setdefault(child.__dict__.get(child_col), []).append(child)
-    for parent, key in zip(parents, parent_keys):
-        matches = grouped.get(key, [])
-        if is_many:
-            setattr(parent, relation_name, matches)
-        else:
-            setattr(parent, relation_name, matches[0] if matches else None)
+    plan = plan_eager_load(model_class, parents, relation_name)
+    children = await run_async(plan.query, adapter) if plan.query is not None else []
+    attach_eager_load(plan, parents, children)

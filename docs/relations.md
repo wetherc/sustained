@@ -197,7 +197,7 @@ One extra query per relation, and each instance keeps its own identity. A
 dotted path reaches further, `withGraphFetched('shows.tickets')` for the
 tickets of every show of every venue, at one query per level. See
 [Executing Queries](./executing#eager-loading-relations) for what it needs in
-the select list and which relation types it supports on async adapters.
+the select list.
 
 ## Raw joins
 

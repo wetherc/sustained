@@ -298,22 +298,46 @@ def _eager_load_tree(
             )
 
 
-def eager_load_relation(
+class EagerPlan:
+    """
+    One eager load, split into the query to run and how to attach its rows.
+    The split lets the sync and async paths share the SQL and the grouping,
+    since only the way they run the query differs.
+
+    A None query means there is nothing to fetch, and attaching sets the
+    empty value on every parent.
+    """
+
+    def __init__(
+        self,
+        relation_name: str,
+        parent_keys: List[Any],
+        is_many: bool,
+        query: Optional[Any] = None,
+        child_col: Optional[str] = None,
+        through: bool = False,
+    ) -> None:
+        self.relation_name = relation_name
+        self.parent_keys = parent_keys
+        self.is_many = is_many
+        self.query = query
+        self.child_col = child_col
+        self.through = through
+
+
+def plan_eager_load(
     model_class: Type["Model"],
-    connection: Any,
     parents: List["Model"],
     relation_name: str,
-) -> None:
+) -> EagerPlan:
     """
-    Loads a relation for a list of parent instances with one extra query and
-    attaches the results to each parent under the relation name.
+    Builds the query that loads a relation for a list of parents, batched
+    over their join keys.
 
-    HasManyRelation attaches a list; the to-one relation types attach a
-    single instance or None. Through relations are not supported yet.
+    Raises:
+        ValueError: If the model has no relation with that name, or the
+            parent rows lack the join key column.
     """
-    if not parents:
-        return
-
     relation = model_class.relationMappings.get(relation_name)
     if not relation:
         raise ValueError(
@@ -331,17 +355,9 @@ def eager_load_relation(
     to_table, to_col = _split_column_ref(join_info["to"], relation_name)
 
     if "through" in join_info:
-        _eager_load_through(
-            model_class,
-            related_cls,
-            connection,
-            parents,
-            relation_name,
-            relation,
-            from_col,
-            to_col,
+        return _plan_eager_load_through(
+            related_cls, parents, relation_name, relation, from_col, to_col
         )
-        return
 
     # The side whose table matches the parent model holds the parent key.
     if from_table == model_class.tableName:
@@ -351,30 +367,75 @@ def eager_load_relation(
 
     parent_keys = _collect_parent_keys(parents, parent_col, relation_name)
     unique_keys = [k for k in dict.fromkeys(parent_keys) if k is not None]
-
     is_many = relation["relation"] == RelationType.HasManyRelation
     if not unique_keys:
-        for parent in parents:
-            setattr(parent, relation_name, [] if is_many else None)
-        return
+        return EagerPlan(relation_name, parent_keys, is_many)
+    return EagerPlan(
+        relation_name,
+        parent_keys,
+        is_many,
+        query=related_cls.query().whereIn(child_col, unique_keys),
+        child_col=child_col,
+    )
 
-    children = related_cls.query().whereIn(child_col, unique_keys).run(connection)
+
+def attach_eager_load(
+    plan: EagerPlan, parents: List["Model"], children: List["Model"]
+) -> None:
+    """
+    Groups fetched rows by their join key and attaches them to the parents
+    under the relation name. HasManyRelation and ManyToManyRelation attach
+    a list; the to-one types attach a single instance or None.
+
+    Raises:
+        ValueError: If the fetched rows lack the join key column.
+    """
+    empty: Any = [] if plan.is_many else None
+    if plan.query is None:
+        for parent in parents:
+            setattr(parent, plan.relation_name, [] if plan.is_many else None)
+        return
 
     grouped: Dict[Any, List["Model"]] = {}
     for child in children:
-        if child_col not in child.__dict__:
-            raise ValueError(
-                f"Cannot eager load '{relation_name}': related rows do not "
-                f"include the '{child_col}' column."
-            )
-        grouped.setdefault(child.__dict__[child_col], []).append(child)
-
-    for parent, key in zip(parents, parent_keys):
-        matches = grouped.get(key, [])
-        if is_many:
-            setattr(parent, relation_name, matches)
+        if plan.through:
+            key = child.__dict__.pop(_PARENT_KEY_ALIAS, None)
         else:
-            setattr(parent, relation_name, matches[0] if matches else None)
+            assert plan.child_col is not None
+            if plan.child_col not in child.__dict__:
+                raise ValueError(
+                    f"Cannot eager load '{plan.relation_name}': related rows "
+                    f"do not include the '{plan.child_col}' column."
+                )
+            key = child.__dict__[plan.child_col]
+        grouped.setdefault(key, []).append(child)
+
+    for parent, key in zip(parents, plan.parent_keys):
+        matches = grouped.get(key, [])
+        if plan.is_many:
+            setattr(parent, plan.relation_name, matches)
+        else:
+            setattr(parent, plan.relation_name, matches[0] if matches else empty)
+
+
+def eager_load_relation(
+    model_class: Type["Model"],
+    connection: Any,
+    parents: List["Model"],
+    relation_name: str,
+) -> None:
+    """
+    Loads a relation for a list of parent instances with one extra query and
+    attaches the results to each parent under the relation name.
+
+    HasManyRelation and ManyToManyRelation attach a list; the to-one relation
+    types attach a single instance or None.
+    """
+    if not parents:
+        return
+    plan = plan_eager_load(model_class, parents, relation_name)
+    children = plan.query.run(connection) if plan.query is not None else []
+    attach_eager_load(plan, parents, children)
 
 
 def _collect_parent_keys(
@@ -400,20 +461,18 @@ def _collect_parent_keys(
 _PARENT_KEY_ALIAS = "sustained_parent_key"
 
 
-def _eager_load_through(
-    model_class: Type["Model"],
+def _plan_eager_load_through(
     related_cls: Type["Model"],
-    connection: Any,
     parents: List["Model"],
     relation_name: str,
     relation: Any,
     parent_col: str,
     related_col: str,
-) -> None:
+) -> EagerPlan:
     """
-    Loads a many-to-many relation with one query that joins the related
-    table to the through table and exposes the parent key under a reserved
-    alias for grouping.
+    Plans a many-to-many load as one query that joins the related table to
+    the through table and exposes the parent key under a reserved alias for
+    grouping.
     """
     join_info = relation["join"]
     through = join_info["through"]
@@ -434,11 +493,9 @@ def _eager_load_through(
     parent_keys = _collect_parent_keys(parents, parent_col, relation_name)
     unique_keys = [k for k in dict.fromkeys(parent_keys) if k is not None]
     if not unique_keys:
-        for parent in parents:
-            setattr(parent, relation_name, [])
-        return
+        return EagerPlan(relation_name, parent_keys, is_many=True)
 
-    children = (
+    query = (
         related_cls.query()
         .select(
             f"{related_table}.*",
@@ -451,13 +508,7 @@ def _eager_load_through(
             f"{related_table}.{related_col}",
         )
         .whereIn(f"{through_table}.{through_from_key}", unique_keys)
-        .run(connection)
     )
-
-    grouped: Dict[Any, List["Model"]] = {}
-    for child in children:
-        key = child.__dict__.pop(_PARENT_KEY_ALIAS, None)
-        grouped.setdefault(key, []).append(child)
-
-    for parent, key in zip(parents, parent_keys):
-        setattr(parent, relation_name, grouped.get(key, []))
+    return EagerPlan(
+        relation_name, parent_keys, is_many=True, query=query, through=True
+    )

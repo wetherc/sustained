@@ -11,6 +11,7 @@ from sustained.aio import (
     async_transaction,
     convert_format_to_numbered,
 )
+from sustained.execution import set_statement_listener
 from sustained.schema import Integer, String
 
 
@@ -32,6 +33,51 @@ class AioPet(Model):
         "id": Integer(primary_key=True),
         "owner_id": Integer(),
         "name": String(50),
+    }
+    relationMappings = {
+        "toys": {
+            "relation": RelationType.HasManyRelation,
+            "modelClass": "AioToy",
+            "join": {"from": "aio_pets.id", "to": "aio_toys.pet_id"},
+        },
+        "owner": {
+            "relation": RelationType.BelongsToOneRelation,
+            "modelClass": AioOwner,
+            "join": {"from": "aio_pets.owner_id", "to": "aio_owners.id"},
+        },
+    }
+
+
+class AioToy(Model):
+    tableName = "aio_toys"
+    tableColumns = {
+        "id": Integer(primary_key=True),
+        "pet_id": Integer(),
+        "name": String(50),
+    }
+
+
+class AioTag(Model):
+    tableName = "aio_tags"
+    tableColumns = {"id": Integer(primary_key=True), "label": String(50)}
+
+
+class AioTagged(Model):
+    tableName = "aio_owners"
+    tableColumns = {"id": Integer(primary_key=True), "name": String(50)}
+    relationMappings = {
+        "tags": {
+            "relation": RelationType.ManyToManyRelation,
+            "modelClass": AioTag,
+            "join": {
+                "from": "aio_owners.id",
+                "through": {
+                    "from": {"table": "aio_owner_tags", "key": "owner_id"},
+                    "to": {"table": "aio_owner_tags", "key": "tag_id"},
+                },
+                "to": "aio_tags.id",
+            },
+        }
     }
 
 
@@ -138,6 +184,70 @@ class TestAsyncTransactions(AsyncTestCase):
         AioOwner.bind_async(self.adapter)
         owners = await AioOwner.query().arun()
         self.assertEqual(len(owners), 1)
+
+
+class TestAsyncNestedEagerLoad(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.conn = sqlite3.connect(":memory:", check_same_thread=False)
+        self.conn.executescript("""
+            CREATE TABLE aio_owners (id INTEGER PRIMARY KEY, name TEXT);
+            CREATE TABLE aio_pets (id INTEGER PRIMARY KEY, owner_id INTEGER, name TEXT);
+            CREATE TABLE aio_toys (id INTEGER PRIMARY KEY, pet_id INTEGER, name TEXT);
+            CREATE TABLE aio_tags (id INTEGER PRIMARY KEY, label TEXT);
+            CREATE TABLE aio_owner_tags (owner_id INTEGER, tag_id INTEGER);
+            INSERT INTO aio_owners VALUES (1, 'Ada'), (2, 'Grace'), (3, 'Alan');
+            INSERT INTO aio_pets VALUES (1, 1, 'Rex'), (2, 1, 'Mia'), (3, 2, 'Sam');
+            INSERT INTO aio_toys VALUES (1, 1, 'Ball'), (2, 1, 'Rope'), (3, 3, 'Bone');
+            INSERT INTO aio_tags VALUES (10, 'vip'), (11, 'new');
+            INSERT INTO aio_owner_tags VALUES (1, 10), (1, 11);
+            """)
+        self.adapter = DbApiAsyncAdapter(self.conn)
+        self.models = (AioOwner, AioPet, AioToy, AioTag, AioTagged)
+        for model in self.models:
+            model.bind_async(self.adapter)
+        self.statements = []
+        set_statement_listener(lambda sql, params, seconds: self.statements.append(sql))
+
+    def tearDown(self):
+        set_statement_listener(None)
+        for model in self.models:
+            model.unbind_async()
+        self.conn.close()
+
+    async def test_dotted_path_loads_two_levels(self):
+        owners = (
+            await AioOwner.query().orderBy("id").withGraphFetched("pets.toys").arun()
+        )
+        self.assertEqual([p.name for p in owners[0].pets], ["Rex", "Mia"])
+        self.assertEqual([t.name for t in owners[0].pets[0].toys], ["Ball", "Rope"])
+        self.assertEqual(owners[0].pets[1].toys, [])
+        self.assertEqual(owners[1].pets[0].toys[0].name, "Bone")
+
+    async def test_one_query_per_relation_per_level(self):
+        await AioOwner.query().withGraphFetched("pets.toys").arun()
+        self.assertEqual(len(self.statements), 3)
+        self.assertIn("FROM aio_toys", self.statements[2])
+
+    async def test_shared_prefix_loads_the_prefix_once(self):
+        owners = (
+            await AioOwner.query()
+            .orderBy("id")
+            .withGraphFetched("pets.toys", "pets.owner")
+            .arun()
+        )
+        self.assertEqual(len(self.statements), 4)
+        self.assertEqual(owners[0].pets[0].owner.name, "Ada")
+
+    async def test_through_relation_loads(self):
+        owners = await AioTagged.query().orderBy("id").withGraphFetched("tags").arun()
+        self.assertEqual([t.label for t in owners[0].tags], ["vip", "new"])
+        self.assertEqual(owners[1].tags, [])
+        self.assertNotIn("sustained_parent_key", owners[0].tags[0].__dict__)
+
+    async def test_no_parent_keys_attaches_empty(self):
+        await AioPet.query().insert({"id": 4, "owner_id": None, "name": "Stray"}).arun()
+        pets = await AioPet.query().where("id", "=", 4).withGraphFetched("owner").arun()
+        self.assertIsNone(pets[0].owner)
 
 
 class TestPlaceholderConversion(unittest.TestCase):

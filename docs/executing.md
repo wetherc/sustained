@@ -307,10 +307,10 @@ async with Show.async_transaction():
 ```
 
 `arun()` mirrors `run()`: hydration, RETURNING rows, batched multi-row
-inserts, and eager loading of direct relations. Two limits are worth knowing
-before you build on it. Async eager loading of relations through a link table
-is not supported yet, and async transactions do not nest, so there is no
-savepoint equivalent.
+inserts, and eager loading. Both paths share the same loader, so dotted paths,
+per-level batching, and relations through a link table behave the same way.
+One limit is worth knowing before you build on it: async transactions do not
+nest, so there is no savepoint equivalent.
 
 ## Watching what runs
 
