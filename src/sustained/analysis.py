@@ -33,6 +33,15 @@ _ALTER_DROP_RE = re.compile(
 )
 
 
+def normalize_statement(statement: str) -> str:
+    """
+    One statement on one line: comments removed, whitespace collapsed,
+    ends trimmed. Every textual scan reads this form, so a commented-out
+    drop is never matched and a statement always prints on one line.
+    """
+    return _WHITESPACE_RE.sub(" ", _COMMENT_RE.sub("", statement)).strip()
+
+
 def destructive_statements(statements: Union[str, Sequence[str]]) -> List[str]:
     """
     Returns the statements that remove data: DROP TABLE, DROP COLUMN,
@@ -47,7 +56,7 @@ def destructive_statements(statements: Union[str, Sequence[str]]) -> List[str]:
         statements = [statements]
     found = []
     for statement in statements:
-        stripped = _WHITESPACE_RE.sub(" ", _COMMENT_RE.sub("", statement)).strip()
+        stripped = normalize_statement(statement)
         if _DESTRUCTIVE_RE.search(stripped) or _ALTER_DROP_RE.search(stripped):
             found.append(stripped)
     return found

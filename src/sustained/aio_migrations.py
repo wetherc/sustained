@@ -11,10 +11,21 @@ async_transaction() block.
 from __future__ import annotations
 
 import inspect
+import sys
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from typing import Any, AsyncIterator, Dict, List, Optional, Tuple, cast
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    AsyncIterator,
+    Dict,
+    List,
+    Optional,
+    Sequence,
+    Tuple,
+    cast,
+)
 
 from sustained.aio import AsyncAdapter, async_transaction
 from sustained.dialects import Dialects
@@ -24,6 +35,7 @@ from sustained.migrations import (
     RECEIPT_FAILED,
     RECEIPT_PASSED,
     AppliedRecord,
+    Callbacks,
     Migration,
     MigrationStep,
     Rehearsal,
@@ -42,10 +54,14 @@ from sustained.migrations import (
     _tracking_column_defs,
     _upgrade_column_def,
     _validation_problems,
+    check_guards,
     migration_checksum,
     receipt_key,
     rehearsal_failed,
 )
+
+if TYPE_CHECKING:
+    from sustained.guards import Guard
 
 
 class AsyncMigrator:
@@ -59,11 +75,15 @@ class AsyncMigrator:
         dialect: Dialects = Dialects.DEFAULT,
         tracking_table_options: Any = None,
         rehearsal_table: str = "sustained_rehearsals",
+        guards: Optional[Sequence["Guard"]] = None,
+        callbacks: Optional[Callbacks] = None,
     ) -> None:
         ids = [m.id for m in migrations]
         duplicates = {i for i in ids if ids.count(i) > 1}
         if duplicates:
             raise ValueError(f"Duplicate migration ids: {sorted(duplicates)}.")
+        self._guards = list(guards or [])
+        self._callbacks = callbacks or Callbacks()
         self._adapter = adapter
         self._migrations = list(migrations)
         self._table = table
@@ -540,7 +560,57 @@ class AsyncMigrator:
         covers exactly these statements against exactly this applied
         history. Rehearse first, or pass unrehearsed=True to apply them
         without the proof.
+
+        The migrator's guards read the statements before they run. A
+        blocking verdict raises GuardBlocked and nothing is applied; a
+        warning prints on stderr. The migrator's callbacks fire around
+        the run, and each is awaited when it returns an awaitable.
         """
+        callbacks = self._callbacks
+        await self._fire(callbacks.before_migrate, self._adapter)
+        try:
+            applied = await self._run_up(
+                target, validate, allow_out_of_order, unrehearsed
+            )
+        except Exception as error:
+            await self._fire_on_error(error)
+            raise
+        if applied:
+            await self._fire(callbacks.after_migrate, self._adapter, applied)
+        return applied
+
+    async def _fire(self, hook: Optional[Any], *args: Any) -> None:
+        """Calls one callback and awaits it when it returns an awaitable."""
+        if hook is None:
+            return
+        result = hook(*args)
+        if inspect.isawaitable(result):
+            await result
+
+    async def _fire_on_error(self, error: BaseException) -> None:
+        """
+        Hands a failed run to the on_error callback. A callback that
+        raises is reported on stderr and set aside, so the run's own
+        error reaches the caller.
+        """
+        hook = self._callbacks.on_error
+        if hook is None:
+            return
+        try:
+            await self._fire(
+                hook, self._adapter, getattr(error, "migration_id", None), error
+            )
+        except Exception as callback_error:
+            print(f"error: on_error raised {callback_error!r}", file=sys.stderr)
+
+    async def _run_up(
+        self,
+        target: Optional[str],
+        validate: bool,
+        allow_out_of_order: bool,
+        unrehearsed: bool,
+    ) -> List[str]:
+        """The run itself, without the callbacks up() wraps it in."""
         from sustained.exceptions import MigrationError
 
         migrations = self._versioned()
@@ -575,9 +645,9 @@ class AsyncMigrator:
             ]
             # The order matches pending(), so a rehearsal of the same set
             # produces the same key.
-            await self._require_receipt(
-                records, versioned_now + repeatables_now, unrehearsed
-            )
+            run = versioned_now + repeatables_now
+            check_guards(self._guards, run, self._dialect)
+            await self._require_receipt(records, run, unrehearsed)
             for migration in versioned_now:
                 await self._apply(migration, next_seq, update=False)
                 next_seq += 1

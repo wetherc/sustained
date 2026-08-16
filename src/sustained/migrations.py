@@ -24,6 +24,7 @@ sustained.autogenerate and Migrator.up(models=[...]).
 from __future__ import annotations
 
 import hashlib
+import sys
 import time
 import warnings
 from contextlib import contextmanager
@@ -31,6 +32,7 @@ from datetime import datetime, timezone
 from typing import (
     TYPE_CHECKING,
     Any,
+    Awaitable,
     Callable,
     Dict,
     Iterable,
@@ -39,6 +41,7 @@ from typing import (
     NamedTuple,
     Optional,
     Sequence,
+    Set,
     Tuple,
     Type,
     Union,
@@ -50,10 +53,37 @@ from sustained.execution import transaction
 
 if TYPE_CHECKING:
     from sustained.compilers.base import Compiler
+    from sustained.guards import Guard, Verdict
     from sustained.model import Model
     from sustained.schema import ColumnDef
 
 MigrationStep = Union[str, List[str], Callable[[Any], None]]
+
+# A callback returns nothing, or an awaitable the async migrator awaits.
+CallbackResult = Optional[Awaitable[None]]
+
+
+class Callbacks(NamedTuple):
+    """
+    The functions a migrator calls around a run.
+
+    `before_migrate` runs before anything else, including validation and
+    the advisory lock. `after_migrate` runs after a successful run that
+    applied at least one migration, and receives the applied ids; a run
+    that applied nothing does not call it. `on_error` receives the failed
+    migration's id, or None when the run failed before any migration ran,
+    and the error, which then propagates.
+
+    The first argument of each is the connection the migrator runs on, or
+    the adapter for AsyncMigrator. An async migrator awaits a callback
+    that returns an awaitable.
+    """
+
+    before_migrate: Optional[Callable[[Any], CallbackResult]] = None
+    after_migrate: Optional[Callable[[Any, List[str]], CallbackResult]] = None
+    on_error: Optional[
+        Callable[[Any, Optional[str], BaseException], CallbackResult]
+    ] = None
 
 
 class Migration:
@@ -282,6 +312,73 @@ def _destructive_prefix_keys(
         if _destructive_in(prefix):
             keys.append(receipt_key(applied, prefix))
     return keys
+
+
+def run_statements(run: Sequence[Migration]) -> List[str]:
+    """
+    Every up statement a run would apply, in order. Callable steps render
+    no SQL and are skipped, so a guard cannot read them, the same limit
+    the destructive labels carry.
+    """
+    statements: List[str] = []
+    for migration in run:
+        if callable(migration.up):
+            continue
+        statements.extend(migration_sql(migration, "up"))
+    return statements
+
+
+def _report_warnings(verdicts: Sequence["Verdict"]) -> None:
+    """Prints the warning verdicts on stderr, one per line."""
+    for verdict in verdicts:
+        print(f"warn: {verdict.rule}  {verdict.statement}", file=sys.stderr)
+
+
+def check_guards(
+    guards: Sequence["Guard"],
+    run: Sequence[Migration],
+    dialect: Dialects,
+    reported: Optional[Set["Verdict"]] = None,
+) -> None:
+    """
+    Runs the guards over the statements a run would apply. A blocking
+    verdict raises GuardBlocked before anything executes; warnings print
+    on stderr and the run goes on.
+
+    `reported` collects the warnings already printed. A run whose
+    statements are known in two parts checks the whole set twice, and the
+    set keeps the operator from reading the same warning twice.
+    """
+    from sustained.exceptions import GuardBlocked
+    from sustained.guards import blocking, run_guards, warnings_only
+
+    if not guards:
+        return
+    verdicts = run_guards(guards, run_statements(run), dialect)
+    blockers = blocking(verdicts)
+    if blockers:
+        raise GuardBlocked(blockers)
+    warned = warnings_only(verdicts)
+    if reported is not None:
+        warned = [v for v in warned if v not in reported]
+        reported.update(warned)
+    _report_warnings(warned)
+
+
+def _call_on_error(callbacks: Callbacks, connection: Any, error: BaseException) -> None:
+    """
+    Hands a failed run to the on_error callback. A callback that raises
+    must not replace the error it was told about, so its own failure is
+    reported on stderr and set aside. before_migrate and after_migrate
+    are called plainly: a failure there is the operator's own and stops
+    the run.
+    """
+    if callbacks.on_error is None:
+        return
+    try:
+        callbacks.on_error(connection, getattr(error, "migration_id", None), error)
+    except Exception as callback_error:
+        print(f"error: on_error raised {callback_error!r}", file=sys.stderr)
 
 
 def _receipt_message(destructive: List[Tuple[str, str]], outcome: Optional[str]) -> str:
@@ -627,6 +724,10 @@ class Migrator:
     migration. Engines without transactions at all, such as Athena, run
     each step bare; a failing migration there can leave partial changes
     that need manual cleanup.
+
+    `guards` are rules that read the statements a run would apply; see
+    sustained.guards. A blocking verdict stops up() before any statement
+    runs. `callbacks` are the functions to call around a run.
     """
 
     def __init__(
@@ -637,11 +738,15 @@ class Migrator:
         dialect: Dialects = Dialects.DEFAULT,
         tracking_table_options: Optional[Any] = None,
         rehearsal_table: str = "sustained_rehearsals",
+        guards: Optional[Sequence["Guard"]] = None,
+        callbacks: Optional[Callbacks] = None,
     ) -> None:
         ids = [m.id for m in migrations]
         duplicates = {i for i in ids if ids.count(i) > 1}
         if duplicates:
             raise ValueError(f"Duplicate migration ids: {sorted(duplicates)}.")
+        self._guards = list(guards or [])
+        self._callbacks = callbacks or Callbacks()
         self._connection = connection
         self._migrations = list(migrations)
         self._table = table
@@ -1082,7 +1187,51 @@ class Migrator:
         without the proof. Runs that only add are never gated, and a
         callable step is invisible to the check, the same limit the
         destructive labels carry.
+
+        The migrator's guards read the statements before they run. A
+        blocking verdict raises GuardBlocked and nothing is applied; a
+        warning prints on stderr. The migrator's callbacks fire around
+        the run.
         """
+        callbacks = self._callbacks
+        if callbacks.before_migrate is not None:
+            callbacks.before_migrate(self._connection)
+        try:
+            applied = self._run_up(
+                target=target,
+                validate=validate,
+                allow_out_of_order=allow_out_of_order,
+                models=models,
+                allow_drops=allow_drops,
+                ignore_changed_columns=ignore_changed_columns,
+                migration_id=migration_id,
+                renames=renames,
+                table_renames=table_renames,
+                type_casts=type_casts,
+                unrehearsed=unrehearsed,
+            )
+        except Exception as error:
+            _call_on_error(callbacks, self._connection, error)
+            raise
+        if applied and callbacks.after_migrate is not None:
+            callbacks.after_migrate(self._connection, applied)
+        return applied
+
+    def _run_up(
+        self,
+        target: Optional[str],
+        validate: bool,
+        allow_out_of_order: bool,
+        models: Optional[List[Type["Model"]]],
+        allow_drops: bool,
+        ignore_changed_columns: bool,
+        migration_id: Optional[str],
+        renames: Optional[dict[str, str]],
+        table_renames: Optional[dict[str, str]],
+        type_casts: Optional[dict[str, str]],
+        unrehearsed: bool,
+    ) -> List[str]:
+        """The run itself, without the callbacks up() wraps it in."""
         from sustained.exceptions import MigrationError
 
         if models is not None and target is not None:
@@ -1136,6 +1285,8 @@ class Migrator:
             # order matches pending(), so a rehearsal of the same set
             # produces the same key.
             registered_run = versioned_now + repeatables_now
+            warned: Set["Verdict"] = set()
+            check_guards(self._guards, registered_run, self._dialect, warned)
             self._require_receipt(records, registered_run, unrehearsed)
             for migration in versioned_now:
                 self._apply(migration, next_seq, update=False)
@@ -1154,8 +1305,14 @@ class Migrator:
                 if generated is not None:
                     # The generated statements are known only now, after
                     # the registered migrations left the schema they diff
-                    # against, so the gate runs a second time before the
-                    # one migration it could not see.
+                    # against, so both gates run a second time before the
+                    # one migration they could not see.
+                    check_guards(
+                        self._guards,
+                        registered_run + [generated],
+                        self._dialect,
+                        warned,
+                    )
                     self._require_receipt(
                         records, registered_run + [generated], unrehearsed
                     )
