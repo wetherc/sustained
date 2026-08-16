@@ -21,15 +21,18 @@ class FakeCursor:
             self._rows = [
                 (i, n, None, True) for n, i in enumerate(self._conn.applied, 1)
             ]
-        elif sql.startswith("INSERT INTO"):
+        elif sql.startswith("INSERT INTO") and "sustained_migrations" in sql:
             self._conn.applied.append(params[0])
-        elif sql.startswith("DELETE FROM"):
+        elif sql.startswith("DELETE FROM") and "sustained_migrations" in sql:
             self._conn.applied.remove(params[0])
         else:
             self._rows = []
 
     def fetchall(self):
         return self._rows
+
+    def fetchone(self):
+        return self._rows[0] if self._rows else None
 
 
 class FakePostgresConnection:
@@ -184,7 +187,7 @@ class TestLockingRun(unittest.TestCase):
         # psycopg, so it closes before BEGIN rather than warning.
         self.assertEqual(conn.log[begin_at - 1], "<rollback>")
 
-    def test_rehearsal_commits_nothing_after_the_tracking_table_exists(self):
+    def test_rehearsal_commits_only_its_receipt(self):
         conn = FakePostgresConnection()
         migration = Migration(
             "one", up="CREATE TABLE t1 (id INTEGER)", down="DROP TABLE t1"
@@ -193,7 +196,33 @@ class TestLockingRun(unittest.TestCase):
         migrator.applied_records()
         conn.log.clear()
         migrator.rehearse()
-        self.assertNotIn("<commit>", conn.log)
+        rollback_at = conn.log.index("ROLLBACK")
+        commits = [i for i, line in enumerate(conn.log) if line == "<commit>"]
+        # Everything the rehearsal itself ran is inside the rolled-back
+        # transaction; only the receipt written afterwards commits.
+        self.assertTrue(commits)
+        self.assertTrue(all(i > rollback_at for i in commits))
+        self.assertIn(
+            'INSERT INTO "sustained_rehearsals" '
+            "(rehearsal_key, outcome, rehearsed_at) VALUES (%s, %s, %s)",
+            conn.log,
+        )
+
+    def test_receipt_lands_before_the_lock_is_released(self):
+        conn = FakePostgresConnection()
+        migration = Migration(
+            "one", up="CREATE TABLE t1 (id INTEGER)", down="DROP TABLE t1"
+        )
+        self._migrator(conn, [migration]).rehearse()
+        receipt_at = max(
+            i
+            for i, line in enumerate(conn.log)
+            if line.startswith('INSERT INTO "sustained_rehearsals"')
+        )
+        unlock_at = conn.log.index(
+            "SELECT pg_advisory_unlock(hashtext('sustained_migrations'))"
+        )
+        self.assertLess(receipt_at, unlock_at)
 
 
 if __name__ == "__main__":

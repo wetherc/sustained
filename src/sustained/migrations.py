@@ -12,6 +12,10 @@ timestamp, the execution time in milliseconds, and a success flag.
 Tracking tables written by earlier versions of Sustained, which held only
 the id and the timestamp, are upgraded in place on first use.
 
+A second table holds rehearsal receipts: one row per set of statements a
+rehearsal proved, keyed to the applied history it started from. A run that
+would remove data reads that table first and stops when nothing covers it.
+
 Migrations are written by hand, generated from a model with
 create_table_migration(), or produced by schema diffing through
 sustained.autogenerate and Migrator.up(models=[...]).
@@ -29,10 +33,12 @@ from typing import (
     Any,
     Callable,
     Dict,
+    Iterable,
     Iterator,
     List,
     NamedTuple,
     Optional,
+    Sequence,
     Tuple,
     Type,
     Union,
@@ -151,6 +157,137 @@ class RehearsalResult(NamedTuple):
     reversed: Optional[List[str]] = None
 
 
+def rehearsal_failed(result: RehearsalResult) -> bool:
+    """
+    Whether one result stops a rehearsal from passing: a step that raised,
+    a down step that failed, models that did not land, or a schema that
+    did not come back. A down step that could not be proved is not a
+    failure.
+    """
+    return (
+        not result.up_ok
+        or result.down_ok is False
+        or bool(result.landed)
+        or bool(result.reversed)
+    )
+
+
+class Rehearsal(List[RehearsalResult]):
+    """
+    A rehearsal's results, one per migration that ran, plus the receipt it
+    earned.
+
+    The class is a list, so it iterates and indexes like the plain list
+    earlier versions returned. `key` names the exact content the rehearsal
+    covered: the applied history it started from and the statements it
+    ran. `recorded` says whether the receipt reached the tracking
+    database, which a scratch rehearsal leaves to the caller.
+    """
+
+    def __init__(
+        self,
+        results: Iterable[RehearsalResult],
+        key: str,
+        recorded: bool = False,
+    ) -> None:
+        super().__init__(results)
+        self.key = key
+        self.recorded = recorded
+
+    @property
+    def ok(self) -> bool:
+        """True when every result passed."""
+        return not any(rehearsal_failed(r) for r in self)
+
+
+# The two outcomes a receipt row can hold.
+RECEIPT_PASSED = "passed"
+RECEIPT_FAILED = "failed"
+
+
+def _receipt_token(checksum: Optional[str], migration_id: str) -> str:
+    """
+    One entry in a receipt key. A callable step has no SQL to hash and no
+    explicit checksum, so its id stands in: the token keeps a mixed set
+    ordered and hashable, and a callable can never trigger the gate on its
+    own, since the destructive scan cannot read it either.
+    """
+    return checksum if checksum is not None else f"id:{migration_id}"
+
+
+def receipt_key(applied: Sequence[AppliedRecord], run: Sequence[Migration]) -> str:
+    """
+    The SHA-256 hex digest that names one rehearsal: the checksums of the
+    successful tracking rows the run starts from, then the checksums of
+    the migrations it runs.
+
+    The applied history is part of the key because a rehearsal proves a
+    set of statements against one starting schema. A database with a
+    different history must not accept the receipt.
+
+    Ids are not hashed, only statements, so a generated migration that
+    takes a new timestamped id between the rehearsal and the run keeps the
+    same key.
+    """
+    digest = hashlib.sha256()
+    digest.update(b"applied\n")
+    for record in applied:
+        if not record.success:
+            continue
+        digest.update(_receipt_token(record.checksum, record.id).encode("utf-8"))
+        digest.update(b"\n")
+    digest.update(b"run\n")
+    for migration in run:
+        token = _receipt_token(migration_checksum(migration), migration.id)
+        digest.update(token.encode("utf-8"))
+        digest.update(b"\n")
+    return digest.hexdigest()
+
+
+def _destructive_in(run: Sequence[Migration]) -> List[Tuple[str, str]]:
+    """
+    The (migration id, statement) pairs in a run that remove data. A
+    callable step renders no SQL and is invisible here, the same limit the
+    plan command's labels carry.
+    """
+    from sustained.analysis import destructive_statements
+
+    found: List[Tuple[str, str]] = []
+    for migration in run:
+        if callable(migration.up):
+            continue
+        for statement in destructive_statements(migration_sql(migration, "up")):
+            found.append((migration.id, statement))
+    return found
+
+
+def _receipt_message(destructive: List[Tuple[str, str]], outcome: Optional[str]) -> str:
+    """
+    Why a run stopped, which statements stopped it, and the two ways
+    forward. A failed rehearsal reads differently from no rehearsal at
+    all: the operator has already seen these statements break.
+    """
+    if outcome == RECEIPT_FAILED:
+        opening = (
+            "The last rehearsal of these statements failed, and this run "
+            "removes data:"
+        )
+    else:
+        opening = (
+            "This run removes data, and no rehearsal has proved these " "statements:"
+        )
+    width = max(len(migration_id) for migration_id, _ in destructive)
+    lines = [f"  {migration_id:<{width}}  {sql}" for migration_id, sql in destructive]
+    return "\n".join(
+        [opening]
+        + lines
+        + [
+            "Prove them first: sustained rehearse",
+            "Or apply them without proof: sustained migrate --unrehearsed",
+        ]
+    )
+
+
 # Dialects whose schema changes roll back, so a rehearsal can undo itself.
 # The others need a scratch database; see Migrator.rehearse(). DEFAULT is
 # on the list for SQLite, the engine the generic compiler usually serves;
@@ -209,6 +346,27 @@ def _tracking_column_defs(constraints: bool) -> Dict[str, "ColumnDef"]:
         "execution_ms": Integer(),
         "success": Boolean(),
         "generated": Boolean(),
+    }
+
+
+def _rehearsal_column_defs(constraints: bool) -> Dict[str, "ColumnDef"]:
+    """
+    The receipt table's columns: the key a rehearsal earned, what it
+    proved, and when. Engines without constraints get plain nullable
+    columns, as the tracking table does.
+    """
+    from sustained.schema import String, Text
+
+    if constraints:
+        return {
+            "rehearsal_key": String(64, primary_key=True),
+            "outcome": String(16, nullable=False),
+            "rehearsed_at": Text(nullable=False),
+        }
+    return {
+        "rehearsal_key": String(64),
+        "outcome": String(16),
+        "rehearsed_at": Text(),
     }
 
 
@@ -455,6 +613,7 @@ class Migrator:
         table: str = "sustained_migrations",
         dialect: Dialects = Dialects.DEFAULT,
         tracking_table_options: Optional[Any] = None,
+        rehearsal_table: str = "sustained_rehearsals",
     ) -> None:
         ids = [m.id for m in migrations]
         duplicates = {i for i in ids if ids.count(i) > 1}
@@ -463,10 +622,12 @@ class Migrator:
         self._connection = connection
         self._migrations = list(migrations)
         self._table = table
+        self._rehearsal_table = rehearsal_table
         self._dialect = dialect
         self._compiler: "Compiler" = Dialects.get_compiler(dialect)
         self._tracking_table_options = tracking_table_options
         self._tracking_ready = False
+        self._rehearsal_ready = False
         self._rehearsing = False
 
     @property
@@ -476,6 +637,14 @@ class Migrator:
 
     def _table_sql(self) -> str:
         return self._compiler.quote_identifier(self._table)
+
+    def _own_tables(self) -> Tuple[str, ...]:
+        """
+        The tables Sustained keeps for itself. A diff against the models
+        leaves them alone, and a rehearsal snapshot drops them, so its own
+        bookkeeping never reads as drift or as an object left behind.
+        """
+        return (self._table, self._rehearsal_table)
 
     @contextmanager
     def _migration_scope(self) -> Iterator[None]:
@@ -546,6 +715,74 @@ class Migrator:
         self._commit_quietly()
         self._upgrade_tracking_table()
         self._tracking_ready = True
+
+    def _rehearsal_table_sql(self) -> str:
+        return self._compiler.quote_identifier(self._rehearsal_table)
+
+    def _ensure_rehearsal_table(self) -> None:
+        from sustained.schema import build_create_table_sql
+
+        if self._rehearsal_ready:
+            return
+        sql = build_create_table_sql(
+            self._compiler,
+            self._rehearsal_table_sql(),
+            _rehearsal_column_defs(self._compiler.supports_constraints()),
+            if_not_exists=True,
+            options=self._tracking_table_options,
+        )
+        self._connection.cursor().execute(sql)
+        self._commit_quietly()
+        self._rehearsal_ready = True
+
+    def record_rehearsal(self, key: str, outcome: str = RECEIPT_PASSED) -> None:
+        """
+        Writes the receipt for one rehearsal key, replacing any earlier row
+        for the same key. The outcome is 'passed' or 'failed'.
+
+        A rehearsal on a scratch database records nothing on its own: the
+        receipt belongs on the database the next run will read. Call this
+        on a migrator bound to that database once the scratch run passes.
+        """
+        if outcome not in (RECEIPT_PASSED, RECEIPT_FAILED):
+            raise ValueError(
+                f"Unknown rehearsal outcome {outcome!r}; use "
+                f"{RECEIPT_PASSED!r} or {RECEIPT_FAILED!r}."
+            )
+        self._ensure_rehearsal_table()
+        placeholder = self._compiler.placeholder()
+        table = self._rehearsal_table_sql()
+        cursor = self._connection.cursor()
+        cursor.execute(
+            f"DELETE FROM {table} WHERE rehearsal_key = {placeholder}", (key,)
+        )
+        values = ", ".join([placeholder] * 3)
+        cursor.execute(
+            f"INSERT INTO {table} (rehearsal_key, outcome, rehearsed_at) "
+            f"VALUES ({values})",
+            (key, outcome, datetime.now(timezone.utc).isoformat()),
+        )
+        self._commit_quietly()
+
+    def rehearsal_outcome(self, key: str) -> Optional[str]:
+        """
+        What the recorded rehearsal of this key proved: 'passed', 'failed',
+        or None when no rehearsal has covered it.
+        """
+        self._ensure_rehearsal_table()
+        placeholder = self._compiler.placeholder()
+        cursor = self._connection.cursor()
+        cursor.execute(
+            f"SELECT outcome FROM {self._rehearsal_table_sql()} "
+            f"WHERE rehearsal_key = {placeholder}",
+            (key,),
+        )
+        row = cursor.fetchone()
+        return None if row is None else str(row[0])
+
+    def rehearsed(self, key: str) -> bool:
+        """True when a passing rehearsal covers this key."""
+        return self.rehearsal_outcome(key) == RECEIPT_PASSED
 
     def _has_columns(self, columns: Tuple[str, ...]) -> bool:
         """Probes the tracking table for the given columns."""
@@ -787,6 +1024,7 @@ class Migrator:
         renames: Optional[dict[str, str]] = None,
         table_renames: Optional[dict[str, str]] = None,
         type_casts: Optional[dict[str, str]] = None,
+        unrehearsed: bool = False,
     ) -> List[str]:
         """
         Applies pending migrations in order, stopping after the target id
@@ -814,6 +1052,13 @@ class Migrator:
         migration always runs last of the versioned ones, so it cannot be
         combined with a target, and the remaining arguments are the diff
         options plan() takes.
+
+        A run that would remove data stops unless a passing rehearsal
+        covers exactly these statements against exactly this applied
+        history. Rehearse first, or pass unrehearsed=True to apply them
+        without the proof. Runs that only add are never gated, and a
+        callable step is invisible to the check, the same limit the
+        destructive labels carry.
         """
         from sustained.exceptions import MigrationError
 
@@ -858,9 +1103,18 @@ class Migrator:
             already_applied = {r.id for r in records if r.success}
             next_seq = _next_seq(records)
             applied_now: List[str] = []
-            for migration in migrations:
-                if migration.id in already_applied:
-                    continue
+            versioned_now = [m for m in migrations if m.id not in already_applied]
+            repeatables_now = [
+                m
+                for m in (self._repeatables() if target is None else [])
+                if not _is_current(records_by_id.get(m.id), migration_checksum(m), True)
+            ]
+            # The registered set is checked before anything runs. The
+            # order matches pending(), so a rehearsal of the same set
+            # produces the same key.
+            registered_run = versioned_now + repeatables_now
+            self._require_receipt(records, registered_run, unrehearsed)
+            for migration in versioned_now:
                 self._apply(migration, next_seq, update=False)
                 next_seq += 1
                 applied_now.append(migration.id)
@@ -875,19 +1129,47 @@ class Migrator:
                     type_casts=type_casts,
                 )
                 if generated is not None:
+                    # The generated statements are known only now, after
+                    # the registered migrations left the schema they diff
+                    # against, so the gate runs a second time before the
+                    # one migration it could not see.
+                    self._require_receipt(
+                        records, registered_run + [generated], unrehearsed
+                    )
                     self._migrations.append(generated)
                     self._apply(generated, next_seq, update=False, generated=True)
                     next_seq += 1
                     applied_now.append(generated.id)
-            for migration in self._repeatables() if target is None else []:
+            for migration in repeatables_now:
                 record = records_by_id.get(migration.id)
-                if _is_current(record, migration_checksum(migration), True):
-                    continue
                 self._apply(migration, next_seq, update=record is not None)
                 if record is None:
                     next_seq += 1
                 applied_now.append(migration.id)
             return applied_now
+
+    def _require_receipt(
+        self,
+        records: List[AppliedRecord],
+        run: List[Migration],
+        unrehearsed: bool,
+    ) -> None:
+        """
+        Stops a run that removes data unless a passing rehearsal covers
+        exactly this content. A run that only adds passes straight
+        through and never reads the receipt table.
+        """
+        from sustained.exceptions import RehearsalRequired
+
+        if unrehearsed:
+            return
+        destructive = _destructive_in(run)
+        if not destructive:
+            return
+        outcome = self.rehearsal_outcome(receipt_key(records, run))
+        if outcome == RECEIPT_PASSED:
+            return
+        raise RehearsalRequired(_receipt_message(destructive, outcome))
 
     def _apply(
         self, migration: Migration, seq: int, update: bool, generated: bool = False
@@ -946,11 +1228,11 @@ class Migrator:
         renames: Optional[dict[str, str]] = None,
         table_renames: Optional[dict[str, str]] = None,
         type_casts: Optional[dict[str, str]] = None,
-    ) -> List[RehearsalResult]:
+    ) -> Rehearsal:
         """
         Runs every pending migration up, then back down, inside one
         transaction, and rolls that transaction back. Returns one result
-        per migration that ran; an empty list means nothing was pending.
+        per migration that ran; an empty result means nothing was pending.
 
         A rehearsal proves that the SQL is valid, that the schema moved,
         and that the down steps take it back. It does not prove anything
@@ -976,6 +1258,14 @@ class Migrator:
         its change back. Tables and columns are compared; indexes,
         constraints, and defaults are not, so a leftover index is not
         reported yet.
+
+        A passing run leaves a receipt behind: one row keyed to the applied
+        history it started from and the statements it ran, which up() reads
+        before it applies anything that removes data. A failing run records
+        the failure under the same key. A scratch rehearsal records
+        nothing, since the receipt belongs on the database the next run
+        will read; the key comes back on the result for the caller to
+        record there.
 
         Only dialects whose schema changes roll back may rehearse. Pass
         scratch=True when the connection points at a database that can be
@@ -1004,13 +1294,18 @@ class Migrator:
         with self._lock_scope():
             self.validate()
             pending = self.pending()
+            record_list = self.applied_records()
             if not pending and models is None:
-                return []
+                return Rehearsal([], receipt_key(record_list, []))
             if models is not None:
                 self._ensure_tracking_table()
-            records = {r.id: r for r in self.applied_records()}
-            seq = _next_seq(list(records.values()))
+            records = {r.id: r for r in record_list}
+            seq = _next_seq(record_list)
             before = self._snapshot()
+            # What the receipt will cover: the pending set, plus the
+            # generated migration once the diff produces one.
+            attempted: List[Migration] = list(pending)
+            has_drift = False
             self._rehearsing = True
             try:
                 # Close whatever transaction the reads above opened, so the
@@ -1046,6 +1341,8 @@ class Migrator:
                         type_casts=type_casts,
                     )
                     if drift is not None:
+                        attempted.append(drift)
+                        has_drift = True
                         try:
                             self._apply(drift, seq, update=False, generated=True)
                         except Exception as error:
@@ -1068,17 +1365,33 @@ class Migrator:
                     after = self._snapshot()
                     if after is not None:
                         reverted = diff_snapshots(before, after)
-                return _rehearsal_results(ran, up_error, outcomes, landed, reverted)
+                results = _rehearsal_results(ran, up_error, outcomes, landed, reverted)
             finally:
                 self._rehearsing = False
                 self._roll_back_rehearsal()
+            # The receipt is written after the rollback, in its own
+            # committed transaction, and still inside the lock: everything
+            # the rehearsal itself wrote has just been taken back.
+            key = receipt_key(record_list, attempted)
+            passed = not any(rehearsal_failed(r) for r in results)
+            recorded = False
+            if not scratch:
+                self.record_rehearsal(key, RECEIPT_PASSED if passed else RECEIPT_FAILED)
+                if passed and has_drift:
+                    # A run without models applies the registered
+                    # migrations and stops there, which this rehearsal
+                    # also proved.
+                    self.record_rehearsal(receipt_key(record_list, pending))
+                recorded = True
+            return Rehearsal(results, key, recorded)
 
     def _snapshot(self) -> Optional[Dict[str, Any]]:
         """
-        The live schema, without the tracking table, or None when the
+        The live schema, without Sustained's own tables, or None when the
         database will not report it. A rehearsal compares two of these,
-        and the tracking table is created by the rehearsal itself, so
-        leaving it in would report it as an object left behind.
+        and the tracking and receipt tables are created by the rehearsal
+        itself, so leaving them in would report them as objects left
+        behind.
 
         A read that raises leaves the rehearsal's other proofs standing
         and reports the comparison as not checked, which is what a
@@ -1090,7 +1403,8 @@ class Migrator:
             schema = introspect_schema(self._connection, self._dialect)
         except Exception:
             return None
-        schema.pop(self._table.lower(), None)
+        for name in self._own_tables():
+            schema.pop(name.lower(), None)
         return dict(schema)
 
     def drift(
@@ -1114,7 +1428,7 @@ class Migrator:
             self._connection,
             models,
             dialect=self._dialect,
-            exclude_tables=(self._table,),
+            exclude_tables=self._own_tables(),
             renames=renames,
             table_renames=table_renames,
         )
@@ -1251,7 +1565,7 @@ class Migrator:
             dialect=self._dialect,
             allow_drops=allow_drops,
             ignore_changed_columns=ignore_changed_columns,
-            exclude_tables=(self._table,),
+            exclude_tables=self._own_tables(),
             renames=renames,
             table_renames=table_renames,
             type_casts=type_casts,

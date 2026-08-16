@@ -361,7 +361,9 @@ class TestSqliteRebuild(AutogenTestCase):
         )
         migration = autogenerate(self.conn, [changed], id="rb1")
         self.assertIsNone(migration.down)
-        Migrator(self.conn, [migration]).up()
+        # A SQLite rebuild drops the old table, so the run needs
+        # either a receipt or the recorded override.
+        Migrator(self.conn, [migration]).up(unrehearsed=True)
         rows = self.conn.execute("SELECT id, email FROM ag_users").fetchall()
         self.assertEqual(rows, [(1, "a@x")])
         self.assertTrue(diff_schema(self.conn, [changed]).is_empty())
@@ -371,7 +373,9 @@ class TestSqliteRebuild(AutogenTestCase):
         self.conn.execute("INSERT INTO ag_users VALUES (1, 'a@x')")
         self.User.tableColumns["status"] = String(10, nullable=False, backfill="new")
         migration = autogenerate(self.conn, [self.User], id="rb2")
-        Migrator(self.conn, [migration]).up()
+        # A SQLite rebuild drops the old table, so the run needs
+        # either a receipt or the recorded override.
+        Migrator(self.conn, [migration]).up(unrehearsed=True)
         rows = self.conn.execute("SELECT status FROM ag_users").fetchall()
         self.assertEqual(rows, [("new",)])
         notnull = self.conn.execute("PRAGMA table_info(ag_users)").fetchall()[2][3]

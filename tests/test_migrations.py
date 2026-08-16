@@ -7,12 +7,15 @@ import unittest
 from unittest import mock
 
 from sustained import Model
-from sustained.exceptions import MigrationError
+from sustained.exceptions import MigrationError, RehearsalRequired
 from sustained.migrations import (
+    RECEIPT_FAILED,
+    RECEIPT_PASSED,
     Migration,
     Migrator,
     create_table_migration,
     migration_checksum,
+    receipt_key,
 )
 from sustained.schema import Integer, String
 
@@ -23,6 +26,11 @@ class MigUser(Model):
         "id": Integer(primary_key=True),
         "email": String(120, nullable=False),
     }
+
+
+# What a rehearsal leaves behind: the tracking table and the receipt it
+# earned, both created by the rehearsal itself.
+SUSTAINED_TABLES = {"sustained_migrations", "sustained_rehearsals"}
 
 
 def table_names(conn):
@@ -676,7 +684,7 @@ class TestRehearse(MigrationTestCase):
             ],
         )
         self.assertEqual(results[2].error, "no down step (repeatable)")
-        self.assertEqual(table_names(self.conn), {"sustained_migrations"})
+        self.assertEqual(table_names(self.conn), SUSTAINED_TABLES)
         self.assertEqual(migrator.applied_records(), [])
         self.assertEqual(len(migrator.pending()), 3)
 
@@ -725,7 +733,7 @@ class TestRehearse(MigrationTestCase):
         )
         self.assertIn("syntax error", results[1].error)
         self.assertEqual(results[0].error, "down not rehearsed: the run stopped")
-        self.assertEqual(table_names(self.conn), {"sustained_migrations"})
+        self.assertEqual(table_names(self.conn), SUSTAINED_TABLES)
 
     def test_missing_down_step_stops_the_down_sweep(self):
         migrations = [
@@ -756,7 +764,7 @@ class TestRehearse(MigrationTestCase):
         self.assertEqual(
             results[0].error, "down not reached: '002_bad_down' down failed"
         )
-        self.assertEqual(table_names(self.conn), {"sustained_migrations"})
+        self.assertEqual(table_names(self.conn), SUSTAINED_TABLES)
 
     def test_validation_problems_stop_the_rehearsal(self):
         migrator = Migrator(self.conn, self.migrations())
@@ -793,7 +801,10 @@ class TestRehearse(MigrationTestCase):
         self.assertEqual(
             [(r.id, r.up_ok, r.down_ok) for r in results], [("001_users", True, True)]
         )
+        # A scratch rehearsal writes no receipt: it belongs on the
+        # database the next run will read, not on the throwaway one.
         self.assertEqual(table_names(self.conn), {"sustained_migrations"})
+        self.assertFalse(results.recorded)
 
     def test_rehearse_refuses_an_autocommit_connection(self):
         conn = sqlite3.connect(":memory:", autocommit=True)
@@ -988,6 +999,187 @@ class TestRehearsalProofs(MigrationTestCase):
         migrator = Migrator(self.conn, [])
         results = migrator.rehearse(models=self.models(), migration_id="drift")
         self.assertEqual(results[0].id, "drift")
+
+
+class TestReceiptKey(unittest.TestCase):
+    """The key names content, not names or moments."""
+
+    def test_the_same_statements_key_the_same_under_a_new_id(self):
+        first = Migration("auto_1", up="CREATE TABLE k (id INTEGER)")
+        second = Migration("auto_2", up="CREATE TABLE k (id INTEGER)")
+        self.assertEqual(receipt_key([], [first]), receipt_key([], [second]))
+
+    def test_different_statements_key_differently(self):
+        first = Migration("one", up="CREATE TABLE k (id INTEGER)")
+        second = Migration("one", up="CREATE TABLE k (id TEXT)")
+        self.assertNotEqual(receipt_key([], [first]), receipt_key([], [second]))
+
+    def test_the_applied_history_is_part_of_the_key(self):
+        from sustained.migrations import AppliedRecord
+
+        run = [Migration("one", up="CREATE TABLE k (id INTEGER)")]
+        history = [AppliedRecord("older", 1, "abc", True)]
+        self.assertNotEqual(receipt_key([], run), receipt_key(history, run))
+
+    def test_a_failed_row_is_left_out_of_the_history(self):
+        from sustained.migrations import AppliedRecord
+
+        run = [Migration("one", up="CREATE TABLE k (id INTEGER)")]
+        failed = [AppliedRecord("older", 1, "abc", False)]
+        self.assertEqual(receipt_key([], run), receipt_key(failed, run))
+
+    def test_a_callable_step_keys_on_its_id(self):
+        run = [Migration("one", up=lambda conn: None)]
+        same = [Migration("one", up=lambda conn: None)]
+        other = [Migration("two", up=lambda conn: None)]
+        self.assertEqual(receipt_key([], run), receipt_key([], same))
+        self.assertNotEqual(receipt_key([], run), receipt_key([], other))
+
+
+class TestReceipts(MigrationTestCase):
+    """A rehearsal leaves a receipt the next run can read."""
+
+    def migrations(self):
+        return [
+            Migration(
+                "001_users",
+                up="CREATE TABLE rc_users (id INTEGER)",
+                down="DROP TABLE rc_users",
+            )
+        ]
+
+    def test_a_passing_rehearsal_records_its_key(self):
+        migrator = Migrator(self.conn, self.migrations())
+        rehearsal = migrator.rehearse()
+        self.assertTrue(rehearsal.ok)
+        self.assertTrue(rehearsal.recorded)
+        self.assertTrue(migrator.rehearsed(rehearsal.key))
+        self.assertEqual(migrator.rehearsal_outcome(rehearsal.key), RECEIPT_PASSED)
+
+    def test_a_failing_rehearsal_records_the_failure(self):
+        broken = Migration("002_bad", up="NOT SQL", down="DROP TABLE nothing")
+        migrator = Migrator(self.conn, self.migrations() + [broken])
+        rehearsal = migrator.rehearse()
+        self.assertFalse(rehearsal.ok)
+        self.assertEqual(migrator.rehearsal_outcome(rehearsal.key), RECEIPT_FAILED)
+        self.assertFalse(migrator.rehearsed(rehearsal.key))
+
+    def test_an_unknown_key_has_no_outcome(self):
+        migrator = Migrator(self.conn, self.migrations())
+        self.assertIsNone(migrator.rehearsal_outcome("0" * 64))
+        self.assertFalse(migrator.rehearsed("0" * 64))
+
+    def test_a_second_rehearsal_replaces_the_row(self):
+        migrator = Migrator(self.conn, self.migrations())
+        key = migrator.rehearse().key
+        migrator.record_rehearsal(key, RECEIPT_FAILED)
+        migrator.record_rehearsal(key, RECEIPT_PASSED)
+        rows = self.conn.execute(
+            "SELECT COUNT(*) FROM sustained_rehearsals WHERE rehearsal_key = ?",
+            (key,),
+        ).fetchone()
+        self.assertEqual(rows[0], 1)
+        self.assertTrue(migrator.rehearsed(key))
+
+    def test_an_unknown_outcome_is_refused(self):
+        migrator = Migrator(self.conn, self.migrations())
+        with self.assertRaises(ValueError) as caught:
+            migrator.record_rehearsal("0" * 64, "maybe")
+        self.assertIn("passed", str(caught.exception))
+
+    def test_the_receipt_table_is_not_read_as_drift(self):
+        migrator = Migrator(self.conn, [])
+        migrator.up(models=[MigUser])
+        migrator.record_rehearsal("0" * 64)
+        self.assertIsNone(migrator.plan([MigUser], allow_drops=True))
+
+
+class TestDestructiveGate(MigrationTestCase):
+    """A run that removes data needs a rehearsal that proved it."""
+
+    def setUp(self):
+        super().setUp()
+        self.conn.execute("CREATE TABLE gate_old (id INTEGER)")
+        self.drop = Migration(
+            "001_drop",
+            up="DROP TABLE gate_old",
+            down="CREATE TABLE gate_old (id INTEGER)",
+        )
+
+    def test_an_unrehearsed_drop_is_refused(self):
+        migrator = Migrator(self.conn, [self.drop])
+        with self.assertRaises(RehearsalRequired) as caught:
+            migrator.up()
+        message = str(caught.exception)
+        self.assertIn("no rehearsal has proved these statements", message)
+        self.assertIn("001_drop  DROP TABLE gate_old", message)
+        self.assertIn("sustained rehearse", message)
+        self.assertIn("--unrehearsed", message)
+        self.assertEqual(migrator.applied(), [])
+
+    def test_a_rehearsed_drop_runs(self):
+        migrator = Migrator(self.conn, [self.drop])
+        self.assertTrue(migrator.rehearse().ok)
+        self.assertEqual(migrator.up(), ["001_drop"])
+        self.assertNotIn("gate_old", table_names(self.conn))
+
+    def test_the_override_runs_without_a_receipt(self):
+        migrator = Migrator(self.conn, [self.drop])
+        self.assertEqual(migrator.up(unrehearsed=True), ["001_drop"])
+
+    def test_a_failed_rehearsal_reads_differently(self):
+        broken = Migration("001_drop", up=["DROP TABLE gate_old", "NOT SQL"])
+        migrator = Migrator(self.conn, [broken])
+        self.assertFalse(migrator.rehearse().ok)
+        with self.assertRaises(RehearsalRequired) as caught:
+            migrator.up()
+        self.assertIn(
+            "The last rehearsal of these statements failed", str(caught.exception)
+        )
+
+    def test_editing_the_migration_voids_the_receipt(self):
+        Migrator(self.conn, [self.drop]).rehearse()
+        edited = Migration(
+            "001_drop",
+            up=["DROP TABLE gate_old", "CREATE TABLE gate_new (id INTEGER)"],
+            down="DROP TABLE gate_new",
+        )
+        with self.assertRaises(RehearsalRequired):
+            Migrator(self.conn, [edited]).up()
+
+    def test_an_additive_run_is_never_gated(self):
+        additive = Migration("001_add", up="CREATE TABLE gate_new (id INTEGER)")
+        self.assertEqual(Migrator(self.conn, [additive]).up(), ["001_add"])
+
+    def test_a_callable_step_cannot_trigger_the_gate(self):
+        def drop(connection):
+            connection.execute("DROP TABLE gate_old")
+
+        migrator = Migrator(self.conn, [Migration("001_call", up=drop)])
+        self.assertEqual(migrator.up(), ["001_call"])
+
+    def test_a_generated_drop_is_gated_and_then_runs(self):
+        migrator = Migrator(self.conn, [])
+        with self.assertRaises(RehearsalRequired) as caught:
+            migrator.up(models=[MigUser], allow_drops=True)
+        self.assertIn("DROP TABLE", str(caught.exception))
+        # The registered migrations that ran before the diff stay applied;
+        # here there are none, and the tables the models want are absent.
+        self.assertNotIn("mig_users", table_names(self.conn))
+        self.assertTrue(
+            Migrator(self.conn, []).rehearse(models=[MigUser], allow_drops=True).ok
+        )
+        Migrator(self.conn, []).up(models=[MigUser], allow_drops=True)
+        self.assertIn("mig_users", table_names(self.conn))
+        self.assertNotIn("gate_old", table_names(self.conn))
+
+    def test_a_rehearsal_with_models_also_covers_the_registered_set(self):
+        migrator = Migrator(self.conn, [self.drop])
+        rehearsal = migrator.rehearse(models=[MigUser])
+        self.assertTrue(rehearsal.ok)
+        # The rehearsal ran the drop and the generated migration; a run
+        # without models applies the drop alone, which it also proved.
+        self.assertEqual(Migrator(self.conn, [self.drop]).up(), ["001_drop"])
 
 
 if __name__ == "__main__":

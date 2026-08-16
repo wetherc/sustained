@@ -614,7 +614,10 @@ class RehearseCliTestCase(CliBase):
         self.assertIn("rehearsed 001_users  up ok, down ok, reversed", out)
         self.assertIn("rehearsed 002_flag   up ok, down ok, reversed", out)
         self.assertIn("rollback complete, database unchanged", out)
-        self.assertEqual(self.table_names(), {"sustained_migrations"})
+        self.assertEqual(
+            self.table_names(),
+            {"sustained_migrations", "sustained_rehearsals"},
+        )
 
     def test_rehearse_reports_a_broken_migration_and_exits_1(self):
         self._write(
@@ -627,7 +630,10 @@ class RehearseCliTestCase(CliBase):
         self.assertIn("failed    003_bad", out)
         self.assertIn("syntax error", out)
         self.assertIn("rollback complete, database unchanged", out)
-        self.assertEqual(self.table_names(), {"sustained_migrations"})
+        self.assertEqual(
+            self.table_names(),
+            {"sustained_migrations", "sustained_rehearsals"},
+        )
 
     def test_a_migration_without_a_down_step_is_not_a_failure(self):
         self._write(
@@ -667,7 +673,10 @@ class RehearseCliTestCase(CliBase):
         self.assertIn("up ok, down ok, not reversed", out)
         self.assertIn("leftover     table 'leftover' left behind", out)
         self.assertIn("run: sustained plan", out)
-        self.assertEqual(self.table_names(), {"sustained_migrations"})
+        self.assertEqual(
+            self.table_names(),
+            {"sustained_migrations", "sustained_rehearsals"},
+        )
 
     def test_models_are_rehearsed_with_the_pending_migrations(self):
         name = f"rehearse_models_{id(self)}"
@@ -689,7 +698,10 @@ class RehearseCliTestCase(CliBase):
         self.assertEqual(code, 0)
         self.assertIn("rehearsed 001_users", out)
         self.assertIn("up ok, landed, down ok, reversed", out)
-        self.assertEqual(self.table_names(), {"sustained_migrations"})
+        self.assertEqual(
+            self.table_names(),
+            {"sustained_migrations", "sustained_rehearsals"},
+        )
 
     def test_rehearse_json_reports_every_check(self):
         stdout = io.StringIO()

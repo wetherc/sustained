@@ -15,6 +15,15 @@ class DialectError(SustainedError):
     pass
 
 
+class RehearsalRequired(SustainedError):
+    """
+    Raised when a run would apply SQL that removes data and no passing
+    rehearsal covers that exact set of statements.
+    """
+
+    pass
+
+
 class MigrationError(SustainedError):
     """Raised when migration validation finds problems."""
 
