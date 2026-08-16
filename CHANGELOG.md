@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- The type stubs now describe the join and clause methods the runtime accepts. `whereRaw`, `havingRaw`, and their `and` and `or` forms were absent, so a type checker rejected working code. `outerJoin` and `OuterJoinRelated` were declared but have never existed, and `fullJoin`, `fullOuterJoin`, and `crossJoinRelated` were missing. The raw join form is now three overloads, one per calling shape, and the relation form takes the `alias` argument it has always accepted. A test compares each stub against the runtime in both directions, since `__getattr__` resolves most of this surface and a type checker cannot see the drift.
+- `LENGTH` is registered once. It was registered twice, and the second registration, which carries the T-SQL `LEN` spelling, overwrote the first.
+- `IntrospectedTable` and `FunctionMetadata` default their mapping fields to read-only empty mappings. A NamedTuple shares one default object across every instance, so a mutable default lets one table's or one function's mapping become another's.
+
 ## 2.11.0 (2026-08-14)
 
 ### Fixed
