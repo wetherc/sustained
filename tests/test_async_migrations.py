@@ -7,7 +7,12 @@ import unittest
 
 from sustained.aio import DbApiAsyncAdapter
 from sustained.aio_migrations import AsyncMigrator
-from sustained.migrations import Migration
+from sustained.exceptions import RehearsalRequired
+from sustained.migrations import RECEIPT_FAILED, RECEIPT_PASSED, Migration
+
+# What a rehearsal leaves behind: the tracking table and the receipt it
+# earned, both created by the rehearsal itself.
+SUSTAINED_TABLES = {"sustained_migrations", "sustained_rehearsals"}
 
 
 def table_names(conn):
@@ -324,7 +329,7 @@ class TestAsyncRehearse(unittest.IsolatedAsyncioTestCase):
             [(r.id, r.up_ok, r.down_ok) for r in results],
             [("001_a", True, True), ("002_b", True, True), ("rv", True, None)],
         )
-        self.assertEqual(table_names(self.conn), {"sustained_migrations"})
+        self.assertEqual(table_names(self.conn), SUSTAINED_TABLES)
         self.assertEqual(await migrator.applied_records(), [])
 
     async def test_a_clean_sweep_proves_the_schema_came_back(self):
@@ -367,7 +372,7 @@ class TestAsyncRehearse(unittest.IsolatedAsyncioTestCase):
             [(r.id, r.up_ok) for r in results], [("001_a", True), ("002_bad", False)]
         )
         self.assertIn("syntax error", results[1].error)
-        self.assertEqual(table_names(self.conn), {"sustained_migrations"})
+        self.assertEqual(table_names(self.conn), SUSTAINED_TABLES)
 
     async def test_missing_and_failing_down_steps_are_reported(self):
         migrator = AsyncMigrator(
@@ -412,6 +417,7 @@ class TestAsyncRehearse(unittest.IsolatedAsyncioTestCase):
         # statements runnable here.
         migrator._compiler = Dialects.get_compiler(Dialects.DEFAULT)
         self.assertEqual(len(await migrator.rehearse(scratch=True)), 3)
+        # A scratch rehearsal writes no receipt.
         self.assertEqual(table_names(self.conn), {"sustained_migrations"})
 
     async def test_rehearse_refuses_inside_an_open_transaction(self):
@@ -451,12 +457,87 @@ class TestAsyncRehearse(unittest.IsolatedAsyncioTestCase):
         migrator = AsyncMigrator(adapter, self.migrations())
         results = await migrator.rehearse()
         self.assertEqual([r.up_ok for r in results], [True, True, True])
-        self.assertEqual(table_names(self.conn), {"sustained_migrations"})
+        self.assertEqual(table_names(self.conn), SUSTAINED_TABLES)
         self.assertEqual(await migrator.applied_records(), [])
 
     async def test_the_adapter_is_reachable(self):
         migrator = AsyncMigrator(self.adapter, [])
         self.assertIs(migrator.adapter, self.adapter)
+
+
+class TestAsyncReceipts(unittest.IsolatedAsyncioTestCase):
+    """The async gate reads the same receipts the sync one writes."""
+
+    def setUp(self):
+        self.conn = sqlite3.connect(":memory:", check_same_thread=False)
+        self.conn.execute("CREATE TABLE gate_old (id INTEGER)")
+        self.adapter = DbApiAsyncAdapter(self.conn)
+        self.drop = Migration(
+            "001_drop",
+            up="DROP TABLE gate_old",
+            down="CREATE TABLE gate_old (id INTEGER)",
+        )
+
+    def tearDown(self):
+        self.conn.close()
+
+    async def test_a_passing_rehearsal_records_its_key(self):
+        migrator = AsyncMigrator(self.adapter, [self.drop])
+        rehearsal = await migrator.rehearse()
+        self.assertTrue(rehearsal.ok)
+        self.assertTrue(rehearsal.recorded)
+        self.assertTrue(await migrator.rehearsed(rehearsal.key))
+        self.assertEqual(
+            await migrator.rehearsal_outcome(rehearsal.key), RECEIPT_PASSED
+        )
+
+    async def test_a_failing_rehearsal_records_the_failure(self):
+        broken = Migration("001_drop", up=["DROP TABLE gate_old", "NOT SQL"])
+        migrator = AsyncMigrator(self.adapter, [broken])
+        rehearsal = await migrator.rehearse()
+        self.assertFalse(rehearsal.ok)
+        self.assertEqual(
+            await migrator.rehearsal_outcome(rehearsal.key), RECEIPT_FAILED
+        )
+
+    async def test_an_unrehearsed_drop_is_refused(self):
+        migrator = AsyncMigrator(self.adapter, [self.drop])
+        with self.assertRaises(RehearsalRequired) as caught:
+            await migrator.up()
+        self.assertIn("001_drop  DROP TABLE gate_old", str(caught.exception))
+        self.assertEqual(await migrator.applied(), [])
+
+    async def test_a_rehearsed_drop_runs(self):
+        migrator = AsyncMigrator(self.adapter, [self.drop])
+        await migrator.rehearse()
+        self.assertEqual(await migrator.up(), ["001_drop"])
+        self.assertNotIn("gate_old", table_names(self.conn))
+
+    async def test_the_override_runs_without_a_receipt(self):
+        migrator = AsyncMigrator(self.adapter, [self.drop])
+        self.assertEqual(await migrator.up(unrehearsed=True), ["001_drop"])
+
+    async def test_an_additive_run_is_never_gated(self):
+        additive = Migration("001_add", up="CREATE TABLE gate_new (id INTEGER)")
+        migrator = AsyncMigrator(self.adapter, [additive])
+        self.assertEqual(await migrator.up(), ["001_add"])
+
+    async def test_an_unknown_outcome_is_refused(self):
+        migrator = AsyncMigrator(self.adapter, [])
+        with self.assertRaises(ValueError):
+            await migrator.record_rehearsal("0" * 64, "maybe")
+
+    async def test_an_unknown_key_has_no_outcome(self):
+        migrator = AsyncMigrator(self.adapter, [])
+        self.assertIsNone(await migrator.rehearsal_outcome("0" * 64))
+        self.assertFalse(await migrator.rehearsed("0" * 64))
+
+    async def test_a_key_recorded_by_the_sync_migrator_is_accepted(self):
+        from sustained.migrations import Migrator, receipt_key
+
+        Migrator(self.conn, [self.drop]).record_rehearsal(receipt_key([], [self.drop]))
+        migrator = AsyncMigrator(self.adapter, [self.drop])
+        self.assertEqual(await migrator.up(), ["001_drop"])
 
 
 if __name__ == "__main__":

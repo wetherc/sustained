@@ -21,21 +21,29 @@ from sustained.dialects import Dialects
 from sustained.migrations import (
     _RECORDS_SELECT,
     _UPGRADE_COLUMNS,
+    RECEIPT_FAILED,
+    RECEIPT_PASSED,
     AppliedRecord,
     Migration,
     MigrationStep,
+    Rehearsal,
     RehearsalResult,
     _check_rehearsable,
+    _destructive_in,
     _down_sweep,
     _is_current,
     _migration_state,
     _next_seq,
+    _receipt_message,
+    _rehearsal_column_defs,
     _rehearsal_results,
     _tag_migration,
     _tracking_column_defs,
     _upgrade_column_def,
     _validation_problems,
     migration_checksum,
+    receipt_key,
+    rehearsal_failed,
 )
 
 
@@ -49,6 +57,7 @@ class AsyncMigrator:
         table: str = "sustained_migrations",
         dialect: Dialects = Dialects.DEFAULT,
         tracking_table_options: Any = None,
+        rehearsal_table: str = "sustained_rehearsals",
     ) -> None:
         ids = [m.id for m in migrations]
         duplicates = {i for i in ids if ids.count(i) > 1}
@@ -57,10 +66,12 @@ class AsyncMigrator:
         self._adapter = adapter
         self._migrations = list(migrations)
         self._table = table
+        self._rehearsal_table = rehearsal_table
         self._dialect = dialect
         self._compiler = Dialects.get_compiler(dialect)
         self._tracking_table_options = tracking_table_options
         self._tracking_ready = False
+        self._rehearsal_ready = False
         self._rehearsing = False
 
     @property
@@ -144,6 +155,96 @@ class AsyncMigrator:
         await self._adapter.commit()
         await self._upgrade_tracking_table()
         self._tracking_ready = True
+
+    def _rehearsal_table_sql(self) -> str:
+        return self._compiler.quote_identifier(self._rehearsal_table)
+
+    def _own_tables(self) -> Tuple[str, ...]:
+        """
+        The tables Sustained keeps for itself, which a rehearsal snapshot
+        drops so its own bookkeeping never reads as an object left behind.
+        """
+        return (self._table, self._rehearsal_table)
+
+    async def _ensure_rehearsal_table(self) -> None:
+        from sustained.schema import build_create_table_sql
+
+        if self._rehearsal_ready:
+            return
+        sql = build_create_table_sql(
+            self._compiler,
+            self._rehearsal_table_sql(),
+            _rehearsal_column_defs(self._compiler.supports_constraints()),
+            if_not_exists=True,
+            options=self._tracking_table_options,
+        )
+        await self._adapter.execute(sql, ())
+        await self._adapter.commit()
+        self._rehearsal_ready = True
+
+    async def record_rehearsal(self, key: str, outcome: str = RECEIPT_PASSED) -> None:
+        """
+        Writes the receipt for one rehearsal key, replacing any earlier row
+        for the same key. Mirrors Migrator.record_rehearsal().
+        """
+        if outcome not in (RECEIPT_PASSED, RECEIPT_FAILED):
+            raise ValueError(
+                f"Unknown rehearsal outcome {outcome!r}; use "
+                f"{RECEIPT_PASSED!r} or {RECEIPT_FAILED!r}."
+            )
+        await self._ensure_rehearsal_table()
+        placeholder = self._compiler.placeholder()
+        table = self._rehearsal_table_sql()
+        await self._adapter.execute(
+            f"DELETE FROM {table} WHERE rehearsal_key = {placeholder}", (key,)
+        )
+        values = ", ".join([placeholder] * 3)
+        await self._adapter.execute(
+            f"INSERT INTO {table} (rehearsal_key, outcome, rehearsed_at) "
+            f"VALUES ({values})",
+            (key, outcome, datetime.now(timezone.utc).isoformat()),
+        )
+        await self._adapter.commit()
+
+    async def rehearsal_outcome(self, key: str) -> Optional[str]:
+        """
+        What the recorded rehearsal of this key proved: 'passed', 'failed',
+        or None when no rehearsal has covered it.
+        """
+        await self._ensure_rehearsal_table()
+        placeholder = self._compiler.placeholder()
+        _, rows = await self._adapter.fetch(
+            f"SELECT outcome FROM {self._rehearsal_table_sql()} "
+            f"WHERE rehearsal_key = {placeholder}",
+            (key,),
+        )
+        return None if not rows else str(rows[0][0])
+
+    async def rehearsed(self, key: str) -> bool:
+        """True when a passing rehearsal covers this key."""
+        return await self.rehearsal_outcome(key) == RECEIPT_PASSED
+
+    async def _require_receipt(
+        self,
+        records: List[AppliedRecord],
+        run: List[Migration],
+        unrehearsed: bool,
+    ) -> None:
+        """
+        Stops a run that removes data unless a passing rehearsal covers
+        exactly this content. Mirrors Migrator._require_receipt().
+        """
+        from sustained.exceptions import RehearsalRequired
+
+        if unrehearsed:
+            return
+        destructive = _destructive_in(run)
+        if not destructive:
+            return
+        outcome = await self.rehearsal_outcome(receipt_key(records, run))
+        if outcome == RECEIPT_PASSED:
+            return
+        raise RehearsalRequired(_receipt_message(destructive, outcome))
 
     async def _has_columns(self, columns: Tuple[str, ...]) -> bool:
         """Probes the tracking table for the given columns."""
@@ -416,6 +517,7 @@ class AsyncMigrator:
         target: Optional[str] = None,
         validate: bool = True,
         allow_out_of_order: bool = False,
+        unrehearsed: bool = False,
     ) -> List[str]:
         """
         Applies pending migrations in order, stopping after the target id
@@ -432,6 +534,11 @@ class AsyncMigrator:
         repeatable may depend on a versioned migration past the target,
         and the next full up() runs it. The target must name a versioned
         migration.
+
+        A run that would remove data stops unless a passing rehearsal
+        covers exactly these statements against exactly this applied
+        history. Rehearse first, or pass unrehearsed=True to apply them
+        without the proof.
         """
         from sustained.exceptions import MigrationError
 
@@ -459,16 +566,23 @@ class AsyncMigrator:
             already_applied = {r.id for r in records if r.success}
             next_seq = _next_seq(records)
             applied_now: List[str] = []
-            for migration in migrations:
-                if migration.id in already_applied:
-                    continue
+            versioned_now = [m for m in migrations if m.id not in already_applied]
+            repeatables_now = [
+                m
+                for m in (self._repeatables() if target is None else [])
+                if not _is_current(records_by_id.get(m.id), migration_checksum(m), True)
+            ]
+            # The order matches pending(), so a rehearsal of the same set
+            # produces the same key.
+            await self._require_receipt(
+                records, versioned_now + repeatables_now, unrehearsed
+            )
+            for migration in versioned_now:
                 await self._apply(migration, next_seq, update=False)
                 next_seq += 1
                 applied_now.append(migration.id)
-            for migration in self._repeatables() if target is None else []:
+            for migration in repeatables_now:
                 record = records_by_id.get(migration.id)
-                if _is_current(record, migration_checksum(migration), True):
-                    continue
                 await self._apply(migration, next_seq, update=record is not None)
                 if record is None:
                     next_seq += 1
@@ -511,7 +625,7 @@ class AsyncMigrator:
             _tag_migration(error, migration.id)
             raise
 
-    async def rehearse(self, scratch: bool = False) -> List[RehearsalResult]:
+    async def rehearse(self, scratch: bool = False) -> Rehearsal:
         """
         Runs every pending migration up, then back down, inside one
         transaction, and rolls that transaction back. Returns one result
@@ -525,6 +639,11 @@ class AsyncMigrator:
         constraints, and defaults are not. There is no models argument
         here: schema diffing against models is a synchronous path, so the
         async rehearsal covers registered migrations only.
+
+        A passing run leaves a receipt behind, which up() reads before it
+        applies anything that removes data. A scratch rehearsal records
+        nothing; the key comes back on the result for the caller to record
+        on the database the next run will read.
         """
         from sustained.aio import in_async_transaction
 
@@ -549,10 +668,11 @@ class AsyncMigrator:
         async with self._lock_scope():
             await self.validate()
             pending = await self.pending()
+            record_list = await self.applied_records()
             if not pending:
-                return []
-            records = {r.id: r for r in await self.applied_records()}
-            seq = _next_seq(list(records.values()))
+                return Rehearsal([], receipt_key(record_list, []))
+            records = {r.id: r for r in record_list}
+            seq = _next_seq(record_list)
             before = await self._snapshot()
             self._rehearsing = True
             try:
@@ -584,10 +704,21 @@ class AsyncMigrator:
                     after = await self._snapshot()
                     if after is not None:
                         reverted = diff_snapshots(before, after)
-                return _rehearsal_results(ran, up_error, outcomes, None, reverted)
+                results = _rehearsal_results(ran, up_error, outcomes, None, reverted)
             finally:
                 self._rehearsing = False
                 await self._roll_back_rehearsal()
+            # The receipt is written after the rollback, in its own
+            # committed transaction, and still inside the lock.
+            key = receipt_key(record_list, pending)
+            passed = not any(rehearsal_failed(r) for r in results)
+            recorded = False
+            if not scratch:
+                await self.record_rehearsal(
+                    key, RECEIPT_PASSED if passed else RECEIPT_FAILED
+                )
+                recorded = True
+            return Rehearsal(results, key, recorded)
 
     async def _snapshot(self) -> Optional[Dict[str, Any]]:
         """
@@ -600,7 +731,8 @@ class AsyncMigrator:
             schema = await async_introspect_schema(self._adapter, self._dialect)
         except Exception:
             return None
-        schema.pop(self._table.lower(), None)
+        for name in self._own_tables():
+            schema.pop(name.lower(), None)
         return dict(schema)
 
     async def _roll_back_rehearsal(self) -> None:
