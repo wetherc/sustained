@@ -41,7 +41,7 @@ Migrator(connection, migrations, table='sustained_migrations',
 Applies and reverts migrations, records them in a tracking table, and runs
 each inside a transaction. Duplicate ids raise `ValueError`.
 
-`guards` is a list of rules over the statements a run would apply; see
+`guards` is a list of rules over the statements an up run would apply; see
 [Guards](#guards) below. `callbacks` is a `Callbacks` object, whose functions
 `up()` calls around the run.
 
@@ -150,7 +150,7 @@ dialect unset while pointing at, say, MySQL would rehearse for real.
 
 | Signature | Returns | Description |
 | --- | --- | --- |
-| `record_rehearsal(key, outcome='passed')` | `None` | Writes the receipt for one key, replacing any earlier row. `outcome` is `'passed'` or `'failed'`; anything else raises `ValueError`. |
+| `record_rehearsal(key, outcome='passed')` | `None` | Writes the receipt for one key, replacing any earlier row. `outcome` is `'passed'`, `'failed'`, or `'override'` for statements applied with `unrehearsed=True`; anything else raises `ValueError`. |
 | `rehearsal_outcome(key)` | `str` or `None` | What the recorded rehearsal proved, or `None` when none covers the key. |
 | `rehearsed(key)` | `bool` | Whether a passing rehearsal covers the key. |
 
@@ -270,20 +270,21 @@ raises stops the caller.
 ## Guards
 
 In `sustained.guards`. A guard is
-`Callable[[Sequence[str], Dialects], list[Verdict]]`: it reads the statements a
-run would apply and returns one `Verdict(rule, verdict, statement)` per
+`Callable[[Sequence[str], Dialects], list[Verdict]]`: it reads the statements an
+up run would apply and returns one `Verdict(rule, verdict, statement)` per
 objection. `verdict` is `BLOCK` (`'block'`) or `WARN` (`'warn'`).
 
 `up()` raises `GuardBlocked` on a blocking verdict, before any statement runs,
 and prints warnings on stderr. Callable steps render no SQL, so guards cannot
-read them.
+read them. `down()` does not run guards: a down undoes work the rules already
+passed, so `no_drops()` would block every rollback of a create.
 
 | Signature | Returns | Description |
 | --- | --- | --- |
 | `no_drops()` | `Guard` | Blocks a table, column, view, schema, or database drop. Constraint, index, and key drops pass. |
 | `index_must_be_concurrent()` | `Guard` | Blocks `CREATE INDEX` without `CONCURRENTLY`. Postgres only; silent elsewhere. |
 | `no_table_rewrite()` | `Guard` | Warns on a column type change, or a NOT NULL with no default for existing rows. |
-| `no_lock_without_timeout()` | `Guard` | Blocks a run that alters or drops a table with no `SET lock_timeout` anywhere in it. |
+| `no_lock_without_timeout()` | `Guard` | Blocks a run that alters or drops a table with no `SET lock_timeout` anywhere in it. Postgres only; silent elsewhere. |
 | `max_statements(limit)` | `Guard` | Blocks every statement past `limit`. A limit below 1 raises `ValueError`. |
 | `run_guards(guards, statements, dialect)` | `list[Verdict]` | Every guard's verdicts, in guard order. |
 | `blocking(verdicts)` | `list[Verdict]` | The verdicts that stop a run. |

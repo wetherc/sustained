@@ -1198,6 +1198,43 @@ class TestDestructiveGate(MigrationTestCase):
         migrator = Migrator(self.conn, [self.drop])
         self.assertEqual(migrator.up(unrehearsed=True), ["001_drop"])
 
+    def test_the_override_is_recorded_and_unlocks_nothing(self):
+        migrator = Migrator(self.conn, [self.drop])
+        migrator.up(unrehearsed=True)
+        key = receipt_key(migrator.applied_records()[:0], [self.drop])
+        self.assertEqual(migrator.rehearsal_outcome(key), "override")
+        self.assertFalse(migrator.rehearsed(key))
+
+    def test_an_additive_override_records_nothing(self):
+        additive = Migration("001_add", up="CREATE TABLE gate_new (id INTEGER)")
+        migrator = Migrator(self.conn, [additive])
+        migrator.up(unrehearsed=True)
+        self.assertIsNone(
+            migrator.rehearsal_outcome(receipt_key([], [additive])),
+        )
+
+    def test_a_targeted_message_names_the_target(self):
+        later = Migration("002_trim", up="DROP TABLE gate_old")
+        migrator = Migrator(self.conn, [self.drop, later])
+        with self.assertRaises(RehearsalRequired) as caught:
+            migrator.up(target="001_drop")
+        self.assertIn(
+            "sustained migrate --target 001_drop --unrehearsed",
+            str(caught.exception),
+        )
+
+    def test_a_block_after_the_registered_run_names_what_applied(self):
+        registered = Migration(
+            "001_add",
+            up="CREATE TABLE gate_new (id INTEGER)",
+            down="DROP TABLE gate_new",
+        )
+        migrator = Migrator(self.conn, [registered])
+        with self.assertRaises(RehearsalRequired) as caught:
+            migrator.up(models=[MigUser], allow_drops=True)
+        self.assertEqual(getattr(caught.exception, "applied", None), ["001_add"])
+        self.assertIn("gate_new", table_names(self.conn))
+
     def test_a_failed_rehearsal_reads_differently(self):
         broken = Migration("001_drop", up=["DROP TABLE gate_old", "NOT SQL"])
         migrator = Migrator(self.conn, [broken])

@@ -70,7 +70,12 @@ The four problems:
 A run would apply SQL that removes data, and no passing rehearsal covers that
 exact set of statements.
 
-Raised by `Migrator.up()` and `AsyncMigrator.up()` before any statement runs.
+Raised by `Migrator.up()` and `AsyncMigrator.up()`. The registered migrations
+are checked before any statement runs. A run with models is checked a second
+time against the migration generated from them, which exists only once the
+registered migrations have applied, so a refusal there leaves those applied
+and lists their ids on the exception's `applied` attribute.
+
 The message names the migration and the statement, then both ways forward:
 
 ```
@@ -83,7 +88,9 @@ Or apply them without proof: sustained migrate --unrehearsed
 When a rehearsal of the same content ran and failed, the first line reads
 `The last rehearsal of these statements failed` instead.
 
-`up(unrehearsed=True)` waives the check. A run that only adds never triggers
+The CLI exits 4 on this error. `up(unrehearsed=True)` waives the check and
+records an `override` row under the same key, which never opens the gate for a
+later run. A run that only adds never triggers
 it, and neither does a callable step, which renders no SQL to scan. See
 [The receipt a rehearsal leaves](/schema#the-receipt-a-rehearsal-leaves).
 

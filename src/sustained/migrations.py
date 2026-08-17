@@ -240,9 +240,12 @@ class Rehearsal(List[RehearsalResult]):
         return not any(rehearsal_failed(r) for r in self)
 
 
-# The two outcomes a receipt row can hold.
+# The outcomes a receipt row can hold. 'override' marks statements that
+# were applied with unrehearsed=True: nothing proved them, and the row is
+# there so the database says who skipped the proof and when.
 RECEIPT_PASSED = "passed"
 RECEIPT_FAILED = "failed"
+RECEIPT_OVERRIDE = "override"
 
 
 def _receipt_token(checksum: Optional[str], migration_id: str) -> str:
@@ -393,12 +396,20 @@ def _call_on_error(
         print(f"error: on_error raised {callback_error!r}", file=sys.stderr)
 
 
-def _receipt_message(destructive: List[Tuple[str, str]], outcome: Optional[str]) -> str:
+def _receipt_message(
+    destructive: List[Tuple[str, str]],
+    outcome: Optional[str],
+    target: Optional[str] = None,
+) -> str:
     """
     Why a run stopped, which statements stopped it, and the two ways
     forward. A failed rehearsal reads differently from no rehearsal at
     all: the operator has already seen these statements break.
+
+    A targeted run gets the target back in the suggested command, so
+    copying the line runs what was blocked and not the whole set.
     """
+    target_sql = f" --target {target}" if target is not None else ""
     if outcome == RECEIPT_FAILED:
         opening = (
             "The last rehearsal of these statements failed, and this run "
@@ -415,7 +426,8 @@ def _receipt_message(destructive: List[Tuple[str, str]], outcome: Optional[str])
         + lines
         + [
             "Prove them first: sustained rehearse",
-            "Or apply them without proof: sustained migrate --unrehearsed",
+            "Or apply them without proof: sustained migrate"
+            f"{target_sql} --unrehearsed",
         ]
     )
 
@@ -678,6 +690,23 @@ def _tag_migration(error: BaseException, migration_id: str) -> None:
         pass
 
 
+def _tag_applied(error: BaseException, applied: List[str]) -> None:
+    """
+    Records which migrations were already applied when a run stopped, on
+    the exception itself, so a caller can report them. The gates that run
+    against the generated migration read a schema the registered
+    migrations already changed, so a block there is not a block on an
+    untouched database. An exception type that rejects new attributes,
+    such as one with __slots__, keeps its error unmarked.
+    """
+    if not applied:
+        return
+    try:
+        setattr(error, "applied", list(applied))
+    except Exception:
+        pass
+
+
 def _validation_problems(
     migrations: List[Migration],
     records: List[AppliedRecord],
@@ -906,16 +935,18 @@ class Migrator:
     def record_rehearsal(self, key: str, outcome: str = RECEIPT_PASSED) -> None:
         """
         Writes the receipt for one rehearsal key, replacing any earlier row
-        for the same key. The outcome is 'passed' or 'failed'.
+        for the same key. The outcome is 'passed', 'failed', or 'override'
+        for statements applied with unrehearsed=True.
 
         A rehearsal on a scratch database records nothing on its own: the
         receipt belongs on the database the next run will read. Call this
         on a migrator bound to that database once the scratch run passes.
         """
-        if outcome not in (RECEIPT_PASSED, RECEIPT_FAILED):
+        if outcome not in (RECEIPT_PASSED, RECEIPT_FAILED, RECEIPT_OVERRIDE):
             raise ValueError(
                 f"Unknown rehearsal outcome {outcome!r}; use "
-                f"{RECEIPT_PASSED!r} or {RECEIPT_FAILED!r}."
+                f"{RECEIPT_PASSED!r}, {RECEIPT_FAILED!r}, or "
+                f"{RECEIPT_OVERRIDE!r}."
             )
         self._ensure_rehearsal_table()
         placeholder = self._compiler.placeholder()
@@ -1224,14 +1255,20 @@ class Migrator:
         A run that would remove data stops unless a passing rehearsal
         covers exactly these statements against exactly this applied
         history. Rehearse first, or pass unrehearsed=True to apply them
-        without the proof. Runs that only add are never gated, and a
+        without the proof, which writes an 'override' receipt naming what
+        was applied unproved. Runs that only add are never gated, and a
         callable step is invisible to the check, the same limit the
         destructive labels carry.
 
         The migrator's guards read the statements before they run. A
-        blocking verdict raises GuardBlocked and nothing is applied; a
-        warning prints on stderr. The migrator's callbacks fire around
-        the run.
+        blocking verdict raises GuardBlocked; a warning prints on stderr.
+        Both gates read the registered migrations before anything runs,
+        and read them again together with the generated migration, whose
+        statements exist only once the registered ones have applied. A
+        block or a missing receipt at that second reading leaves the
+        registered migrations applied, and lists their ids on the
+        exception's `applied` attribute. The migrator's callbacks fire
+        around the run.
         """
         callbacks = self._callbacks
         if callbacks.before_migrate is not None:
@@ -1323,7 +1360,8 @@ class Migrator:
             registered_run = versioned_now + repeatables_now
             warned: Set["Verdict"] = set()
             check_guards(self._guards, registered_run, self._dialect, warned)
-            self._require_receipt(records, registered_run, unrehearsed)
+            self._require_receipt(records, registered_run, unrehearsed, target)
+            final_run = list(registered_run)
             for migration in versioned_now:
                 self._apply(migration, next_seq, update=False)
                 next_seq += 1
@@ -1342,16 +1380,16 @@ class Migrator:
                     # The generated statements are known only now, after
                     # the registered migrations left the schema they diff
                     # against, so both gates run a second time before the
-                    # one migration they could not see.
-                    check_guards(
-                        self._guards,
-                        registered_run + [generated],
-                        self._dialect,
-                        warned,
-                    )
-                    self._require_receipt(
-                        records, registered_run + [generated], unrehearsed
-                    )
+                    # one migration they could not see. The registered
+                    # migrations are already applied and committed by
+                    # then, so a block here reports what it stopped after.
+                    final_run = registered_run + [generated]
+                    try:
+                        check_guards(self._guards, final_run, self._dialect, warned)
+                        self._require_receipt(records, final_run, unrehearsed, target)
+                    except Exception as error:
+                        _tag_applied(error, applied_now)
+                        raise
                     self._migrations.append(generated)
                     self._apply(generated, next_seq, update=False, generated=True)
                     next_seq += 1
@@ -1362,6 +1400,10 @@ class Migrator:
                 if record is None:
                     next_seq += 1
                 applied_now.append(migration.id)
+            if unrehearsed and _destructive_in(final_run):
+                # The proof was waived, so the row says so. It never
+                # unlocks a later run: only 'passed' does that.
+                self.record_rehearsal(receipt_key(records, final_run), RECEIPT_OVERRIDE)
             return applied_now
 
     def _require_receipt(
@@ -1369,6 +1411,7 @@ class Migrator:
         records: List[AppliedRecord],
         run: List[Migration],
         unrehearsed: bool,
+        target: Optional[str] = None,
     ) -> None:
         """
         Stops a run that removes data unless a passing rehearsal covers
@@ -1385,7 +1428,7 @@ class Migrator:
         outcome = self.rehearsal_outcome(receipt_key(records, run))
         if outcome == RECEIPT_PASSED:
             return
-        raise RehearsalRequired(_receipt_message(destructive, outcome))
+        raise RehearsalRequired(_receipt_message(destructive, outcome, target))
 
     def _apply(
         self, migration: Migration, seq: int, update: bool, generated: bool = False

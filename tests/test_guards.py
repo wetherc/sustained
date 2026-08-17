@@ -161,6 +161,23 @@ class NoLockWithoutTimeoutTest(unittest.TestCase):
     def test_passes_a_run_that_takes_no_table_lock(self):
         self.assertEqual(self.run_on(["CREATE TABLE users (id INTEGER)"]), [])
 
+    def test_session_timeout_counts(self):
+        statements = ["SET SESSION lock_timeout = '5s'", "DROP TABLE users"]
+        self.assertEqual(self.run_on(statements), [])
+
+    def test_a_column_named_lock_timeout_is_not_a_timeout(self):
+        statements = ["UPDATE settings SET lock_timeout = 5", "DROP TABLE users"]
+        verdicts = self.run_on(statements)
+        self.assertEqual([v.statement for v in verdicts], ["DROP TABLE users"])
+
+    def test_a_timeout_on_another_setting_does_not_count(self):
+        statements = ["SET statement_timeout = '5s'", "DROP TABLE users"]
+        self.assertEqual(len(self.run_on(statements)), 1)
+
+    def test_silent_off_postgres(self):
+        verdicts = self.guard(["DROP TABLE users"], Dialects.DEFAULT)
+        self.assertEqual(verdicts, [])
+
 
 class MaxStatementsTest(unittest.TestCase):
     def test_blocks_every_statement_past_the_limit(self):

@@ -33,6 +33,7 @@ from sustained.migrations import (
     _RECORDS_SELECT,
     _UPGRADE_COLUMNS,
     RECEIPT_FAILED,
+    RECEIPT_OVERRIDE,
     RECEIPT_PASSED,
     AppliedRecord,
     CallbackResult,
@@ -217,10 +218,11 @@ class AsyncMigrator:
         Writes the receipt for one rehearsal key, replacing any earlier row
         for the same key. Mirrors Migrator.record_rehearsal().
         """
-        if outcome not in (RECEIPT_PASSED, RECEIPT_FAILED):
+        if outcome not in (RECEIPT_PASSED, RECEIPT_FAILED, RECEIPT_OVERRIDE):
             raise ValueError(
                 f"Unknown rehearsal outcome {outcome!r}; use "
-                f"{RECEIPT_PASSED!r} or {RECEIPT_FAILED!r}."
+                f"{RECEIPT_PASSED!r}, {RECEIPT_FAILED!r}, or "
+                f"{RECEIPT_OVERRIDE!r}."
             )
         await self._ensure_rehearsal_table()
         placeholder = self._compiler.placeholder()
@@ -259,6 +261,7 @@ class AsyncMigrator:
         records: List[AppliedRecord],
         run: List[Migration],
         unrehearsed: bool,
+        target: Optional[str] = None,
     ) -> None:
         """
         Stops a run that removes data unless a passing rehearsal covers
@@ -274,7 +277,7 @@ class AsyncMigrator:
         outcome = await self.rehearsal_outcome(receipt_key(records, run))
         if outcome == RECEIPT_PASSED:
             return
-        raise RehearsalRequired(_receipt_message(destructive, outcome))
+        raise RehearsalRequired(_receipt_message(destructive, outcome, target))
 
     async def _has_columns(self, columns: Tuple[str, ...]) -> bool:
         """Probes the tracking table for the given columns."""
@@ -662,7 +665,7 @@ class AsyncMigrator:
             # produces the same key.
             run = versioned_now + repeatables_now
             check_guards(self._guards, run, self._dialect)
-            await self._require_receipt(records, run, unrehearsed)
+            await self._require_receipt(records, run, unrehearsed, target)
             for migration in versioned_now:
                 await self._apply(migration, next_seq, update=False)
                 next_seq += 1
@@ -673,6 +676,10 @@ class AsyncMigrator:
                 if record is None:
                     next_seq += 1
                 applied_now.append(migration.id)
+            if unrehearsed and _destructive_in(run):
+                # The proof was waived, so the row says so. It never
+                # unlocks a later run: only 'passed' does that.
+                await self.record_rehearsal(receipt_key(records, run), RECEIPT_OVERRIDE)
             return applied_now
 
     async def _apply(self, migration: Migration, seq: int, update: bool) -> None:

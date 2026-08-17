@@ -39,7 +39,8 @@ Guide: [Schema and Migrations](/schema#command-line).
 | 0 | Success, or nothing to do. |
 | 1 | A failure: config, connection, validation problems, or a migration error. Details on stderr. |
 | 2 | `plan` only: work is waiting. |
-| 3 | `plan` and `migrate`: a guard blocked a statement. Nothing ran. |
+| 3 | `plan` and `migrate`: a guard blocked a statement. |
+| 4 | `migrate` only: the run removes data and no rehearsal proved it. |
 
 `plan` is the one command with four outcomes: 0 when the database is current,
 2 when migrations are pending or the models have drifted, 3 when a guard
@@ -53,8 +54,13 @@ waiting" should check stderr for an `error:` line.
 land, or when the schema did not come back. A migration with no down step is
 not a failure, so it exits 0.
 
-`migrate` exits 1 when the run would remove data and no passing rehearsal
-covers those statements. The message names them and both ways forward.
+`migrate` exits 4 when the run would remove data and no passing rehearsal
+covers those statements. The message names them and both ways forward, with
+`--target` carried through when the run had one.
+
+A block or a refusal on the migration generated from the models comes after
+the registered migrations have applied. Those ids print on stdout before the
+error, and they stay applied.
 
 `validate` exits 1 when problems exist, 0 otherwise. Exit codes are the same
 with and without `--json`.

@@ -794,7 +794,7 @@ class ReceiptCliTestCase(CliBase):
 
     def test_migrate_refuses_an_unrehearsed_drop(self):
         code, out, err = self.run_cli("migrate")
-        self.assertEqual(code, 1)
+        self.assertEqual(code, 4)
         self.assertIn("no rehearsal has proved these statements", err)
         self.assertIn("003_trim  DROP TABLE flags", err)
         self.assertIn("--unrehearsed", err)
@@ -814,6 +814,53 @@ class ReceiptCliTestCase(CliBase):
         self.assertEqual(code, 0)
         self.assertNotIn("flags", self.table_names())
 
+    def test_the_override_is_recorded_on_the_database(self):
+        self.run_cli("migrate", "--unrehearsed")
+        with contextlib.closing(self.db()) as conn:
+            rows = conn.execute("SELECT outcome FROM sustained_rehearsals").fetchall()
+        self.assertEqual([r[0] for r in rows], ["override"])
+
+    def test_plan_points_at_migrate_once_the_receipt_covers_the_drop(self):
+        self.run_cli("rehearse")
+        code, out, _ = self.run_cli("plan")
+        self.assertEqual(code, 2)
+        self.assertIn("run: sustained migrate", out)
+        self.assertNotIn("run: sustained rehearse", out)
+
+    def test_a_targeted_run_gets_the_target_back_in_the_message(self):
+        code, _, err = self.run_cli("migrate", "--target", "003_trim")
+        self.assertEqual(code, 4)
+        self.assertIn("sustained migrate --target 003_trim --unrehearsed", err)
+
+    def test_a_scratch_rehearsal_covers_a_targeted_run(self):
+        # Two destructive migrations are pending, so the target stops
+        # short of the full pending set and reads a prefix receipt.
+        self._write(
+            os.path.join(self.dir.name, "migrations"),
+            "004_users.up.sql",
+            "DROP TABLE users;",
+        )
+        self._write(
+            os.path.join(self.dir.name, "migrations"),
+            "004_users.down.sql",
+            "CREATE TABLE users (id INTEGER);",
+        )
+        name = f"scratch_target_{id(self)}"
+        with open(os.path.join(self.dir.name, f"{name}.py"), "w") as f:
+            f.write(
+                CONFIG_TEMPLATE + "\n"
+                "def get_rehearsal_connection():\n"
+                "    return sqlite3.connect(\n"
+                "        os.path.join(os.path.dirname(__file__), 'scratch2.db')\n"
+                "    )\n"
+            )
+        self.addCleanup(sys.modules.pop, name, None)
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(main(["rehearse", "--config", name]), 0)
+        code, out, _ = self.run_cli("migrate", "--target", "003_trim")
+        self.assertEqual(code, 0)
+        self.assertIn("applied  003_trim", out)
+
     def test_plan_points_at_rehearse_when_a_drop_is_waiting(self):
         code, out, _ = self.run_cli("plan")
         self.assertEqual(code, 2)
@@ -829,7 +876,7 @@ class ReceiptCliTestCase(CliBase):
             "DROP TABLE flags;\nDROP TABLE users;",
         )
         code, _, err = self.run_cli("migrate")
-        self.assertEqual(code, 1)
+        self.assertEqual(code, 4)
         self.assertIn("no rehearsal has proved these statements", err)
 
     def test_a_scratch_run_that_misses_a_pending_migration_records_nothing(self):

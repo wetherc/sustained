@@ -121,7 +121,7 @@ Autogeneration refuses to guess about anything that loses data or fails on popul
 - **Type and nullability changes migrate per dialect.** Postgres, MSSQL, and DuckDB alter in place with reversible down steps; Postgres casts take a hint through `type_casts={'table.col': 'col::integer'}`. SQLite rebuilds the table (create new, copy rows, replace), which is not reversible. Columns and indexes the models do not declare survive the rebuild unless `allow_drops=True`; an index on an expression is invisible to introspection, so a rebuild loses it and it must be recreated by hand. Pass `ignore_changed_columns=True` to skip changed columns entirely.
 - **NOT NULL needs a value for existing rows.** Adding or tightening to NOT NULL requires a `default` or a `backfill` value on the ColumnDef; generation emits add-nullable, UPDATE backfill, SET NOT NULL, or folds the backfill into a SQLite rebuild. New primary key or autoincrement columns cannot be added with ALTER TABLE.
 - **Statements that remove data need a rehearsal.** `up()` refuses to run a DROP, a column drop, or a TRUNCATE until a passing rehearsal has proved that exact set of statements. `up(unrehearsed=True)` applies them anyway. See [The receipt a rehearsal leaves](#the-receipt-a-rehearsal-leaves).
-- **Your own rules run too.** Guards read every statement a run would apply, generated or hand-written, and can block it. See [Guards](#guards).
+- **Your own rules run too.** Guards read every statement an up run would apply, generated or hand-written, and can block it. Down runs are not checked. See [Guards](#guards).
 - The tracking table and the receipt table are excluded from diffing, and `exclude_tables` protects any other tables Sustained does not manage.
 
 Renames cannot be detected from the catalog, so pass hints: `up(models=models, renames={'users.name': 'full_name'}, table_renames={'old': 'new'})` emits reversible RENAME statements instead of a destructive drop-plus-add.
@@ -320,7 +320,7 @@ $ sustained script down             # print the SQL without running it
 $ sustained baseline 001_create_users
 ```
 
-Commands exit 0 on success and 1 on failure, with errors on stderr, so they slot into deploy pipelines. `plan` exits 2 when work is waiting, and `plan` and `migrate` exit 3 when a [guard](#guards) blocked a statement.
+Commands exit 0 on success and 1 on failure, with errors on stderr, so they slot into deploy pipelines. `plan` exits 2 when work is waiting, `plan` and `migrate` exit 3 when a [guard](#guards) blocked a statement, and `migrate` exits 4 when a run that removes data has no receipt.
 
 When the config module names `models`, `rehearse` and `migrate` use them: `rehearse` proves the generated migration alongside the pending ones, and `migrate` applies it after them. A targeted `migrate` applies the registered migrations only, since the generated migration always runs last.
 
@@ -356,11 +356,11 @@ run: sustained rehearse
 
 A statement that drops a table, drops a column, or truncates one is labelled `destructive`. A column drop written without the COLUMN keyword, as MySQL allows, is labelled too. The scan is textual, so a drop named inside a string literal is labelled too.
 
-The footer points at `rehearse` rather than `migrate` when a pending migration carries one of these labels, because `migrate` will refuse it until a rehearsal has proved it. With nothing destructive waiting, the footer reads `run: sustained migrate`.
+The footer points at `rehearse` rather than `migrate` when a pending migration carries one of these labels, because `migrate` will refuse it until a rehearsal has proved it. Once a rehearsal has recorded a receipt for that run, the footer reads `run: sustained migrate` again. With nothing destructive waiting, it reads `run: sustained migrate` from the start.
 
 The drift section appears only when the config module names `models`. It reports every difference, drops included, while `migrate` never generates a drop. When drops are all that is left, the footer says so instead of offering `sustained migrate`. With no `models`, the plan says drift went unchecked rather than reporting none.
 
-When the config module names `guards`, `plan` runs them over every statement it just listed and prints a fourth section. See [Guards](#guards).
+When the config module names `guards`, `plan` runs them and prints a fourth section. See [Guards](#guards). The guards read the statements `migrate` would apply: the pending migrations, and the generated migration without the drops. The drift section is the wider set, so a drop it lists carries no verdict, because no run would read it.
 
 `plan` exits 0 when the database is current, 2 when work is waiting, 3 when a guard blocked a statement, and 1 when validation found problems. Problems win over everything: a plan that cannot be trusted is worse news than a statement that will be refused. A blocked statement in turn wins over work merely waiting. Note that argparse also exits 2 on a usage error, so a script that treats 2 as "work is waiting" should check stderr for an `error:` line.
 
@@ -486,7 +486,9 @@ Ids are not part of the key, only statements. A generated migration takes a new 
 
 `migrate --target` runs a shorter set, which has its own key. A rehearsal applied every one of those shorter sets on its way up and took them all back on the way down, so it records a receipt for each one that removes data. One rehearsal covers the whole run and every target within it.
 
-`--unrehearsed` is the override, named so a shell history records what was done. There is no config setting that turns the gate off.
+`--unrehearsed` is the override. It writes a row of its own under the same key, with the outcome `override`, so the database records what was applied unproved and when. That row never opens the gate for a later run: only a `passed` row does. There is no config setting that turns the gate off.
+
+A refused run exits 4, which a pipeline can tell apart from a failure. A targeted run gets the target back in the suggested command, so the line can be copied as it stands.
 
 Two limits, both shared with the `destructive` labels in `plan`:
 
@@ -521,7 +523,7 @@ def get_rehearsal_connection():
 
 The scratch database is usually empty, so the whole history replays rather than what is pending on the real one, which proves the migrations run from nothing. The dialect check does not apply, the changes may survive the rollback, and the footer says so. The connection closes when the command ends. On an engine whose schema changes do not roll back, the rehearsed objects stay behind, so recreate the scratch database before the next rehearsal.
 
-The receipt belongs on the database `migrate` will read, not on the throwaway one, so the CLI writes it there after the scratch run passes. The key is computed against the real database's history and pending set. It is written only when the scratch run applied every migration pending on the real database; otherwise the output says the receipt was not recorded. A scratch rehearsal cannot cover a generated migration, because the diff it runs against the throwaway schema is not the diff the real run will produce.
+The receipt belongs on the database `migrate` will read, not on the throwaway one, so the CLI writes it there after the scratch run passes. The key is computed against the real database's history and pending set. It is written only when the scratch run applied every migration pending on the real database; otherwise the output says the receipt was not recorded. Rows go in for the shorter target sets too, the same ones a real rehearsal records, so `migrate --target` reads a receipt after a scratch run. A scratch rehearsal cannot cover a generated migration, because the diff it runs against the throwaway schema is not the diff the real run will produce.
 
 Through the API, `rehearse(scratch=True)` writes nothing at all. Take the key off the result and record it yourself on a migrator bound to the real database:
 
@@ -549,7 +551,7 @@ guards = [no_drops(), index_must_be_concurrent(), max_statements(50)]
 migrator = Migrator(conn, migrations, dialect=Dialects.POSTGRES, guards=guards)
 ```
 
-Each rule returns a verdict on each statement it objects to: `block` or `warn`. A `block` stops `up()` before a single statement runs, and raises `GuardBlocked`. A `warn` prints on stderr and the run goes on.
+Each rule returns a verdict on each statement it objects to: `block` or `warn`. A `block` raises `GuardBlocked`. A `warn` prints on stderr and the run goes on. A block on the registered migrations stops the run before a single statement runs. A block on the migration generated from your models comes later, because those statements do not exist until the registered migrations have applied; the registered ids print before the error, and they stay applied.
 
 ```console
 $ sustained plan
@@ -580,16 +582,18 @@ Both commands exit 3. There is no `--force`: a rule you can wave away on the day
 | `no_drops()` | block | A statement that drops a table, column, view, schema, or database |
 | `index_must_be_concurrent()` | block | `CREATE INDEX` without `CONCURRENTLY`, on Postgres only |
 | `no_table_rewrite()` | warn | A column type change, or a NOT NULL with nothing to fill existing rows |
-| `no_lock_without_timeout()` | block | A run that alters or drops a table with no `SET lock_timeout` in it |
+| `no_lock_without_timeout()` | block | An up run that alters or drops a table with no `SET lock_timeout` in it, on Postgres only |
 | `max_statements(n)` | block | Every statement past the limit |
 
 Every one is a factory, so they all read the same at the call site. `no_table_rewrite()` warns where the others block, because whether a change rewrites the table depends on the engine, its version, and whether the two types coerce. Read it against your own engine rather than trusting it.
 
-`index_must_be_concurrent()` is silent on every dialect but Postgres, which is the only one with the keyword. A rule that does not apply says nothing rather than guessing.
+`index_must_be_concurrent()` and `no_lock_without_timeout()` are silent on every dialect but Postgres, the only one with the keyword and the setting they are about. A rule that does not apply says nothing rather than guessing.
 
 ### What guards read, and when
 
-Guards read every SQL statement the run would apply: SQL file migrations, Python migrations with string steps, and the diff against your models. A callable step renders no SQL, so guards cannot see inside it, the same limit the destructive labels carry.
+Guards read every SQL statement an up run would apply: SQL file migrations, Python migrations with string steps, and the diff against your models. A callable step renders no SQL, so guards cannot see inside it, the same limit the destructive labels carry.
+
+Down runs are not checked. A down undoes work the rules already passed, so `no_drops()` would block every rollback of a create.
 
 `migrate` checks twice. The registered migrations are checked before anything runs. The diff against the models cannot be generated until those have run, so its statements are checked the moment they exist, alongside the registered statements from the same run, so a rule about the whole run counts the whole run. A warning already printed is not printed again.
 

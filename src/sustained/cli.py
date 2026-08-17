@@ -31,7 +31,8 @@ guard blocked a statement. A run with problems exits 1 even when a guard
 also blocked: a plan that cannot be trusted outranks the rest.
 
 `migrate` refuses to apply statements that remove data until a passing
-rehearsal has covered them. `--unrehearsed` applies them anyway.
+rehearsal has covered them, and exits 4. `--unrehearsed` applies them
+anyway and records the override on the database.
 
 `status`, `validate`, `plan`, and `rehearse` take `--json`, which prints
 one JSON object instead of the plain lines. The exit code stays the same
@@ -64,7 +65,7 @@ from sustained.analysis import (
     summarize,
 )
 from sustained.dialects import Dialects
-from sustained.exceptions import GuardBlocked, MigrationError
+from sustained.exceptions import GuardBlocked, MigrationError, RehearsalRequired
 from sustained.guards import Verdict, blocking, run_guards
 from sustained.migration_files import load_migrations
 from sustained.migrations import (
@@ -74,6 +75,7 @@ from sustained.migrations import (
     Migrator,
     Rehearsal,
     RehearsalResult,
+    _destructive_prefix_keys,
     migration_sql,
     receipt_key,
     rehearsal_failed,
@@ -220,6 +222,54 @@ def _drift_statements(migrator: Migrator, config: ModuleType) -> Optional[List[s
     return migration_sql(migration, "up")
 
 
+def _migrate_drift_statements(
+    migrator: Migrator, config: ModuleType
+) -> Optional[List[str]]:
+    """
+    The generated statements migrate would actually apply, or None when
+    the config module names no models.
+
+    This is the drift preview without the drops: migrate generates none
+    unless it is called from Python with allow_drops=True. The guards read
+    this set, so a verdict names a statement the run would run.
+    """
+    models = getattr(config, "models", None)
+    if not models:
+        return None
+    migration = migrator.plan(list(models))
+    if migration is None:
+        return []
+    return migration_sql(migration, "up")
+
+
+def _receipt_covers(migrator: Migrator, config: ModuleType) -> bool:
+    """
+    Whether a passing rehearsal already covers the run migrate would make,
+    so the plan can point at migrate instead of rehearse.
+
+    Two keys are tried: the pending migrations on their own, which is what
+    a run without models applies, and the pending migrations plus the
+    migration the models generate right now. The second is a guess. The
+    real run diffs the models after the pending migrations have applied,
+    and a pending migration that changes the same tables moves the
+    generated statements, and with them the key. A wrong guess costs a
+    stale suggestion; migrate still reads the receipt itself.
+    """
+    pending = migrator.pending()
+    if not pending:
+        return False
+    records = migrator.applied_records()
+    if migrator.rehearsed(receipt_key(records, pending)):
+        return True
+    models = getattr(config, "models", None)
+    if not models:
+        return False
+    generated = migrator.plan(list(models))
+    if generated is None:
+        return False
+    return migrator.rehearsed(receipt_key(records, pending + [generated]))
+
+
 def _print_pending(summaries: List[PendingSummary]) -> None:
     print("pending")
     width = max(len(s.id) for s in summaries)
@@ -243,12 +293,14 @@ def _plan_verdicts(
     dialect: Dialects,
 ) -> Dict[str, List[Verdict]]:
     """
-    The guards' verdicts on the statements the plan would apply, keyed by
+    The guards' verdicts on the statements migrate would apply, keyed by
     the statement they flag.
 
-    The guards read the whole run at once, pending migrations and drift
-    together, so a rule over the run as a whole sees what migrate will
-    see.
+    The guards read the whole run at once, pending migrations and
+    generated statements together, so a rule over the run as a whole sees
+    what migrate will see. The drift the plan prints is the wider set: it
+    includes the drops migrate does not generate, and no verdict is
+    reported on those, because no run would read them.
     """
     guards = list(getattr(config, "guards", None) or [])
     statements = [s for summary in summaries for s in summary.sql or []]
@@ -330,7 +382,12 @@ def _cmd_plan(migrator: Migrator, args: argparse.Namespace, config: ModuleType) 
     summaries = [summarize(m, states.get(m.id, "pending")) for m in migrator.pending()]
     problems = migrator.validate(raise_on_problems=False)
     drift = _drift_statements(migrator, config)
-    by_statement = _plan_verdicts(config, summaries, drift, migrator.dialect)
+    by_statement = _plan_verdicts(
+        config,
+        summaries,
+        _migrate_drift_statements(migrator, config),
+        migrator.dialect,
+    )
     verdicts = [v for group in by_statement.values() for v in group]
     blockers = blocking(verdicts)
 
@@ -392,7 +449,9 @@ def _cmd_plan(migrator: Migrator, args: argparse.Namespace, config: ModuleType) 
         # migrate never generates drops, so a drift section holding
         # nothing else is not work it can do.
         closable = [s for s in drift or [] if not destructive_statements([s])]
-        if any(s.destructive for s in summaries):
+        if any(s.destructive for s in summaries) and not _receipt_covers(
+            migrator, config
+        ):
             # migrate refuses these until a rehearsal has proved them.
             print("run: sustained rehearse")
         elif summaries or closable:
@@ -499,6 +558,12 @@ def _record_scratch_receipt(
     against the real database's applied history and pending set. Nothing
     is written when the scratch run did not run every pending migration,
     since the receipt would then cover statements nothing proved.
+
+    A row also goes in for every destructive prefix of the versioned
+    pending list, the keys a `migrate --target` reads. The scratch run
+    applied each of those prefixes on its way up and took them back on
+    the way down, so it proved them too, and a real rehearsal records
+    them the same way.
     """
     pending = migrator.pending()
     if not pending:
@@ -509,8 +574,11 @@ def _record_scratch_receipt(
             "receipt not recorded: the scratch run did not cover every "
             "pending migration"
         )
-    key = receipt_key(migrator.applied_records(), pending)
+    records = migrator.applied_records()
+    key = receipt_key(records, pending)
     migrator.record_rehearsal(key)
+    for prefix_key in _destructive_prefix_keys(records, pending):
+        migrator.record_rehearsal(prefix_key)
     return key, "receipt recorded"
 
 
@@ -724,6 +792,20 @@ _COMMANDS = {
 }
 
 
+def _print_applied(error: BaseException) -> None:
+    """
+    Names the migrations that were already applied when a run stopped.
+
+    A run with models reads the guards and the receipt twice: once before
+    anything runs, and once more against the migration generated from the
+    models, whose statements exist only after the registered migrations
+    have applied. A stop at that second reading leaves work behind, and
+    the operator needs to know what.
+    """
+    for migration_id in getattr(error, "applied", None) or []:
+        print(f"applied  {migration_id}")
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = _build_parser().parse_args(argv)
     try:
@@ -740,9 +822,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return _COMMANDS[args.command](migrator, args, config)
     except GuardBlocked as error:
         # Exit 3 says a guard blocked the run, which plan reports the same
-        # way. Nothing ran.
+        # way.
+        _print_applied(error)
         print(f"error: {error}", file=sys.stderr)
         return 3
+    except RehearsalRequired as error:
+        # Exit 4 says the run needs a rehearsal it does not have, which is
+        # a different thing to do from fixing a failure.
+        _print_applied(error)
+        print(f"error: {error}", file=sys.stderr)
+        return 4
     except MigrationError as error:
         print(f"error: {error}", file=sys.stderr)
         return 1

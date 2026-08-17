@@ -1,5 +1,5 @@
 """
-Rules that read the statements a run would apply.
+Rules that read the statements an up run would apply.
 
 A guard takes the statement list and the dialect, and returns a verdict
 for each statement it objects to. A `block` verdict stops the run before
@@ -7,10 +7,14 @@ any statement executes. A `warn` verdict prints and lets the run go on.
 
 Guards are given to the migrator (`Migrator(..., guards=[...])`) or named
 in the config module (`guards = [...]`) for the CLI. They run over every
-statement the run would apply: file migrations, Python migrations with
+statement an up run would apply: file migrations, Python migrations with
 SQL steps, and the diff against the models. A callable step renders no
 SQL, so guards cannot read it, the same limit the destructive labels
 carry.
+
+Down runs are not checked. A down undoes work that already passed the
+rules, so a rule like `no_drops()` would block every rollback of a
+create.
 
 The built-in rules are factories, so every one reads the same at the call
 site:
@@ -46,7 +50,8 @@ class Verdict(NamedTuple):
     statement: str
 
 
-# A guard reads the statements a run would apply and returns its verdicts.
+# A guard reads the statements an up run would apply and returns its
+# verdicts.
 Guard = Callable[[Sequence[str], Dialects], List[Verdict]]
 
 
@@ -92,7 +97,13 @@ _SET_NOT_NULL_RE = re.compile(r"\bSET\s+NOT\s+NULL\b", re.IGNORECASE)
 _ADD_NOT_NULL_RE = re.compile(r"\bADD\s+(COLUMN\s+)?\S+.*\bNOT\s+NULL\b", re.IGNORECASE)
 _DEFAULT_RE = re.compile(r"\bDEFAULT\b", re.IGNORECASE)
 _LOCK_TAKING_RE = re.compile(r"\bALTER\s+TABLE\b|\bDROP\s+TABLE\b", re.IGNORECASE)
-_LOCK_TIMEOUT_RE = re.compile(r"\bSET\b.*\block_timeout\b", re.IGNORECASE)
+# Only a statement that starts with `SET lock_timeout` counts, so an
+# `UPDATE t SET lock_timeout = 5` on a column of that name does not pass
+# for a timeout. `SESSION` and `LOCAL` are the two words Postgres allows
+# between the two.
+_LOCK_TIMEOUT_RE = re.compile(
+    r"^SET\s+(SESSION\s+|LOCAL\s+)?lock_timeout\b", re.IGNORECASE
+)
 
 
 def no_drops() -> Guard:
@@ -164,14 +175,17 @@ def no_table_rewrite() -> Guard:
 def no_lock_without_timeout() -> Guard:
     """
     Blocks a run that alters or drops a table without setting a lock
-    timeout first. Without one, a statement waiting behind a long
-    transaction queues every other query on that table behind it.
+    timeout first, on Postgres, where a statement waiting behind a long
+    transaction queues every other query on that table behind it. Silent
+    on every other dialect, which has no such setting.
 
     The rule reads the whole run: one `SET lock_timeout` statement, in
     any migration of the run, satisfies it.
     """
 
     def guard(statements: Sequence[str], dialect: Dialects) -> List[Verdict]:
+        if dialect is not Dialects.POSTGRES:
+            return []
         texts = [normalize_statement(s) for s in statements]
         if any(_LOCK_TIMEOUT_RE.search(text) for text in texts):
             return []

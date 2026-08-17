@@ -382,7 +382,15 @@ class TestSqliteRebuild(AutogenTestCase):
         Migrator(self.conn, [migration]).up(unrehearsed=True)
         rows = self.conn.execute("SELECT id, email FROM ag_users").fetchall()
         self.assertEqual(rows, [(1, "a@x")])
-        self.assertTrue(diff_schema(self.conn, [changed]).is_empty())
+        # The override the run recorded lives in the receipt table, which
+        # the models do not declare.
+        self.assertTrue(
+            diff_schema(
+                self.conn,
+                [changed],
+                exclude_tables=("sustained_migrations", "sustained_rehearsals"),
+            ).is_empty()
+        )
 
     def test_rebuild_preserves_undeclared_columns_and_indexes(self):
         self.User.create_table(self.conn)
