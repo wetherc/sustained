@@ -1,46 +1,41 @@
 # Sustained.py
 
-A Python query builder, lightweight ORM, and schema migration tool, inspired by [Objection.js](https://vincit.github.io/objection.js/).
+Sustained is a Python query builder, lightweight ORM, and schema migration tool, originally inspired by [Objection.js](https://vincit.github.io/objection.js/).
 
-Your models declare their columns. Sustained diffs them against the live database, writes the migration, and runs the whole thing forwards and back on a rehearsal before it touches the real schema:
+With Sustained, You define one set of model classes to describe your tables, and Sustained builds and runs the queries against them, and keeps the schema itself in step.
 
-```console
-$ sustained rehearse
-rehearsed 003_sessions  up ok, down ok, reversed
-rehearsed 004_trim      up ok, down ok, reversed
-rollback complete, database unchanged
-```
-
-The same model classes build and run your queries:
+The syntax will look familiar if you have worked with Objection, Kysely, or even knex before:
 
 ```python
 adults = User.query().where(User.c.age >= 18).orderBy('name').run()
 ```
 
-## Migrations
+## Managing queries through Sustained
 
-- **Generated from your models.** `Migrator.up(models=[...])` diffs the live database, generates the migration, records it, applies it, and `down()` rolls it back. Only the difference is applied on each run. `sustained migrate` does the same from the shell.
-- **Rehearsed before they land.** `sustained rehearse` applies every pending migration, runs the down steps back down, and rolls the whole thing back. It reads the schema before and after, so a migration that does not run, that does not put the models in place, or that does not reverse says so while the real schema is still untouched. Point it at a scratch database when the rollback cannot be trusted.
-- **Planned in one screen.** `sustained plan` merges pending migrations, validation problems, and model drift, labels destructive statements, and exits 2 when work is waiting. `--json` for a pipeline.
-- **Checked, not trusted.** The tracking table holds a sequence number, a SHA-256 checksum, timing, and a success flag per migration. `validate()` blocks a run when a migration was edited after it ran, arrives out of order, or left a failed attempt; `repair()` fixes the bookkeeping.
-- **Proved before they can drop anything.** A passing rehearsal writes a receipt keyed to the exact statements it ran. `migrate` refuses a drop, a column drop, or a truncate until a receipt covers it, and `--unrehearsed` is the recorded override.
-- **Held to your own rules.** Guards read every statement an up run would apply and return a verdict: `no_drops()`, `index_must_be_concurrent()`, `max_statements(50)`, or a function you write. A block stops `migrate` before the first statement, or, for the migration generated from your models, before that one runs and after the registered ones; `plan` prints the verdicts beside the pending work. `down` is not checked, since a rule like `no_drops()` would block every rollback of a create.
-- **Safe by refusal.** Drops need `allow_drops=True`, renames need hints, NOT NULL changes need a `backfill`. Constraint drift is reported, never silently migrated.
-- **Yours to write.** Migrations can be Python objects, `<id>.up.sql` and `<id>.down.sql` files with `${placeholders}`, or `<id>.repeat.sql` files that re-run whenever their contents change. `script('up')` renders every statement for offline review.
-- **Ready for deploys.** The `sustained` console script runs `plan`, `status`, `rehearse`, `migrate`, `down`, `validate`, `repair`, `script`, and `baseline` from the shell, with exit codes and config module callbacks around each run. Concurrent deploys queue on an advisory lock. `baseline` adopts a database that already has the schema.
+With Sustained, you can:
 
-## What else it does
+- **Build SQL programmatically.** Selects, aggregates, window functions, CASE expressions, every join type, CTEs (including recursive), unions, INTERSECT and EXCEPT, subqueries in SELECT, FROM, WHERE, and JOIN clauses.
+- **Target seven dialects.** ANSI (default), PostgreSQL, MySQL and MariaDB, MSSQL, Presto, AWS Athena, and DuckDB. Quoting, placeholders, upsert syntax, LIMIT/OFFSET spelling, and function names all follow the dialect. Unsupported features raise `DialectError` at build time instead of failing in the database. Migrating queries between dialects is a one-line change.
+- **Execute queries safely.** Every statement runs parameterized against any DB-API 2.0 connection or a `ConnectionPool`. Transactions nest through savepoints. `update()` and `delete()` refuse to run without a WHERE clause.
+- **Write data.** `insert()`, `update()`, `delete()`, upserts through `onConflict()`, `INSERT ... SELECT`, CREATE TABLE AS, and RETURNING.
+- **Hydrate results.** Rows become model instances, plain dicts, pandas DataFrames, or pyarrow Tables. Relations eager load with `withGraphFetched()`. A type checker reads `Show.query().run()` as `List[Show]`.
+- **Run queries async.** The same queries run through driver adapters with `await query.arun()`, including asyncpg and aiosqlite.
 
-- **SQL building** for the default (ANSI), Postgres, MySQL and MariaDB, MSSQL, Presto, AWS Athena, and DuckDB dialects: joins, CTEs (including recursive), unions, window functions, CASE expressions, and subqueries. Features a dialect lacks raise `DialectError` at build time.
-- **Safe execution**: every statement runs parameterized. Transactions nest through savepoints. `update()` and `delete()` refuse to run without a WHERE clause.
-- **Writes**: `insert()`, `update()`, `delete()`, upserts with `onConflict()`, `INSERT ... SELECT`, CTAS, and RETURNING.
-- **Typed filters**: `User.query().where((User.c.age > 21) & User.c.name.like('A%'))`.
-- **Results as** model instances, dicts, pandas DataFrames, or pyarrow Tables, with `withGraphFetched()` eager loading. The builder carries its model, so `Show.query().run()` types as `List[Show]`.
-- **Async**: the same queries run through driver adapters (`asyncpg`, `aiosqlite`, or any sync driver in a worker thread) with `await query.arun()`, including an `AsyncMigrator`.
+## Schema management with Sustained
 
-## What it does not do
+Sustained also provides strong support for database schema change management, to allow you easily and reliably test schema changes safely, evolve your database schema, and easily roll back migrations. These features are discussed in detail at [Schema and Migrations](./schema).
 
-No lazy loading, no dirty tracking or `save()`, no identity map, no result caching, no cross-dialect emulation of missing features, and no guessed migrations: drops, renames, and NOT NULL backfills all require explicit opt-ins or hints. Writes and schema changes only happen when you spell them out.
+With Sustained, schema migrations are:
+
+- **Generated from your models.** `Migrator.up(models=[...])` diffs the live database against your models, generates the migration, records it, and applies it. Run it again after a model change and only the difference is applied. `down()` rolls it back.
+- **Rehearsed before they land.** `sustained rehearse` applies every pending migration, runs the downgrade steps to test the revert plan, and rolls the whole thing back. A migration that does not run, or does not reverse, says so before it reaches the real schema. A config module can send the rehearsal to a scratch database instead.
+- **Planned in one screen.** `sustained plan` shows your pending migrations, outstanding problems that `validate` would report, and any gap between your models and the database's current state.
+- **Checked, not trusted.** Sustained manages a per-database tracking table that holds a sequence number, a SHA-256 checksum, an apply timestamp, execution time, and a success flag per migration. `validate` refuses a run when a migration was edited after it ran, arrives out of order, or left a failed attempt behind. `repair` will delete failed runs from the tracking table and update script checksums after manual corrections.
+- **Gated by custom safeguards.** Guards can be built-in functions (`no_drops()`, `index_must_be_concurrent()`, `max_statements(n)`) or can be a custom function you write. These read every statement of a migration that would run and block the deployment if any of the rule checks fail.
+- **Safe by default.** Drops need explicit `allow_drops=True`, renames need explicit hints, NOT NULL changes need a `default` or `backfill`. Destructive changes will never run by default.
+- **Written your way.** Migrations can be Python `Migration` objects, `<id>.up.sql` and `<id>.down.sql` files with `${placeholders}`, or `<id>.repeat.sql` files for views and seed data, which re-run whenever their contents change.
+- **Ready for deploys.** The `sustained` console script runs `plan`, `status`, `rehearse`, `migrate`, `down`, `validate`, `repair`, `script`, and `baseline`, with exit codes for pipelines and `before_migrate`, `after_migrate`, and `on_error` callbacks around a run. Concurrent deploys queue on an advisory lock. `baseline` adopts a database that already matches. `script('up')` renders the SQL for a DBA instead of running it. `AsyncMigrator` does all of it on an async adapter.
+
 
 ## Installation
 
@@ -147,8 +142,7 @@ The [documentation](https://sustained.tbmh.org/) has four parts:
 - The guides cover one area each: [models](https://sustained.tbmh.org/models), [queries](https://sustained.tbmh.org/queries), [dialects and drivers](https://sustained.tbmh.org/dialects), [filtering](https://sustained.tbmh.org/filtering), [grouping](https://sustained.tbmh.org/grouping), [relations and joins](https://sustained.tbmh.org/relations), [execution, pooling, and async](https://sustained.tbmh.org/executing), and [schema and migrations](https://sustained.tbmh.org/schema) at length.
 - The [API reference](https://sustained.tbmh.org/reference/) gives every public name its signature, return type, and the conditions that raise.
 
-Which databases and Python versions are supported, and how much warning a
-removal gets, is written down in the
+Supported databases and Python versions, and version deprecation/removal policy, are documented at
 [support policy](https://sustained.tbmh.org/support). Released versions are
 listed in the [changelog](https://sustained.tbmh.org/changelog).
 
