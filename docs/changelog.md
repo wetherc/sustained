@@ -10,6 +10,22 @@ Version numbers follow semantic versioning. A major version marks a change
 that can break working code. A minor version adds behaviour. A patch version
 fixes a defect without changing the surface.
 
+## 2.19.0 (2026-08-17)
+
+### Added
+
+- A written support policy at [Support Policy](https://sustained.tbmh.org/support). A database is at one of two levels: `runs` means the integration suite applies migrations to a real server and reads the schema back, and `builds` means the SQL compiles and unit tests check its text. Nothing sits between the two. The page also states the Python floor, one server version per database, the three-step deprecation path, what each part of a version number promises, and where to report a security problem.
+- `support.json` holds that list once. `sync_support.py` renders the tables on the support page from it, and a pre-commit hook fails when the page and the file disagree. The script refuses a `runs` row that has no `tests/integration` module, and a container row whose service is not in the compose file, so the table cannot claim coverage that does not exist.
+- An integration suite in `tests/integration/`. One shared body runs against every server: apply the models, read the schema back, apply only the difference, roll it down, run a registered migration and revert it, rehearse, validate, repair, hold the advisory lock while two migrators run at once, check that a JSON column does not drift against its own DDL, and round trip a query through the driver. A server that is not there is skipped, unless `SUSTAINED_TEST_STRICT=1` turns those skips into failures.
+- `matrix.py` runs that suite. It starts the servers from `docker/compose.yaml`, waits for each to report healthy, runs its module, prints one line per server, and removes the containers afterwards. A bare run takes every server the machine can serve, naming targets runs a subset, `python` runs the unit suite on each interpreter on PATH, and `--check` reports what would run without starting anything. Exit codes are 0 for a clean run, 1 for a failure, and 2 when nothing failed and something was still waiting. Setting a server's connection variable uses that server and starts no container. Athena runs in your own AWS account, needs a staging S3 directory, and is covered for queries only.
+- `Compiler.compile_create_table()` renders the whole CREATE TABLE statement, so a dialect that spells the if-missing check differently can override one method.
+
+### Fixed
+
+- Tracking table columns now quote through the dialect compiler. `generated` is a reserved word in MySQL, so the unquoted SQL was a syntax error there: the column probe read the column as missing, and every run tried to add it again. Found by running the migration lifecycle against a real MySQL server.
+- The MySQL advisory lock waits with a one-year timeout rather than a negative one. MariaDB returns NULL for a negative `GET_LOCK` timeout, so the lock was silently absent and two migrators could collide on the same statement.
+- SQL Server creates the tracking tables behind an `IF OBJECT_ID(...) IS NULL` check. T-SQL has no `CREATE TABLE IF NOT EXISTS`, so every migration run against SQL Server failed on its first statement.
+
 ## 2.18.0 (2026-08-16)
 
 ### Added
