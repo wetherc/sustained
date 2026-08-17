@@ -17,9 +17,9 @@ class FakeCursor:
         self._conn.log.append(sql)
         if self._conn.fail_on and self._conn.fail_on in sql:
             raise RuntimeError(f"forced failure on: {sql}")
-        if sql.startswith("SELECT id, seq, checksum, success FROM"):
+        if sql.startswith("SELECT") and "checksum" in sql:
             self._rows = [
-                (i, n, None, True) for n, i in enumerate(self._conn.applied, 1)
+                (i, n, None, True, False) for n, i in enumerate(self._conn.applied, 1)
             ]
         elif sql.startswith("INSERT INTO") and "sustained_migrations" in sql:
             self._conn.applied.append(params[0])
@@ -129,7 +129,9 @@ class TestLockingRun(unittest.TestCase):
         )
         ddl_at = conn.log.index("CREATE TABLE t1 (id INTEGER)")
         records_at = next(
-            n for n, s in enumerate(conn.log) if s.startswith("SELECT id, seq")
+            n
+            for n, s in enumerate(conn.log)
+            if s.startswith("SELECT") and "checksum" in s
         )
         self.assertLess(lock_at, records_at)
         self.assertLess(records_at, ddl_at)

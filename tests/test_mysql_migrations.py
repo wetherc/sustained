@@ -11,7 +11,7 @@ from sustained.aio_migrations import AsyncMigrator
 from sustained.dialects import Dialects
 from sustained.migrations import Migration, Migrator
 
-LOCK = "SELECT GET_LOCK('sustained_migrations', -1)"
+LOCK = "SELECT GET_LOCK('sustained_migrations', 31536000)"
 UNLOCK = "SELECT RELEASE_LOCK('sustained_migrations')"
 
 
@@ -24,9 +24,10 @@ class FakeCursor:
         self._conn.log.append(sql)
         if self._conn.fail_on and self._conn.fail_on in sql:
             raise RuntimeError(f"forced failure on: {sql}")
-        if sql.startswith("SELECT id, seq, checksum, success FROM"):
+        if sql.startswith("SELECT") and "checksum" in sql:
             self._rows = [
-                (i, n, None, ok) for n, (i, ok) in enumerate(self._conn.applied, 1)
+                (i, n, None, ok, False)
+                for n, (i, ok) in enumerate(self._conn.applied, 1)
             ]
         elif sql.startswith("INSERT INTO") and "sustained_migrations" in sql:
             self._conn.rows.append(params)

@@ -255,11 +255,11 @@ class FakeAthenaCursor:
             self._rows = self._conn.columns_rows
         elif "information_schema" in sql:
             self._rows = []
-        elif sql.startswith("SELECT id, seq, checksum, success, generated FROM"):
+        elif sql.startswith("SELECT") and "checksum" in sql:
             self._rows = [
                 (i, n, None, True, False) for n, i in enumerate(self._conn.applied, 1)
             ]
-        elif sql.startswith("SELECT id FROM"):
+        elif sql.startswith("SELECT") and "sustained_migrations" in sql:
             self._rows = [(i,) for i in self._conn.applied]
         elif sql.startswith("INSERT INTO") and "sustained_migrations" in sql:
             self._conn.applied.append(params[0])

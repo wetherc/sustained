@@ -469,7 +469,58 @@ _UPGRADE_COLUMNS = (
     "steps",
 )
 
-_RECORDS_SELECT = "SELECT id, seq, checksum, success, generated FROM"
+
+def quoted_columns(compiler: "Compiler", *names: str) -> str:
+    """
+    Tracking table column names, quoted for the dialect. Quoting is not
+    cosmetic here: `generated` is a reserved word on MySQL, so a bare
+    reference to it is a syntax error.
+    """
+    return ", ".join(compiler.quote_identifier(name) for name in names)
+
+
+def records_select(compiler: "Compiler", table_sql: str) -> str:
+    """Reads every tracking table row in application order."""
+    columns = quoted_columns(compiler, "id", "seq", "checksum", "success", "generated")
+    order = quoted_columns(compiler, "seq", "applied_at", "id")
+    return f"SELECT {columns} FROM {table_sql} ORDER BY {order}"
+
+
+def insert_sql(compiler: "Compiler", table_sql: str) -> str:
+    """Writes one tracking table row."""
+    columns = quoted_columns(
+        compiler,
+        "id",
+        "seq",
+        "checksum",
+        "applied_at",
+        "execution_ms",
+        "success",
+        "generated",
+        "steps",
+    )
+    values = ", ".join([compiler.placeholder()] * 8)
+    return f"INSERT INTO {table_sql} ({columns}) VALUES ({values})"
+
+
+def update_sql(compiler: "Compiler", table_sql: str) -> str:
+    """Rewrites the tracking table row a repeatable already has."""
+    placeholder = compiler.placeholder()
+    column = compiler.quote_identifier
+    assignments = ", ".join(
+        f"{column(name)} = {placeholder}"
+        for name in (
+            "checksum",
+            "applied_at",
+            "execution_ms",
+            "success",
+            "generated",
+            "steps",
+        )
+    )
+    return (
+        f"UPDATE {table_sql} SET {assignments} " f"WHERE {column('id')} = {placeholder}"
+    )
 
 
 def _tracking_column_defs(constraints: bool) -> Dict[str, "ColumnDef"]:
@@ -1032,7 +1083,8 @@ class Migrator:
         try:
             cursor = self._connection.cursor()
             cursor.execute(
-                f"SELECT {', '.join(columns)} FROM {self._table_sql()} WHERE 1 = 0"
+                f"SELECT {quoted_columns(self._compiler, *columns)} "
+                f"FROM {self._table_sql()} WHERE 1 = 0"
             )
             cursor.fetchall()
             return True
@@ -1068,21 +1120,24 @@ class Migrator:
         cursor = self._connection.cursor()
         # Backfill only the columns this run added, and only where they are
         # still null, so values a partial earlier upgrade wrote survive.
+        column = self._compiler.quote_identifier
         if "success" in added:
             cursor.execute(
-                f"UPDATE {self._table_sql()} SET success = {placeholder} "
-                "WHERE success IS NULL",
+                f"UPDATE {self._table_sql()} SET {column('success')} = "
+                f"{placeholder} WHERE {column('success')} IS NULL",
                 (True,),
             )
         if "seq" in added:
             cursor.execute(
-                f"SELECT id FROM {self._table_sql()} ORDER BY applied_at, id"
+                f"SELECT {column('id')} FROM {self._table_sql()} "
+                f"ORDER BY {quoted_columns(self._compiler, 'applied_at', 'id')}"
             )
             ids = [row[0] for row in cursor.fetchall()]
             for position, migration_id in enumerate(ids, start=1):
                 cursor.execute(
-                    f"UPDATE {self._table_sql()} SET seq = {placeholder} "
-                    f"WHERE id = {placeholder} AND seq IS NULL",
+                    f"UPDATE {self._table_sql()} SET {column('seq')} = "
+                    f"{placeholder} WHERE {column('id')} = {placeholder} "
+                    f"AND {column('seq')} IS NULL",
                     (position, migration_id),
                 )
         self._commit_quietly()
@@ -1091,9 +1146,7 @@ class Migrator:
         """Returns every tracking table row in application order."""
         self._ensure_tracking_table()
         cursor = self._connection.cursor()
-        cursor.execute(
-            f"{_RECORDS_SELECT} {self._table_sql()} ORDER BY seq, applied_at, id"
-        )
+        cursor.execute(records_select(self._compiler, self._table_sql()))
         return [
             AppliedRecord(row[0], row[1], row[2], bool(row[3]), bool(row[4]))
             for row in cursor.fetchall()
@@ -1145,24 +1198,10 @@ class Migrator:
         ]
 
     def _insert_sql(self) -> str:
-        placeholder = self._compiler.placeholder()
-        values = ", ".join([placeholder] * 8)
-        return (
-            f"INSERT INTO {self._table_sql()} "
-            f"(id, seq, checksum, applied_at, execution_ms, success, "
-            f"generated, steps) "
-            f"VALUES ({values})"
-        )
+        return insert_sql(self._compiler, self._table_sql())
 
     def _update_sql(self) -> str:
-        placeholder = self._compiler.placeholder()
-        return (
-            f"UPDATE {self._table_sql()} "
-            f"SET checksum = {placeholder}, applied_at = {placeholder}, "
-            f"execution_ms = {placeholder}, success = {placeholder}, "
-            f"generated = {placeholder}, steps = {placeholder} "
-            f"WHERE id = {placeholder}"
-        )
+        return update_sql(self._compiler, self._table_sql())
 
     def validate(self, raise_on_problems: bool = True) -> List[str]:
         """
@@ -1202,8 +1241,10 @@ class Migrator:
         for record in records:
             if not record.success:
                 cursor.execute(
-                    f"DELETE FROM {self._table_sql()} WHERE id = {placeholder} "
-                    f"AND success = {self._compiler.compile_boolean(False)}",
+                    f"DELETE FROM {self._table_sql()} WHERE "
+                    f"{self._compiler.quote_identifier('id')} = {placeholder} "
+                    f"AND {self._compiler.quote_identifier('success')} = "
+                    f"{self._compiler.compile_boolean(False)}",
                     (record.id,),
                 )
                 actions.append(f"removed the failed attempt of '{record.id}'")
@@ -1214,8 +1255,10 @@ class Migrator:
             current = migration_checksum(migration)
             if current is not None and current != record.checksum:
                 cursor.execute(
-                    f"UPDATE {self._table_sql()} SET checksum = {placeholder} "
-                    f"WHERE id = {placeholder}",
+                    f"UPDATE {self._table_sql()} SET "
+                    f"{self._compiler.quote_identifier('checksum')} = "
+                    f"{placeholder} WHERE "
+                    f"{self._compiler.quote_identifier('id')} = {placeholder}",
                     (current, record.id),
                 )
                 actions.append(f"updated the stored checksum of '{record.id}'")
@@ -1817,7 +1860,9 @@ class Migrator:
                     with self._migration_scope():
                         _run_step(self._connection, cast(MigrationStep, migration.down))
                         self._connection.cursor().execute(
-                            f"DELETE FROM {self._table_sql()} WHERE id = {placeholder}",
+                            f"DELETE FROM {self._table_sql()} WHERE "
+                            f"{self._compiler.quote_identifier('id')} = "
+                            f"{placeholder}",
                             (migration.id,),
                         )
                 except Exception as error:
@@ -1957,6 +2002,16 @@ class Migrator:
         """
         placeholder_free_ts = datetime.now(timezone.utc).isoformat()
         format_value = self._compiler.format_value
+        column = self._compiler.quote_identifier
+        insert_columns = quoted_columns(
+            self._compiler,
+            "id",
+            "seq",
+            "checksum",
+            "applied_at",
+            "execution_ms",
+            "success",
+        )
         lines: List[str] = []
         if direction == "up":
             records = self.applied_records()
@@ -1970,7 +2025,7 @@ class Migrator:
                 lines.extend(f"{s};" for s in migration_sql(migration, "up"))
                 lines.append(
                     f"INSERT INTO {self._table_sql()} "
-                    f"(id, seq, checksum, applied_at, execution_ms, success) "
+                    f"({insert_columns}) "
                     f"VALUES ({format_value(migration.id)}, {next_seq}, "
                     f"{format_value(migration_checksum(migration))}, "
                     f"{format_value(placeholder_free_ts)}, NULL, "
@@ -1987,7 +2042,7 @@ class Migrator:
                 if record is None:
                     lines.append(
                         f"INSERT INTO {self._table_sql()} "
-                        f"(id, seq, checksum, applied_at, execution_ms, success) "
+                        f"({insert_columns}) "
                         f"VALUES ({format_value(migration.id)}, {next_seq}, "
                         f"{format_value(checksum)}, "
                         f"{format_value(placeholder_free_ts)}, NULL, "
@@ -1997,11 +2052,13 @@ class Migrator:
                 else:
                     lines.append(
                         f"UPDATE {self._table_sql()} "
-                        f"SET checksum = {format_value(checksum)}, "
-                        f"applied_at = {format_value(placeholder_free_ts)}, "
-                        f"execution_ms = NULL, "
-                        f"success = {self._compiler.compile_boolean(True)} "
-                        f"WHERE id = {format_value(migration.id)};"
+                        f"SET {column('checksum')} = {format_value(checksum)}, "
+                        f"{column('applied_at')} = "
+                        f"{format_value(placeholder_free_ts)}, "
+                        f"{column('execution_ms')} = NULL, "
+                        f"{column('success')} = "
+                        f"{self._compiler.compile_boolean(True)} "
+                        f"WHERE {column('id')} = {format_value(migration.id)};"
                     )
         elif direction == "down":
             by_id = {m.id: m for m in self._migrations}
@@ -2015,7 +2072,7 @@ class Migrator:
                 lines.append(f"-- down: {migration_id}")
                 lines.extend(f"{s};" for s in migration_sql(registered, "down"))
                 lines.append(
-                    f"DELETE FROM {self._table_sql()} WHERE id = "
+                    f"DELETE FROM {self._table_sql()} WHERE {column('id')} = "
                     f"{format_value(migration_id)};"
                 )
         else:
@@ -2051,7 +2108,9 @@ class Migrator:
         placeholder = self._compiler.placeholder()
         cursor = self._connection.cursor()
         cursor.execute(
-            f"SELECT steps FROM {self._table_sql()} WHERE id = {placeholder}",
+            f"SELECT {self._compiler.quote_identifier('steps')} "
+            f"FROM {self._table_sql()} WHERE "
+            f"{self._compiler.quote_identifier('id')} = {placeholder}",
             (migration_id,),
         )
         row = cursor.fetchone()
@@ -2090,7 +2149,9 @@ class Migrator:
                 with self._migration_scope():
                     _run_step(self._connection, migration.down)
                     self._connection.cursor().execute(
-                        f"DELETE FROM {self._table_sql()} WHERE id = {placeholder}",
+                        f"DELETE FROM {self._table_sql()} WHERE "
+                        f"{self._compiler.quote_identifier('id')} = "
+                        f"{placeholder}",
                         (migration_id,),
                     )
                 reverted.append(migration_id)

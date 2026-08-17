@@ -17,6 +17,10 @@ _ALL_ROWS = 18446744073709551615
 # will not take a literal DEFAULT for.
 _OFF_ROW_TYPES = ("TEXT", "JSON")
 
+# How long a migrator waits for the advisory lock. Both servers accept a
+# year; neither reads it as anything but a long wait.
+LOCK_TIMEOUT_SECONDS = 31536000
+
 
 class MysqlCompiler(Compiler):
     """
@@ -199,9 +203,11 @@ class MysqlCompiler(Compiler):
         return False
 
     def migration_lock_sql(self, name: str) -> "list[str]":
-        # Session-scoped and reentrant, released on disconnect. A negative
-        # timeout waits until the lock is free.
-        return [f"SELECT GET_LOCK({self.format_value(name)}, -1)"]
+        # Session-scoped and reentrant, released on disconnect. The timeout
+        # is a year rather than the negative value MySQL reads as "wait
+        # forever": MariaDB returns NULL for a negative timeout and takes
+        # no lock at all, which would let two migrators run together.
+        return [f"SELECT GET_LOCK({self.format_value(name)}, {LOCK_TIMEOUT_SECONDS})"]
 
     def migration_unlock_sql(self, name: str) -> "list[str]":
         return [f"SELECT RELEASE_LOCK({self.format_value(name)})"]

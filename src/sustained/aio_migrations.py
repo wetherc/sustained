@@ -30,7 +30,6 @@ from typing import (
 from sustained.aio import AsyncAdapter, async_transaction
 from sustained.dialects import Dialects
 from sustained.migrations import (
-    _RECORDS_SELECT,
     _UPGRADE_COLUMNS,
     RECEIPT_FAILED,
     RECEIPT_OVERRIDE,
@@ -59,9 +58,13 @@ from sustained.migrations import (
     _upgrade_column_def,
     _validation_problems,
     check_guards,
+    insert_sql,
     migration_checksum,
+    quoted_columns,
     receipt_key,
+    records_select,
     rehearsal_failed,
+    update_sql,
 )
 
 if TYPE_CHECKING:
@@ -284,7 +287,8 @@ class AsyncMigrator:
         """Probes the tracking table for the given columns."""
         try:
             await self._adapter.fetch(
-                f"SELECT {', '.join(columns)} FROM {self._table_sql()} WHERE 1 = 0",
+                f"SELECT {quoted_columns(self._compiler, *columns)} "
+                f"FROM {self._table_sql()} WHERE 1 = 0",
                 (),
             )
             return True
@@ -319,20 +323,24 @@ class AsyncMigrator:
         placeholder = self._compiler.placeholder()
         # Backfill only the columns this run added, and only where they are
         # still null, so values a partial earlier upgrade wrote survive.
+        column = self._compiler.quote_identifier
         if "success" in added:
             await self._adapter.execute(
-                f"UPDATE {self._table_sql()} SET success = {placeholder} "
-                "WHERE success IS NULL",
+                f"UPDATE {self._table_sql()} SET {column('success')} = "
+                f"{placeholder} WHERE {column('success')} IS NULL",
                 (True,),
             )
         if "seq" in added:
             _, rows = await self._adapter.fetch(
-                f"SELECT id FROM {self._table_sql()} ORDER BY applied_at, id", ()
+                f"SELECT {column('id')} FROM {self._table_sql()} ORDER BY "
+                f"{quoted_columns(self._compiler, 'applied_at', 'id')}",
+                (),
             )
             for position, row in enumerate(rows, start=1):
                 await self._adapter.execute(
-                    f"UPDATE {self._table_sql()} SET seq = {placeholder} "
-                    f"WHERE id = {placeholder} AND seq IS NULL",
+                    f"UPDATE {self._table_sql()} SET {column('seq')} = "
+                    f"{placeholder} WHERE {column('id')} = {placeholder} "
+                    f"AND {column('seq')} IS NULL",
                     (position, row[0]),
                 )
         await self._adapter.commit()
@@ -341,7 +349,7 @@ class AsyncMigrator:
         """Returns every tracking table row in application order."""
         await self._ensure_tracking_table()
         _, rows = await self._adapter.fetch(
-            f"{_RECORDS_SELECT} {self._table_sql()} ORDER BY seq, applied_at, id",
+            records_select(self._compiler, self._table_sql()),
             (),
         )
         return [
@@ -395,24 +403,10 @@ class AsyncMigrator:
         ]
 
     def _insert_sql(self) -> str:
-        placeholder = self._compiler.placeholder()
-        values = ", ".join([placeholder] * 8)
-        return (
-            f"INSERT INTO {self._table_sql()} "
-            f"(id, seq, checksum, applied_at, execution_ms, success, "
-            f"generated, steps) "
-            f"VALUES ({values})"
-        )
+        return insert_sql(self._compiler, self._table_sql())
 
     def _update_sql(self) -> str:
-        placeholder = self._compiler.placeholder()
-        return (
-            f"UPDATE {self._table_sql()} "
-            f"SET checksum = {placeholder}, applied_at = {placeholder}, "
-            f"execution_ms = {placeholder}, success = {placeholder}, "
-            f"generated = {placeholder}, steps = {placeholder} "
-            f"WHERE id = {placeholder}"
-        )
+        return update_sql(self._compiler, self._table_sql())
 
     async def validate(self, raise_on_problems: bool = True) -> List[str]:
         """
@@ -451,8 +445,10 @@ class AsyncMigrator:
         for record in records:
             if not record.success:
                 await self._adapter.execute(
-                    f"DELETE FROM {self._table_sql()} WHERE id = {placeholder} "
-                    f"AND success = {self._compiler.compile_boolean(False)}",
+                    f"DELETE FROM {self._table_sql()} WHERE "
+                    f"{self._compiler.quote_identifier('id')} = {placeholder} "
+                    f"AND {self._compiler.quote_identifier('success')} = "
+                    f"{self._compiler.compile_boolean(False)}",
                     (record.id,),
                 )
                 actions.append(f"removed the failed attempt of '{record.id}'")
@@ -463,8 +459,10 @@ class AsyncMigrator:
             current = migration_checksum(migration)
             if current is not None and current != record.checksum:
                 await self._adapter.execute(
-                    f"UPDATE {self._table_sql()} SET checksum = {placeholder} "
-                    f"WHERE id = {placeholder}",
+                    f"UPDATE {self._table_sql()} SET "
+                    f"{self._compiler.quote_identifier('checksum')} = "
+                    f"{placeholder} WHERE "
+                    f"{self._compiler.quote_identifier('id')} = {placeholder}",
                     (current, record.id),
                 )
                 actions.append(f"updated the stored checksum of '{record.id}'")
@@ -890,7 +888,9 @@ class AsyncMigrator:
                     async with self._migration_scope():
                         await self._run_step(cast(MigrationStep, migration.down))
                         await self._adapter.execute(
-                            f"DELETE FROM {self._table_sql()} WHERE id = {placeholder}",
+                            f"DELETE FROM {self._table_sql()} WHERE "
+                            f"{self._compiler.quote_identifier('id')} = "
+                            f"{placeholder}",
                             (migration.id,),
                         )
                 except Exception as error:
@@ -913,7 +913,9 @@ class AsyncMigrator:
         models, and either migrator can take one back.
         """
         rows = await self._adapter.fetch(
-            f"SELECT steps FROM {self._table_sql()} WHERE id = "
+            f"SELECT {self._compiler.quote_identifier('steps')} "
+            f"FROM {self._table_sql()} WHERE "
+            f"{self._compiler.quote_identifier('id')} = "
             f"{self._compiler.placeholder()}",
             (migration_id,),
         )
@@ -951,7 +953,9 @@ class AsyncMigrator:
                 async with self._migration_scope():
                     await self._run_step(migration.down)
                     await self._adapter.execute(
-                        f"DELETE FROM {self._table_sql()} WHERE id = {placeholder}",
+                        f"DELETE FROM {self._table_sql()} WHERE "
+                        f"{self._compiler.quote_identifier('id')} = "
+                        f"{placeholder}",
                         (migration_id,),
                     )
                 reverted.append(migration_id)

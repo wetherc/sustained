@@ -286,9 +286,11 @@ class TestLockingAndTransactions(unittest.TestCase):
         self.assertEqual(compiler().compile_locking(False, True), "FOR UPDATE NOWAIT")
 
     def test_advisory_lock_statements(self):
+        # MariaDB takes no lock at all for a negative timeout, so the wait
+        # is spelled as a year instead.
         self.assertEqual(
             compiler().migration_lock_sql("sustained_migrations"),
-            ["SELECT GET_LOCK('sustained_migrations', -1)"],
+            ["SELECT GET_LOCK('sustained_migrations', 31536000)"],
         )
         self.assertEqual(
             compiler().migration_unlock_sql("sustained_migrations"),
