@@ -81,6 +81,13 @@ _TYPE_SYNONYMS = {
     "NVARCHAR": "VARCHAR",
     "TEXT": "TEXT",
     "STRING": "TEXT",
+    # MySQL sizes its text columns in the type name. TINYINT is left off
+    # this table on purpose: TINYINT(1) is how MySQL spells a boolean, and
+    # folding plain TINYINT into INTEGER would make the two the same
+    # column to a diff.
+    "TINYTEXT": "TEXT",
+    "MEDIUMTEXT": "TEXT",
+    "LONGTEXT": "TEXT",
     "BOOLEAN": "BOOLEAN",
     "BOOL": "BOOLEAN",
     "BIT": "BOOLEAN",
@@ -124,7 +131,9 @@ def type_params(raw: str) -> Optional[str]:
 def normalize_default(raw: Optional[str]) -> Optional[str]:
     """
     Reduces a reported column default to a comparable form: strips
-    parentheses, Postgres ::type casts, and quotes, and uppercases.
+    parentheses, Postgres ::type casts, quotes, and an empty argument
+    list, and uppercases. The argument list is why MariaDB's
+    current_timestamp() and MySQL's CURRENT_TIMESTAMP compare equal.
     """
     if raw is None:
         return None
@@ -133,6 +142,7 @@ def normalize_default(raw: Optional[str]) -> Optional[str]:
         value = value[1:-1].strip()
     value = re.sub(r"::[a-zA-Z_ ]+", "", value)
     value = value.strip("'\"")
+    value = re.sub(r"\(\s*\)$", "", value.strip())
     return value.upper()
 
 
@@ -210,6 +220,8 @@ async def async_introspect_schema(
 def _schema_plan(dialect: Dialects) -> SchemaPlan:
     if dialect == Dialects.DEFAULT:
         return _sqlite_plan()
+    if dialect == Dialects.MYSQL:
+        return _mysql_plan()
     return _information_schema_plan()
 
 
@@ -274,12 +286,48 @@ _SYSTEM_SCHEMAS = (
 )
 
 
-def _information_schema_plan() -> SchemaPlan:
-    schema_filter = f"table_schema NOT IN ({', '.join(_SYSTEM_SCHEMAS)})"
+class Catalog(NamedTuple):
+    """
+    How one engine's information_schema differs from the shared read.
+
+    Attributes:
+        schema_filter: The WHERE fragment that picks the schemas to read.
+        type_column: The column holding the type spelling to compare on.
+        join_on_schema: Whether the constraint join must match schemas as
+            well as names, on engines where a constraint name is only
+            unique within its schema.
+    """
+
+    schema_filter: str
+    type_column: str
+    join_on_schema: bool
+
+
+ANSI_CATALOG = Catalog(
+    schema_filter=f"table_schema NOT IN ({', '.join(_SYSTEM_SCHEMAS)})",
+    type_column="data_type",
+    join_on_schema=False,
+)
+
+MYSQL_CATALOG = Catalog(
+    # A MySQL schema is a database, and every other database on the server
+    # belongs to someone else. DATABASE() is the one the connection is on.
+    schema_filter="table_schema = DATABASE()",
+    # data_type reports 'varchar' and keeps the length in a column of its
+    # own. column_type reports 'varchar(120)', which is what the compiler
+    # emits, so a column never drifts against its own DDL.
+    type_column="column_type",
+    join_on_schema=True,
+)
+
+
+def _information_schema_plan(catalog: Catalog = ANSI_CATALOG) -> SchemaPlan:
+    schema_filter = catalog.schema_filter
 
     columns_by_table: Dict[str, Dict[str, IntrospectedColumn]] = {}
     column_rows = yield (
-        "SELECT table_name, column_name, data_type, is_nullable, column_default "
+        f"SELECT table_name, column_name, {catalog.type_column}, "
+        "is_nullable, column_default "
         f"FROM information_schema.columns WHERE {schema_filter} "
         "ORDER BY table_name, ordinal_position"
     )
@@ -296,6 +344,9 @@ def _information_schema_plan() -> SchemaPlan:
     primary_keys: Dict[str, List[str]] = {}
     unique_indexes: Dict[str, Dict[str, IntrospectedIndex]] = {}
     foreign_keys: Dict[str, Dict[str, str]] = {}
+    schema_join = (
+        "AND tc.table_schema = kcu.table_schema " if catalog.join_on_schema else ""
+    )
     try:
         constraint_rows = yield (
             "SELECT tc.table_name, tc.constraint_type, tc.constraint_name, "
@@ -304,6 +355,7 @@ def _information_schema_plan() -> SchemaPlan:
             "JOIN information_schema.key_column_usage kcu "
             "ON tc.constraint_name = kcu.constraint_name "
             "AND tc.table_name = kcu.table_name "
+            f"{schema_join}"
             f"WHERE tc.{schema_filter} "
             "ORDER BY kcu.ordinal_position"
         )
@@ -340,6 +392,59 @@ def _information_schema_plan() -> SchemaPlan:
             indexes=unique_indexes.get(table, {}),
         )
     return schema
+
+
+# The whole body of the CHECK constraint MariaDB writes for a JSON column.
+_JSON_VALID_RE = re.compile(
+    r"^\s*json_valid\(\s*`?(\w+)`?\s*\)\s*$",
+    re.IGNORECASE,
+)
+
+
+def _mysql_plan() -> SchemaPlan:
+    schema = yield from _information_schema_plan(MYSQL_CATALOG)
+    yield from _recover_mariadb_json(schema)
+    return schema
+
+
+def _recover_mariadb_json(
+    schema: Dict[str, IntrospectedTable],
+) -> Generator[str, List[Sequence[RowValue]], None]:
+    """
+    Restores the JSON type to columns MariaDB reports as longtext.
+
+    MariaDB's JSON is a longtext with a `json_valid` CHECK constraint on
+    it, and the catalog reports the storage type, not the alias. Left
+    alone, a model column declared Json() would read as drift on every
+    plan, with no migration able to close it. The check constraint says
+    which columns those are.
+    """
+    try:
+        rows = yield (
+            "SELECT table_name, check_clause "
+            "FROM information_schema.check_constraints "
+            "WHERE constraint_schema = DATABASE()"
+        )
+    except Exception:
+        # MySQL's own check_constraints view has no table_name column, and
+        # MariaDB before 10.2.22 has no such view. Neither case needs the
+        # recovery: MySQL stores JSON as JSON, and older MariaDB has no
+        # constraint to read.
+        return
+    for table, clause in rows:
+        match = _JSON_VALID_RE.match(str(clause))
+        if match is None:
+            continue
+        introspected = schema.get(str(table).lower())
+        if introspected is None:
+            continue
+        name = match.group(1).lower()
+        column = introspected.columns.get(name)
+        # Only a column reading as text is promoted, so a hand-written
+        # json_valid check on a real JSON column changes nothing.
+        if column is None or normalize_type(column.raw_type) != "TEXT":
+            continue
+        introspected.columns[name] = column._replace(raw_type="JSON")
 
 
 def _column_shape(column: IntrospectedColumn) -> Tuple[str, Optional[str], bool, bool]:
