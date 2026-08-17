@@ -79,7 +79,13 @@ class TestTransactionalDdl(unittest.TestCase):
         Dialects.MSSQL: True,
         Dialects.PRESTO: True,
         Dialects.ATHENA: False,
+        Dialects.MYSQL: False,
     }
+
+    def test_mysql_has_transactions_but_not_for_schema(self):
+        compiler = Dialects.get_compiler(Dialects.MYSQL)
+        self.assertTrue(compiler.supports_transactions())
+        self.assertFalse(compiler.supports_transactional_ddl())
 
     def test_every_dialect_states_an_answer(self):
         self.assertEqual(set(self.EXPECTED), set(Dialects))

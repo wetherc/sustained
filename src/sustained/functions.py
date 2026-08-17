@@ -45,6 +45,7 @@ class _FunctionRegistry:
             Dialects.ATHENA,
             Dialects.MSSQL,
             Dialects.POSTGRES,
+            Dialects.MYSQL,
             Dialects.DUCKDB,
         ]
 
@@ -70,6 +71,10 @@ class _FunctionRegistry:
             self.register(func_name, FunctionMetadata(supported_dialects=all_dialects))
 
         # Dialect-specific functions
+        # MySQL is left off STRING_AGG on purpose. Its GROUP_CONCAT takes
+        # the separator as a SEPARATOR keyword rather than a second
+        # argument, so an alternate name would produce SQL that does not
+        # parse. Write GROUP_CONCAT through raw SQL there.
         self.register(
             "STRING_AGG",
             FunctionMetadata(
@@ -89,6 +94,7 @@ class _FunctionRegistry:
                     Dialects.PRESTO: "NOW",
                     Dialects.ATHENA: "NOW",
                     Dialects.POSTGRES: "NOW",
+                    Dialects.MYSQL: "NOW",
                     Dialects.DUCKDB: "NOW",
                 },
             ),
@@ -100,6 +106,7 @@ class _FunctionRegistry:
                     Dialects.PRESTO,
                     Dialects.ATHENA,
                     Dialects.POSTGRES,
+                    Dialects.MYSQL,
                     Dialects.DUCKDB,
                 ],
                 dialect_names={Dialects.MSSQL: "GETDATE"},
@@ -115,6 +122,7 @@ class _FunctionRegistry:
                     Dialects.PRESTO,
                     Dialects.ATHENA,
                     Dialects.POSTGRES,
+                    Dialects.MYSQL,
                     Dialects.DUCKDB,
                 ],
                 dialect_names={Dialects.MSSQL: "LEN"},
