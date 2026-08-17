@@ -299,6 +299,17 @@ class Compiler:
         """Renders a DROP INDEX statement."""
         return f"DROP INDEX {self.quote_identifier(index_name)}"
 
+    def compile_create_table(
+        self, table_sql: str, body: str, suffix_sql: str, if_missing: bool
+    ) -> str:
+        """
+        Renders a CREATE TABLE statement. With if_missing, the statement
+        does nothing when the table is already there, which most engines
+        spell as an IF NOT EXISTS clause.
+        """
+        exists_sql = "IF NOT EXISTS " if if_missing else ""
+        return f"CREATE TABLE {exists_sql}{table_sql} ({body}){suffix_sql}"
+
     def supports_alter_column(self) -> bool:
         """
         Reports whether the dialect can change a column's type or

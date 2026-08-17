@@ -252,10 +252,9 @@ def build_create_table_sql(
             )
 
     body = ", ".join(column_parts + list(extras or []) + table_constraints)
-    exists_sql = "IF NOT EXISTS " if if_not_exists else ""
     suffix = compiler.compile_table_options(options)
     suffix_sql = f" {suffix}" if suffix else ""
-    return f"CREATE TABLE {exists_sql}{table_sql} ({body}){suffix_sql}"
+    return compiler.compile_create_table(table_sql, body, suffix_sql, if_not_exists)
 
 
 __all__ = [

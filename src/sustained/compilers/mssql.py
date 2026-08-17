@@ -94,6 +94,17 @@ class MssqlCompiler(Compiler):
         # T-SQL requires the table in DROP INDEX.
         return f"DROP INDEX {self.quote_identifier(index_name)} ON {table_sql}"
 
+    def compile_create_table(
+        self, table_sql: str, body: str, suffix_sql: str, if_missing: bool
+    ) -> str:
+        # CREATE TABLE takes no IF NOT EXISTS clause on SQL Server, so the
+        # statement runs behind a catalog check instead. OBJECT_ID reads the
+        # bracketed name as written.
+        create = f"CREATE TABLE {table_sql} ({body}){suffix_sql}"
+        if not if_missing:
+            return create
+        return f"IF OBJECT_ID({self.format_value(table_sql)}, 'U') IS NULL {create}"
+
     def supports_alter_column(self) -> bool:
         return True
 
