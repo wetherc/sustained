@@ -287,6 +287,21 @@ class Compiler:
         """
         return True
 
+    def supports_transactional_ddl(self) -> bool:
+        """
+        Reports whether a schema change taken back by a rollback really
+        goes away. On most engines this follows supports_transactions(),
+        so that is the default. MySQL is the exception: its transactions
+        work for rows, but every DDL statement commits as it runs, and a
+        migration that fails halfway leaves the statements before it in
+        place.
+
+        The migration runner reads this rather than supports_transactions()
+        when it decides whether to wrap a migration and whether a failed
+        migration needs a failure row recorded for repair().
+        """
+        return self.supports_transactions()
+
     def begin_transaction_sql(self) -> Optional[str]:
         """
         The statement that opens a transaction, or None on engines that

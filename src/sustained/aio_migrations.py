@@ -127,8 +127,8 @@ class AsyncMigrator:
     @asynccontextmanager
     async def _migration_scope(self) -> AsyncIterator[None]:
         """
-        A transaction on engines that have them; a bare run followed by a
-        commit on engines that do not.
+        A transaction on engines whose schema changes roll back; a bare run
+        followed by a commit on engines whose do not.
 
         A rehearsal opens one transaction around the whole run and rolls it
         back at the end, so each migration runs bare and nothing commits.
@@ -136,7 +136,7 @@ class AsyncMigrator:
         if self._rehearsing:
             yield
             return
-        if self._compiler.supports_transactions():
+        if self._compiler.supports_transactional_ddl():
             async with async_transaction(self._adapter):
                 yield
             return
@@ -524,12 +524,12 @@ class AsyncMigrator:
     ) -> None:
         """
         Writes a failed-attempt row after a migration step raised on an
-        engine without transactions, where partial changes may remain. A
-        repeatable that already has a row updates it in place. A failure
-        to write the row never masks the original error. A rehearsal writes
-        nothing: its whole run rolls back.
+        engine whose schema changes do not roll back, where partial changes
+        may remain. A repeatable that already has a row updates it in
+        place. A failure to write the row never masks the original error. A
+        rehearsal writes nothing: its whole run rolls back.
         """
-        if self._rehearsing or self._compiler.supports_transactions():
+        if self._rehearsing or self._compiler.supports_transactional_ddl():
             return
         try:
             timestamp = datetime.now(timezone.utc).isoformat()
