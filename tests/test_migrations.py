@@ -185,6 +185,7 @@ class TestTrackingTable(MigrationTestCase):
                 "execution_ms",
                 "success",
                 "generated",
+                "steps",
             },
         )
 
@@ -856,6 +857,42 @@ class TestGeneratedRows(MigrationTestCase):
         record = Migrator(self.conn, []).applied_records()[0]
         self.assertTrue(record.generated)
         self.assertEqual(Migrator(self.conn, []).validate(), [])
+
+    def test_a_later_process_can_revert_a_generated_migration(self):
+        Migrator(self.conn, []).up(models=self.models())
+        self.assertIn("gen_users", table_names(self.conn))
+        # A migrator that never saw the diff: the statements come off the
+        # tracking row.
+        later = Migrator(self.conn, [])
+        applied_id = later.applied()[0]
+        self.assertEqual(later.down(), [applied_id])
+        self.assertNotIn("gen_users", table_names(self.conn))
+        self.assertEqual(later.applied(), [])
+
+    def test_a_generated_migration_without_a_down_step_still_refuses(self):
+        Migrator(self.conn, []).up(models=self.models())
+        applied_id = Migrator(self.conn, []).applied()[0]
+        self.conn.execute(
+            "UPDATE sustained_migrations SET steps = ? WHERE id = ?",
+            ('{"up": ["SELECT 1"], "down": null}', applied_id),
+        )
+        with self.assertRaises(ValueError) as caught:
+            Migrator(self.conn, []).down()
+        self.assertIn("has no down step", str(caught.exception))
+
+    def test_a_row_with_unreadable_steps_is_not_revertible(self):
+        Migrator(self.conn, []).up(models=self.models())
+        self.conn.execute("UPDATE sustained_migrations SET steps = 'not json'")
+        with self.assertRaises(ValueError) as caught:
+            Migrator(self.conn, []).down()
+        self.assertIn("not registered", str(caught.exception))
+
+    def test_a_registered_migration_stores_no_steps(self):
+        Migrator(
+            self.conn, [Migration("001_t", up="CREATE TABLE gt (id INTEGER)")]
+        ).up()
+        (row,) = self.conn.execute("SELECT steps FROM sustained_migrations").fetchall()
+        self.assertIsNone(row[0])
 
     def test_a_registered_migration_is_not_marked(self):
         migrator = Migrator(

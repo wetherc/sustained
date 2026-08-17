@@ -211,7 +211,7 @@ failure.
 
 ## The tracking table
 
-Seven columns, named by default `sustained_migrations`:
+Eight columns, named by default `sustained_migrations`:
 
 | Column | Type | Holds |
 | --- | --- | --- |
@@ -222,10 +222,13 @@ Seven columns, named by default `sustained_migrations`:
 | `execution_ms` | `INTEGER` | How long it took. Null for a baselined row |
 | `success` | `BOOLEAN` not null | Whether it finished |
 | `generated` | `BOOLEAN` | Whether a model diff wrote it. Such a row is never reported as an unregistered migration |
+| `steps` | `TEXT` | The up and down statements of a generated migration, as JSON. Null for every registered one, whose statements live in your code or your migrations directory |
 
-On Athena the same six columns are all plain and nullable, because Athena
+On Athena the same columns are all plain and nullable, because Athena
 enforces no constraints. Tracking tables written by earlier versions, holding
-only `id` and `applied_at`, upgrade in place on first use.
+only `id` and `applied_at`, upgrade in place on first use. A generated row
+written before the `steps` column existed carries no statements, so `down()`
+cannot revert it.
 
 ## The receipt table
 

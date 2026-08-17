@@ -44,6 +44,11 @@ migrator.down(steps=2)         # revert the two newest
 migrator.down_to('auto_20260814...')  # revert until this id is newest
 ```
 
+A generated migration lives nowhere but the run that made it, so its
+tracking row carries the statements it ran. A later process, on a later
+deploy, reverts it from that row without having the diff in hand. A
+rebuild, which has no down step, still cannot be reverted.
+
 Every applied migration is recorded in a tracking table, each runs inside a transaction, and a failing step rolls itself back and leaves earlier migrations applied.
 
 ## Validation and Repair

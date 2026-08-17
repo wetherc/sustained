@@ -52,6 +52,7 @@ from sustained.migrations import (
     _receipt_message,
     _rehearsal_column_defs,
     _rehearsal_results,
+    _restore_migration,
     _reversal_provable,
     _tag_migration,
     _tracking_column_defs,
@@ -395,10 +396,11 @@ class AsyncMigrator:
 
     def _insert_sql(self) -> str:
         placeholder = self._compiler.placeholder()
-        values = ", ".join([placeholder] * 7)
+        values = ", ".join([placeholder] * 8)
         return (
             f"INSERT INTO {self._table_sql()} "
-            f"(id, seq, checksum, applied_at, execution_ms, success, generated) "
+            f"(id, seq, checksum, applied_at, execution_ms, success, "
+            f"generated, steps) "
             f"VALUES ({values})"
         )
 
@@ -408,7 +410,7 @@ class AsyncMigrator:
             f"UPDATE {self._table_sql()} "
             f"SET checksum = {placeholder}, applied_at = {placeholder}, "
             f"execution_ms = {placeholder}, success = {placeholder}, "
-            f"generated = {placeholder} "
+            f"generated = {placeholder}, steps = {placeholder} "
             f"WHERE id = {placeholder}"
         )
 
@@ -509,6 +511,7 @@ class AsyncMigrator:
                         None,
                         True,
                         False,
+                        None,
                     ),
                 )
                 next_seq += 1
@@ -534,12 +537,21 @@ class AsyncMigrator:
             if update:
                 await self._adapter.execute(
                     self._update_sql(),
-                    (checksum, timestamp, None, False, False, migration.id),
+                    (checksum, timestamp, None, False, False, None, migration.id),
                 )
             else:
                 await self._adapter.execute(
                     self._insert_sql(),
-                    (migration.id, seq, checksum, timestamp, None, False, False),
+                    (
+                        migration.id,
+                        seq,
+                        checksum,
+                        timestamp,
+                        None,
+                        False,
+                        False,
+                        None,
+                    ),
                 )
             await self._adapter.commit()
         except Exception:
@@ -698,7 +710,15 @@ class AsyncMigrator:
                 if update:
                     await self._adapter.execute(
                         self._update_sql(),
-                        (checksum, timestamp, elapsed_ms, True, False, migration.id),
+                        (
+                            checksum,
+                            timestamp,
+                            elapsed_ms,
+                            True,
+                            False,
+                            None,
+                            migration.id,
+                        ),
                     )
                 else:
                     await self._adapter.execute(
@@ -711,6 +731,7 @@ class AsyncMigrator:
                             elapsed_ms,
                             True,
                             False,
+                            None,
                         ),
                     )
         except Exception as error:
@@ -884,20 +905,42 @@ class AsyncMigrator:
         repeatable_ids = {m.id for m in self._repeatables()}
         return [i for i in await self.applied() if i not in repeatable_ids]
 
+    async def _generated_migration(self, migration_id: str) -> Optional[Migration]:
+        """
+        The migration a generated tracking row describes, read back from
+        the row itself. Mirrors Migrator._generated_migration(): the sync
+        migrator writes these rows when it applies a diff against the
+        models, and either migrator can take one back.
+        """
+        rows = await self._adapter.fetch(
+            f"SELECT steps FROM {self._table_sql()} WHERE id = "
+            f"{self._compiler.placeholder()}",
+            (migration_id,),
+        )
+        if not rows or rows[0][0] is None:
+            return None
+        return _restore_migration(migration_id, str(rows[0][0]))
+
     async def down(self, steps: int = 1) -> List[str]:
         """
         Reverts the most recently applied migrations, newest first. Every
-        reverted migration must define a down step and be registered with
-        this migrator. Repeatables are never reverted. Returns the ids
-        that were reverted.
+        reverted migration must define a down step. Repeatables are never
+        reverted. Returns the ids that were reverted.
+
+        A migration generated from the models is reverted from its own
+        tracking row, which holds the statements it ran. Every other
+        migration must be registered with this migrator.
         """
         async with self._lock_scope():
+            await self._ensure_tracking_table()
             applied = await self._applied_versioned()
             by_id = {m.id: m for m in self._migrations}
             placeholder = self._compiler.placeholder()
             reverted: List[str] = []
             for migration_id in reversed(applied[-steps:] if steps else []):
-                migration = by_id.get(migration_id)
+                migration = by_id.get(migration_id) or await self._generated_migration(
+                    migration_id
+                )
                 if migration is None:
                     raise ValueError(
                         f"Applied migration '{migration_id}' is not registered "

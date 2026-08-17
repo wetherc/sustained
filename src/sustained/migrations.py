@@ -24,6 +24,7 @@ sustained.autogenerate and Migrator.up(models=[...]).
 from __future__ import annotations
 
 import hashlib
+import json
 import sys
 import time
 import warnings
@@ -459,7 +460,14 @@ def _check_rehearsable(dialect: Dialects) -> None:
 
 # Columns added when upgrading a tracking table written by an earlier
 # version, which held only id and applied_at.
-_UPGRADE_COLUMNS = ("seq", "checksum", "execution_ms", "success", "generated")
+_UPGRADE_COLUMNS = (
+    "seq",
+    "checksum",
+    "execution_ms",
+    "success",
+    "generated",
+    "steps",
+)
 
 _RECORDS_SELECT = "SELECT id, seq, checksum, success, generated FROM"
 
@@ -481,6 +489,7 @@ def _tracking_column_defs(constraints: bool) -> Dict[str, "ColumnDef"]:
             "execution_ms": Integer(),
             "success": Boolean(nullable=False),
             "generated": Boolean(),
+            "steps": Text(),
         }
     return {
         "id": String(255),
@@ -490,6 +499,7 @@ def _tracking_column_defs(constraints: bool) -> Dict[str, "ColumnDef"]:
         "execution_ms": Integer(),
         "success": Boolean(),
         "generated": Boolean(),
+        "steps": Text(),
     }
 
 
@@ -516,7 +526,7 @@ def _rehearsal_column_defs(constraints: bool) -> Dict[str, "ColumnDef"]:
 
 def _upgrade_column_def(name: str) -> "ColumnDef":
     """A nullable definition for one upgrade column, safe to ADD COLUMN."""
-    from sustained.schema import Boolean, Integer, String
+    from sustained.schema import Boolean, Integer, String, Text
 
     defs: Dict[str, "ColumnDef"] = {
         "seq": Integer(),
@@ -524,6 +534,7 @@ def _upgrade_column_def(name: str) -> "ColumnDef":
         "execution_ms": Integer(),
         "success": Boolean(),
         "generated": Boolean(),
+        "steps": Text(),
     }
     return defs[name]
 
@@ -688,6 +699,38 @@ def _tag_migration(error: BaseException, migration_id: str) -> None:
         setattr(error, "migration_id", migration_id)
     except Exception:
         pass
+
+
+def _stored_steps(migration: Migration, generated: bool) -> Optional[str]:
+    """
+    The JSON a generated migration's tracking row carries: its up and down
+    statements, so a later process can revert it.
+
+    A registered migration stores nothing. Its statements live in the
+    migration list or the migrations directory, and the checksum on the
+    row already says whether they changed since. A generated migration has
+    no such home: the diff produced it, applied it, and the process ended.
+    A callable step cannot be stored, and the diff never produces one.
+    """
+    if not generated or callable(migration.up):
+        return None
+    down = None if migration.down is None else migration_sql(migration, "down")
+    return json.dumps({"up": migration_sql(migration, "up"), "down": down})
+
+
+def _restore_migration(migration_id: str, steps: Optional[str]) -> Optional[Migration]:
+    """
+    The migration a generated tracking row describes, or None when the row
+    carries no statements: a row written before this column existed, or
+    one for a registered migration.
+    """
+    if not steps:
+        return None
+    try:
+        stored = json.loads(steps)
+    except ValueError:
+        return None
+    return Migration(migration_id, up=stored["up"], down=stored["down"])
 
 
 def _tag_applied(error: BaseException, applied: List[str]) -> None:
@@ -1102,10 +1145,11 @@ class Migrator:
 
     def _insert_sql(self) -> str:
         placeholder = self._compiler.placeholder()
-        values = ", ".join([placeholder] * 7)
+        values = ", ".join([placeholder] * 8)
         return (
             f"INSERT INTO {self._table_sql()} "
-            f"(id, seq, checksum, applied_at, execution_ms, success, generated) "
+            f"(id, seq, checksum, applied_at, execution_ms, success, "
+            f"generated, steps) "
             f"VALUES ({values})"
         )
 
@@ -1115,7 +1159,7 @@ class Migrator:
             f"UPDATE {self._table_sql()} "
             f"SET checksum = {placeholder}, applied_at = {placeholder}, "
             f"execution_ms = {placeholder}, success = {placeholder}, "
-            f"generated = {placeholder} "
+            f"generated = {placeholder}, steps = {placeholder} "
             f"WHERE id = {placeholder}"
         )
 
@@ -1200,12 +1244,29 @@ class Migrator:
             if update:
                 cursor.execute(
                     self._update_sql(),
-                    (checksum, timestamp, None, False, generated, migration.id),
+                    (
+                        checksum,
+                        timestamp,
+                        None,
+                        False,
+                        generated,
+                        _stored_steps(migration, generated),
+                        migration.id,
+                    ),
                 )
             else:
                 cursor.execute(
                     self._insert_sql(),
-                    (migration.id, seq, checksum, timestamp, None, False, generated),
+                    (
+                        migration.id,
+                        seq,
+                        checksum,
+                        timestamp,
+                        None,
+                        False,
+                        generated,
+                        _stored_steps(migration, generated),
+                    ),
                 )
             self._commit_quietly()
         except Exception:
@@ -1456,6 +1517,7 @@ class Migrator:
                             elapsed_ms,
                             True,
                             generated,
+                            _stored_steps(migration, generated),
                             migration.id,
                         ),
                     )
@@ -1470,6 +1532,7 @@ class Migrator:
                             elapsed_ms,
                             True,
                             generated,
+                            _stored_steps(migration, generated),
                         ),
                     )
         except Exception as error:
@@ -1804,6 +1867,7 @@ class Migrator:
                         None,
                         True,
                         False,
+                        None,
                     ),
                 )
                 next_seq += 1
@@ -1974,20 +2038,47 @@ class Migrator:
         steps = len(applied) - applied.index(target) - 1
         return self.down(steps) if steps else []
 
+    def _generated_migration(self, migration_id: str) -> Optional[Migration]:
+        """
+        The migration a generated tracking row describes, read back from
+        the row itself, or None when the row holds no statements.
+
+        up(models=[...]) applies a migration that exists nowhere but that
+        run, so a later process has nothing to revert it with. The row
+        carries the statements for exactly that reason.
+        """
+        placeholder = self._compiler.placeholder()
+        cursor = self._connection.cursor()
+        cursor.execute(
+            f"SELECT steps FROM {self._table_sql()} WHERE id = {placeholder}",
+            (migration_id,),
+        )
+        row = cursor.fetchone()
+        if row is None or row[0] is None:
+            return None
+        return _restore_migration(migration_id, str(row[0]))
+
     def down(self, steps: int = 1) -> List[str]:
         """
         Reverts the most recently applied migrations, newest first. Every
-        reverted migration must define a down step and be registered with
-        this migrator. Repeatables are never reverted. Returns the ids
-        that were reverted.
+        reverted migration must define a down step. Repeatables are never
+        reverted. Returns the ids that were reverted.
+
+        A migration generated from the models is reverted from its own
+        tracking row, which holds the statements it ran, so a process that
+        never saw the diff can still take it back. Every other migration
+        must be registered with this migrator.
         """
         with self._lock_scope():
+            self._ensure_tracking_table()
             applied = self._applied_versioned()
             by_id = {m.id: m for m in self._migrations}
             placeholder = self._compiler.placeholder()
             reverted: List[str] = []
             for migration_id in reversed(applied[-steps:] if steps else []):
-                migration = by_id.get(migration_id)
+                migration = by_id.get(migration_id) or self._generated_migration(
+                    migration_id
+                )
                 if migration is None:
                     raise ValueError(
                         f"Applied migration '{migration_id}' is not registered "
