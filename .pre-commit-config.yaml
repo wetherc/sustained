@@ -37,6 +37,13 @@ repos:
         files: ^(CHANGELOG\.md|docs/changelog\.md|sync_changelog\.py)$
         pass_filenames: false
 
+      - id: sync-support
+        name: Check the support page matches support.json
+        entry: python3 sync_support.py --check
+        language: system
+        files: ^(support\.json|docs/support\.md|sync_support\.py)$
+        pass_filenames: false
+
       - id: unit-tests
         name: Run unit tests with coverage
         entry: >

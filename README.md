@@ -147,7 +147,10 @@ The [documentation](https://sustained.tbmh.org/) has four parts:
 - The guides cover one area each: [models](https://sustained.tbmh.org/models), [queries](https://sustained.tbmh.org/queries), [dialects and drivers](https://sustained.tbmh.org/dialects), [filtering](https://sustained.tbmh.org/filtering), [grouping](https://sustained.tbmh.org/grouping), [relations and joins](https://sustained.tbmh.org/relations), [execution, pooling, and async](https://sustained.tbmh.org/executing), and [schema and migrations](https://sustained.tbmh.org/schema) at length.
 - The [API reference](https://sustained.tbmh.org/reference/) gives every public name its signature, return type, and the conditions that raise.
 
-Released versions are listed in the [changelog](https://sustained.tbmh.org/changelog).
+Which databases and Python versions are supported, and how much warning a
+removal gets, is written down in the
+[support policy](https://sustained.tbmh.org/support). Released versions are
+listed in the [changelog](https://sustained.tbmh.org/changelog).
 
 ## Development
 
