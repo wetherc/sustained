@@ -3,24 +3,25 @@ layout: default
 title: Building Queries
 ---
 
-`Model.query()` returns a `QueryBuilder`. Every method on it adds one piece of
-a SELECT and returns the builder, so a query is a chain that ends in a string:
+`Model.query()` returns a `QueryBuilder`. Query methods are chained onto this to build out a full query:
 
 ```python
-print(Show.query().select('title').where('sold_out', '=', True).orderBy('starts_at'))
+print(
+    Show.query()
+        .select('title')
+        .where('sold_out', '=', True)
+        .orderBy('starts_at')
+)
 # SELECT title FROM shows WHERE sold_out = TRUE ORDER BY starts_at ASC
 ```
 
-The chain mutates the builder in place. Two branches from one base query need
-[`clone()`](#reusing-a-query).
+The chain mutates the builder in place. If you want to run multiple branching queries off of the same base query, you must make a deep copy with [`clone()`](#reusing-a-query) first.
 
-This page follows the clause order of the statement it builds: the source, the
-columns, the ordering, the row limit, then the pieces that wrap all of it. It
-uses the venue booking schema from [Getting Started](./getting-started).
+This page continues to use the venue booking schema from [Getting Started](./getting-started).
 
 ## Where the rows come from
 
-The model's table is the default source. `from_()` replaces it:
+The model's table is the default source, but can be overridden with `from_()`:
 
 ```python
 Show.query().from_('shows_archive')
@@ -30,8 +31,7 @@ Show.query().from_('shows', 'r')
 # SELECT * FROM shows AS r
 ```
 
-The source can also be another query, which renders as a derived table. An
-alias is required there, because SQL has no name for an unnamed subquery:
+The source can also be another query, which renders as a derived table. An alias is required there, because SQL has no name for an unnamed subquery:
 
 ```python
 sellouts = Show.query().select('id', 'title').where('sold_out', '=', True)
@@ -42,25 +42,21 @@ Show.query().from_(sellouts, 'sellouts').select('*')
 
 ## Choosing columns
 
-`select()` takes any number of column names. Without it, the query selects
-everything:
+`select()` takes any number of column names. Without it, the query selects everything:
 
 ```python
 Show.query().select('id', 'title', 'starts_at')
 # SELECT id, title, starts_at FROM shows
 ```
 
-Once a query joins, two tables can both have a `name` column, and an
-unqualified name is ambiguous. Model attributes give you the qualified form
-without writing the table name twice:
+Once a query joins, two tables can both have columns with the same name. Model attributes give you the qualified form without writing the table name twice:
 
 ```python
 Show.query().select(Show.title, Venue.name).innerJoinRelated('venue')
 # SELECT shows.title, venues.name FROM shows INNER JOIN venues ON shows.venue_id = venues.id
 ```
 
-An alias uses the `'column AS alias'` shorthand. Both halves quote correctly
-for the dialect:
+An alias uses the `'column AS alias'` shorthand. Both halves quote correctly for the dialect:
 
 ```python
 Venue.query().select('name AS venue_name')
@@ -76,8 +72,7 @@ Venue.query().distinct().select('city')
 
 ### Aggregates
 
-`count()`, `sum()`, `avg()`, `min()`, and `max()` each add one aggregate to
-the select list. Called with no column, `count()` counts rows:
+`count()`, `sum()`, `avg()`, `min()`, and `max()` each add one aggregate to the select list. Called with no column specified, `count()` counts rows:
 
 ```python
 Show.query().count()
@@ -90,8 +85,7 @@ Ticket.query().sum('price', alias='gross')
 # SELECT SUM(price) AS gross FROM tickets
 ```
 
-For an aggregate with no method of its own, build an `AggregateExpression` and
-pass it to `select()`:
+For an aggregate with no method of its own, build an `AggregateExpression` and pass it to `select()`:
 
 ```python
 from sustained.expressions import AggregateExpression
@@ -100,15 +94,11 @@ Artist.query().select(AggregateExpression('STRING_AGG', "name, ', '"))
 # SELECT STRING_AGG(name, ', ') FROM artists
 ```
 
-The argument to `AggregateExpression` is raw SQL, so it is your job to get the
-quoting right there. Grouping those aggregates and filtering the groups is
-[Grouping](./grouping).
+The argument to `AggregateExpression` is raw SQL, so you do need to get the dialect-specific quoting right there. Grouping those aggregates and filtering the groups is detailed in [Grouping](./grouping).
 
 ### Functions
 
-`select_func()` calls any SQL function. String arguments are column names.
-Wrap a string value in `Literal` to pass it as data, and in `Column` to pass
-it as raw SQL:
+`select_func()` allows you to call any SQL function. String arguments are interpreted as column names. You can wrap a string value in `Literal` to pass it as data, and in `Column` to pass it as raw SQL:
 
 ```python
 from sustained import Literal
@@ -117,8 +107,7 @@ Venue.query().select_func('COALESCE', 'name', Literal('unknown'), alias='label')
 # SELECT COALESCE(name, 'unknown') AS label FROM venues
 ```
 
-A string argument that is not a plain column name raises `ValueError` when the
-query renders:
+A string argument that is not a plain column name raises `ValueError` when the query renders:
 
 ```python
 Venue.query().select_func('COALESCE', 'not a column', alias='x')
@@ -126,24 +115,16 @@ Venue.query().select_func('COALESCE', 'not a column', alias='x')
 # Wrap literal values in Literal() or raw SQL in Column().
 ```
 
-That rule exists because the alternative is silent: without it, a forgotten
-`Literal` turns a value into a column reference and the query returns the
-wrong rows rather than failing.
+That rule exists because without it, a forgotten `Literal` turns a value into a column reference and the query silently returns the wrong rows rather than failing.
 
-Every registered function is also a method of its own name, so these build the
-same query:
+Every registered function also has a named method equivalent, so these build the same query:
 
 ```python
 Venue.query().select_func('COALESCE', 'name', Literal('unknown'), alias='label')
 Venue.query().coalesce('name', Literal('unknown'), alias='label')
 ```
 
-The registry holds the scalar functions `LOWER`, `UPPER`, `COALESCE`,
-`CONCAT`, `SUBSTRING`, `TRIM`, `LENGTH`, `ROUND`, `ABS`, `CEILING`, `FLOOR`,
-`MOD`, `NOW`, and `GETDATE`, plus the aggregates `COUNT`, `SUM`, `AVG`, `MIN`,
-`MAX`, and `STRING_AGG`. A registered function checks itself against the
-dialect and raises `DialectError` at build time when the engine has no
-spelling for it:
+The registry holds the scalar functions `LOWER`, `UPPER`, `COALESCE`, `CONCAT`, `SUBSTRING`, `TRIM`, `LENGTH`, `ROUND`, `ABS`, `CEILING`, `FLOOR`, `MOD`, `NOW`, and `GETDATE`, plus the aggregates `COUNT`, `SUM`, `AVG`, `MIN`, `MAX`, and `STRING_AGG`. A registered function checks itself against the configured dialect and raises `DialectError` at build time when the engine has no spelling for it:
 
 ```python
 from sustained.dialects import Dialects
@@ -153,8 +134,7 @@ Venue.query().select_func('STRING_AGG', 'name')
 # DialectError: Function 'STRING_AGG' is not supported by the 'MSSQL' dialect.
 ```
 
-Some registered names change spelling instead of raising. You write the name
-you know and the dialect gets the one it needs:
+Some registered names change spelling instead of raising to account for dialect-specific variations in function names. For example:
 
 ```python
 Venue.query().length('name', alias='n')
@@ -167,21 +147,18 @@ Venue.query().now(alias='t')
 # DEFAULT:  DialectError: Function 'NOW' is not supported by the 'DEFAULT' dialect.
 ```
 
-An unregistered name passes through unchecked, which is how you reach a
-function Sustained has never heard of:
+An unregistered name passes through unchecked, which is how you reach a function Sustained has never heard of:
 
 ```python
 Venue.query().select_func('SOME_CUSTOM_FN', 'name')
 # SELECT SOME_CUSTOM_FN(name) FROM venues
 ```
 
-The [function reference](./reference/predicates#function-registry) lists every
-registered name with its per-dialect spelling.
+The [function reference](./reference/predicates#function-registry) lists every registered name with its per-dialect spelling.
 
 ### Window functions
 
-`select_window()` takes the function name, an alias, and the partition and
-order columns:
+`select_window()` takes the function name, an alias, and the partition and order columns:
 
 ```python
 Ticket.query().select_window(
@@ -190,13 +167,11 @@ Ticket.query().select_window(
 # SELECT ROW_NUMBER() OVER (PARTITION BY show_id ORDER BY sold_at) AS seat FROM tickets
 ```
 
-Filtering on the result needs a wrapping subquery on most engines, or
-[`qualify()`](#analyst-clauses) on DuckDB.
+Filtering on the result needs a wrapping subquery on most engines, or [`qualify()`](#analyst-clauses) on DuckDB.
 
 ### CASE expressions
 
-`select_case()` takes the alias, the ELSE value, and the WHEN pairs. Strings
-in the result position are literals:
+`select_case()` takes the alias, the `ELSE` value, and the `WHEN` pairs. Strings in the result position are literals:
 
 ```python
 Venue.query().select_case(
@@ -227,15 +202,11 @@ Ticket.query().select_case(
 # FROM tickets
 ```
 
-The condition half of each pair is raw SQL and renders as written. A result
-that is neither a string nor a `Column` raises `TypeError` when the query
-renders.
+The condition half of each pair is raw SQL and renders as written. A result that is neither a string nor a `Column` raises `TypeError` when the query renders.
 
 ### Subqueries in the select list
 
-`Subquery` embeds a whole query as one column. Reference the outer query's
-columns with `QueryBuilder.raw()`, which stops the name being treated as a
-value:
+`Subquery` embeds a whole query as one column. Reference the outer query's columns with `QueryBuilder.raw()`, which stops the name being treated as a value:
 
 ```python
 from sustained.builder import QueryBuilder
@@ -250,20 +221,18 @@ Show.query().select('title', Subquery(sold, 'tickets_sold'))
 
 ## Ordering
 
-`orderBy()` takes a column and an optional `'asc'` or `'desc'`, defaulting to
-ascending. Call it once per sort key, in order:
+`orderBy()` takes a column and an optional `'asc'` or `'desc'`, defaulting to ascending. Call it once per sort key, in order:
 
 ```python
 Show.query().orderBy('starts_at', 'desc').orderBy('title')
 # SELECT * FROM shows ORDER BY starts_at DESC, title ASC
 ```
 
-On a query built with `union()`, the ordering applies to the combined result,
-not to the members.
+On a query built with `union()`, the ordering applies to the combined result.
 
 ## Limiting and paging
 
-`limit()` and `offset()` are the standard pair. Each takes a non-negative
+`limit()` and `offset()` are paired methods. Each takes a non-negative
 integer and can be called once:
 
 ```python
@@ -271,15 +240,14 @@ Show.query().orderBy('starts_at', 'desc').limit(10).offset(5)
 # SELECT * FROM shows ORDER BY starts_at DESC LIMIT 10 OFFSET 5
 ```
 
-`page()` computes the same thing from a zero-based page number and a page
-size:
+`page()` computes the same thing from a zero-based page number and a page size:
 
 ```python
 Show.query().page(2, 25)
 # SELECT * FROM shows LIMIT 25 OFFSET 50
 ```
 
-`top()` is the T-SQL spelling, and puts the cap at the front of the statement:
+`top()` is the T-SQL spelling, and puts the limit at the front of the statement:
 
 ```python
 Show.query().top(10)
@@ -287,30 +255,20 @@ Show.query().top(10)
 # others:  DialectError: TOP is not supported by the 'DEFAULT' dialect. Use limit() instead.
 ```
 
-Four rules govern the group. `limit()` and `top()` on the same query raise
-`ValueError`. On MSSQL, `limit()` and `offset()` compile to `OFFSET ... FETCH`,
-which T-SQL only allows after an `ORDER BY`, so the query raises `DialectError`
-without one. On Presto, `OFFSET` renders before `LIMIT`. And an offset deep
-into a large table costs a scan that grows with the offset, which is what
-`cursor_page()` avoids:
+`limit()` and `top()` on the same query raise `ValueError`. On MSSQL, `limit()` and `offset()` compile to `OFFSET ... FETCH`, which T-SQL only allows after an `ORDER BY`, so the query raises `DialectError` without one. On Presto, `OFFSET` renders before `LIMIT`. And an offset deep into a large table costs a scan that grows with the offset. To avoid this, use `cursor_page()`:
 
 ```python
 first = Ticket.query().cursor_page('id', 100).run()
 next_page = Ticket.query().cursor_page('id', 100, after=first[-1].id).run()
 ```
 
-`cursor_page()` orders by the column, filters for rows past the last value you
-saw, and limits to the page size. The column has to be unique and sorted the
-same way each call, which usually means the primary key.
+`cursor_page()` orders by the column, filters for rows past the last value you saw, and limits to the page size. The column has to be unique and sorted the same way each call, which usually means the primary key.
 
-`total()` runs `SELECT COUNT(*)` over the query with ORDER BY, LIMIT, and
-OFFSET stripped, and returns the number without changing the builder. It is
-the row count a paged query would have had.
+`total()` runs `SELECT COUNT(*)` over the query with `ORDER BY`, `LIMIT`, and `OFFSET` stripped, and returns the number without changing the builder. It is the row count a paged query would have had.
 
 ## Common table expressions
 
-`with_()` takes an alias and a query. The trailing underscore keeps the name
-away from Python's `with` keyword:
+`with_()` takes an alias and a query. The trailing underscore is needed to distinguish the method from Python's `with` keyword:
 
 ```python
 big_venues = Venue.query().select('id').where('capacity', '>', 5000)
@@ -324,18 +282,11 @@ big_venues = Venue.query().select('id').where('capacity', '>', 5000)
 # JOIN big_venues ON shows.venue_id = big_venues.id
 ```
 
-A CTE is also the way to join against a derived result set, because the table
-argument to a raw join has to be a name.
-
-`recursive=True` renders `WITH RECURSIVE`, except on MSSQL, where T-SQL spells
-recursive CTEs with plain `WITH`. Sustained does not build the anchor and
-recursive halves for you; write that body with `raw()` and a `union()`.
+`recursive=True` renders `WITH RECURSIVE`, except on MSSQL, where T-SQL spells recursive CTEs with plain `WITH`. Sustained does not build the anchor and recursive halves for you; you will need to write that with `raw()` and a `union()` yourself.
 
 ## Combining queries
 
-`union()`, `unionAll()`, `intersect()`, and `except_()` each take any number of
-builders and combine them with the matching set operator. `union()` removes
-duplicate rows and `unionAll()` keeps them:
+`union()`, `unionAll()`, `intersect()`, and `except_()` each take any number of builders and combine them with the matching set operator. `union()` removes duplicate rows and `unionAll()` keeps them:
 
 ```python
 sellouts = Show.query().select('id', 'title').where('sold_out', '=', True)
@@ -347,64 +298,54 @@ sellouts.union(soon)
 # (SELECT id, title FROM shows WHERE starts_at < '2026-09-01')
 ```
 
-Each member renders inside its own parentheses and keeps its own `ORDER BY`
-and `LIMIT`. Clauses added to the query afterwards apply to the combination:
+Each member renders inside its own parentheses and keeps its own `ORDER BY` and `LIMIT`. Clauses added to the query afterwards apply to the combination:
 
 ```python
 sellouts.union(soon).orderBy('title').limit(20)
 # (...) UNION (...) ORDER BY title ASC LIMIT 20
 ```
 
-CTEs from every member hoist to a single `WITH` at the top of the statement.
-Two different CTEs sharing an alias raise `ValueError`, because one would
-silently shadow the other.
+CTEs from every member query are elevated to a single `WITH` at the top of the statement. Two different CTEs sharing an alias raise `ValueError` and must be disambiguated.
 
-`except_()` carries the same trailing underscore as `with_()`, for the same
-reason.
+`except_()` uses the same trailing underscore as `with_()`, for the same reason.
 
 ## Analyst clauses
 
-These four are narrower than the rest of the page, and each is supported on a
-subset of dialects. The rest raise `DialectError` when the query builds.
+These clauses are only supported for a subset of the available dialects.
 
-`distinctOn(*columns)` keeps the first row per group, and needs an `orderBy()`
-on the same leading columns to define which row that is. Postgres and DuckDB:
+`distinctOn(*columns)` keeps the first row per group, and needs an `orderBy()` on the same leading columns to define which row that is. For Postgres and DuckDB:
 
 ```python
 Show.query().distinctOn('venue_id').orderBy('venue_id').orderBy('starts_at')
 # SELECT DISTINCT ON ("venue_id") * FROM "shows" ORDER BY "venue_id" ASC, "starts_at" ASC
 ```
 
-`qualify(condition)` filters on a window function without a wrapping subquery.
-It takes a `Predicate` or a raw string. DuckDB:
+`qualify(condition)` filters on a window function without a wrapping subquery. It takes a `Predicate` or a raw string. For DuckDB:
 
 ```python
 (Ticket.query()
     .select('show_id')
-    .select_window('ROW_NUMBER', 'rn', partition_by=['show_id'], order_by=['sold_at'])
+    .select_window(
+        'ROW_NUMBER',
+        'rn',
+        partition_by=['show_id'],
+        order_by=['sold_at'])
     .qualify('rn <= 3'))
 # SELECT "show_id", ROW_NUMBER() OVER (PARTITION BY "show_id" ORDER BY "sold_at") AS "rn"
 # FROM "tickets" QUALIFY rn <= 3
 ```
 
-`groupByRollup()`, `groupByCube()`, and `groupByGroupingSets()` produce
-subtotal rows and multi-grain aggregates. They are covered with the rest of
-GROUP BY in [Grouping](./grouping#subtotals-and-multiple-grains).
+`groupByRollup()`, `groupByCube()`, and `groupByGroupingSets()` produce subtotal rows and multi-grain aggregates. They are covered with the rest of `GROUP BY` in [Grouping](./grouping#subtotals-and-multiple-grains).
 
-`for_update(skip_locked=False, nowait=False)` locks the selected rows for the
-transaction. Postgres only, and rejected on a query with a union.
+`for_update(skip_locked=False, nowait=False)` locks the selected rows for the transaction. Postgres only, and unavailable in queries using unions.
 
-## Reading the plan
+## Reading the execution plan
 
-`explain()` runs the dialect's EXPLAIN and returns the plan rows.
-`explain(analyze=True)` uses EXPLAIN ANALYZE, which runs the statement for
-real, so do not point it at a write. MSSQL raises, because T-SQL has no
-EXPLAIN statement.
+`explain()` runs the dialect's EXPLAIN and returns the plan rows. `explain(analyze=True)` uses EXPLAIN ANALYZE, which runs the statement for real, so do not point it at a write. MSSQL raises, because T-SQL has no EXPLAIN statement.
 
 ## Reusing a query
 
-Each chained call adds to the same builder, so a shared base query collects
-every branch's filters. `clone()` copies it:
+Each chained call adds to the same builder, so a shared base query collects every branch's filters. `clone()` copies it if you want to create multiple branch queries from the same base:
 
 ```python
 base = Show.query().where('sold_out', '=', True)
@@ -416,47 +357,35 @@ first_ave = base.clone().where('venue_id', '=', 2)
 # SELECT * FROM shows WHERE sold_out = TRUE AND venue_id = 2
 ```
 
-Without the clones, the second line would filter on both venues and return
-nothing.
+Without the clones, the second line would filter on both venues and return nothing.
 
 ## Method naming
 
-The canonical names are camelCase, matching Objection.js: `orderBy`,
-`groupBy`, `whereIn`, `unionAll`, `leftJoin`. Each also accepts its snake_case
-spelling: `order_by`, `group_by`, `where_in`, `union_all`, `left_join`. The
-translation is mechanical, and it uppercases the letter after each underscore,
-so `whereILike` is `where_i_like`.
+The canonical names are camelCase: `orderBy`, `groupBy`, `whereIn`, `unionAll`, `leftJoin`. Each also accepts its snake_case spelling: `order_by`, `group_by`, `where_in`, `union_all`, `left_join`. The translation is mechanical, and it uppercases the letter after each underscore, so `whereILike` is `where_i_like`. (Method names are also not case sensitive, so you could probably use Mocking Spongebob case if you wanted to `.iNnErJoIn()` something. Note that at time of writing I haven't actually tested this, but am pretty sure it holds.)
 
 ## Getting the SQL out
 
-`str(query)` renders values inline as SQL literals. It is for reading and
-logging:
+`str(query)` renders values inline as SQL literals. It is for reading and logging:
 
 ```python
 print(Show.query().select('title').where('id', '=', 1))
 # SELECT title FROM shows WHERE id = 1
 ```
 
-`to_sql()` returns the SQL with placeholders and the parameters as a separate
-tuple, in the order they appear. That pair goes to any DB-API cursor, and it
-is what keeps values out of the SQL text:
+`to_sql()` returns the SQL with placeholders and with the parameters as a separate tuple, in the order they appear.
 
 ```python
 Show.query().select('title').where('id', '=', 1).to_sql()
 # ('SELECT title FROM shows WHERE id = ?', (1,))
 ```
 
-The placeholder follows the dialect, `?` by default and on MSSQL, `%s` on
-Postgres and Athena:
+The placeholder follows the dialect, `?` by default and on MSSQL, `%s` on Postgres and Athena:
 
 ```python
 Show.set_dialect(Dialects.POSTGRES)
 Show.query().select('title').where('id', '=', 1).to_sql()
 # ('SELECT "title" FROM "shows" WHERE "id" = %s', (1,))
 ```
-
-`run()` does both halves for you and hydrates the rows into model instances.
-See [Executing Queries](./executing).
 
 ## Where to go next
 

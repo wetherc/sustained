@@ -3,7 +3,7 @@ layout: default
 title: Defining Models
 ---
 
-A model is a Python class with a table name on it:
+Tables and their schema are represented within Sustained as Models: this provides a consistent interface for describing columns, declaring relationships, and querying data.
 
 ```python
 from sustained import Model
@@ -12,18 +12,13 @@ class Venue(Model):
     tableName = 'venues'
 ```
 
-That is enough to build queries. Everything else on this page is optional,
-and each addition buys one specific thing: qualified names, typo checking,
-typed columns, a dialect, a connection, or a schema the migrator can manage.
+Minimally, a Model only needs a table name; everything else on this page is strictly optional.
 
-The examples use the venue booking schema from
-[Getting Started](./getting-started): venues hold shows, shows sell tickets,
-and artists play shows through a link table.
+The examples use the venue booking schema from [Getting Started](./getting-started): venues hold shows, shows sell tickets, and artists play shows through a link table.
 
 ## Naming the table
 
-`tableName` is the only required attribute. Add `tableSchema` and `database`
-when the table needs a qualified name:
+`tableName` is the only required attribute. Models also support a `tableSchema` and `database` when the table needs a qualified name:
 
 ```python
 class Venue(Model):
@@ -35,10 +30,7 @@ print(Venue.query())
 # SELECT * FROM analytics.public.venues
 ```
 
-The parts join with dots in the order database, schema, table. Both extra
-attributes default to `None`, and a `None` part is left out. Quoting follows
-the dialect, so the same class renders `"analytics"."public"."venues"` on
-Postgres.
+The parts join with dots in the order database, schema, table. Both extra attributes default to `None` and are omitted in query building. Quoting follows the dialect you've specified, so the same class renders, e.g., `"analytics"."public"."venues"` on Postgres.
 
 ## Columns as attributes
 
@@ -52,19 +44,13 @@ Venue.query().select(Venue.name, Venue.city)
 # SELECT venues.name, venues.city FROM venues
 ```
 
-Qualified names matter in joins, where two tables can both have a `name`
-column. They come from the same three parts as the table name, so a model
-with a `database` and `tableSchema` produces `analytics.public.venues.city`.
+Qualified names matter in joins, where two tables can both have columns with the same name. They come from the same three parts as the table name, so a model with a `database` and `tableSchema` produces `analytics.public.venues.city`.
 
-Instances behave the same way. `Venue().city` is also `'venues.city'`, which
-means a hydrated instance returns the column name for any attribute the query
-did not populate.
+Instances behave the same way. `Venue().city` is also `'venues.city'`, which means a hydrated instance returns the column name for any attribute the query did not populate.
 
 ## Catching column typos
 
-Attribute access is generous by default: an undeclared name still resolves,
-so `Venue.citty` becomes the string `'venues.citty'` and the mistake surfaces
-as a database error at run time. Declare the column names to close that gap:
+Attribute access is generous by default: an undeclared name still resolves, so `Venue.citty` becomes the string `'venues.citty'` and the mistake surfaces as a database error at run time. To strictly enforce allowed columns in queries, you can explicitly declare them on the model:
 
 ```python
 class Venue(Model):
@@ -76,12 +62,9 @@ Venue.citty
 # Declared columns: id, name, city, capacity.
 ```
 
-The check runs on the class, on instances, and on the `Model.c` namespace
-below. It does not run on the string arguments to `select()` or `where()`,
-which are passed through to the SQL as written.
+The check runs on the class, on instances, and on the `Model.c` namespace below. It does not run on the string arguments to `select()` or `where()`, which are passed through to the SQL as written.
 
-Declaring `tableColumns` sets `columns` for you from the same keys, so a
-model with a typed schema gets the check without repeating the names:
+Declaring `tableColumns` sets `columns` for you from the same keys, so a model with a typed schema gets the check without repeating the names:
 
 ```python
 from sustained.schema import Integer, String
@@ -99,17 +82,13 @@ Venue.columns
 # ('id', 'name', 'city', 'capacity')
 ```
 
-Set `columns` explicitly alongside `tableColumns` to override that, which is
-what you want when the table has columns the migrator should not manage.
+You can still set `columns` explicitly alongside `tableColumns` to override this default behavior, which is useful when the table has columns the migrator should not manage.
 
-`tableColumns` is also what the migrator diffs against the live database. See
-[Schema and Migrations](./schema) for the column types and what a change to
-one generates.
+`tableColumns` is also what the migrator diffs against the live database. See [Schema and Migrations](./schema) for the column types and what a change to one generates.
 
 ## Typed columns
 
-`Model.c` gives every column a reference that builds conditions from Python
-operators instead of operator strings:
+`Model.c` gives every column a reference that builds conditions from Python operators instead of operator strings:
 
 ```python
 Venue.c.capacity
@@ -119,19 +98,14 @@ Venue.query().where((Venue.c.capacity > 1000) & (Venue.c.city == 'Minneapolis'))
 # SELECT * FROM venues WHERE (venues.capacity > 1000 AND venues.city = 'Minneapolis')
 ```
 
-The result of a comparison is a `Predicate`, which combines with `&`, `|`,
-and `~`. Pass it to `where()` or `having()`. For a table with no model in
-scope, `col('show_artists.artist_id')` builds the same kind of reference from
+The result of a comparison is a `Predicate`, which combines with `&`, `|`, and `~`. Pass it to `where()` or `having()`. For a table with no model in scope, `col('show_artists.artist_id')` builds the same kind of reference from
 a dotted path.
 
-[Filtering](./filtering#typed-predicates) covers the full operator set and the
-methods for LIKE, IN, BETWEEN, and NULL.
+[Filtering](./filtering#typed-predicates) covers the full operator set and the methods for `LIKE`, `IN`, `BETWEEN`, and `NULL`.
 
 ## Finding models by name
 
-Every subclass with a `tableName` registers itself under its class name when
-the class body executes. Relation mappings use that registry, so a mapping
-can name its target as a string:
+Every subclass with a `tableName` registers itself under its class name when the class body executes. Relation mappings use that registry, so a mapping can name its target as a string:
 
 ```python
 class Venue(Model):
@@ -145,20 +119,13 @@ class Venue(Model):
     }
 ```
 
-The string form is what breaks import cycles: `Venue` and `Show` can point at
-each other from separate modules as long as both classes exist before the
-query is built. A name that never resolves raises `ValueError` at build time,
-naming the reference it could not find.
+The string form prevents cyclical imports: `Venue` and `Show` can point at each other from separate modules as long as both classes exist before the query is built. A name that never resolves raises `ValueError` at build time, naming the reference it could not find.
 
-`get_registered_model('Show')` returns the class or `None`.
-`resolve_model_reference` takes a class or a name and returns the class,
-raising for an unresolvable name.
+`get_registered_model('Show')` returns the class or `None`. `resolve_model_reference` takes a class or a name and returns the class, raising for an unresolvable name.
 
-Two model classes with the same name in different modules overwrite each
-other in the registry, and the last one defined wins. Pass the class itself
-rather than a name when that is a risk.
+Two model classes with the same name in different modules overwrite each other in the registry. You should pass the class itself rather than a name when that is a risk.
 
-## The dialect and the connection
+## Dialects and database connections
 
 Both are class attributes, set once and inherited by subclasses:
 
@@ -169,20 +136,15 @@ Venue.set_dialect(Dialects.POSTGRES)   # quoting, placeholders, function names
 Venue.bind(psycopg.connect(DSN))       # every query on Venue can now run()
 ```
 
-Setting either on `Model` itself applies to every model that does not set its
-own. Setting it on a subclass scopes it to that subclass. `Model.unbind()`
-removes a binding, and passing a connection to `run()` overrides one.
+Setting either on `Model` itself applies to every model that does not set its own. Setting it on a subclass scopes it to only that subclass. `Model.unbind()` removes a binding, and passing a connection to `run()` overrides one.
 
-Two models with different dialects can coexist, which is how a query against
-Postgres and a query against Athena run in one process.
-[SQL Dialects](./dialects) pairs each dialect with its driver and lists what
-it cannot do. [Executing Queries](./executing) covers binding, pooling, and
-async adapters.
+Two models with different dialects can coexist, which is how a query against Postgres and a query against Athena run in one process.
 
-## Models built at run time
+[SQL Dialects](./dialects) gives an overview of recommended drivers for each supported dialect. [Executing Queries](./executing) covers binding, pooling, and async adapters.
 
-`create_model()` returns a model class from a name and a table name, for
-schemas discovered at run time rather than written down:
+## Models built at runtime
+
+`create_model()` returns a model class from a name and a table name for schemas discovered at runtime:
 
 ```python
 from sustained import create_model
@@ -193,10 +155,7 @@ Venue.query().select('id', 'name')
 # SELECT id, name FROM venues
 ```
 
-It takes the same optional pieces as a class body: `mappings` for
-`relationMappings`, `columns` for the strict column set, and `table_schema`
-and `database` for the qualified name. The result registers itself under the name
-you pass, so string references in other models resolve to it.
+It takes the same optional pieces as a class body: `mappings` for `relationMappings`, `columns` for the strict column set, and `table_schema` and `database` for the qualified name. The result registers itself with the name passed to `create_model()`, so string references in other models will resolve to it.
 
 ```python
 Show = create_model(
