@@ -37,7 +37,7 @@ never described as partly supported.
 | Presto and Trino | `runs` | Container (trinodb/trino:468) | queries | Reads the tpch catalog. Neither server takes the migration surface. |
 | SQLite | `runs` | In process | queries, migrations | Standard library. The table rebuild path lives here. |
 | DuckDB | `runs` | In process | queries, migrations | In-process, so no container and no advisory lock. |
-| AWS Athena | `runs` | Your AWS account | queries, migrations | Your AWS account. Needs a staging S3 directory and credentials; nothing to containerize. |
+| AWS Athena | `runs` | Your AWS account | queries | Your AWS account, with a staging S3 directory. Athena's migration surface is not exercised, since the tables it needs live in your buckets. |
 | ANSI (default) | `builds` | Nothing to run | SQL text only | The portable compiler. Any DB-API 2.0 driver that takes this SQL will work, untested here. |
 
 <!-- end databases -->
