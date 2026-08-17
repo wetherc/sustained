@@ -196,6 +196,22 @@ class TestMigratorSync(AutogenTestCase):
         self.assertEqual(applied[0], "hand")
         self.assertEqual(len(applied), 2)
 
+    def test_up_with_models_still_blocks_out_of_order_migrations(self):
+        from sustained.exceptions import MigrationError
+
+        Migrator(
+            self.conn, [Migration("002_b", up="CREATE TABLE t_b (id INTEGER)")]
+        ).up()
+        late = Migrator(
+            self.conn,
+            [
+                Migration("001_a", up="CREATE TABLE t_a (id INTEGER)"),
+                Migration("002_b", up="CREATE TABLE t_b (id INTEGER)"),
+            ],
+        )
+        with self.assertRaises(MigrationError):
+            late.up(models=[self.User])
+
     def test_sync_still_works_and_warns(self):
         migrator = Migrator(self.conn, [])
         with self.assertWarns(DeprecationWarning) as caught:
@@ -367,6 +383,42 @@ class TestSqliteRebuild(AutogenTestCase):
         rows = self.conn.execute("SELECT id, email FROM ag_users").fetchall()
         self.assertEqual(rows, [(1, "a@x")])
         self.assertTrue(diff_schema(self.conn, [changed]).is_empty())
+
+    def test_rebuild_preserves_undeclared_columns_and_indexes(self):
+        self.User.create_table(self.conn)
+        self.conn.execute("ALTER TABLE ag_users ADD COLUMN notes TEXT")
+        self.conn.execute("CREATE INDEX ag_users_notes ON ag_users (notes)")
+        self.conn.execute("INSERT INTO ag_users VALUES (1, 'a@x', 'keep me')")
+        changed = make_model(
+            "AgKeep",
+            "ag_users",
+            {"id": Integer(primary_key=True), "email": Text()},
+        )
+        migration = autogenerate(self.conn, [changed], id="rb3", ignore_undeclared=True)
+        Migrator(self.conn, [migration]).up(unrehearsed=True)
+        rows = self.conn.execute("SELECT id, email, notes FROM ag_users").fetchall()
+        self.assertEqual(rows, [(1, "a@x", "keep me")])
+        names = {row[1] for row in self.conn.execute("PRAGMA index_list(ag_users)")}
+        self.assertIn("ag_users_notes", names)
+
+    def test_rebuild_with_allow_drops_drops_undeclared_columns(self):
+        self.User.create_table(self.conn)
+        self.conn.execute("ALTER TABLE ag_users ADD COLUMN notes TEXT")
+        changed = make_model(
+            "AgDropCol",
+            "ag_users",
+            {"id": Integer(primary_key=True), "email": Text()},
+        )
+        migration = autogenerate(self.conn, [changed], id="rb4", allow_drops=True)
+        Migrator(self.conn, [migration]).up(unrehearsed=True)
+        columns = [row[1] for row in self.conn.execute("PRAGMA table_info(ag_users)")]
+        self.assertEqual(columns, ["id", "email"])
+
+    def test_expression_index_does_not_crash_introspection(self):
+        self.User.create_table(self.conn)
+        self.conn.execute("CREATE INDEX ag_users_lower ON ag_users (lower(email))")
+        schema = introspect_schema(self.conn)
+        self.assertNotIn("ag_users_lower", schema["ag_users"].indexes)
 
     def test_not_null_add_with_backfill_rebuilds(self):
         self.User.create_table(self.conn)

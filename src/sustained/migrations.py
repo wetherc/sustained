@@ -184,7 +184,9 @@ class RehearsalResult(NamedTuple):
     `reversed` compares the schema after the down sweep against the
     snapshot taken before the rehearsal, so it is shared by every
     migration in the run: a leftover object names the whole sweep, not
-    one step of it.
+    one step of it. It stays None unless every step in the run reversed,
+    since changes a migration without a down step leaves behind cannot be
+    charged to the steps that did come back.
     """
 
     id: str
@@ -598,6 +600,29 @@ def _down_sweep(ran: List[Migration]) -> Iterator[Tuple[Migration, Optional[str]
             yield migration, "no down step"
         else:
             yield migration, None
+
+
+def _reversal_provable(
+    ran: List[Migration],
+    outcomes: Dict[str, Tuple[Optional[bool], Optional[str]]],
+) -> bool:
+    """
+    Whether comparing the schema after the down sweep against the one
+    before it proves anything.
+
+    It does when at least one down step ran and every versioned migration
+    in the run reversed. A versioned migration whose down step did not run
+    leaves its own changes in the database, and blaming those on the steps
+    that did reverse would report a rehearsal that behaved as designed as
+    a failure. Repeatables are left out of the requirement: they never
+    have a down step, so waiting for one would switch the comparison off
+    for every run that carries a view or a seed.
+    """
+    if not any(down_ok is True for down_ok, _ in outcomes.values()):
+        return False
+    return all(
+        outcomes.get(m.id, (None, None))[0] is True for m in ran if not m.repeatable
+    )
 
 
 def _rehearsal_results(
@@ -1259,10 +1284,6 @@ class Migrator:
         with self._lock_scope():
             if models is not None:
                 self._ensure_tracking_table()
-                # A generated id carries the moment it was generated, which
-                # sorts after every applied migration but not necessarily
-                # after every registered one.
-                allow_out_of_order = True
 
             migrations = self._versioned()
             if target is not None:
@@ -1442,17 +1463,20 @@ class Migrator:
         The remaining arguments are the diff options up() takes, and they
         should match the ones the real run will use.
 
-        The up steps run in order. Repeatables run after them, as in up().
-        The down steps then run newest-first, skipping the repeatables,
-        which have none. The first migration without a down step stops the
-        sweep, since everything older sits under changes that cannot be
-        taken back. The first step that raises stops the rehearsal.
+        The up steps run in the order up() runs them: the versioned
+        migrations, then the generated one, then the repeatables. The down
+        steps then run newest-first, skipping the repeatables, which have
+        none. The first migration without a down step stops the sweep,
+        since everything older sits under changes that cannot be taken
+        back. The first step that raises stops the rehearsal.
 
         The schema is read before the run and again after the down sweep.
         A difference between the two means a down step ran without taking
-        its change back. Tables and columns are compared; indexes,
-        constraints, and defaults are not, so a leftover index is not
-        reported yet.
+        its change back. The comparison is only made when every step in
+        the run reversed: one migration without a down step leaves changes
+        that no other step can be blamed for. Tables and columns are
+        compared; indexes, constraints, and defaults are not, so a
+        leftover index is not reported yet.
 
         A passing run leaves a receipt behind: one row keyed to the applied
         history it started from and the statements it ran, which up() reads
@@ -1511,14 +1535,22 @@ class Migrator:
                     self._connection.cursor().execute(begin)
                 ran: List[Migration] = []
                 up_error: Optional[Tuple[str, str]] = None
-                for migration in pending:
-                    try:
-                        self._apply(migration, seq, update=migration.id in records)
-                    except Exception as error:
-                        up_error = (migration.id, str(error))
-                        break
-                    seq += 1
-                    ran.append(migration)
+
+                def apply_each(group: List[Migration]) -> None:
+                    nonlocal seq, up_error
+                    for migration in group:
+                        try:
+                            self._apply(migration, seq, update=migration.id in records)
+                        except Exception as error:
+                            up_error = (migration.id, str(error))
+                            return
+                        seq += 1
+                        ran.append(migration)
+
+                # The order matches up(): the versioned migrations, then
+                # the generated one, then the repeatables, which may read
+                # objects the generated migration creates.
+                apply_each([m for m in pending if not m.repeatable])
                 landed: Dict[str, List[str]] = {}
                 if models is not None and up_error is None:
                     # The diff is taken here, inside the rehearsal, so it
@@ -1545,16 +1577,18 @@ class Migrator:
                         else:
                             seq += 1
                             ran.append(drift)
+                            # The renames have already run, so the schema
+                            # holds the new names. Passing the hints again
+                            # would ask to rename objects that are gone.
                             landed[drift.id] = self.drift(
                                 models,
-                                renames=renames,
-                                table_renames=table_renames,
+                                ignore_changed_columns=ignore_changed_columns,
                             )
+                if up_error is None:
+                    apply_each([m for m in pending if m.repeatable])
                 outcomes = {} if up_error else self._rehearse_down(ran)
                 reverted = None
-                if before is not None and any(
-                    down_ok for down_ok, _ in outcomes.values()
-                ):
+                if before is not None and _reversal_provable(ran, outcomes):
                     from sustained.autogenerate import diff_snapshots
 
                     after = self._snapshot()
@@ -1610,6 +1644,7 @@ class Migrator:
         models: List[Type["Model"]],
         renames: Optional[dict[str, str]] = None,
         table_renames: Optional[dict[str, str]] = None,
+        ignore_changed_columns: bool = False,
     ) -> List[str]:
         """
         What the models still ask for, one readable line each, empty when
@@ -1619,6 +1654,10 @@ class Migrator:
         generated migration leaves those alone unless drops are allowed,
         so a schema built partly by hand does not read as drift here. Use
         plan() for the full comparison, drops included.
+
+        Pass ignore_changed_columns=True to leave type and nullability
+        changes out, matching a run that generates its migration the same
+        way.
         """
         from sustained.autogenerate import diff_schema
 
@@ -1630,7 +1669,7 @@ class Migrator:
             renames=renames,
             table_renames=table_renames,
         )
-        return diff.outstanding()
+        return diff.outstanding(ignore_changed_columns=ignore_changed_columns)
 
     def _roll_back_rehearsal(self) -> None:
         """

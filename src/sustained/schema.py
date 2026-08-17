@@ -209,10 +209,12 @@ def build_create_table_sql(
     columns: Dict[str, ColumnDef],
     if_not_exists: bool = False,
     options: Optional[TableOptions] = None,
+    extras: Optional[List[str]] = None,
 ) -> str:
     """
     Renders a CREATE TABLE statement from typed column definitions using
-    the given dialect compiler.
+    the given dialect compiler. `extras` are pre-rendered column parts
+    appended after the declared columns.
     """
     if not columns:
         raise ValueError("Cannot create a table with no columns.")
@@ -235,7 +237,7 @@ def build_create_table_sql(
         pk_sql = ", ".join(compiler.quote_identifier(c) for c in primary_keys)
         table_constraints.append(f"PRIMARY KEY ({pk_sql})")
 
-    body = ", ".join(column_parts + table_constraints)
+    body = ", ".join(column_parts + list(extras or []) + table_constraints)
     exists_sql = "IF NOT EXISTS " if if_not_exists else ""
     suffix = compiler.compile_table_options(options)
     suffix_sql = f" {suffix}" if suffix else ""

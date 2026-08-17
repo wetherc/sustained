@@ -51,6 +51,7 @@ from sustained.migrations import (
     _receipt_message,
     _rehearsal_column_defs,
     _rehearsal_results,
+    _reversal_provable,
     _tag_migration,
     _tracking_column_defs,
     _upgrade_column_def,
@@ -720,10 +721,11 @@ class AsyncMigrator:
 
         The schema is read before the run and again after the down sweep,
         and a difference between the two means a down step ran without
-        taking its change back. Tables and columns are compared; indexes,
-        constraints, and defaults are not. There is no models argument
-        here: schema diffing against models is a synchronous path, so the
-        async rehearsal covers registered migrations only.
+        taking its change back. The comparison is only made when every
+        step in the run reversed. Tables and columns are compared;
+        indexes, constraints, and defaults are not. There is no models
+        argument here: schema diffing against models is a synchronous
+        path, so the async rehearsal covers registered migrations only.
 
         A passing run leaves a receipt behind, which up() reads before it
         applies anything that removes data. A scratch rehearsal records
@@ -781,9 +783,7 @@ class AsyncMigrator:
                     ran.append(migration)
                 outcomes = {} if up_error else await self._rehearse_down(ran)
                 reverted = None
-                if before is not None and any(
-                    down_ok for down_ok, _ in outcomes.values()
-                ):
+                if before is not None and _reversal_provable(ran, outcomes):
                     from sustained.autogenerate import diff_snapshots
 
                     after = await self._snapshot()

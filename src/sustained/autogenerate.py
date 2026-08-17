@@ -40,6 +40,7 @@ from typing import (
     NamedTuple,
     Optional,
     Sequence,
+    Set,
     Tuple,
     Type,
     cast,
@@ -269,7 +270,13 @@ def _sqlite_plan() -> SchemaPlan:
             if origin == "pk":
                 continue
             info = yield f"PRAGMA index_info({index_name})"
-            index_columns = tuple(r[2].lower() for r in info)
+            names = [r[2] for r in info]
+            if any(name is None for name in names):
+                # An expression index reports NULL column names. It cannot
+                # be compared against a model's column list, so it is left
+                # out of the schema rather than crashing the read.
+                continue
+            index_columns = tuple(name.lower() for name in names)
             indexes[index_name.lower()] = IntrospectedIndex(index_columns, unique)
 
         schema[table.lower()] = IntrospectedTable(
@@ -447,7 +454,7 @@ class SchemaDiff:
             or self.constraint_notes
         )
 
-    def outstanding(self) -> List[str]:
+    def outstanding(self, ignore_changed_columns: bool = False) -> List[str]:
         """
         The differences a generated migration was supposed to close, one
         readable line each, empty when the models all landed.
@@ -457,16 +464,22 @@ class SchemaDiff:
         generated migration leaves those alone unless drops are allowed,
         so counting them would report a schema built partly by hand as a
         failure.
+
+        Pass ignore_changed_columns=True to leave type and nullability
+        changes out, matching a migration generated with the same option:
+        those columns were never meant to be closed.
         """
         lines: List[str] = []
         for model in self.missing_tables:
             lines.append(f"table '{model.tableName}' was not created")
         for model, name, _ in self.new_columns:
             lines.append(f"column '{model.tableName}.{name}' was not added")
-        for table, name, actual, expected in self.changed_columns:
-            lines.append(
-                f"column '{table}.{name}' is {actual}, the models declare {expected}"
-            )
+        if not ignore_changed_columns:
+            for table, name, actual, expected in self.changed_columns:
+                lines.append(
+                    f"column '{table}.{name}' is {actual}, "
+                    f"the models declare {expected}"
+                )
         for model, index in self.new_indexes:
             lines.append(f"index '{index.name}' on '{model.tableName}' was not created")
         for model, index, _ in self.changed_indexes:
@@ -726,17 +739,43 @@ def _diff_constraints(
 
 
 def _sqlite_rebuild_steps(
-    compiler: "Compiler", model: Type["Model"], actual_table: IntrospectedTable
+    compiler: "Compiler",
+    model: Type["Model"],
+    actual_table: IntrospectedTable,
+    allow_drops: bool = False,
 ) -> List[str]:
     """
     Rebuilds a SQLite table to match the model: create a new table from the
     declaration, copy rows across, replace the old table, and recreate the
-    model's indexes.
+    indexes. Columns and indexes the model does not declare survive the
+    rebuild unless allow_drops is True; a drop is never a side effect of a
+    column change.
     """
     assert model.tableColumns is not None and model.tableName is not None
     table = model.tableName
     temp = f"{table}_sustained_new"
-    steps = [build_create_table_sql(compiler, temp, model.tableColumns)]
+    declared = {name.lower() for name in model.tableColumns}
+    undeclared: Dict[str, IntrospectedColumn] = (
+        {}
+        if allow_drops
+        else {
+            name: col
+            for name, col in actual_table.columns.items()
+            if name not in declared
+        }
+    )
+    unique_undeclared = {
+        index.columns[0]
+        for name, index in actual_table.indexes.items()
+        if index.unique
+        and len(index.columns) == 1
+        and name.startswith("sqlite_autoindex")
+    }
+    extras = [
+        _introspected_column_sql(name, col, unique=name in unique_undeclared)
+        for name, col in undeclared.items()
+    ]
+    steps = [build_create_table_sql(compiler, temp, model.tableColumns, extras=extras)]
 
     select_parts: List[str] = []
     insert_columns: List[str] = []
@@ -754,6 +793,9 @@ def _sqlite_rebuild_steps(
             select_parts.append(compiler.format_value(coldef.default))
         else:
             select_parts.append("NULL")
+    for name in undeclared:
+        insert_columns.append(name)
+        select_parts.append(name)
 
     steps.append(
         f"INSERT INTO {temp} ({', '.join(insert_columns)}) "
@@ -762,7 +804,59 @@ def _sqlite_rebuild_steps(
     steps.append(f"DROP TABLE {table}")
     steps.append(compiler.compile_rename_table(temp, table))
     steps.extend(model.create_indexes_sql())
+    steps.extend(
+        _undeclared_index_sql(
+            compiler, table, model, actual_table, declared, undeclared
+        )
+    )
     return steps
+
+
+def _introspected_column_sql(
+    name: str, col: IntrospectedColumn, unique: bool = False
+) -> str:
+    """Renders an introspected column back into a CREATE TABLE part."""
+    parts = [name]
+    if col.raw_type:
+        parts.append(col.raw_type)
+    if not col.nullable:
+        parts.append("NOT NULL")
+    if unique:
+        parts.append("UNIQUE")
+    if col.default is not None:
+        parts.append(f"DEFAULT {col.default}")
+    return " ".join(parts)
+
+
+def _undeclared_index_sql(
+    compiler: "Compiler",
+    table: str,
+    model: Type["Model"],
+    actual_table: IntrospectedTable,
+    declared_columns: Set[str],
+    undeclared_columns: Dict[str, IntrospectedColumn],
+) -> List[str]:
+    """
+    CREATE INDEX statements for the table's indexes that the model does not
+    declare, so a rebuild does not quietly discard them. SQLite's automatic
+    indexes are skipped: the column constraints that made them recreate
+    them. An index on a column the rebuild dropped is skipped too.
+    """
+    declared_indexes = {i.name.lower() for i in model.indexes or []}
+    surviving = declared_columns | set(undeclared_columns)
+    statements: List[str] = []
+    for name, index in actual_table.indexes.items():
+        if name in declared_indexes or name.startswith("sqlite_autoindex"):
+            continue
+        if not all(column in surviving for column in index.columns):
+            continue
+        table_sql = compiler.quote_fully_qualified_identifier(table)
+        statements.append(
+            compiler.compile_create_index(
+                name, table_sql, list(index.columns), index.unique
+            )
+        )
+    return statements
 
 
 def autogenerate(
@@ -954,7 +1048,9 @@ def autogenerate(
 
     # Table rebuilds for SQLite consume every remaining change on the table.
     for table_key, model in rebuild_tables.items():
-        up_steps.extend(_sqlite_rebuild_steps(compiler, model, actual[table_key]))
+        up_steps.extend(
+            _sqlite_rebuild_steps(compiler, model, actual[table_key], allow_drops)
+        )
         reversible = False
 
     # Index changes.

@@ -84,7 +84,10 @@ The MSSQL messages name the alternative: `OUTPUT` for RETURNING,
 
 The default dialect cannot alter a column, so migration generation rebuilds
 the table instead: create new, copy rows, replace. A rebuild is not
-reversible, so a migration containing one has no down step.
+reversible, so a migration containing one has no down step. Columns and
+indexes the models do not declare are carried across the rebuild unless
+`allow_drops=True`. An index on an expression cannot be introspected, so a
+rebuild loses it; recreate it by hand.
 
 ## Migration behaviour
 

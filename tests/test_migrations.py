@@ -945,6 +945,77 @@ class TestRehearsalProofs(MigrationTestCase):
         results = migrator.rehearse()
         self.assertIsNone(results[0].reversed)
 
+    def test_one_migration_without_a_down_step_spares_the_others(self):
+        migrator = Migrator(
+            self.conn,
+            [
+                Migration("001_k", up="CREATE TABLE rp_k (id INTEGER)"),
+                Migration(
+                    "002_t",
+                    up="CREATE TABLE rp_t (id INTEGER)",
+                    down="DROP TABLE rp_t",
+                ),
+            ],
+        )
+        results = migrator.rehearse()
+        self.assertTrue(results[1].down_ok)
+        self.assertIsNone(results[1].reversed)
+        self.assertTrue(results.ok)
+
+    def test_a_repeatable_still_allows_the_reversed_comparison(self):
+        migrator = Migrator(
+            self.conn,
+            [
+                Migration(
+                    "001_t",
+                    up="CREATE TABLE rp_t (id INTEGER)",
+                    down="DROP TABLE rp_t",
+                ),
+                Migration(
+                    "vw_rp",
+                    up="CREATE VIEW vw_rp AS SELECT 1 AS one",
+                    repeatable=True,
+                ),
+            ],
+        )
+        results = migrator.rehearse()
+        self.assertTrue(results.ok)
+        self.assertEqual(results[0].reversed, [])
+
+    def test_a_rename_hint_survives_the_landed_check(self):
+        self.conn.execute("CREATE TABLE rp_users (id INTEGER, mail VARCHAR(120))")
+        migrator = Migrator(self.conn, [])
+        results = migrator.rehearse(
+            models=self.models(), renames={"rp_users.mail": "email"}
+        )
+        self.assertEqual(results[0].landed, [])
+        self.assertTrue(results.ok)
+
+    def test_a_table_rename_hint_survives_the_landed_check(self):
+        self.conn.execute("CREATE TABLE rp_people (id INTEGER, email VARCHAR(120))")
+        migrator = Migrator(self.conn, [])
+        results = migrator.rehearse(
+            models=self.models(), table_renames={"rp_people": "rp_users"}
+        )
+        self.assertEqual(results[0].landed, [])
+        self.assertTrue(results.ok)
+
+    def test_repeatables_rehearse_after_the_generated_migration(self):
+        migrator = Migrator(
+            self.conn,
+            [
+                Migration(
+                    "vw_rp",
+                    up="CREATE VIEW vw_rp AS SELECT id FROM rp_users",
+                    repeatable=True,
+                )
+            ],
+        )
+        results = migrator.rehearse(models=self.models())
+        self.assertTrue(results[0].id.startswith("auto_"))
+        self.assertEqual(results[1].id, "vw_rp")
+        self.assertTrue(results.ok)
+
     def test_models_rehearse_as_a_migration_of_their_own(self):
         migrator = Migrator(self.conn, [])
         results = migrator.rehearse(models=self.models())
@@ -971,14 +1042,14 @@ class TestRehearsalProofs(MigrationTestCase):
         self.assertTrue(results[1].id.startswith("auto_"))
         self.assertIsNone(results[0].landed)
 
-    def test_a_change_the_diff_skipped_is_reported_as_not_landed(self):
+    def test_a_change_the_diff_skipped_is_not_reported_as_not_landed(self):
         self.conn.execute("CREATE TABLE rp_users (id INTEGER, email BOOLEAN)")
         migrator = Migrator(self.conn, [])
         results = migrator.rehearse(
             models=self.models(bio=String(20)), ignore_changed_columns=True
         )
-        self.assertEqual(len(results[0].landed), 1)
-        self.assertIn("column 'rp_users.email'", results[0].landed[0])
+        self.assertEqual(results[0].landed, [])
+        self.assertTrue(results.ok)
 
     def test_models_that_match_the_database_rehearse_nothing(self):
         migrator = Migrator(self.conn, [])
