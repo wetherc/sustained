@@ -1,5 +1,29 @@
 # Changelog
 
+## 2.18.0 (2026-08-16)
+
+### Added
+
+- `Dialects.MYSQL` compiles for MySQL and MariaDB. Identifiers quote with backticks, placeholders are `%s` to match PyMySQL and mysqlclient, upserts render `ON DUPLICATE KEY UPDATE`, `autoincrement` renders `AUTO_INCREMENT`, column changes go through `MODIFY COLUMN`, and migration runs hold a `GET_LOCK` advisory lock. `for_update()` works, with `SKIP LOCKED` and `NOWAIT` on MySQL 8.0.
+- Column types render in the spelling `information_schema` reports back, so a column never drifts against the DDL that created it: `INT`, `TINYINT(1)` for `Boolean`, `DOUBLE` for `Float`, `DECIMAL` for `Numeric`, and `DATETIME` for `Timestamp`. `DATETIME` rather than `TIMESTAMP`, whose four bytes stop in 2038 and which converts time zones on the way in and out.
+- MySQL introspection reads `column_type` rather than `data_type`, so a column arrives as `varchar(120)` and compares against the compiler's own spelling. It scopes every query to `DATABASE()`, since a MySQL schema is a database, and matches schemas as well as names in the constraint join, since a MySQL constraint name is only unique within its schema.
+- MariaDB stores a `Json()` column as `longtext` with a `json_valid` CHECK constraint and reports the storage type. The read looks those constraints up and restores the JSON type, so the column does not report as drift no migration can close. MariaDB before 10.2.22 has no `check_constraints` view, and there the column does report as drift.
+- `Compiler.supports_transactional_ddl()` reports whether a schema change taken back by a rollback really goes away. It defaults to `supports_transactions()`, so no other dialect changes. MySQL is the first engine where the two answers differ: its transactions work for rows, but every DDL statement commits as it runs.
+- `Compiler.inline_references()` reports whether a `REFERENCES` clause beside a column definition creates a foreign key, with `compile_add_foreign_key()` and `compile_drop_foreign_key()` for the dialects that say no.
+
+### Changed
+
+- Schema reading moved from `sustained.autogenerate` to `sustained.introspect`: the `Introspected*` records, the type and default normalization, the schema plans, `introspect_schema`, `async_introspect_schema`, and `diff_snapshots`. Every name is re-exported from `sustained.autogenerate`, so existing imports keep working. The type-parameter helper is now public as `type_params`.
+- Default normalization drops an empty argument list, so MariaDB's `current_timestamp()` and MySQL's `CURRENT_TIMESTAMP` compare equal. Type normalization gained `TINYTEXT`, `MEDIUMTEXT`, and `LONGTEXT`. `TINYINT` is deliberately absent: `TINYINT(1)` is how MySQL spells a boolean, and folding plain `TINYINT` into `INTEGER` would make a boolean and an integer the same column to a diff.
+
+### Refused
+
+- `rehearse()` refuses MySQL against the real database, because its rollback would take nothing back and the run would report a database unchanged that had changed. Pass `scratch=True` on a throwaway connection, or define `get_rehearsal_connection()` for the CLI. A migration that fails halfway leaves the statements before it applied and records a failure row, so recovery is `repair()`.
+- `returning()` raises on MySQL, including against MariaDB, which supports it. One builder emitting SQL that only one of the two servers accepts is worse than neither. Use a second query, or `LAST_INSERT_ID()` through raw SQL.
+- `STRING_AGG` raises rather than translating to `GROUP_CONCAT`, whose separator is a keyword and not a second argument.
+- A whole `Text()` or `Json()` column takes neither a unique key, which MySQL wants a prefix length for, nor a literal `DEFAULT`, which it refuses.
+- An unsigned integer column has no `tableColumns` declaration that produces it, so one already in the database reports as drift that no migration closes.
+
 ## 2.17.0 (2026-08-16)
 
 ### Added
