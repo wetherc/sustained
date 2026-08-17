@@ -134,5 +134,40 @@ class TestDriverTypes(unittest.TestCase):
         self.assertNotIn("error:", run_mypy(DRIVERS))
 
 
+VALUES = """
+import datetime
+from decimal import Decimal
+
+from sustained import Model
+
+class Show(Model):
+    tableName = "shows"
+
+cutoff = datetime.datetime(2026, 1, 1)
+Show.query().delete().where("starts_at", "<", cutoff).run()
+Show.query().where("night", "=", datetime.date(2026, 1, 1)).run()
+Show.query().where("price", ">=", Decimal("12.50")).run()
+Show.query().where("poster", "=", b"\\x89PNG").run()
+Show.query().whereIn("night", [datetime.date(2026, 1, 1)]).run()
+Show.query().whereBetween("starts_at", cutoff, cutoff).run()
+"""
+
+
+@unittest.skipUnless(
+    importlib.util.find_spec("mypy") is not None, "mypy is not installed"
+)
+class TestFilterValueTypes(unittest.TestCase):
+    """
+    Timestamps, dates, decimals, and binary data are ordinary column types,
+    so comparing a column against one of them is not a type error.
+    """
+
+    def test_temporal_and_binary_values_are_accepted(self):
+        import os
+
+        os.environ["MYPYPATH"] = SRC
+        self.assertNotIn("error:", run_mypy(VALUES))
+
+
 if __name__ == "__main__":
     unittest.main()

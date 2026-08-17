@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import datetime
+from decimal import Decimal
 from enum import Enum
 from typing import (
     TYPE_CHECKING,
@@ -117,7 +119,17 @@ if TYPE_CHECKING:
     """
 
 
-DbReturnValue = Union[str, int, float, bool]
+DbReturnValue = Union[
+    str, int, float, bool, datetime.datetime, datetime.date, Decimal, bytes
+]
+"""
+A literal value in a filter or a write: the Python types a driver binds as
+a parameter without help. Timestamps, dates, decimals, and binary data are
+in the set, because a column of that type is compared against a value of
+that type. `None` is not: the clause methods that accept it say so with
+`Optional`, so that a checker can hold apart `= NULL` from `IS NULL`.
+"""
+
 Selectable = Union[
     str,
     "AggregateExpression",

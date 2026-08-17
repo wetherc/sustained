@@ -7,7 +7,7 @@ import sqlite3
 import unittest
 
 from sustained import Model
-from sustained.execution import in_transaction, set_statement_listener
+from sustained.execution import in_transaction, set_statement_listener, transaction
 
 
 class TxUser(Model):
@@ -73,6 +73,69 @@ class TestTransactions(TransactionTestCase):
         total = other.execute("SELECT COUNT(*) FROM users").fetchone()[0]
         self.assertEqual(total, 1)
         other.close()
+
+
+class RefusingCursor:
+    """A cursor that refuses the statements its connection was told to fail."""
+
+    def __init__(self, connection):
+        self._connection = connection
+
+    def execute(self, sql, parameters=()):
+        self._connection.statements.append(sql)
+        if self._connection.refuse is not None and sql.startswith(
+            self._connection.refuse
+        ):
+            raise sqlite3.OperationalError(f"refused: {sql}")
+        return None
+
+
+class RefusingConnection:
+    """
+    A connection that records every statement and can be told to refuse the
+    ones starting with a given prefix.
+    """
+
+    def __init__(self):
+        self.statements = []
+        self.refuse = None
+
+    def cursor(self):
+        return RefusingCursor(self)
+
+    def commit(self):
+        pass
+
+    def rollback(self):
+        pass
+
+    def close(self):
+        pass
+
+
+class TestSavepointDepth(TransactionTestCase):
+    def test_failed_savepoint_leaves_the_depth_where_it_was(self):
+        """
+        A SAVEPOINT that raises must still give the depth back, so the next
+        nested block reuses the same savepoint name instead of skipping one.
+        """
+        conn = RefusingConnection()
+        with transaction(conn):
+            conn.refuse = "SAVEPOINT"
+            with self.assertRaises(sqlite3.OperationalError):
+                with transaction(conn):
+                    pass
+            conn.refuse = None
+            with transaction(conn):
+                pass
+        self.assertEqual(
+            conn.statements,
+            [
+                "SAVEPOINT sustained_sp_1",
+                "SAVEPOINT sustained_sp_1",
+                "RELEASE SAVEPOINT sustained_sp_1",
+            ],
+        )
 
 
 class TestStatementListener(TransactionTestCase):

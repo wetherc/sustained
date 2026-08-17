@@ -61,6 +61,43 @@ def stub_methods(relative_path, class_name):
     return names
 
 
+def runtime_definitions(relative_path):
+    """
+    The public surface a runtime module declares: top level functions and
+    classes, plus the methods of every public class. Names that start with
+    an underscore are private and are left out.
+    """
+    tree = ast.parse((SRC / relative_path).read_text())
+    top, methods = set(), {}
+    for node in tree.body:
+        if not isinstance(
+            node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+        ) or node.name.startswith("_"):
+            continue
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            top.add(node.name)
+        else:
+            top.add(node.name)
+            methods[node.name] = {
+                item.name
+                for item in node.body
+                if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and not item.name.startswith("_")
+            }
+    return top, methods
+
+
+def stub_definitions(relative_path):
+    """Every public top level name a stub file declares."""
+    tree = ast.parse((SRC / relative_path).read_text())
+    return {
+        node.name
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+        and not node.name.startswith("_")
+    }
+
+
 def resolves(obj, name):
     """
     Whether an attribute name reaches a callable. A clause method that
@@ -148,6 +185,32 @@ class TestRuntimeSurfaceIsStubbed(unittest.TestCase):
                 sorted(expected - stub_methods(path, class_name)),
                 [],
                 f"{path} is missing join methods the runtime accepts",
+            )
+
+    def test_every_public_builder_name_is_stubbed(self):
+        """
+        builder.pyi hides builder.py from a type checker, so a public name
+        that the stub leaves out is a name no checker can see. The runtime
+        has one builder class; the stub splits it into a read view and a
+        write view, so a method counts as stubbed when either view, or a
+        base of either, declares it.
+        """
+        top, methods = runtime_definitions("builder.py")
+        stubbed = stub_definitions("builder.pyi")
+        self.assertEqual(
+            sorted(top - stubbed),
+            [],
+            "builder.pyi is missing top level names builder.py declares",
+        )
+
+        views = stub_methods("builder.pyi", "QueryBuilder") | stub_methods(
+            "builder.pyi", "WriteBuilder"
+        )
+        for class_name, names in methods.items():
+            self.assertEqual(
+                sorted(names - views),
+                [],
+                f"builder.pyi is missing {class_name} methods builder.py declares",
             )
 
     def test_every_clause_method_is_stubbed(self):

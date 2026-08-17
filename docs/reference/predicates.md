@@ -167,7 +167,7 @@ accepts.
 
 | Alias | Definition |
 | --- | --- |
-| `DbReturnValue` | `str \| int \| float \| bool` |
+| `DbReturnValue` | `str \| int \| float \| bool \| datetime \| date \| Decimal \| bytes` |
 | `Selectable` | Anything `select()` takes |
 | `CaseResult` | `DbReturnValue \| Column` |
 | `QueryResolvable` | `QueryBuilder \| Callable[..., QueryBuilder] \| str` |

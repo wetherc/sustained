@@ -173,13 +173,14 @@ def transaction(connection: Binding) -> Iterator[Connection]:
         depth = entry[1] + 1
         _ACTIVE_TRANSACTIONS[key] = (connection, depth)
         savepoint = f"sustained_sp_{depth}"
-        connection.cursor().execute(f"SAVEPOINT {savepoint}")
         try:
-            yield connection
+            connection.cursor().execute(f"SAVEPOINT {savepoint}")
+            try:
+                yield connection
+            except BaseException:
+                connection.cursor().execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+                raise
             connection.cursor().execute(f"RELEASE SAVEPOINT {savepoint}")
-        except BaseException:
-            connection.cursor().execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
-            raise
         finally:
             _ACTIVE_TRANSACTIONS[key] = (connection, depth - 1)
         return
