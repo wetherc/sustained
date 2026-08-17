@@ -436,9 +436,9 @@ def _receipt_message(
 # Dialects whose schema changes roll back, so a rehearsal can undo itself.
 # The others need a scratch database; see Migrator.rehearse(). DEFAULT is
 # on the list for SQLite, the engine the generic compiler usually serves;
-# a config that leaves the dialect unset while pointing at an engine
-# without transactional DDL, such as MySQL, should declare its dialect or
-# rehearse against a scratch database.
+# a config that leaves the dialect unset while pointing at MySQL, whose
+# DDL commits as it runs, should declare Dialects.MYSQL so the refusal
+# arrives before the run instead of after it.
 _REHEARSABLE = frozenset({Dialects.DEFAULT, Dialects.POSTGRES, Dialects.DUCKDB})
 
 
