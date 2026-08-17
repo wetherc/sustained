@@ -117,6 +117,8 @@ Column types render in the spelling `information_schema` reports back, so a colu
 
 RETURNING raises `DialectError`, including on MariaDB, which has it: a builder that emitted it for one server would produce SQL the other rejects. Read the row back with a second query, or reach for `LAST_INSERT_ID()` through raw SQL. `STRING_AGG` raises too, rather than translating to `GROUP_CONCAT`, whose separator is a keyword and not a second argument. A whole `Text()` or `Json()` column takes neither a unique key nor a literal `DEFAULT`; MySQL wants a prefix length for the first and refuses the second.
 
+A `references` declaration becomes a table-level `FOREIGN KEY` in `CREATE TABLE`, and a named `ADD CONSTRAINT` statement when the column is added to a table that already exists. InnoDB parses a `REFERENCES` clause written beside a column and creates nothing, so writing one there would look like a foreign key and behave like a comment.
+
 An unsigned integer column has no `tableColumns` declaration that produces it, so one already in your database reports as drift that no migration closes. Leave it out of the model, or move the column to a signed type.
 
 ### Schema changes commit as they run

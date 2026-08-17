@@ -195,12 +195,17 @@ def render_column_sql(
         parts.append("UNIQUE")
     if col.default is not None:
         parts.append(f"DEFAULT {compiler.format_value(col.default)}")
-    if col.references is not None:
-        ref_table, ref_column = col.references.rsplit(".", 1)
-        quoted_table = compiler.quote_fully_qualified_identifier(ref_table)
-        quoted_column = compiler.quote_identifier(ref_column)
-        parts.append(f"REFERENCES {quoted_table} ({quoted_column})")
+    if col.references is not None and compiler.inline_references():
+        parts.append(f"REFERENCES {reference_target_sql(compiler, col.references)}")
     return " ".join(parts)
+
+
+def reference_target_sql(compiler: "Compiler", references: str) -> str:
+    """Renders the table and column half of a REFERENCES clause."""
+    ref_table, ref_column = references.rsplit(".", 1)
+    quoted_table = compiler.quote_fully_qualified_identifier(ref_table)
+    quoted_column = compiler.quote_identifier(ref_column)
+    return f"{quoted_table} ({quoted_column})"
 
 
 def build_create_table_sql(
@@ -236,6 +241,15 @@ def build_create_table_sql(
     if len(primary_keys) > 1:
         pk_sql = ", ".join(compiler.quote_identifier(c) for c in primary_keys)
         table_constraints.append(f"PRIMARY KEY ({pk_sql})")
+
+    if not compiler.inline_references():
+        for name, col in columns.items():
+            if col.references is None:
+                continue
+            table_constraints.append(
+                f"FOREIGN KEY ({compiler.quote_identifier(name)}) REFERENCES "
+                f"{reference_target_sql(compiler, col.references)}"
+            )
 
     body = ", ".join(column_parts + list(extras or []) + table_constraints)
     exists_sql = "IF NOT EXISTS " if if_not_exists else ""

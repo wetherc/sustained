@@ -276,6 +276,84 @@ class TestMysqlDrift(unittest.TestCase):
         )
         self.assertEqual(migration.down, ["DROP TABLE IF EXISTS `users`"])
 
+    def test_a_reference_becomes_a_table_constraint(self):
+        # InnoDB parses a column-level REFERENCES clause and creates
+        # nothing, so the foreign key has to be a table constraint.
+        model = make_model(
+            "MysqlShow",
+            "shows",
+            {
+                "id": Integer(primary_key=True, autoincrement=True),
+                "venue_id": Integer(references="venues.id"),
+            },
+        )
+        migration = autogenerate(
+            FakeConnection(FakeCursor()), [model], id="create", dialect=Dialects.MYSQL
+        )
+        self.assertEqual(
+            migration.up,
+            [
+                "CREATE TABLE `shows` ("
+                "`id` INT AUTO_INCREMENT PRIMARY KEY, "
+                "`venue_id` INT, "
+                "FOREIGN KEY (`venue_id`) REFERENCES `venues` (`id`))"
+            ],
+        )
+
+    def test_an_added_reference_becomes_its_own_statement(self):
+        cursor = FakeCursor(columns=[("shows", "id", "int", "NO", None)])
+        model = make_model(
+            "MysqlShowAdd",
+            "shows",
+            {
+                "id": Integer(primary_key=True),
+                "venue_id": Integer(references="venues.id"),
+            },
+        )
+        migration = autogenerate(
+            FakeConnection(cursor), [model], id="add_fk", dialect=Dialects.MYSQL
+        )
+        self.assertEqual(
+            migration.up,
+            [
+                "ALTER TABLE `shows` ADD COLUMN `venue_id` INT",
+                "ALTER TABLE `shows` ADD CONSTRAINT `fk_shows_venue_id` "
+                "FOREIGN KEY (`venue_id`) REFERENCES `venues` (`id`)",
+            ],
+        )
+        # The key goes before the column, or MySQL refuses the drop.
+        self.assertEqual(
+            migration.down,
+            [
+                "ALTER TABLE `shows` DROP FOREIGN KEY `fk_shows_venue_id`",
+                "ALTER TABLE `shows` DROP COLUMN `venue_id`",
+            ],
+        )
+
+    def test_a_backfilled_reference_adds_the_key_after_tightening(self):
+        cursor = FakeCursor(columns=[("shows", "id", "int", "NO", None)])
+        model = make_model(
+            "MysqlShowFill",
+            "shows",
+            {
+                "id": Integer(primary_key=True),
+                "venue_id": Integer(references="venues.id", nullable=False, backfill=1),
+            },
+        )
+        migration = autogenerate(
+            FakeConnection(cursor), [model], id="fill_fk", dialect=Dialects.MYSQL
+        )
+        self.assertEqual(
+            migration.up,
+            [
+                "ALTER TABLE `shows` ADD COLUMN `venue_id` INT",
+                "UPDATE `shows` SET `venue_id` = 1 WHERE `venue_id` IS NULL",
+                "ALTER TABLE `shows` MODIFY COLUMN `venue_id` INT NOT NULL",
+                "ALTER TABLE `shows` ADD CONSTRAINT `fk_shows_venue_id` "
+                "FOREIGN KEY (`venue_id`) REFERENCES `venues` (`id`)",
+            ],
+        )
+
     def test_a_type_change_generates_modify_column(self):
         cursor = self.catalog()
         cursor.columns[0] = ("users", "id", "bigint", "NO", None)

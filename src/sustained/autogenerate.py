@@ -684,10 +684,14 @@ def autogenerate(
                 )
             )
             down_steps.insert(0, compiler.compile_drop_column(table_sql, name))
+            _add_foreign_key(
+                compiler, up_steps, down_steps, table_sql, model, name, coldef
+            )
             continue
         column_sql = render_column_sql(compiler, name, coldef, inline_pk=False)
         up_steps.append(compiler.compile_add_column(table_sql, column_sql))
         down_steps.insert(0, compiler.compile_drop_column(table_sql, name))
+        _add_foreign_key(compiler, up_steps, down_steps, table_sql, model, name, coldef)
 
     # Table rebuilds for SQLite consume every remaining change on the table.
     for table_key, model in rebuild_tables.items():
@@ -747,6 +751,36 @@ def autogenerate(
     return Migration(
         id=id, up=up_steps, down=down_steps if reversible and down_steps else None
     )
+
+
+def _add_foreign_key(
+    compiler: "Compiler",
+    up_steps: List[str],
+    down_steps: List[str],
+    table_sql: str,
+    model: Type["Model"],
+    name: str,
+    coldef: "ColumnDef",
+) -> None:
+    """
+    Adds the foreign key of a newly added column as its own statement, on
+    a dialect where a REFERENCES clause beside the column creates nothing.
+    The constraint takes a name, so the down step can name it back.
+    """
+    if coldef.references is None or compiler.inline_references():
+        return
+    ref_table, ref_column = coldef.references.rsplit(".", 1)
+    constraint = f"fk_{model.tableName}_{name}"
+    up_steps.append(
+        compiler.compile_add_foreign_key(
+            table_sql,
+            constraint,
+            name,
+            compiler.quote_fully_qualified_identifier(ref_table),
+            ref_column,
+        )
+    )
+    down_steps.insert(0, compiler.compile_drop_foreign_key(table_sql, constraint))
 
 
 def _relaxed_copy(coldef: "ColumnDef") -> "ColumnDef":

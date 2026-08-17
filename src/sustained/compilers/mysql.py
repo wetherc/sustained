@@ -150,6 +150,19 @@ class MysqlCompiler(Compiler):
         # both.
         return f"DROP INDEX {self.quote_identifier(index_name)} ON {table_sql}"
 
+    def inline_references(self) -> bool:
+        # InnoDB parses a column-level REFERENCES clause and creates
+        # nothing. Only a table constraint makes a real foreign key.
+        return False
+
+    def compile_drop_foreign_key(self, table_sql: str, constraint: str) -> str:
+        # MySQL spells this DROP FOREIGN KEY; DROP CONSTRAINT arrived in
+        # 8.0.19 and MariaDB 10.2, and does not reach back further.
+        return (
+            f"ALTER TABLE {table_sql} DROP FOREIGN KEY "
+            f"{self.quote_identifier(constraint)}"
+        )
+
     def supports_alter_column(self) -> bool:
         return True
 

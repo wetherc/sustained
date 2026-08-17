@@ -243,6 +243,41 @@ class Compiler:
         new_sql = self.quote_identifier(new_name)
         return f"ALTER TABLE {table_sql} RENAME COLUMN {old_sql} TO {new_sql}"
 
+    def inline_references(self) -> bool:
+        """
+        Reports whether a REFERENCES clause written beside a column
+        definition creates a foreign key. MySQL parses one and creates
+        nothing, so it says no and takes its foreign keys as table
+        constraints instead.
+        """
+        return True
+
+    def compile_add_foreign_key(
+        self,
+        table_sql: str,
+        constraint: str,
+        column: str,
+        ref_table_sql: str,
+        ref_column: str,
+    ) -> str:
+        """
+        Renders a named foreign key added to an existing table, for the
+        dialects that cannot declare one beside the column.
+        """
+        return (
+            f"ALTER TABLE {table_sql} ADD CONSTRAINT "
+            f"{self.quote_identifier(constraint)} FOREIGN KEY "
+            f"({self.quote_identifier(column)}) REFERENCES {ref_table_sql} "
+            f"({self.quote_identifier(ref_column)})"
+        )
+
+    def compile_drop_foreign_key(self, table_sql: str, constraint: str) -> str:
+        """Renders the statement that takes back an added foreign key."""
+        return (
+            f"ALTER TABLE {table_sql} DROP CONSTRAINT "
+            f"{self.quote_identifier(constraint)}"
+        )
+
     def compile_rename_table(self, old_sql: str, new_sql: str) -> str:
         """Renders a table rename."""
         return f"ALTER TABLE {old_sql} RENAME TO {new_sql}"

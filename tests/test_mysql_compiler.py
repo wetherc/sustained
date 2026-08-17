@@ -237,6 +237,46 @@ class TestSchemaStatements(unittest.TestCase):
         self.assertEqual(compiler().compile_with_keyword(True), "WITH RECURSIVE")
 
 
+class TestForeignKeys(unittest.TestCase):
+    def test_references_are_not_written_beside_the_column(self):
+        self.assertFalse(compiler().inline_references())
+
+    def test_other_dialects_still_write_them_beside_the_column(self):
+        for dialect in Dialects:
+            if dialect is Dialects.MYSQL:
+                continue
+            with self.subTest(dialect=dialect.name):
+                self.assertTrue(Dialects.get_compiler(dialect).inline_references())
+
+    def test_create_table_carries_the_key_as_a_constraint(self):
+        sql = build_create_table_sql(
+            compiler(),
+            "`shows`",
+            {
+                "id": Integer(primary_key=True),
+                "venue_id": Integer(references="venues.id"),
+            },
+        )
+        self.assertEqual(
+            sql,
+            "CREATE TABLE `shows` (`id` INT PRIMARY KEY, `venue_id` INT, "
+            "FOREIGN KEY (`venue_id`) REFERENCES `venues` (`id`))",
+        )
+
+    def test_a_named_key_added_and_dropped(self):
+        self.assertEqual(
+            compiler().compile_add_foreign_key(
+                "`shows`", "fk_shows_venue_id", "venue_id", "`venues`", "id"
+            ),
+            "ALTER TABLE `shows` ADD CONSTRAINT `fk_shows_venue_id` "
+            "FOREIGN KEY (`venue_id`) REFERENCES `venues` (`id`)",
+        )
+        self.assertEqual(
+            compiler().compile_drop_foreign_key("`shows`", "fk_shows_venue_id"),
+            "ALTER TABLE `shows` DROP FOREIGN KEY `fk_shows_venue_id`",
+        )
+
+
 class TestLockingAndTransactions(unittest.TestCase):
     def test_row_locking(self):
         self.assertEqual(compiler().compile_locking(False, False), "FOR UPDATE")
