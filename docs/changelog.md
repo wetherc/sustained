@@ -10,6 +10,30 @@ Version numbers follow semantic versioning. A major version marks a change
 that can break working code. A minor version adds behaviour. A patch version
 fixes a defect without changing the surface.
 
+## 2.17.0 (2026-08-16)
+
+### Added
+
+- The tracking table has a `steps` column holding the up and down statements of a migration generated from the models, as JSON. `down()` reads it, so a process that never ran the diff can still revert what the diff applied. Registered migrations store nothing there. Tables written by earlier versions add the column on first use.
+- `up(unrehearsed=True)` records what it waived: a receipt row under the run's key with the outcome `override`. The row never opens the gate for a later run. `record_rehearsal()` accepts `'override'` alongside `'passed'` and `'failed'`.
+- `migrate` exits 4 when a run that removes data has no passing rehearsal, which a pipeline can tell apart from a failure. The message carries `--target` through when the run had one.
+- `Migrator.drift()` and `SchemaDiff.outstanding()` take `ignore_changed_columns`, matching the option that generated the migration.
+- A block or a missing receipt on the migration generated from the models names the registered migrations that already applied, on the exception's `applied` attribute. The CLI prints those ids before the error.
+
+### Fixed
+
+- A SQLite table rebuild dropped columns the models do not declare, along with their data and indexes. Undeclared columns now cross the rebuild with their type, nullability, uniqueness, and default, and hand-made indexes are recreated. `allow_drops=True` still drops them. An index on an expression cannot be introspected, so a rebuild loses it.
+- An index on an expression crashed introspection, because SQLite reports a null column name for one. Those indexes are left out of the schema instead.
+- `up(models=[...])` disabled the out-of-order validation check for hand-written migrations. The check runs again.
+- A rehearsal with models and rename hints raised while checking whether the models landed: the renames had already run, so the second diff asked to rename objects that were gone. The check now runs without the hints, and honours `ignore_changed_columns`.
+- A rehearsal reported "not reversed" and recorded a failed receipt when any migration in the run had no down step, blaming its leftovers on the steps that did reverse. The comparison now runs only when every versioned migration in the run reversed.
+- A rehearsal applied the generated migration after the repeatables, while `migrate` applies it before them.
+- A scratch rehearsal recorded no receipts for the shorter target sets, so `migrate --target` was refused for statements the scratch run had proved.
+- The plan footer said `run: sustained rehearse` even after a rehearsal had recorded its receipt, and computed guard verdicts over the drops `migrate` never generates.
+- `no_lock_without_timeout()` fired on every dialect, and its pattern matched any statement holding the words, such as an update of a column named `lock_timeout`. It is now Postgres only and anchored to a `SET` statement.
+- Filter and write values accept `datetime`, `date`, `Decimal`, and `bytes`. Comparing a timestamp column against a datetime was an error under a strict checker.
+- A sync savepoint that failed to open left the nesting depth one too high, so the next nested block reused a savepoint name.
+
 ## 2.16.1 (2026-08-16)
 
 ### Added
