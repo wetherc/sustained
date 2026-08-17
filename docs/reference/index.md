@@ -18,7 +18,7 @@ If you are looking for how to do something rather than what a method takes,
 | [Migrations](/reference/migrations) | `Migration`, `Migrator`, `AsyncMigrator`, autogeneration, guards, SQL files, analysis |
 | [Execution and pooling](/reference/execution) | Transactions, `ConnectionPool`, async adapters, the statement listener |
 | [Command line](/reference/cli) | Every subcommand, flag, exit code, and config-module attribute |
-| [Dialect support](/reference/dialects) | What each of the six dialects supports, and what it refuses |
+| [Dialect support](/reference/dialects) | What each of the seven dialects supports, and what it refuses |
 | [Errors](/reference/errors) | Every exception and the condition that raises it |
 
 ## What imports from where

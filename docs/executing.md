@@ -35,7 +35,7 @@ rather than at build time:
 | Dialect | Placeholder | Driver |
 | --- | --- | --- |
 | `DEFAULT`, `MSSQL`, `PRESTO`, `DUCKDB` | `?` | `sqlite3`, `pyodbc`, `trino`, `duckdb` |
-| `POSTGRES`, `ATHENA` | `%s` | `psycopg`, `pyathena` |
+| `POSTGRES`, `ATHENA`, `MYSQL` | `%s` | `psycopg`, `pyathena`, `PyMySQL` |
 
 [SQL Dialects](./dialects) pairs each dialect with its driver and shows a
 connection for each.

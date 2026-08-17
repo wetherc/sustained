@@ -83,7 +83,7 @@ On engines without transactions, a failing step writes a row with the success fl
 
 ## Concurrency
 
-While a run is in progress, the migrator holds an exclusive advisory lock named after the tracking table, so two application instances deploying at once queue instead of racing each other's DDL. Postgres uses `pg_advisory_lock`, MSSQL uses `sp_getapplock`; both are session-scoped and release on disconnect. SQLite and DuckDB serialize writers on their own. Athena has no lock to take, so run one migrator at a time there.
+While a run is in progress, the migrator holds an exclusive advisory lock named after the tracking table, so two application instances deploying at once queue instead of racing each other's DDL. Postgres uses `pg_advisory_lock`, MSSQL uses `sp_getapplock`, and MySQL uses `GET_LOCK`; all three are session-scoped and release on disconnect. SQLite and DuckDB serialize writers on their own. Athena has no lock to take, so run one migrator at a time there.
 
 ## Adopting an Existing Database
 
@@ -123,7 +123,7 @@ print(migration.down)  # ['ALTER TABLE users DROP COLUMN bio']
 Autogeneration refuses to guess about anything that loses data or fails on populated tables:
 
 - **Drops are opt-in.** Extra tables and columns are left alone unless `allow_drops=True`, which generates the drops. A migration containing drops has no down step, because the dropped data cannot come back. `autogenerate()` called directly still raises on undeclared objects; the migrator passes `ignore_undeclared=True`, since a database that hand-written migrations also touch holds tables no model declares.
-- **Type and nullability changes migrate per dialect.** Postgres, MSSQL, and DuckDB alter in place with reversible down steps; Postgres casts take a hint through `type_casts={'table.col': 'col::integer'}`. SQLite rebuilds the table (create new, copy rows, replace), which is not reversible. Columns and indexes the models do not declare survive the rebuild unless `allow_drops=True`; an index on an expression is invisible to introspection, so a rebuild loses it and it must be recreated by hand. Pass `ignore_changed_columns=True` to skip changed columns entirely.
+- **Type and nullability changes migrate per dialect.** Postgres, MySQL, MSSQL, and DuckDB alter in place with reversible down steps; Postgres casts take a hint through `type_casts={'table.col': 'col::integer'}`. SQLite rebuilds the table (create new, copy rows, replace), which is not reversible. Columns and indexes the models do not declare survive the rebuild unless `allow_drops=True`; an index on an expression is invisible to introspection, so a rebuild loses it and it must be recreated by hand. Pass `ignore_changed_columns=True` to skip changed columns entirely.
 - **NOT NULL needs a value for existing rows.** Adding or tightening to NOT NULL requires a `default` or a `backfill` value on the ColumnDef; generation emits add-nullable, UPDATE backfill, SET NOT NULL, or folds the backfill into a SQLite rebuild. New primary key or autoincrement columns cannot be added with ALTER TABLE.
 - **Statements that remove data need a rehearsal.** `up()` refuses to run a DROP, a column drop, or a TRUNCATE until a passing rehearsal has proved that exact set of statements. `up(unrehearsed=True)` applies them anyway. See [The receipt a rehearsal leaves](#the-receipt-a-rehearsal-leaves).
 - **Your own rules run too.** Guards read every statement an up run would apply, generated or hand-written, and can block it. Down runs are not checked. See [Guards](#guards).
@@ -217,6 +217,16 @@ Reverting migrations deletes tracking rows, which requires the tracking table to
 - **Column changes use Iceberg rules.** A generated migration adds columns with `ALTER TABLE ... ADD COLUMNS` and changes types with `CHANGE COLUMN`, which Iceberg only allows for widenings such as `INT` to `BIGINT`. Renames, nullability changes, and `type_casts` hints raise; write those by hand in a `Migration`.
 
 Upserts (`onConflict().merge()`), `UPDATE`, `DELETE`, and `down()` reverts all depend on Iceberg tables. Plain Hive external tables are read-and-append only.
+
+## MySQL and MariaDB
+
+`Dialects.MYSQL` serves both. Everything above works there, with one difference that changes the workflow: MySQL has no transactional DDL. Every schema statement commits the moment it runs, whatever the surrounding transaction does.
+
+That means `migrate` does not wrap a migration in a transaction, because there is nothing a rollback would take back. A migration that fails halfway leaves the statements before it applied. The run records a failure row against that migration, so recovery is the one already described under [Validation and Repair](#validation-and-repair): read what landed, finish or undo it by hand, then `sustained repair` to clear the row. `sustained script up` prints the statements the run would have executed, in order, which is how you find where it stopped.
+
+It also means `rehearse` refuses MySQL against the real database, and asks for [a scratch one](#rehearsing-on-a-scratch-database) instead.
+
+[SQL Dialects](./dialects#mysql-and-mariadb) has the type mapping, the MariaDB divergences, and the column shapes MySQL will not accept.
 
 ## Hand-Written Migrations
 
@@ -452,7 +462,7 @@ The `reversed` check compares tables and columns. Indexes, constraints, and colu
 
 The rehearsal creates the tracking table when the database has none, because it reads the applied rows before it opens its transaction. It also creates the receipt table and writes one row there after the rollback, described below. Nothing else survives: the tracking rows the rehearsal writes roll back with everything else, and the migrations stay pending. A callable step that commits on its own is the exception, since that commit cannot be taken back.
 
-Only databases whose schema changes roll back can rehearse: SQLite, Postgres, and DuckDB. The rest are refused, and so is a connection in autocommit mode or one inside an open `transaction()` block, because none of them could take the changes back. The check reads the declared dialect. The default dialect passes it, since the generic compiler usually serves SQLite; a config that leaves the dialect unset while pointing at an engine like MySQL would rehearse for real, so declare the dialect or use a scratch database.
+Only databases whose schema changes roll back can rehearse: SQLite, Postgres, and DuckDB. The rest are refused, and so is a connection in autocommit mode or one inside an open `transaction()` block, because none of them could take the changes back. The check reads the declared dialect, so declare it. The default dialect passes, since the generic compiler usually serves SQLite; a config that leaves the dialect unset while pointing at MySQL, whose DDL commits as it runs, would rehearse for real.
 
 ### The receipt a rehearsal leaves
 

@@ -699,8 +699,8 @@ contents.
 
 Nothing to configure. During a run the migrator holds an exclusive advisory
 lock named after the tracking table, so a second deploy waits instead of
-racing. Postgres uses `pg_advisory_lock` and MSSQL uses `sp_getapplock`.
-SQLite and DuckDB serialize writers themselves. Athena has no lock to take, so
+racing. Postgres uses `pg_advisory_lock`, MSSQL uses `sp_getapplock`, and MySQL uses
+`GET_LOCK`. SQLite and DuckDB serialize writers themselves. Athena has no lock to take, so
 run one migrator at a time there.
 
 ---
@@ -719,6 +719,7 @@ execution fails at the driver.
 | `MSSQL` | `pyodbc` | `?` |
 | `PRESTO` | `trino` | `?` |
 | `ATHENA` | `pyathena` | `%s` |
+| `MYSQL` | `PyMySQL`, `mysqlclient` | `%s` |
 | `DUCKDB` | `duckdb` | `?` |
 
 ```python
