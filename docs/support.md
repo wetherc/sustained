@@ -72,6 +72,50 @@ says it is coming. Dropping a Python version never waits for a major
 release: holding the floor down would cost every other user the newer
 language features.
 
+## Run it yourself
+
+Nothing here has to be taken on trust. `matrix.py` in the repository reads
+the same `support.json` this page comes from, starts each server, and runs
+the integration suite against it:
+
+```console
+$ python3 matrix.py
+starting postgres, mysql, mariadb, mssql, presto
+ran     postgres    10 tests, queries, migrations
+ran     mysql       10 tests, queries, migrations
+ran     mariadb     10 tests, queries, migrations
+ran     mssql       10 tests, queries, migrations
+ran     presto      2 tests, queries
+ran     sqlite      10 tests, queries, migrations
+ran     duckdb      10 tests, queries, migrations
+waiting athena      SUSTAINED_TEST_ATHENA_S3_DIR is not set
+removing postgres, mysql, mariadb, mssql, presto
+
+1 of 8 still waiting
+```
+
+Containers come from `docker/compose.yaml` and are removed at the end, so
+you never type a docker command. Name a target to run one server, use
+`python` for the interpreter matrix, and `--check` to see what this machine
+can serve before anything starts:
+
+```console
+$ python3 matrix.py postgres
+$ python3 matrix.py python
+$ python3 matrix.py --check
+```
+
+A server the machine cannot serve is a `waiting` line naming the missing
+piece, usually a driver to install. A server the runner did start is not
+allowed to skip: a skipped test there is reported as a failure, since the
+whole point is that the row ran. Exit codes are 0 for a clean run, 1 for a
+failure, and 2 when nothing failed and something was still waiting.
+
+To use a server you already run, set its connection variable, for example
+`SUSTAINED_TEST_POSTGRES_DSN`, and no container is started for it. Athena
+runs in your own AWS account: point `SUSTAINED_TEST_ATHENA_S3_DIR` at a
+staging directory and name a profile with `--athena-profile`.
+
 ## Deprecation
 
 A public name is anything the documentation names: a class, a function, a

@@ -12,12 +12,14 @@ commit when the page is stale.
 """
 
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 LEVELS = ("runs", "builds")
 SERVERS = ("container", "in-process", "account", "none")
+SERVICE_LINE = re.compile(r"^ {2}[A-Za-z0-9_-]+:\s*$")
 
 DATABASES_BEGIN = "<!-- databases: generated from support.json -->"
 DATABASES_END = "<!-- end databases -->"
@@ -25,18 +27,55 @@ PYTHON_BEGIN = "<!-- python: generated from support.json -->"
 PYTHON_END = "<!-- end python -->"
 
 
+def compose_services(path: Path) -> List[str]:
+    """The service names in the compose file, read without a YAML parser."""
+    services: List[str] = []
+    inside = False
+    for line in path.read_text().splitlines():
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        if not line[0].isspace():
+            inside = line.startswith("services:")
+            continue
+        if inside and SERVICE_LINE.match(line):
+            services.append(line.strip().rstrip(":"))
+    return services
+
+
 def load(path: Path) -> Dict[str, Any]:
-    """Read support.json and check that every row is well formed."""
+    """
+    Read support.json and check that every row is well formed. A `runs` row
+    is a claim that the suite runs against that server, so the row has to
+    name a test module, and a container row has to name a compose service.
+    Without these checks the table could claim coverage that does not exist.
+    """
+    root = path.parent
     data: Dict[str, Any] = json.loads(path.read_text())
+    services = compose_services(root / "docker" / "compose.yaml")
     for row in data["databases"]:
+        name = row["name"]
         if row["level"] not in LEVELS:
-            raise ValueError(f"{row['name']}: level must be one of {LEVELS}")
+            raise ValueError(f"{name}: level must be one of {LEVELS}")
         if row["server"] not in SERVERS:
-            raise ValueError(f"{row['name']}: server must be one of {SERVERS}")
+            raise ValueError(f"{name}: server must be one of {SERVERS}")
         if row["level"] == "builds" and row["covers"]:
-            raise ValueError(f"{row['name']}: a builds row covers nothing")
-        if row["level"] == "runs" and not row["covers"]:
-            raise ValueError(f"{row['name']}: a runs row must cover something")
+            raise ValueError(f"{name}: a builds row covers nothing")
+        if row["level"] != "runs":
+            continue
+        if not row["covers"]:
+            raise ValueError(f"{name}: a runs row must cover something")
+        module = root / "tests" / "integration" / f"test_{name}.py"
+        if not module.exists():
+            raise ValueError(
+                f"{name}: a runs row needs {module.relative_to(root)}. "
+                "Add the module, or move the row down to builds."
+            )
+        if row["server"] == "container" and row.get("service") not in services:
+            raise ValueError(
+                f"{name}: no '{row.get('service')}' service in "
+                "docker/compose.yaml. Add the service, or move the row down "
+                "to builds."
+            )
     return data
 
 

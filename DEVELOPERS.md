@@ -68,6 +68,47 @@ PYTHONPATH=src python3 -m coverage run --branch --source=src/sustained -m unitte
 python3 -m coverage report
 ```
 
+## The Support Matrix
+
+`support.json` is the one list of databases Sustained claims to run against.
+Two things read it. `sync_support.py` renders the tables on the support
+documentation page, and a pre-commit hook fails when the page is stale.
+`matrix.py` starts each server and runs the integration suite against it:
+
+```bash
+python3 matrix.py            # every server this machine can serve
+python3 matrix.py postgres   # one of them
+python3 matrix.py python     # the unit suite on each interpreter on PATH
+python3 matrix.py --check    # what would run, and what is missing
+```
+
+Servers other than SQLite and DuckDB come from `docker/compose.yaml`, which
+the runner starts and removes for you. Ports are the usual port plus 50000,
+so a server you already run locally is left alone. Set a row's connection
+variable, for example `SUSTAINED_TEST_POSTGRES_DSN`, to use your own server
+instead of a container.
+
+Each driver has to match the paramstyle its dialect emits, which is why
+SQL Server uses `pyodbc` and needs the Microsoft ODBC driver installed:
+
+```bash
+pip install "psycopg[binary]" pymysql pyodbc trino duckdb pyathena
+```
+
+The tests live in `tests/integration/`. `harness.py` opens the connections
+and `lifecycle.py` holds the body that every server runs: apply the models,
+read the schema back, roll it down, rehearse, validate, repair, hold the
+advisory lock across two migrators, and round trip a query. A server module
+is a subclass naming its row and the optional behaviours that server has.
+The suite skips a server that is not there, unless `SUSTAINED_TEST_STRICT=1`
+is set, which turns those skips into failures. `matrix.py` sets it for every
+server it starts.
+
+Adding a database means adding a row to `support.json`, a service to the
+compose file, and a `tests/integration/test_<name>.py` module.
+`sync_support.py --check` refuses a `runs` row that is missing either one,
+so the table cannot claim coverage that does not exist.
+
 ## Extending the ORM
 
 ### Adding a New Dialect
