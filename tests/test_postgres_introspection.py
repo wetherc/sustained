@@ -18,10 +18,14 @@ from sustained.schema import Index, Integer, Numeric, String, Text
 class FakeCursor:
     """Serves canned Postgres catalog rows, and records the SQL asked for."""
 
-    def __init__(self, columns=(), indexes=None, foreign_keys=None):
+    def __init__(
+        self, columns=(), indexes=None, foreign_keys=None, checks=None, enums=None
+    ):
         self.columns = list(columns)
         self.indexes = indexes
         self.foreign_keys = foreign_keys
+        self.checks = checks
+        self.enums = enums
         self.statements = []
         self._current = []
 
@@ -37,6 +41,14 @@ class FakeCursor:
             if self.foreign_keys is None:
                 raise RuntimeError("no referential views here")
             self._current = self.foreign_keys
+        elif "check_constraints" in sql:
+            if self.checks is None:
+                raise RuntimeError("no check views here")
+            self._current = self.checks
+        elif "pg_enum" in sql:
+            if self.enums is None:
+                raise RuntimeError("no pg_enum here")
+            self._current = self.enums
         else:
             self._current = []
 
@@ -74,6 +86,18 @@ def column_row(
         nullable,
         default,
     )
+
+
+def fk_row(
+    cname,
+    table,
+    column,
+    ref_table,
+    ref_column,
+    delete_rule="NO ACTION",
+    update_rule="NO ACTION",
+):
+    return (cname, table, column, ref_table, ref_column, delete_rule, update_rule)
 
 
 def make_model(name, table, columns, indexes=None):
@@ -192,16 +216,104 @@ class TestPostgresCatalogQueries(unittest.TestCase):
     def test_foreign_key_targets_resolve(self):
         cursor = FakeCursor(
             columns=[column_row("shows", "venue_id", "integer")],
-            foreign_keys=[("shows", "venue_id", "venues", "id")],
+            foreign_keys=[
+                fk_row("fk_shows_venue", "shows", "venue_id", "venues", "id")
+            ],
         )
         schema = self.read(cursor)
-        self.assertEqual(schema["shows"].foreign_keys["venue_id"], "venues.id")
+        self.assertEqual(schema["shows"].foreign_key_targets["venue_id"], "venues.id")
+
+    def test_foreign_keys_carry_name_and_actions(self):
+        cursor = FakeCursor(
+            columns=[column_row("shows", "venue_id", "integer")],
+            foreign_keys=[
+                fk_row(
+                    "fk_shows_venue",
+                    "shows",
+                    "venue_id",
+                    "venues",
+                    "id",
+                    delete_rule="CASCADE",
+                    update_rule="SET NULL",
+                )
+            ],
+        )
+        schema = self.read(cursor)
+        fk = schema["shows"].foreign_keys["fk_shows_venue"]
+        self.assertEqual(fk.columns, ("venue_id",))
+        self.assertEqual(fk.target_table, "venues")
+        self.assertEqual(fk.target_columns, ("id",))
+        self.assertEqual(fk.on_delete, "CASCADE")
+        self.assertEqual(fk.on_update, "SET NULL")
+
+    def test_a_composite_foreign_key_keeps_its_column_order(self):
+        cursor = FakeCursor(
+            columns=[
+                column_row("seats", "show_id", "integer"),
+                column_row("seats", "venue_id", "integer"),
+            ],
+            foreign_keys=[
+                fk_row("fk_seats_show", "seats", "show_id", "shows", "id"),
+                fk_row("fk_seats_show", "seats", "venue_id", "shows", "venue_id"),
+            ],
+        )
+        schema = self.read(cursor)
+        fk = schema["seats"].foreign_keys["fk_seats_show"]
+        self.assertEqual(fk.columns, ("show_id", "venue_id"))
+        self.assertEqual(fk.target_columns, ("id", "venue_id"))
+        self.assertEqual(
+            schema["seats"].foreign_key_targets,
+            {"show_id": "shows.id", "venue_id": "shows.venue_id"},
+        )
+
+    def test_check_constraints_are_read(self):
+        cursor = FakeCursor(
+            columns=[column_row("shows", "seats", "integer")],
+            checks=[("shows", "ck_shows_seats", "((seats > 0))")],
+        )
+        schema = self.read(cursor)
+        self.assertEqual(schema["shows"].checks, {"ck_shows_seats": "((seats > 0))"})
+
+    def test_system_not_null_checks_are_left_out(self):
+        cursor = FakeCursor(
+            columns=[column_row("shows", "seats", "integer", nullable="NO")],
+            checks=[
+                ("shows", "2200_16389_1_not_null", "seats IS NOT NULL"),
+                ("shows", "ck_shows_seats", "((seats > 0))"),
+            ],
+        )
+        schema = self.read(cursor)
+        self.assertEqual(list(schema["shows"].checks), ["ck_shows_seats"])
+
+    def test_enum_types_and_their_columns_are_read(self):
+        cursor = FakeCursor(
+            columns=[column_row("posts", "status", "USER-DEFINED", "post_status")],
+            enums=[
+                ("post_status", "draft"),
+                ("post_status", "published"),
+            ],
+        )
+        schema = self.read(cursor)
+        self.assertEqual(schema.enum_types, {"post_status": ("draft", "published")})
+        column = schema["posts"].columns["status"]
+        self.assertEqual(column.enum_name, "post_status")
+        self.assertEqual(column.enum_values, ("draft", "published"))
+
+    def test_an_enum_value_list_keeps_its_sort_order(self):
+        cursor = FakeCursor(
+            columns=[column_row("posts", "mood", "USER-DEFINED", "mood")],
+            enums=[("mood", "sad"), ("mood", "ok"), ("mood", "happy")],
+        )
+        schema = self.read(cursor)
+        self.assertEqual(schema.enum_types["mood"], ("sad", "ok", "happy"))
 
     def test_missing_catalog_views_degrade_to_columns(self):
         cursor = FakeCursor(columns=[column_row("users", "id", "integer")])
         schema = self.read(cursor)
         self.assertEqual(schema["users"].primary_key, ())
         self.assertEqual(dict(schema["users"].foreign_keys), {})
+        self.assertEqual(dict(schema["users"].checks), {})
+        self.assertEqual(schema.enum_types, {})
         self.assertIn("id", schema["users"].columns)
 
 
@@ -299,7 +411,9 @@ class TestPostgresDrift(unittest.TestCase):
                 column_row("shows", "venue_id", "integer"),
             ],
             indexes=[("shows", "shows_pkey", True, True, "id")],
-            foreign_keys=[("shows", "venue_id", "venues", "id")],
+            foreign_keys=[
+                fk_row("fk_shows_venue", "shows", "venue_id", "venues", "id")
+            ],
         )
         diff = diff_schema(FakeConnection(cursor), [model], dialect=Dialects.POSTGRES)
         self.assertEqual(diff.constraint_notes, [])
@@ -319,7 +433,7 @@ class TestPostgresDrift(unittest.TestCase):
                 column_row("shows", "venue_id", "integer"),
             ],
             indexes=[("shows", "shows_pkey", True, True, "id")],
-            foreign_keys=[("shows", "venue_id", "halls", "id")],
+            foreign_keys=[fk_row("fk_shows_venue", "shows", "venue_id", "halls", "id")],
         )
         diff = diff_schema(FakeConnection(cursor), [model], dialect=Dialects.POSTGRES)
         self.assertEqual(

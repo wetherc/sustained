@@ -103,7 +103,34 @@ class TestMysqlCatalogQueries(unittest.TestCase):
         schema = self.read(cursor)
         self.assertEqual(schema["users"].indexes["uq_email"].columns, ("email",))
         self.assertTrue(schema["users"].indexes["uq_email"].unique)
-        self.assertEqual(schema["users"].foreign_keys["venue_id"], "?")
+        fk = schema["users"].foreign_keys["fk_venue"]
+        self.assertEqual(fk.columns, ("venue_id",))
+        self.assertEqual(fk.target_table, "?")
+        self.assertEqual(schema["users"].foreign_key_targets["venue_id"], "?")
+
+    def test_an_enum_column_reports_its_values(self):
+        cursor = FakeCursor(
+            columns=[("posts", "status", "enum('draft','published')", "NO", None)]
+        )
+        schema = self.read(cursor)
+        column = schema["posts"].columns["status"]
+        self.assertEqual(column.raw_type, "enum('draft','published')")
+        self.assertEqual(column.enum_values, ("draft", "published"))
+        self.assertIsNone(column.enum_name)
+
+    def test_a_quote_inside_an_enum_value_survives(self):
+        cursor = FakeCursor(
+            columns=[("posts", "mood", "enum('it''s fine','bad')", "YES", None)]
+        )
+        schema = self.read(cursor)
+        self.assertEqual(
+            schema["posts"].columns["mood"].enum_values, ("it's fine", "bad")
+        )
+
+    def test_a_non_enum_column_has_no_enum_values(self):
+        cursor = FakeCursor(columns=[("posts", "title", "varchar(80)", "NO", None)])
+        schema = self.read(cursor)
+        self.assertEqual(schema["posts"].columns["title"].enum_values, ())
 
 
 class TestMariadbJson(unittest.TestCase):

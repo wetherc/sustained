@@ -33,8 +33,10 @@ from typing import TYPE_CHECKING, Dict, List, Optional, Set, Tuple, Type
 from sustained.dialects import Dialects
 from sustained.introspect import (
     IntrospectedColumn,
+    IntrospectedForeignKey,
     IntrospectedIndex,
     IntrospectedTable,
+    Snapshot,
     async_introspect_schema,
     diff_snapshots,
     introspect_schema,
@@ -55,9 +57,11 @@ if TYPE_CHECKING:
 # from here, where callers have always found them.
 __all__ = [
     "IntrospectedColumn",
+    "IntrospectedForeignKey",
     "IntrospectedIndex",
     "IntrospectedTable",
     "SchemaDiff",
+    "Snapshot",
     "async_introspect_schema",
     "autogenerate",
     "diff_schema",
@@ -193,8 +197,10 @@ def _apply_renames(
             for name, index in old_table.indexes.items()
         }
         renamed_fks = {
-            (new_key if col == old_key else col): target
-            for col, target in old_table.foreign_keys.items()
+            name: fk._replace(
+                columns=tuple(new_key if c == old_key else c for c in fk.columns)
+            )
+            for name, fk in old_table.foreign_keys.items()
         }
         actual[table_key] = old_table._replace(
             primary_key=tuple(
@@ -348,7 +354,7 @@ def _diff_constraints(
         if actual_col is None:
             continue
         if coldef.references is not None:
-            actual_fk = actual_table.foreign_keys.get(name.lower())
+            actual_fk = actual_table.foreign_key_targets.get(name.lower())
             if actual_fk is None:
                 diff.constraint_notes.append(
                     f"{table_name}.{name} declares a foreign key to "

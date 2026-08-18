@@ -2,10 +2,10 @@
 Reading a live schema, and comparing two reads.
 
 introspect_schema() and async_introspect_schema() report the tables,
-columns, primary keys, unique constraints, foreign keys, defaults, and
-indexes a database currently holds. Both drive the same generator-based
-plan, so one dialect's reading code serves a blocking connection and an
-async adapter alike.
+columns, primary keys, unique constraints, foreign keys, defaults,
+indexes, check constraints, and enum types a database currently holds.
+Both drive the same generator-based plan, so one dialect's reading code
+serves a blocking connection and an async adapter alike.
 
 diff_snapshots() compares two such reads. A rehearsal uses it to check
 that the down steps put the schema back where it started.
@@ -42,6 +42,8 @@ class IntrospectedColumn(NamedTuple):
     nullable: bool
     primary_key: bool
     default: Optional[str] = None
+    enum_name: Optional[str] = None
+    enum_values: Tuple[str, ...] = ()
 
 
 class IntrospectedIndex(NamedTuple):
@@ -51,11 +53,27 @@ class IntrospectedIndex(NamedTuple):
     unique: bool
 
 
-# Defaults for tables introspected without keys or indexes. A NamedTuple
-# shares one default object across every instance, so these are read-only
-# to keep one table's empty mapping from ever becoming another's.
-_NO_FOREIGN_KEYS: Mapping[str, str] = MappingProxyType({})
+class IntrospectedForeignKey(NamedTuple):
+    """
+    One foreign key constraint as reported by the database. On engines
+    whose catalog does not say where a key points, target_table is '?'
+    and target_columns is empty. Actions are None when the engine does
+    not report them.
+    """
+
+    columns: Tuple[str, ...]
+    target_table: str
+    target_columns: Tuple[str, ...] = ()
+    on_delete: Optional[str] = None
+    on_update: Optional[str] = None
+
+
+# Defaults for tables introspected without keys, indexes, or checks. A
+# NamedTuple shares one default object across every instance, so these are
+# read-only to keep one table's empty mapping from ever becoming another's.
+_NO_FOREIGN_KEYS: Mapping[str, IntrospectedForeignKey] = MappingProxyType({})
 _NO_INDEXES: Mapping[str, IntrospectedIndex] = MappingProxyType({})
+_NO_CHECKS: Mapping[str, str] = MappingProxyType({})
 
 
 class IntrospectedTable(NamedTuple):
@@ -63,8 +81,43 @@ class IntrospectedTable(NamedTuple):
 
     columns: Dict[str, IntrospectedColumn]
     primary_key: Tuple[str, ...] = ()
-    foreign_keys: Mapping[str, str] = _NO_FOREIGN_KEYS
+    foreign_keys: Mapping[str, IntrospectedForeignKey] = _NO_FOREIGN_KEYS
     indexes: Mapping[str, IntrospectedIndex] = _NO_INDEXES
+    checks: Mapping[str, str] = _NO_CHECKS
+
+    @property
+    def foreign_key_targets(self) -> Dict[str, str]:
+        """
+        Each foreign key column mapped to the 'table.column' it points at,
+        or '?' when the engine's catalog does not say. This is the mapping
+        foreign_keys held before constraints were read by name.
+        """
+        targets: Dict[str, str] = {}
+        for fk in self.foreign_keys.values():
+            for position, column in enumerate(fk.columns):
+                if fk.target_table == "?":
+                    targets[column] = "?"
+                elif position < len(fk.target_columns):
+                    targets[column] = f"{fk.target_table}.{fk.target_columns[position]}"
+                else:
+                    targets[column] = fk.target_table
+        return targets
+
+
+class Snapshot(Dict[str, IntrospectedTable]):
+    """
+    One schema read: tables keyed by lowercased name, plus the standalone
+    enum types the database holds. It is a dict, so every caller that
+    wants only the tables reads it as one.
+    """
+
+    def __init__(
+        self,
+        tables: Optional[Mapping[str, IntrospectedTable]] = None,
+        enum_types: Optional[Mapping[str, Tuple[str, ...]]] = None,
+    ) -> None:
+        super().__init__(tables or {})
+        self.enum_types: Dict[str, Tuple[str, ...]] = dict(enum_types or {})
 
 
 # Engine type spellings mapped to Sustained's logical types. Both sides of
@@ -151,26 +204,29 @@ def normalize_default(raw: Optional[str]) -> Optional[str]:
 # code serves a blocking connection and an async adapter. A statement
 # that fails is thrown back in, and the plan decides whether to degrade
 # or give up.
-SchemaPlan = Generator[str, List[Sequence[RowValue]], Dict[str, IntrospectedTable]]
+SchemaPlan = Generator[str, List[Sequence[RowValue]], Snapshot]
 
 
-def _finished(stop: StopIteration) -> Dict[str, IntrospectedTable]:
+def _finished(stop: StopIteration) -> Snapshot:
     """The schema a finished plan carried on its StopIteration."""
-    return cast(Dict[str, IntrospectedTable], stop.value)
+    return cast(Snapshot, stop.value)
 
 
 def introspect_schema(
     connection: Connection, dialect: Dialects = Dialects.DEFAULT
-) -> Dict[str, IntrospectedTable]:
+) -> Snapshot:
     """
     Reads tables, columns, primary keys, unique constraints, foreign keys,
-    defaults, and indexes from the database. The default dialect reads
-    SQLite's PRAGMA tables. Postgres reads information_schema together
-    with pg_index, so every index is visible, varchar lengths and numeric
-    precision survive, enum columns report their type's name, and foreign
-    key targets resolve. Other dialects read plain information_schema and
-    degrade to column-only data when constraint views are unavailable.
-    Names are keyed lowercase.
+    defaults, indexes, and check constraints from the database. The
+    default dialect reads SQLite's PRAGMA tables and the table SQL in
+    sqlite_master. Postgres reads information_schema together with
+    pg_index, pg_enum, and the constraint views, so every index is
+    visible, varchar lengths and numeric precision survive, enum columns
+    report their type's name and values, foreign keys resolve with their
+    names and actions, and the snapshot carries the database's enum
+    types. Other dialects read plain information_schema and degrade to
+    column-only data when constraint views are unavailable. Names are
+    keyed lowercase.
     """
     plan = _schema_plan(dialect)
     cursor = connection.cursor()
@@ -197,7 +253,7 @@ def introspect_schema(
 
 async def async_introspect_schema(
     adapter: "AsyncAdapter", dialect: Dialects = Dialects.DEFAULT
-) -> Dict[str, IntrospectedTable]:
+) -> Snapshot:
     """
     Reads the schema through an async adapter, returning what
     introspect_schema() returns. Both run the same reading code, so a
@@ -230,14 +286,84 @@ def _schema_plan(dialect: Dialects) -> SchemaPlan:
     return _information_schema_plan()
 
 
+def _strip_identifier(name: str) -> str:
+    """An identifier with its quoting characters removed, lowercased."""
+    return name.strip().strip('"`[]').lower()
+
+
+# A named constraint in a CREATE TABLE statement. Only names Sustained
+# itself writes are recovered: checks are read when the name starts with
+# ck_, and foreign keys match their pragma rows by column list.
+_SQLITE_CHECK_RE = re.compile(
+    r"CONSTRAINT\s+[\"`\[]?(ck_\w+)[\"`\]]?\s+CHECK\s*\(",
+    re.IGNORECASE,
+)
+_SQLITE_FK_NAME_RE = re.compile(
+    r"CONSTRAINT\s+[\"`\[]?(\w+)[\"`\]]?\s+FOREIGN\s+KEY\s*\(([^)]*)\)",
+    re.IGNORECASE,
+)
+
+
+def _balanced_paren_body(text: str, start: int) -> Optional[str]:
+    """
+    The text between the parenthesis at `start` and its matching close,
+    or None when the parentheses do not balance. Quoted strings are
+    skipped, so a ')' inside a literal does not end the expression.
+    """
+    depth = 0
+    in_string = False
+    for position in range(start, len(text)):
+        char = text[position]
+        if in_string:
+            if char == "'":
+                in_string = False
+            continue
+        if char == "'":
+            in_string = True
+        elif char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                return text[start + 1 : position]
+    return None
+
+
+def _sqlite_table_checks(create_sql: str) -> Dict[str, str]:
+    """
+    The named ck_ check constraints in a CREATE TABLE statement. SQLite
+    has no catalog view for checks, so the ones Sustained generated are
+    read back out of the SQL it wrote. Hand-written checks stay unread.
+    """
+    checks: Dict[str, str] = {}
+    for match in _SQLITE_CHECK_RE.finditer(create_sql):
+        body = _balanced_paren_body(create_sql, match.end() - 1)
+        if body is not None:
+            checks[match.group(1).lower()] = body.strip()
+    return checks
+
+
+def _sqlite_fk_names(create_sql: str) -> Dict[Tuple[str, ...], str]:
+    """Named FOREIGN KEY clauses, keyed by their column tuple."""
+    names: Dict[Tuple[str, ...], str] = {}
+    for match in _SQLITE_FK_NAME_RE.finditer(create_sql):
+        columns = tuple(
+            _strip_identifier(part)
+            for part in match.group(2).split(",")
+            if part.strip()
+        )
+        names[columns] = match.group(1).lower()
+    return names
+
+
 def _sqlite_plan() -> SchemaPlan:
     rows = yield (
-        "SELECT name FROM sqlite_master WHERE type = 'table' "
+        "SELECT name, sql FROM sqlite_master WHERE type = 'table' "
         "AND name NOT LIKE 'sqlite_%'"
     )
-    tables = [row[0] for row in rows]
-    schema: Dict[str, IntrospectedTable] = {}
-    for table in tables:
+    tables = [(row[0], row[1]) for row in rows]
+    schema = Snapshot()
+    for table, create_sql in tables:
         columns: Dict[str, IntrospectedColumn] = {}
         primary_key: List[str] = []
         for _, name, raw_type, notnull, default, pk in (
@@ -252,10 +378,29 @@ def _sqlite_plan() -> SchemaPlan:
             if pk:
                 primary_key.append(name.lower())
 
-        foreign_keys: Dict[str, str] = {}
-        for row in (yield f"PRAGMA foreign_key_list({table})"):
-            ref_table, from_col, to_col = row[2], row[3], row[4]
-            foreign_keys[from_col.lower()] = f"{ref_table}.{to_col}".lower()
+        fk_rows = sorted(
+            (yield f"PRAGMA foreign_key_list({table})"),
+            key=lambda row: (row[0], row[1]),
+        )
+        rows_by_key: Dict[int, List[Sequence[RowValue]]] = {}
+        for row in fk_rows:
+            rows_by_key.setdefault(int(cast(int, row[0])), []).append(row)
+
+        declared_fk_names = _sqlite_fk_names(create_sql or "")
+        foreign_keys: Dict[str, IntrospectedForeignKey] = {}
+        for fk_id, key_rows in rows_by_key.items():
+            first = key_rows[0]
+            key_columns = tuple(str(r[3]).lower() for r in key_rows)
+            name = declared_fk_names.get(key_columns, f"fk_{table.lower()}_{fk_id}")
+            foreign_keys[name] = IntrospectedForeignKey(
+                columns=key_columns,
+                target_table=str(first[2]).lower(),
+                target_columns=tuple(
+                    str(r[4]).lower() for r in key_rows if r[4] is not None
+                ),
+                on_delete=None if first[6] is None else str(first[6]),
+                on_update=None if first[5] is None else str(first[5]),
+            )
 
         indexes: Dict[str, IntrospectedIndex] = {}
         index_rows = yield f"PRAGMA index_list({table})"
@@ -278,6 +423,7 @@ def _sqlite_plan() -> SchemaPlan:
             primary_key=tuple(primary_key),
             foreign_keys=foreign_keys,
             indexes=indexes,
+            checks=_sqlite_table_checks(create_sql or ""),
         )
     return schema
 
@@ -348,7 +494,7 @@ def _information_schema_plan(catalog: Catalog = ANSI_CATALOG) -> SchemaPlan:
 
     primary_keys: Dict[str, List[str]] = {}
     unique_indexes: Dict[str, Dict[str, IntrospectedIndex]] = {}
-    foreign_keys: Dict[str, Dict[str, str]] = {}
+    foreign_keys: Dict[str, Dict[str, IntrospectedForeignKey]] = {}
     schema_join = (
         "AND tc.table_schema = kcu.table_schema " if catalog.join_on_schema else ""
     )
@@ -376,15 +522,16 @@ def _information_schema_plan(catalog: Catalog = ANSI_CATALOG) -> SchemaPlan:
                     tuple(cols), True
                 )
             elif ctype == "FOREIGN KEY":
-                for col in cols:
-                    # The referenced table is engine-specific to resolve;
-                    # presence is enough for constraint notes.
-                    foreign_keys.setdefault(table, {})[col] = "?"
+                # The referenced table is engine-specific to resolve;
+                # presence is enough for constraint notes.
+                foreign_keys.setdefault(table, {})[cname] = IntrospectedForeignKey(
+                    columns=tuple(cols), target_table="?"
+                )
     except Exception:
         # The engine does not expose constraint views; degrade to columns.
         pass
 
-    schema = {}
+    schema = Snapshot()
     for table, columns in columns_by_table.items():
         pk = tuple(primary_keys.get(table, ()))
         for pk_col in pk:
@@ -488,11 +635,11 @@ def _postgres_plan() -> SchemaPlan:
         # No pg_index to read; degrade to columns without keys or indexes.
         pass
 
-    foreign_keys: Dict[str, Dict[str, str]] = {}
+    foreign_keys: Dict[str, Dict[str, IntrospectedForeignKey]] = {}
     try:
         fk_rows = yield (
-            "SELECT src.table_name, src.column_name, "
-            "tgt.table_name, tgt.column_name "
+            "SELECT rc.constraint_name, src.table_name, src.column_name, "
+            "tgt.table_name, tgt.column_name, rc.delete_rule, rc.update_rule "
             "FROM information_schema.referential_constraints rc "
             "JOIN information_schema.key_column_usage src "
             "ON src.constraint_schema = rc.constraint_schema "
@@ -504,25 +651,83 @@ def _postgres_plan() -> SchemaPlan:
             "WHERE rc.constraint_schema NOT IN ('information_schema', 'pg_catalog') "
             "ORDER BY rc.constraint_name, src.ordinal_position"
         )
-        for table, column, ref_table, ref_column in fk_rows:
-            foreign_keys.setdefault(str(table).lower(), {})[
-                str(column).lower()
-            ] = f"{ref_table}.{ref_column}".lower()
+        fk_parts: Dict[Tuple[str, str], List[Sequence[RowValue]]] = {}
+        for row in fk_rows:
+            part_key = (str(row[1]).lower(), str(row[0]).lower())
+            fk_parts.setdefault(part_key, []).append(row)
+        for (table, cname), rows in fk_parts.items():
+            first = rows[0]
+            foreign_keys.setdefault(table, {})[cname] = IntrospectedForeignKey(
+                columns=tuple(str(r[2]).lower() for r in rows),
+                target_table=str(first[3]).lower(),
+                target_columns=tuple(str(r[4]).lower() for r in rows),
+                on_delete=None if first[5] is None else str(first[5]),
+                on_update=None if first[6] is None else str(first[6]),
+            )
     except Exception:
         # No referential views to read; degrade to no foreign keys.
         pass
 
-    schema = {}
+    checks: Dict[str, Dict[str, str]] = {}
+    try:
+        check_rows = yield (
+            "SELECT tc.table_name, tc.constraint_name, cc.check_clause "
+            "FROM information_schema.table_constraints tc "
+            "JOIN information_schema.check_constraints cc "
+            "ON cc.constraint_schema = tc.constraint_schema "
+            "AND cc.constraint_name = tc.constraint_name "
+            "WHERE tc.constraint_type = 'CHECK' "
+            "AND tc.table_schema NOT IN ('information_schema', 'pg_catalog')"
+        )
+        for table, cname, clause in check_rows:
+            name = str(cname).lower()
+            expression = str(clause)
+            # Postgres spells a NOT NULL as a system check constraint
+            # named ..._not_null. Those belong to the column's own
+            # nullable flag, not to the table's checks.
+            if name.endswith("_not_null") and "IS NOT NULL" in expression.upper():
+                continue
+            checks.setdefault(str(table).lower(), {})[name] = expression
+    except Exception:
+        # No check views to read; degrade to no checks.
+        pass
+
+    enum_types: Dict[str, Tuple[str, ...]] = {}
+    try:
+        enum_rows = yield (
+            "SELECT t.typname, e.enumlabel "
+            "FROM pg_catalog.pg_type t "
+            "JOIN pg_catalog.pg_enum e ON e.enumtypid = t.oid "
+            "JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace "
+            "WHERE n.nspname NOT IN ('information_schema', 'pg_catalog') "
+            "ORDER BY t.typname, e.enumsortorder"
+        )
+        values_by_type: Dict[str, List[str]] = {}
+        for typname, label in enum_rows:
+            values_by_type.setdefault(str(typname).lower(), []).append(str(label))
+        enum_types = {name: tuple(vals) for name, vals in values_by_type.items()}
+    except Exception:
+        # No pg_enum to read; degrade to no enum types.
+        pass
+
+    schema = Snapshot(enum_types=enum_types)
     for table, columns in columns_by_table.items():
         pk = primary_keys.get(table, ())
         for pk_col in pk:
             if pk_col in columns:
                 columns[pk_col] = columns[pk_col]._replace(primary_key=True)
+        for name, column in columns.items():
+            values = enum_types.get(column.raw_type.lower())
+            if values is not None:
+                columns[name] = column._replace(
+                    enum_name=column.raw_type.lower(), enum_values=values
+                )
         schema[table] = IntrospectedTable(
             columns=columns,
             primary_key=pk,
             foreign_keys=foreign_keys.get(table, {}),
             indexes=indexes.get(table, {}),
+            checks=checks.get(table, {}),
         )
     return schema
 
@@ -534,9 +739,35 @@ _JSON_VALID_RE = re.compile(
 )
 
 
+_MYSQL_ENUM_RE = re.compile(r"^\s*enum\s*\((.*)\)\s*$", re.IGNORECASE | re.DOTALL)
+_MYSQL_ENUM_VALUE_RE = re.compile(r"'((?:[^']|'')*)'")
+
+
+def parse_inline_enum(raw_type: str) -> Tuple[str, ...]:
+    """
+    The values of a MySQL enum('a','b') column type, empty when the type
+    is not an enum. A quote inside a value arrives doubled and is put
+    back to one.
+    """
+    match = _MYSQL_ENUM_RE.match(raw_type)
+    if match is None:
+        return ()
+    return tuple(
+        value.replace("''", "'")
+        for value in _MYSQL_ENUM_VALUE_RE.findall(match.group(1))
+    )
+
+
 def _mysql_plan() -> SchemaPlan:
     schema = yield from _information_schema_plan(MYSQL_CATALOG)
     yield from _recover_mariadb_json(schema)
+    for table in schema.values():
+        for name, column in table.columns.items():
+            values = parse_inline_enum(column.raw_type)
+            if values:
+                # A MySQL enum lives inline on its column, so there is no
+                # standalone type name to carry.
+                table.columns[name] = column._replace(enum_values=values)
     return schema
 
 
