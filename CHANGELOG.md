@@ -45,10 +45,10 @@
 ### Added
 
 - The tracking table has a `steps` column holding the up and down statements of a migration generated from the models, as JSON. `down()` reads it, so a process that never ran the diff can still revert what the diff applied. Registered migrations store nothing there. Tables written by earlier versions add the column on first use.
-- `up(unrehearsed=True)` records what it waived: a receipt row under the run's key with the outcome `override`. The row never opens the gate for a later run. `record_rehearsal()` accepts `'override'` alongside `'passed'` and `'failed'`.
+- `up(unrehearsed=True)` records what it waived: a rehearsal row under the run's key with the outcome `override`. The row never opens the gate for a later run. `record_rehearsal()` accepts `'override'` alongside `'passed'` and `'failed'`.
 - `migrate` exits 4 when a run that removes data has no passing rehearsal, which a pipeline can tell apart from a failure. The message carries `--target` through when the run had one.
 - `Migrator.drift()` and `SchemaDiff.outstanding()` take `ignore_changed_columns`, matching the option that generated the migration.
-- A block or a missing receipt on the migration generated from the models names the registered migrations that already applied, on the exception's `applied` attribute. The CLI prints those ids before the error.
+- A block or a missing rehearsal row on the migration generated from the models names the registered migrations that already applied, on the exception's `applied` attribute. The CLI prints those ids before the error.
 
 ### Fixed
 
@@ -56,10 +56,10 @@
 - An index on an expression crashed introspection, because SQLite reports a null column name for one. Those indexes are left out of the schema instead.
 - `up(models=[...])` disabled the out-of-order validation check for hand-written migrations. The check runs again.
 - A rehearsal with models and rename hints raised while checking whether the models landed: the renames had already run, so the second diff asked to rename objects that were gone. The check now runs without the hints, and honours `ignore_changed_columns`.
-- A rehearsal reported "not reversed" and recorded a failed receipt when any migration in the run had no down step, blaming its leftovers on the steps that did reverse. The comparison now runs only when every versioned migration in the run reversed.
+- A rehearsal reported "not reversed" and recorded a failed rehearsal row when any migration in the run had no down step, blaming its leftovers on the steps that did reverse. The comparison now runs only when every versioned migration in the run reversed.
 - A rehearsal applied the generated migration after the repeatables, while `migrate` applies it before them.
-- A scratch rehearsal recorded no receipts for the shorter target sets, so `migrate --target` was refused for statements the scratch run had proved.
-- The plan footer said `run: sustained rehearse` even after a rehearsal had recorded its receipt, and computed guard verdicts over the drops `migrate` never generates.
+- A scratch rehearsal recorded no rows for the shorter target sets, so `migrate --target` was refused for statements the scratch run had proved.
+- The plan footer said `run: sustained rehearse` even after a rehearsal had recorded its row, and computed guard verdicts over the drops `migrate` never generates.
 - `no_lock_without_timeout()` fired on every dialect, and its pattern matched any statement holding the words, such as an update of a column named `lock_timeout`. It is now Postgres only and anchored to a `SET` statement.
 - Filter and write values accept `datetime`, `date`, `Decimal`, and `bytes`. Comparing a timestamp column against a datetime was an error under a strict checker.
 - A sync savepoint that failed to open left the nesting depth one too high, so the next nested block reused a savepoint name.
@@ -123,18 +123,18 @@
 
 ### Added
 
-- A passing rehearsal writes a receipt: one row in a new table, `sustained_rehearsals`, created on first use like the tracking table. The row is keyed by a SHA-256 over the checksums of the applied migrations the run started from and the checksums of the migrations it ran. A failing rehearsal records the failure under the same key.
-- `Migrator.up()` and `AsyncMigrator.up()` refuse to apply a statement that removes data, meaning a DROP TABLE, a column drop, or a TRUNCATE, unless a passing receipt covers that exact set. The error names the migration and the statement. `up(unrehearsed=True)` applies them anyway, and `sustained migrate --unrehearsed` is the same door from the shell. A run that only adds is never gated and never reads the table.
-- A rehearsal also records a receipt for each shorter run a `--target` would produce that removes data, since it applied and reverted those on its way through. One rehearsal covers the whole run and every target within it.
+- A passing rehearsal writes one row in a new table, `sustained_rehearsals`, created on first use like the tracking table. The row is keyed by a SHA-256 over the checksums of the applied migrations the run started from and the checksums of the migrations it ran. A failing rehearsal records the failure under the same key.
+- `Migrator.up()` and `AsyncMigrator.up()` refuse to apply a statement that removes data, meaning a DROP TABLE, a column drop, or a TRUNCATE, unless a passing rehearsal row covers that exact set. The error names the migration and the statement. `up(unrehearsed=True)` applies them anyway, and `sustained migrate --unrehearsed` is the same door from the shell. A run that only adds is never gated and never reads the table.
+- A rehearsal also records a row for each shorter run a `--target` would produce that removes data, since it applied and reverted those on its way through. One rehearsal covers the whole run and every target within it.
 - `RehearsalRequired`, in `sustained.exceptions` and re-exported at the package root, is what the refusal raises.
-- `record_rehearsal(key, outcome)`, `rehearsal_outcome(key)`, and `rehearsed(key)` on both migrators, and `receipt_key(applied, run)` in `sustained.migrations`, for recording and reading a receipt directly.
+- `record_rehearsal(key, outcome)`, `rehearsal_outcome(key)`, and `rehearsed(key)` on both migrators, and `receipt_key(applied, run)` in `sustained.migrations`, for recording and reading a rehearsal row directly.
 - `rehearse --json` gains `key` and `recorded`, and the plain report prints `receipt recorded` when the proof lands.
 - The `Migrator` and `AsyncMigrator` constructors take `rehearsal_table`, and the CLI config module takes the same name.
 
 ### Changed
 
 - `rehearse()` returns a `Rehearsal` rather than a plain list. It subclasses `list`, so iterating and indexing are unchanged, and it carries `key`, `recorded`, and `ok`.
-- `rehearse(scratch=True)` records nothing through the API, since a receipt belongs on the database the next run will read rather than on a throwaway one. The key comes back on the result. The CLI writes it on the real database after a passing scratch run, keyed against that database's applied history and pending set, and only when the scratch run applied every migration pending there.
+- `rehearse(scratch=True)` records nothing through the API, since the row belongs on the database the next run will read rather than on a throwaway one. The key comes back on the result. The CLI writes it on the real database after a passing scratch run, keyed against that database's applied history and pending set, and only when the scratch run applied every migration pending there.
 - `sustained plan` prints `run: sustained rehearse` instead of `run: sustained migrate` when a pending migration removes data, since migrate would refuse it.
 - Both Sustained tables are excluded from every diff against the models, so the new one never reads as drift or as an object a down step left behind.
 - `rehearsal_failed(result)` moved from `sustained.cli` to `sustained.migrations`, so the rule that decides whether a rehearsal passed lives with the API.

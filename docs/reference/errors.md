@@ -92,7 +92,7 @@ The CLI exits 4 on this error. `up(unrehearsed=True)` waives the check and
 records an `override` row under the same key, which never opens the gate for a
 later run. A run that only adds never triggers
 it, and neither does a callable step, which renders no SQL to scan. See
-[The receipt a rehearsal leaves](/schema#the-receipt-a-rehearsal-leaves).
+[Rehearsal logging and tracking](/schema#rehearsal-logging-and-tracking).
 
 ## `GuardBlocked`
 

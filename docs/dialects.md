@@ -3,7 +3,7 @@ layout: default
 title: SQL Dialects
 ---
 
-Sustained compiles the same query for seven database engines. Set the dialect once per model, usually at application startup, and every query, DDL statement, and migration for that model renders in the engine's SQL:
+Sustained compiles the same query for every database engine it supports. You set the dialect once per model, usually at application startup, and every query, DDL statement, and migration for that model renders in that engine's SQL:
 
 ```python
 from sustained.dialects import Dialects
@@ -11,7 +11,7 @@ from sustained.dialects import Dialects
 User.set_dialect(Dialects.POSTGRES)
 ```
 
-Features an engine lacks raise `DialectError` when the query builds, before anything reaches the database.
+If an engine lacks a feature, the query raises `DialectError` when it builds, before anything reaches the database.
 
 ## Dialects, drivers, and placeholders
 
@@ -31,7 +31,7 @@ Async execution wraps a driver in an adapter instead: `AsyncpgAdapter` for async
 
 ## Default (ANSI, SQLite)
 
-The default dialect renders plain ANSI SQL with unquoted identifiers and `?` placeholders. SQLite's built-in driver matches it exactly, and the migration system treats it as SQLite: introspection reads the PRAGMA tables, and column changes rebuild the table because SQLite cannot alter columns in place.
+The default dialect renders plain ANSI SQL with unquoted identifiers and `?` placeholders. SQLite's built-in driver matches it exactly, and the migration system treats it as SQLite: introspection reads the PRAGMA tables, and column changes rebuild the table, because SQLite cannot alter columns in place.
 
 ```python
 import sqlite3
@@ -48,7 +48,7 @@ Upserts render `ON CONFLICT`, RETURNING works, and `whereILike()` compiles to `L
 
 ## PostgreSQL
 
-Postgres gets the largest feature surface: native `ILIKE`, `DISTINCT ON`, `RETURNING`, `ON CONFLICT` upserts, `for_update()` row locking, identity columns for `autoincrement`, `JSONB` for the `Json` type, and in-place `ALTER COLUMN` migrations with `USING` cast hints. Migration runs hold a `pg_advisory_lock`, so concurrent deploys queue. Placeholders are `%s`, matching psycopg.
+Postgres supports the largest set of features: native `ILIKE`, `DISTINCT ON`, `RETURNING`, `ON CONFLICT` upserts, `for_update()` row locking, identity columns for `autoincrement`, `JSONB` for the `Json` type, and in-place `ALTER COLUMN` migrations with `USING` cast hints. Migration runs hold a `pg_advisory_lock`, so concurrent deploys queue. Placeholders are `%s`, matching psycopg.
 
 ```python
 import psycopg
@@ -57,10 +57,14 @@ from sustained.dialects import Dialects
 User.set_dialect(Dialects.POSTGRES)
 User.bind(psycopg.connect('dbname=app user=app'))
 
-row = User.query().insert({'name': 'Ada'}).returning('id').run()
+row = (User.query()
+    .insert({'name': 'Ada'})
+    .returning('id')
+    .run()
+)
 ```
 
-For connection pooling, hand the factory to `ConnectionPool`:
+For connection pooling, pass the factory to `ConnectionPool`:
 
 ```python
 from sustained.pool import ConnectionPool
@@ -70,7 +74,7 @@ User.bind(ConnectionPool(lambda: psycopg.connect(DSN), max_size=10))
 
 ## Microsoft SQL Server
 
-MSSQL quotes identifiers with brackets and uses `?` placeholders, matching pyodbc. Booleans render as `1`/`0`, `Boolean` columns as `BIT`, strings as `NVARCHAR`, and timestamps as `DATETIME2`. `top(n)` renders `TOP n`; `limit()`/`offset()` compile to `OFFSET ... FETCH`, which T-SQL only allows after `orderBy()`. Upserts render a `MERGE` statement. `NOW()` translates to `GETDATE()` and `LENGTH()` to `LEN()`.
+MSSQL quotes identifiers with brackets and uses `?` placeholders, matching pyodbc. Booleans render as `1`/`0`, `Boolean` columns as `BIT`, strings as `NVARCHAR`, and timestamps as `DATETIME2`. `top(n)` renders `TOP n`. `limit()` and `offset()` compile to `OFFSET ... FETCH`, which T-SQL only allows after `orderBy()`. Upserts render a `MERGE` statement. `NOW()` translates to `GETDATE()` and `LENGTH()` to `LEN()`.
 
 ```python
 import pyodbc
@@ -79,14 +83,18 @@ from sustained.dialects import Dialects
 User.set_dialect(Dialects.MSSQL)
 User.bind(pyodbc.connect('DRIVER={ODBC Driver 18 for SQL Server};SERVER=...;DATABASE=app'))
 
-newest = User.query().orderBy('created_at', 'desc').limit(10).run()
+newest = (User.query()
+    .orderBy('created_at', 'desc')
+    .limit(10)
+    .run()
+)
 ```
 
-RETURNING, CTAS, and `explain()` raise `DialectError`; use `OUTPUT`, `SELECT INTO`, and SSMS plans through raw SQL instead. Migrations rename with `sp_rename`, alter columns by restating the full definition, and hold an `sp_getapplock` session lock while they run.
+RETURNING, CTAS, and `explain()` raise `DialectError`. Use `OUTPUT`, `SELECT INTO`, and SSMS plans through raw SQL instead. Migrations rename with `sp_rename`, alter columns by restating the full definition, and hold an `sp_getapplock` session lock while they run.
 
 ## MySQL and MariaDB
 
-One dialect serves both. Identifiers quote with backticks and placeholders are `%s`, matching PyMySQL, mysqlclient, and mysql-connector. Upserts render `ON DUPLICATE KEY UPDATE`. `for_update()` works, with `SKIP LOCKED` and `NOWAIT` on MySQL 8.0 and later. Migration runs hold a `GET_LOCK` session lock.
+The `MYSQL` dialect serves both MySQL and MariaDB; Sustained does not distinguish between the two. Identifiers quote with backticks and placeholders are `%s`, matching PyMySQL, mysqlclient, and mysql-connector. Upserts render `ON DUPLICATE KEY UPDATE`. `for_update()` works, with `SKIP LOCKED` and `NOWAIT` on MySQL 8.0 and later. Migration runs hold a `GET_LOCK` session lock.
 
 ```python
 import pymysql
@@ -95,7 +103,11 @@ from sustained.dialects import Dialects
 User.set_dialect(Dialects.MYSQL)
 User.bind(pymysql.connect(host='db.internal', user='app', database='app'))
 
-newest = User.query().orderBy('created_at', 'desc').limit(10).run()
+newest = (User.query()
+    .orderBy('created_at', 'desc')
+    .limit(10)
+    .run()
+)
 ```
 
 Column types render in the spelling `information_schema` reports back, so a column never drifts against the DDL that created it:
@@ -115,17 +127,17 @@ Column types render in the spelling `information_schema` reports back, so a colu
 
 `Timestamp()` maps to `DATETIME` rather than `TIMESTAMP`. MySQL's `TIMESTAMP` is four bytes, stops in 2038, and converts time zones on the way in and out, which is not what `Timestamp()` describes.
 
-RETURNING raises `DialectError`, including on MariaDB, which has it: a builder that emitted it for one server would produce SQL the other rejects. Read the row back with a second query, or reach for `LAST_INSERT_ID()` through raw SQL. `STRING_AGG` raises too, rather than translating to `GROUP_CONCAT`, whose separator is a keyword and not a second argument. A whole `Text()` or `Json()` column takes neither a unique key nor a literal `DEFAULT`; MySQL wants a prefix length for the first and refuses the second.
+RETURNING raises `DialectError`, even though MariaDB, which supports it: since Sustained shares one dialect for both, it needs to take a more conservative approach. Read the row back with a second query, or use `LAST_INSERT_ID()` through raw SQL. `STRING_AGG` raises as well, rather than translating to `GROUP_CONCAT`, whose separator is a keyword and not a second argument. A whole `Text()` or `Json()` column takes neither a unique key nor a literal `DEFAULT`: MySQL wants a prefix length for the first and refuses the second.
 
-A `references` declaration becomes a table-level `FOREIGN KEY` in `CREATE TABLE`, and a named `ADD CONSTRAINT` statement when the column is added to a table that already exists. InnoDB parses a `REFERENCES` clause written beside a column and creates nothing, so writing one there would look like a foreign key and behave like a comment.
+A `references` declaration becomes a table-level `FOREIGN KEY` in `CREATE TABLE`, and a named `ADD CONSTRAINT` statement when the column is added to a table that already exists. InnoDB parses a `REFERENCES` clause written beside a column and creates nothing, so a clause written there would look like a foreign key while not enforcing anything.
 
-An unsigned integer column has no `tableColumns` declaration that produces it, so one already in your database reports as drift that no migration closes. Leave it out of the model, or move the column to a signed type.
+An unsigned integer column has no `tableColumns` declaration that produces it, so one already in your database reports as drift that a migration won't be able to close. Leave the column out of the model, or move it to a signed type.
 
 ### Schema changes commit as they run
 
-MySQL has no transactional DDL. Every schema statement commits the moment it runs, whatever the surrounding transaction does. Two things follow.
+MySQL has no transactional DDL. Every schema statement commits the moment it runs, whatever the surrounding transaction does. This has two consequences.
 
-`sustained rehearse` refuses MySQL in place, because its rollback would take nothing back and the run would report a database unchanged that had changed. Point it at a database you can throw away instead:
+`sustained rehearse` refuses MySQL in place, because a rollback would have no effect and the run would report a database as unchanged when it had changed. Point it at a scratch database instead:
 
 ```python
 # sustained_config.py
@@ -148,12 +160,17 @@ from sustained.dialects import Dialects
 Event.set_dialect(Dialects.PRESTO)
 Event.bind(trino.dbapi.connect(host='presto.internal', port=8080, catalog='hive', schema='web'))
 
-counts = Event.query().select('page').count('*', alias='views').groupBy('page').run()
+counts = (Event.query()
+    .select('page')
+    .count('*', alias='views')
+    .groupBy('page')
+    .run()
+)
 ```
 
 ## AWS Athena
 
-Athena runs a Trino-based engine over files in S3, so the dialect inherits Presto's query behavior and adds Athena's storage model: `%s` placeholders matching pyathena, `MERGE` upserts on Iceberg tables, Athena type spellings (`INT`, `STRING`, `DOUBLE`, `DECIMAL`), and `TableOptions` for `PARTITIONED BY`, `LOCATION`, and `TBLPROPERTIES` clauses. Sustained never calls boto3 itself; pyathena wraps the boto3 query lifecycle behind the DB-API cursor.
+Athena runs a Trino-based engine over files in S3, so the dialect inherits Presto's query behavior and adds Athena's storage model: `%s` placeholders matching pyathena, `MERGE` upserts on Iceberg tables, Athena type spellings (`INT`, `STRING`, `DOUBLE`, `DECIMAL`), and `TableOptions` for `PARTITIONED BY`, `LOCATION`, and `TBLPROPERTIES` clauses. Sustained never calls boto3 itself: pyathena wraps the boto3 query lifecycle behind the DB-API cursor.
 
 ```python
 from pyathena import connect
@@ -168,11 +185,11 @@ Event.bind(connect(
 deploys = Event.query().where('name', '=', 'deploy').run()
 ```
 
-Every `run()` is one Athena query execution with its own scan cost and latency, so patterns that are cheap elsewhere add up here: eager loading costs one execution per relation and `cursor_page()` one per page. Athena tables have no constraints, indexes, or transactions; see [Schema and Migrations](./schema#athena) for how DDL and the migrator handle that, and what requires Iceberg tables.
+Every `run()` is one Athena query execution with its own scan cost and latency, so patterns that are cheap elsewhere add up here: eager loading costs one execution per relation, and `cursor_page()` one per page. Athena tables have no constraints, indexes, or transactions. See [Schema and Migrations](./schema#athena) for how DDL and the migrator handle that, and for what requires Iceberg tables.
 
 ## DuckDB
 
-DuckDB gets native `ILIKE`, `QUALIFY`, `DISTINCT ON`, `ON CONFLICT` upserts, RETURNING, CTAS, and in-place column type changes with `SET DATA TYPE`. Identifiers quote with double quotes and placeholders are `?`, matching the `duckdb` module's DB-API interface. `autoincrement` raises because DuckDB has no identity columns; use a sequence through raw SQL.
+DuckDB supports native `ILIKE`, `QUALIFY`, `DISTINCT ON`, `ON CONFLICT` upserts, RETURNING, CTAS, and in-place column type changes with `SET DATA TYPE`. Identifiers quote with double quotes and placeholders are `?`, matching the `duckdb` module's DB-API interface. `autoincrement` raises `DialectError` because DuckDB has no identity columns; use a sequence through raw SQL.
 
 ```python
 import duckdb
@@ -181,8 +198,7 @@ from sustained.dialects import Dialects
 Event.set_dialect(Dialects.DUCKDB)
 Event.bind(duckdb.connect('analytics.db'))
 
-top = (
-    Event.query()
+top = (Event.query()
     .select('page')
     .select_window('ROW_NUMBER', 'rank', partition_by=['site'], order_by=['views'])
     .qualify('rank <= 3')
@@ -192,4 +208,4 @@ top = (
 
 ## Writing dialect-portable code
 
-Build queries through the builder's methods rather than raw SQL and one model definition serves every dialect: quoting, placeholders, booleans, `LIMIT` spelling, upsert syntax, and function names (`NOW()`, `LENGTH()`) all follow `set_dialect()`. The unavoidable differences raise `DialectError` with a message naming the alternative, so porting is a matter of running the test suite and reading the errors, not auditing every query.
+If you build queries through the builder's methods rather than raw SQL, one model definition serves every dialect: quoting, placeholders, booleans, `LIMIT` spelling, upsert syntax, and function names (`NOW()`, `LENGTH()`) all follow `set_dialect()`. The differences that cannot be papered over raise `DialectError` with a message naming the alternative, so porting is mostly a matter of running your test suite and reading the errors it raises.

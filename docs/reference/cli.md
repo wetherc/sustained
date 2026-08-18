@@ -77,7 +77,7 @@ with and without `--json`.
 | `models` | no | List of model classes | `None` |
 | `dialect` | no | A `Dialects` member, or its name: `'postgres'`, `'MSSQL'` | `Dialects.DEFAULT` |
 | `table` | no | Tracking table name | `'sustained_migrations'` |
-| `rehearsal_table` | no | Receipt table name | `'sustained_rehearsals'` |
+| `rehearsal_table` | no | Rehearsal table name | `'sustained_rehearsals'` |
 | `tracking_table_options` | no | `TableOptions` | `None` |
 | `guards` | no | `list[Guard]` from `sustained.guards` | `[]` |
 | `get_rehearsal_connection` | no | `() -> Connection`, a scratch database | `None` |
@@ -145,10 +145,10 @@ second migrator on that connection and rehearses there instead. The dialect
 check does not apply, the changes may survive the rollback, and the footer
 says so. The scratch connection closes when the command ends.
 
-The receipt goes on the real database, not the scratch one, keyed against the
+The rehearsal row goes on the real database, not the scratch one, keyed against the
 real database's applied history and pending set. It is written only when the
 scratch run applied every migration pending there; otherwise the output says
-the receipt was not recorded.
+the row was not recorded.
 
 ## Output
 
@@ -177,7 +177,7 @@ run: sustained rehearse
 ```
 
 The footer points at `rehearse` when a pending migration removes data, since
-`migrate` refuses those without a receipt, and at `migrate` otherwise. A
+`migrate` refuses those without a rehearsal row, and at `migrate` otherwise. A
 blocked statement replaces it with
 `blocked: fix the statement, or take the rule out of guards`.
 
@@ -204,7 +204,7 @@ rollback complete, database unchanged
 receipt recorded
 ```
 
-`receipt recorded` means the proof was written where `migrate` will read it.
+`receipt recorded` means the row was written where `migrate` will read it.
 The words after the id are the proofs, in order: `up ok`, `landed` for the
 migration generated from the config's `models`, `down ok`, and `reversed`. A
 check that failed reads `not landed` or `not reversed`, with the objects listed
@@ -295,7 +295,7 @@ $ sustained rehearse --json
 
 `landed` and `reversed` are `null` when the check did not run, `[]` when it
 passed, and the lines naming the trouble when it failed. `key` names the
-content the run covered; `recorded` says whether the receipt was written where
+content the run covered; `recorded` says whether the row was written where
 `migrate` will read it.
 
 `status --json` prints `{"migrations": [{"id": ..., "state": ...}]}`.
