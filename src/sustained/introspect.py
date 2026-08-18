@@ -165,7 +165,10 @@ def introspect_schema(
     """
     Reads tables, columns, primary keys, unique constraints, foreign keys,
     defaults, and indexes from the database. The default dialect reads
-    SQLite's PRAGMA tables; other dialects read information_schema and
+    SQLite's PRAGMA tables. Postgres reads information_schema together
+    with pg_index, so every index is visible, varchar lengths and numeric
+    precision survive, enum columns report their type's name, and foreign
+    key targets resolve. Other dialects read plain information_schema and
     degrade to column-only data when constraint views are unavailable.
     Names are keyed lowercase.
     """
@@ -222,6 +225,8 @@ def _schema_plan(dialect: Dialects) -> SchemaPlan:
         return _sqlite_plan()
     if dialect == Dialects.MYSQL:
         return _mysql_plan()
+    if dialect == Dialects.POSTGRES:
+        return _postgres_plan()
     return _information_schema_plan()
 
 
@@ -390,6 +395,134 @@ def _information_schema_plan(catalog: Catalog = ANSI_CATALOG) -> SchemaPlan:
             primary_key=pk,
             foreign_keys=foreign_keys.get(table, {}),
             indexes=unique_indexes.get(table, {}),
+        )
+    return schema
+
+
+def _postgres_column_type(
+    data_type: str,
+    udt_name: Optional[str],
+    char_length: Optional[RowValue],
+    precision: Optional[RowValue],
+    scale: Optional[RowValue],
+) -> str:
+    """
+    The type spelling a Postgres column is compared on. information_schema's
+    data_type alone loses too much: a varchar drops its length, a numeric
+    its precision, and an enum reads as USER-DEFINED. The parameters go
+    back on, and an enum reports its type's own name from udt_name.
+    """
+    if data_type == "USER-DEFINED" and udt_name:
+        return str(udt_name)
+    if data_type in ("character varying", "character") and char_length is not None:
+        return f"{data_type}({char_length})"
+    if data_type == "numeric" and precision is not None:
+        return f"numeric({precision},{scale if scale is not None else 0})"
+    return data_type
+
+
+def _postgres_plan() -> SchemaPlan:
+    columns_by_table: Dict[str, Dict[str, IntrospectedColumn]] = {}
+    column_rows = yield (
+        "SELECT c.table_name, c.column_name, c.data_type, c.udt_name, "
+        "c.character_maximum_length, c.numeric_precision, c.numeric_scale, "
+        "c.is_nullable, c.column_default "
+        "FROM information_schema.columns c "
+        "JOIN information_schema.tables t "
+        "ON t.table_schema = c.table_schema AND t.table_name = c.table_name "
+        "WHERE c.table_schema NOT IN ('information_schema', 'pg_catalog') "
+        "AND t.table_type = 'BASE TABLE' "
+        "ORDER BY c.table_name, c.ordinal_position"
+    )
+    for row in column_rows:
+        table, name, data_type, udt_name = (str(v) for v in row[:4])
+        char_length, precision, scale, is_nullable, default = row[4:9]
+        columns_by_table.setdefault(table.lower(), {})[name.lower()] = (
+            IntrospectedColumn(
+                raw_type=_postgres_column_type(
+                    data_type, udt_name, char_length, precision, scale
+                ),
+                nullable=str(is_nullable).upper() == "YES",
+                primary_key=False,
+                default=None if default is None else str(default),
+            )
+        )
+
+    primary_keys: Dict[str, Tuple[str, ...]] = {}
+    indexes: Dict[str, Dict[str, IntrospectedIndex]] = {}
+    try:
+        index_rows = yield (
+            "SELECT t.relname, i.relname, ix.indisunique, ix.indisprimary, "
+            "a.attname "
+            "FROM pg_catalog.pg_index ix "
+            "JOIN pg_catalog.pg_class t ON t.oid = ix.indrelid "
+            "JOIN pg_catalog.pg_class i ON i.oid = ix.indexrelid "
+            "JOIN pg_catalog.pg_namespace n ON n.oid = t.relnamespace "
+            "CROSS JOIN LATERAL unnest(ix.indkey) WITH ORDINALITY AS k(attnum, ord) "
+            "LEFT JOIN pg_catalog.pg_attribute a "
+            "ON a.attrelid = t.oid AND a.attnum = k.attnum "
+            "WHERE t.relkind IN ('r', 'p') "
+            "AND n.nspname NOT IN ('information_schema', 'pg_catalog') "
+            "ORDER BY t.relname, i.relname, k.ord"
+        )
+        index_columns: Dict[Tuple[str, str, bool, bool], List[Optional[str]]] = {}
+        for table, index, unique, primary, attname in index_rows:
+            key = (str(table).lower(), str(index).lower(), bool(unique), bool(primary))
+            index_columns.setdefault(key, []).append(
+                None if attname is None else str(attname).lower()
+            )
+        for (table, index, unique, primary), names in index_columns.items():
+            if any(name is None for name in names):
+                # An expression index has no column name for that key part.
+                # It cannot be compared against a model's column list, so it
+                # is left out of the schema rather than crashing the read.
+                continue
+            key_columns = tuple(cast(str, name) for name in names)
+            if primary:
+                primary_keys[table] = key_columns
+            else:
+                indexes.setdefault(table, {})[index] = IntrospectedIndex(
+                    key_columns, unique
+                )
+    except Exception:
+        # No pg_index to read; degrade to columns without keys or indexes.
+        pass
+
+    foreign_keys: Dict[str, Dict[str, str]] = {}
+    try:
+        fk_rows = yield (
+            "SELECT src.table_name, src.column_name, "
+            "tgt.table_name, tgt.column_name "
+            "FROM information_schema.referential_constraints rc "
+            "JOIN information_schema.key_column_usage src "
+            "ON src.constraint_schema = rc.constraint_schema "
+            "AND src.constraint_name = rc.constraint_name "
+            "JOIN information_schema.key_column_usage tgt "
+            "ON tgt.constraint_schema = rc.unique_constraint_schema "
+            "AND tgt.constraint_name = rc.unique_constraint_name "
+            "AND tgt.ordinal_position = src.position_in_unique_constraint "
+            "WHERE rc.constraint_schema NOT IN ('information_schema', 'pg_catalog') "
+            "ORDER BY rc.constraint_name, src.ordinal_position"
+        )
+        for table, column, ref_table, ref_column in fk_rows:
+            foreign_keys.setdefault(str(table).lower(), {})[
+                str(column).lower()
+            ] = f"{ref_table}.{ref_column}".lower()
+    except Exception:
+        # No referential views to read; degrade to no foreign keys.
+        pass
+
+    schema = {}
+    for table, columns in columns_by_table.items():
+        pk = primary_keys.get(table, ())
+        for pk_col in pk:
+            if pk_col in columns:
+                columns[pk_col] = columns[pk_col]._replace(primary_key=True)
+        schema[table] = IntrospectedTable(
+            columns=columns,
+            primary_key=pk,
+            foreign_keys=foreign_keys.get(table, {}),
+            indexes=indexes.get(table, {}),
         )
     return schema
 

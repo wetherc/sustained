@@ -293,7 +293,7 @@ class TestAsyncIntrospection(unittest.IsolatedAsyncioTestCase):
                     raise RuntimeError("no constraint views here")
                 return [], [("shows", "id", "integer", "NO", None)]
 
-        schema = await async_introspect_schema(Adapter(), Dialects.POSTGRES)
+        schema = await async_introspect_schema(Adapter(), Dialects.MSSQL)
         self.assertEqual(list(schema), ["shows"])
         self.assertEqual(schema["shows"].primary_key, ())
 

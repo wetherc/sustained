@@ -570,8 +570,18 @@ class TestAlterGeneration(unittest.TestCase):
     def _connection(self, email_type, email_nullable):
         return FakeConnection(
             [
-                ("pg_users", "id", "integer", "NO", None),
-                ("pg_users", "email", email_type, email_nullable, None),
+                ("pg_users", "id", "integer", "int4", None, None, None, "NO", None),
+                (
+                    "pg_users",
+                    "email",
+                    email_type,
+                    email_type,
+                    None,
+                    None,
+                    None,
+                    email_nullable,
+                    None,
+                ),
             ]
         )
 
@@ -764,7 +774,7 @@ class IntrospectionPlanTestCase(unittest.TestCase):
             return IntrospectionPlanTestCase.Cursor(self)
 
     def test_blocking_driver_degrades_to_columns(self):
-        schema = introspect_schema(self.Connection(), Dialects.POSTGRES)
+        schema = introspect_schema(self.Connection(), Dialects.MSSQL)
         self.assertEqual(list(schema), ["shows"])
         self.assertEqual(schema["shows"].primary_key, ())
         self.assertFalse(schema["shows"].columns["id"].nullable)
