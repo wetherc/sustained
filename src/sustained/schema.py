@@ -9,7 +9,8 @@ supported dialect.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+import enum as _pyenum
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Tuple, Union
 
 from sustained.types import Expression, SqlValue
 
@@ -38,6 +39,9 @@ class ColumnDef:
         backfill: A value or Expression used to fill existing rows when
             migration autogeneration adds this column as NOT NULL or
             tightens it to NOT NULL.
+        enum_name: The name of the enum type, for ENUM columns. Postgres
+            creates a type object with this name.
+        enum_values: The permitted values of an ENUM column, in order.
     """
 
     def __init__(
@@ -54,6 +58,8 @@ class ColumnDef:
         references: Optional[str] = None,
         autoincrement: bool = False,
         backfill: SqlValue = None,
+        enum_name: Optional[str] = None,
+        enum_values: Optional[Sequence[str]] = None,
     ) -> None:
         if autoincrement and type_name not in ("INTEGER", "BIGINT"):
             raise ValueError("autoincrement requires an Integer or BigInteger column.")
@@ -61,6 +67,21 @@ class ColumnDef:
             raise ValueError("autoincrement requires primary_key=True.")
         if references is not None and "." not in references:
             raise ValueError("references must be a 'table.column' string.")
+        if type_name == "ENUM":
+            enum_values = _checked_enum_values(enum_name, enum_values)
+            if (
+                default is not None
+                and not isinstance(default, Expression)
+                and default not in enum_values
+            ):
+                raise ValueError(
+                    f"Default {default!r} is not a value of enum "
+                    f"'{enum_name}'. Values: {', '.join(enum_values)}."
+                )
+        elif enum_name is not None or enum_values is not None:
+            raise ValueError(
+                "enum_name and enum_values are only valid on an ENUM column."
+            )
         self.type_name = type_name
         self.length = length
         self.precision = precision
@@ -72,6 +93,33 @@ class ColumnDef:
         self.references = references
         self.autoincrement = autoincrement
         self.backfill = backfill
+        self.enum_name = enum_name
+        self.enum_values: Optional[Tuple[str, ...]] = (
+            tuple(enum_values) if enum_values is not None else None
+        )
+
+
+def _checked_enum_values(
+    enum_name: Optional[str], enum_values: Optional[Sequence[str]]
+) -> Tuple[str, ...]:
+    """Validates the name and value list of an ENUM column."""
+    if not enum_name:
+        raise ValueError(
+            "An enum column needs a name. Pass name='...'; the name "
+            "identifies the type in the database and in diffs."
+        )
+    if not enum_values:
+        raise ValueError(f"Enum '{enum_name}' needs at least one value.")
+    values = tuple(enum_values)
+    for value in values:
+        if not isinstance(value, str) or not value:
+            raise ValueError(
+                f"Enum '{enum_name}' values must be non-empty strings; "
+                f"got {value!r}."
+            )
+    if len(set(values)) != len(values):
+        raise ValueError(f"Enum '{enum_name}' has duplicate values.")
+    return values
 
 
 class TableOptions:
@@ -174,6 +222,96 @@ def Json(**kwargs: Any) -> ColumnDef:
     return ColumnDef("JSON", **kwargs)
 
 
+def Enum(
+    *values: Union[str, type],
+    name: str,
+    **kwargs: Any,
+) -> ColumnDef:
+    """
+    An enumerated string column: a named, ordered list of permitted
+    values. Pass the values as strings, or pass one Python enum.Enum
+    class whose member values are strings.
+
+    `name` is required. A Postgres enum is a database object with its own
+    identity; an explicit name gives stable diffs and lets two models
+    share one type. The same name with the same values in two models is
+    one type; the same name with different values is an error.
+
+    Rendering follows the dialect: Postgres and DuckDB create a named
+    type, MySQL renders an inline ENUM(...), and ANSI, SQLite, and MSSQL
+    render VARCHAR with a named CHECK constraint. Presto and Athena
+    refuse the column. Hydrated values stay plain strings.
+    """
+    if (
+        len(values) == 1
+        and isinstance(values[0], type)
+        and issubclass(values[0], _pyenum.Enum)
+    ):
+        members = [member.value for member in values[0]]
+        for member in members:
+            if not isinstance(member, str):
+                raise ValueError(
+                    f"Enum '{name}' takes an enum class with string "
+                    f"values; member value {member!r} is not a string."
+                )
+        value_list: List[str] = members
+    else:
+        value_list = []
+        for value in values:
+            if not isinstance(value, str):
+                raise ValueError(
+                    f"Enum '{name}' values must be strings or one "
+                    f"enum.Enum class; got {value!r}."
+                )
+            value_list.append(value)
+    return ColumnDef("ENUM", enum_name=name, enum_values=value_list, **kwargs)
+
+
+def collect_enum_types(columns: Dict[str, ColumnDef]) -> Dict[str, Tuple[str, ...]]:
+    """
+    The enum types the columns use, name to value tuple. Two columns may
+    share a type when their values match; the same name with different
+    values raises.
+    """
+    types: Dict[str, Tuple[str, ...]] = {}
+    for column_name, col in columns.items():
+        if col.type_name != "ENUM":
+            continue
+        assert col.enum_name is not None and col.enum_values is not None
+        known = types.get(col.enum_name)
+        if known is not None and known != col.enum_values:
+            raise ValueError(
+                f"Enum '{col.enum_name}' is declared twice with different "
+                f"values: {', '.join(known)} versus "
+                f"{', '.join(col.enum_values)}."
+            )
+        types[col.enum_name] = col.enum_values
+    return types
+
+
+def bare_table_name(table_sql: str) -> str:
+    """
+    The unquoted table name at the end of a rendered table reference,
+    for building constraint names.
+    """
+    last = table_sql.rsplit(".", 1)[-1]
+    return last.strip('"`[]')
+
+
+def enum_check_constraint_sql(
+    compiler: "Compiler", table_name: str, column_name: str, col: ColumnDef
+) -> str:
+    """
+    Renders the named CHECK constraint that holds an enum column to its
+    values, on dialects without an enum type.
+    """
+    assert col.enum_values is not None
+    constraint = compiler.quote_identifier(f"ck_{table_name}_{column_name}_enum")
+    column_sql = compiler.quote_identifier(column_name)
+    values_sql = ", ".join(compiler.format_value(v) for v in col.enum_values)
+    return f"CONSTRAINT {constraint} CHECK ({column_sql} IN ({values_sql}))"
+
+
 def render_column_sql(
     compiler: "Compiler",
     name: str,
@@ -251,6 +389,14 @@ def build_create_table_sql(
                 f"{reference_target_sql(compiler, col.references)}"
             )
 
+    if compiler.enum_strategy() == "check":
+        table_name = bare_table_name(table_sql)
+        for name, col in columns.items():
+            if col.type_name == "ENUM":
+                table_constraints.append(
+                    enum_check_constraint_sql(compiler, table_name, name, col)
+                )
+
     body = ", ".join(column_parts + list(extras or []) + table_constraints)
     suffix = compiler.compile_table_options(options)
     suffix_sql = f" {suffix}" if suffix else ""
@@ -271,6 +417,9 @@ __all__ = [
     "Date",
     "Timestamp",
     "Json",
+    "Enum",
     "build_create_table_sql",
+    "collect_enum_types",
+    "enum_check_constraint_sql",
     "Expression",
 ]

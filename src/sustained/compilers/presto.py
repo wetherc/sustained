@@ -1,11 +1,24 @@
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from .base import Compiler
+
+if TYPE_CHECKING:
+    from sustained.schema import ColumnDef
 
 
 class PrestoCompiler(Compiler):
     def quote_identifier(self, identifier: str) -> str:
         return f'"{identifier}"'
+
+    def validate_column_def(self, column: "ColumnDef") -> None:
+        if column.type_name == "ENUM":
+            from sustained.exceptions import DialectError
+
+            raise DialectError(
+                "Presto has no enum types and cannot enforce a value "
+                "list. Use String() and validate values in the "
+                "application."
+            )
 
     def compile_upsert_statement(
         self,

@@ -204,10 +204,28 @@ class Compiler:
         "JSON": "JSON",
     }
 
+    def enum_strategy(self) -> str:
+        """
+        How this dialect renders an enum column. One of:
+
+        - 'native': a named type object, created with CREATE TYPE and
+          referenced by name (Postgres, DuckDB).
+        - 'inline': the value list written into the column type
+          (MySQL ENUM('a', 'b')).
+        - 'check': VARCHAR sized to the longest value, held to the list
+          by a named CHECK constraint (ANSI, SQLite, MSSQL).
+
+        Presto and Athena refuse enum columns in validate_column_def,
+        so their strategy is never consulted.
+        """
+        return "check"
+
     def compile_column_type(self, column: "ColumnDef") -> str:
         """
         Renders a ColumnDef's logical type as this dialect's SQL type.
         """
+        if column.type_name == "ENUM":
+            return self.compile_enum_column_type(column)
         base = self._TYPE_MAP.get(column.type_name)
         if base is None:
             raise ValueError(f"Unknown column type: {column.type_name!r}.")
@@ -216,6 +234,53 @@ class Compiler:
         if column.type_name == "NUMERIC" and column.precision is not None:
             return f"{base}({column.precision}, {column.scale})"
         return base
+
+    def compile_enum_column_type(self, column: "ColumnDef") -> str:
+        """
+        Renders an ENUM column's type per the dialect's enum strategy.
+        """
+        assert column.enum_name is not None and column.enum_values is not None
+        strategy = self.enum_strategy()
+        if strategy == "native":
+            return self.quote_identifier(column.enum_name)
+        if strategy == "inline":
+            values_sql = ", ".join(self.format_value(v) for v in column.enum_values)
+            return f"ENUM({values_sql})"
+        longest = max(len(v) for v in column.enum_values)
+        return f"{self._TYPE_MAP['VARCHAR']}({longest})"
+
+    def compile_create_enum_type(self, name: str, values: "list[str]") -> str:
+        """
+        Renders CREATE TYPE for a named enum, on dialects that have one.
+        """
+        from sustained.exceptions import DialectError
+
+        raise DialectError(
+            f"The '{self._dialect.name}' dialect has no named enum types. "
+            "Enum columns render per the dialect's enum strategy instead."
+        )
+
+    def compile_drop_enum_type(self, name: str, if_exists: bool = False) -> str:
+        """
+        Renders DROP TYPE for a named enum, on dialects that have one.
+        """
+        from sustained.exceptions import DialectError
+
+        raise DialectError(
+            f"The '{self._dialect.name}' dialect has no named enum types " "to drop."
+        )
+
+    def compile_add_enum_value(self, name: str, value: str) -> str:
+        """
+        Renders the statement that appends one value to a named enum
+        type, on dialects that can.
+        """
+        from sustained.exceptions import DialectError
+
+        raise DialectError(
+            f"The '{self._dialect.name}' dialect cannot add a value to an "
+            "enum type in place."
+        )
 
     def compile_identity(self) -> str:
         """

@@ -20,7 +20,8 @@ from sustained.migrations import Migration, migration_sql
 _COMMENT_RE = re.compile(r"--[^\n]*|/\*.*?\*/", re.DOTALL)
 _WHITESPACE_RE = re.compile(r"\s+")
 _DESTRUCTIVE_RE = re.compile(
-    r"\bDROP\s+TABLE\b|\bDROP\s+COLUMN\b|\bTRUNCATE\b", re.IGNORECASE
+    r"\bDROP\s+TABLE\b|\bDROP\s+COLUMN\b|\bDROP\s+TYPE\b|\bTRUNCATE\b",
+    re.IGNORECASE,
 )
 # MySQL lets a column drop omit the COLUMN keyword. This matches
 # `ALTER TABLE <name> DROP <identifier>` while it skips drops of other
@@ -45,8 +46,8 @@ def normalize_statement(statement: str) -> str:
 def destructive_statements(statements: Union[str, Sequence[str]]) -> List[str]:
     """
     Returns the statements that remove data: DROP TABLE, DROP COLUMN,
-    TRUNCATE, and a MySQL-style column drop that omits the COLUMN
-    keyword (`ALTER TABLE t DROP col`). Drops of constraints, indexes,
+    DROP TYPE, TRUNCATE, and a MySQL-style column drop that omits the
+    COLUMN keyword (`ALTER TABLE t DROP col`). Drops of constraints, indexes,
     and keys are not labelled. Comments are removed and whitespace is
     collapsed, so each
     statement comes back on one line and a commented-out drop is not

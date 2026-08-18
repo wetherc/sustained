@@ -594,13 +594,13 @@ def _upgrade_column_def(name: str) -> "ColumnDef":
 def create_table_migration(model: Type["Model"]) -> Migration:
     """
     Builds a migration that creates the model's table from its tableColumns
-    on the way up and drops it on the way down. The migration id is
-    'create_<tableName>'.
+    on the way up and drops it on the way down, enum types included on
+    dialects that have them. The migration id is 'create_<tableName>'.
     """
     return Migration(
         id=f"create_{model.tableName}",
         up=model.create_table_statements(),
-        down=model.drop_table_sql(),
+        down=model.drop_table_statements(),
     )
 
 

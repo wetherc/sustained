@@ -45,7 +45,11 @@ from sustained.introspect import (
     type_params,
 )
 from sustained.migrations import Migration
-from sustained.schema import build_create_table_sql, render_column_sql
+from sustained.schema import (
+    build_create_table_sql,
+    collect_enum_types,
+    render_column_sql,
+)
 from sustained.types import Connection
 
 if TYPE_CHECKING:
@@ -584,9 +588,34 @@ def autogenerate(
             0, compiler.compile_rename_column(table_sql, new_name, old_name)
         )
 
+    # Enum types the new tables need, created once each, before any
+    # table that references them. A type already in the database is not
+    # recreated; a type two models share must agree on its values.
+    created_enum_types: List[str] = []
+    if diff.missing_tables and compiler.enum_strategy() == "native":
+        needed_types: Dict[str, Tuple[str, ...]] = {}
+        for model in diff.missing_tables:
+            for type_name, values in collect_enum_types(
+                model.tableColumns or {}
+            ).items():
+                known = needed_types.get(type_name)
+                if known is not None and known != values:
+                    raise ValueError(
+                        f"Enum '{type_name}' is declared with different "
+                        f"values in two models: {', '.join(known)} versus "
+                        f"{', '.join(values)}."
+                    )
+                needed_types[type_name] = values
+        existing_types = {name.lower() for name in actual.enum_types}
+        for type_name, values in needed_types.items():
+            if type_name.lower() in existing_types:
+                continue
+            up_steps.append(compiler.compile_create_enum_type(type_name, list(values)))
+            created_enum_types.append(type_name)
+
     for model in diff.missing_tables:
         assert model.tableColumns is not None
-        up_steps.extend(model.create_table_statements())
+        up_steps.extend(model.create_table_statements(include_enum_types=False))
         down_steps.insert(0, model.drop_table_sql())
 
     # Changed columns: ALTER in place where the dialect can, otherwise
@@ -751,6 +780,11 @@ def autogenerate(
             table_sql = compiler.quote_fully_qualified_identifier(table)
             up_steps.append(f"DROP TABLE {table_sql}")
             reversible = False
+
+    # Types created in this migration drop last on the way down, after
+    # every table that referenced them is gone.
+    for type_name in created_enum_types:
+        down_steps.append(compiler.compile_drop_enum_type(type_name))
 
     if not up_steps:
         return None

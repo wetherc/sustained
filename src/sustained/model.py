@@ -325,11 +325,36 @@ class Model(metaclass=ModelMeta):
         return statements
 
     @classmethod
-    def create_table_statements(cls, if_not_exists: bool = False) -> list[str]:
-        """The CREATE TABLE statement followed by its CREATE INDEX statements."""
-        return [
-            cls.create_table_sql(if_not_exists=if_not_exists)
-        ] + cls.create_indexes_sql()
+    def enum_types(cls) -> "dict[str, tuple[str, ...]]":
+        """
+        The enum types this model's columns use, name to value tuple.
+        Raises when one name carries two different value lists.
+        """
+        from sustained.schema import collect_enum_types
+
+        return collect_enum_types(cls.tableColumns or {})
+
+    @classmethod
+    def create_table_statements(
+        cls, if_not_exists: bool = False, include_enum_types: bool = True
+    ) -> list[str]:
+        """
+        The CREATE TABLE statement followed by its CREATE INDEX
+        statements. On a dialect with named enum types, CREATE TYPE
+        statements come first; pass include_enum_types=False when the
+        types are created elsewhere, as the migration generator does
+        for types shared across models. CREATE TYPE takes no IF NOT
+        EXISTS clause, so if_not_exists does not cover the types.
+        """
+        from sustained.dialects import Dialects
+
+        statements: list[str] = []
+        compiler = Dialects.get_compiler(cls._dialect)
+        if include_enum_types and compiler.enum_strategy() == "native":
+            for name, values in cls.enum_types().items():
+                statements.append(compiler.compile_create_enum_type(name, list(values)))
+        statements.append(cls.create_table_sql(if_not_exists=if_not_exists))
+        return statements + cls.create_indexes_sql()
 
     @classmethod
     def create_table(
@@ -353,14 +378,38 @@ class Model(metaclass=ModelMeta):
         return f"DROP TABLE {exists_sql}{cls._qualified_table_sql()}"
 
     @classmethod
+    def drop_table_statements(cls, if_exists: bool = True) -> list[str]:
+        """
+        The DROP TABLE statement, followed on a dialect with named enum
+        types by DROP TYPE for each type the model's columns use. A type
+        another table still uses fails to drop; the migration generator
+        handles shared types by reference count instead.
+        """
+        from sustained.dialects import Dialects
+
+        statements = [cls.drop_table_sql(if_exists=if_exists)]
+        compiler = Dialects.get_compiler(cls._dialect)
+        if compiler.enum_strategy() == "native":
+            for name in cls.enum_types():
+                statements.append(
+                    compiler.compile_drop_enum_type(name, if_exists=if_exists)
+                )
+        return statements
+
+    @classmethod
     def drop_table(
         cls, connection: Optional[Binding] = None, if_exists: bool = True
     ) -> None:
-        """Executes DROP TABLE for this model on the connection."""
+        """
+        Executes DROP TABLE for this model on the connection, followed by
+        DROP TYPE for its enum types on dialects that have them.
+        """
         from sustained.execution import connection_scope
 
         with connection_scope(connection, cls._connection) as conn:
-            conn.cursor().execute(cls.drop_table_sql(if_exists=if_exists))
+            cursor = conn.cursor()
+            for statement in cls.drop_table_statements(if_exists=if_exists):
+                cursor.execute(statement)
 
     @classmethod
     def transaction(

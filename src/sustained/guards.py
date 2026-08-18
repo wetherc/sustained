@@ -79,7 +79,9 @@ def warnings_only(verdicts: Sequence[Verdict]) -> List[Verdict]:
     return [v for v in verdicts if v.verdict == WARN]
 
 
-_DROP_RE = re.compile(r"\bDROP\s+(TABLE|COLUMN|VIEW|SCHEMA|DATABASE)\b", re.IGNORECASE)
+_DROP_RE = re.compile(
+    r"\bDROP\s+(TABLE|COLUMN|VIEW|SCHEMA|DATABASE|TYPE)\b", re.IGNORECASE
+)
 # MySQL lets a column drop omit the COLUMN keyword.
 _ALTER_DROP_RE = re.compile(
     r"\bALTER\s+TABLE\s+\S+\s+DROP\s+"
@@ -108,9 +110,9 @@ _LOCK_TIMEOUT_RE = re.compile(
 
 def no_drops() -> Guard:
     """
-    Blocks a statement that drops a table, a column, a view, a schema, or
-    a database. Drops of constraints, indexes, and keys pass: they remove
-    no data.
+    Blocks a statement that drops a table, a column, a view, a schema, a
+    database, or an enum type. Drops of constraints, indexes, and keys
+    pass: they remove no data.
     """
 
     def guard(statements: Sequence[str], dialect: Dialects) -> List[Verdict]:

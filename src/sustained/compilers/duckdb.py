@@ -56,3 +56,23 @@ class DuckDbCompiler(Compiler):
             "DuckDB has no identity columns. Use a sequence with a DEFAULT "
             "expression instead."
         )
+
+    def enum_strategy(self) -> str:
+        return "native"
+
+    def compile_create_enum_type(self, name: str, values: "list[str]") -> str:
+        values_sql = ", ".join(self.format_value(v) for v in values)
+        return f"CREATE TYPE {self.quote_identifier(name)} AS ENUM ({values_sql})"
+
+    def compile_drop_enum_type(self, name: str, if_exists: bool = False) -> str:
+        exists_sql = "IF EXISTS " if if_exists else ""
+        return f"DROP TYPE {exists_sql}{self.quote_identifier(name)}"
+
+    def compile_add_enum_value(self, name: str, value: str) -> str:
+        from sustained.exceptions import DialectError
+
+        raise DialectError(
+            "DuckDB cannot add a value to an enum type in place. Create a "
+            "new type, cast the column with ALTER COLUMN ... SET DATA TYPE, "
+            "then drop the old type."
+        )

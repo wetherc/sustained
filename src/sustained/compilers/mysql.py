@@ -71,6 +71,11 @@ class MysqlCompiler(Compiler):
     def compile_identity(self) -> str:
         return "AUTO_INCREMENT"
 
+    def enum_strategy(self) -> str:
+        # The value list is part of the column type; there is no separate
+        # type object to create or drop.
+        return "inline"
+
     def validate_column_def(self, column: "ColumnDef") -> None:
         if column.type_name not in _OFF_ROW_TYPES:
             return
