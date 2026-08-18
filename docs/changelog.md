@@ -10,6 +10,17 @@ Version numbers follow semantic versioning. A major version marks a change
 that can break working code. A minor version adds behaviour. A patch version
 fixes a defect without changing the surface.
 
+## 2.20.0 (2026-08-18)
+
+### Changed
+
+- The row a rehearsal writes is called a rehearsal row throughout the documentation and the code, in place of the earlier word "receipt". `rehearsal_key()` replaces `receipt_key()` in `sustained.migrations`, and the outcome constants are `REHEARSAL_PASSED`, `REHEARSAL_FAILED`, and `REHEARSAL_OVERRIDE`. The stored table, its column names, and every key a database already holds are untouched, so a rehearsal recorded by an earlier version still opens the gate.
+- `sustained rehearse` prints `rehearsal row recorded`, and a scratch run that covered too little prints `rehearsal row not recorded`, where both lines said `receipt` before. A script matching that text needs updating.
+
+### Deprecated
+
+- `receipt_key()`, `RECEIPT_PASSED`, `RECEIPT_FAILED`, and `RECEIPT_OVERRIDE` in `sustained.migrations`. Each still imports and raises a `DeprecationWarning` naming its replacement, and goes away in 3.0.
+
 ## 2.19.0 (2026-08-17)
 
 ### Added
@@ -137,8 +148,8 @@ fixes a defect without changing the surface.
 - `Migrator.up()` and `AsyncMigrator.up()` refuse to apply a statement that removes data, meaning a DROP TABLE, a column drop, or a TRUNCATE, unless a passing rehearsal row covers that exact set. The error names the migration and the statement. `up(unrehearsed=True)` applies them anyway, and `sustained migrate --unrehearsed` is the same door from the shell. A run that only adds is never gated and never reads the table.
 - A rehearsal also records a row for each shorter run a `--target` would produce that removes data, since it applied and reverted those on its way through. One rehearsal covers the whole run and every target within it.
 - `RehearsalRequired`, in `sustained.exceptions` and re-exported at the package root, is what the refusal raises.
-- `record_rehearsal(key, outcome)`, `rehearsal_outcome(key)`, and `rehearsed(key)` on both migrators, and `receipt_key(applied, run)` in `sustained.migrations`, for recording and reading a rehearsal row directly.
-- `rehearse --json` gains `key` and `recorded`, and the plain report prints `receipt recorded` when the proof lands.
+- `record_rehearsal(key, outcome)`, `rehearsal_outcome(key)`, and `rehearsed(key)` on both migrators, and `rehearsal_key(applied, run)` in `sustained.migrations`, for recording and reading a rehearsal row directly.
+- `rehearse --json` gains `key` and `recorded`, and the plain report prints `rehearsal row recorded` when the proof lands.
 - The `Migrator` and `AsyncMigrator` constructors take `rehearsal_table`, and the CLI config module takes the same name.
 
 ### Changed

@@ -481,7 +481,7 @@ Rehearse, and the same command goes through:
 $ sustained rehearse
 rehearsed 004_trim  up ok, down ok, reversed
 rollback complete, database unchanged
-receipt recorded
+rehearsal row recorded
 
 $ sustained migrate
 applied  004_trim
@@ -542,7 +542,7 @@ Through the API, `rehearse(scratch=True)` writes nothing at all. Take the key of
 ```python
 rehearsal = scratch_migrator.rehearse(scratch=True)
 if rehearsal.ok:
-    real_migrator.record_rehearsal(receipt_key(
+    real_migrator.record_rehearsal(rehearsal_key(
         real_migrator.applied_records(), real_migrator.pending()
     ))
 ```

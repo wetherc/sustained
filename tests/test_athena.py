@@ -314,7 +314,7 @@ class TestAthenaMigrator(unittest.TestCase):
         self.assertIn("LOCATION 's3://bucket/meta/'", create)
         self.assertIn("TBLPROPERTIES ('table_type'='ICEBERG')", create)
 
-    def test_receipt_table_has_no_constraints_either(self):
+    def test_rehearsal_table_has_no_constraints_either(self):
         conn = FakeAthenaConnection()
         self._migrator(conn, []).record_rehearsal("0" * 64)
         create = next(

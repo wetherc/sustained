@@ -201,10 +201,10 @@ rehearsed 003_sessions  up ok, down ok, reversed
 rehearsed 004_trim      up ok, down ok, reversed
 rehearsed vw_active     up ok, no down step (repeatable)
 rollback complete, database unchanged
-receipt recorded
+rehearsal row recorded
 ```
 
-`receipt recorded` means the row was written where `migrate` will read it.
+`rehearsal row recorded` means the row was written where `migrate` will read it.
 The words after the id are the proofs, in order: `up ok`, `landed` for the
 migration generated from the config's `models`, `down ok`, and `reversed`. A
 check that failed reads `not landed` or `not reversed`, with the objects listed

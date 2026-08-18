@@ -8,9 +8,9 @@ import unittest
 from sustained.aio import DbApiAsyncAdapter
 from sustained.aio_migrations import AsyncMigrator
 from sustained.exceptions import RehearsalRequired
-from sustained.migrations import RECEIPT_FAILED, RECEIPT_PASSED, Migration
+from sustained.migrations import REHEARSAL_FAILED, REHEARSAL_PASSED, Migration
 
-# What a rehearsal leaves behind: the tracking table and the receipt it
+# What a rehearsal leaves behind: the tracking table and the row it
 # earned, both created by the rehearsal itself.
 SUSTAINED_TABLES = {"sustained_migrations", "sustained_rehearsals"}
 
@@ -417,7 +417,7 @@ class TestAsyncRehearse(unittest.IsolatedAsyncioTestCase):
         # statements runnable here.
         migrator._compiler = Dialects.get_compiler(Dialects.DEFAULT)
         self.assertEqual(len(await migrator.rehearse(scratch=True)), 3)
-        # A scratch rehearsal writes no receipt.
+        # A scratch rehearsal writes no row.
         self.assertEqual(table_names(self.conn), {"sustained_migrations"})
 
     async def test_rehearse_refuses_inside_an_open_transaction(self):
@@ -465,8 +465,8 @@ class TestAsyncRehearse(unittest.IsolatedAsyncioTestCase):
         self.assertIs(migrator.adapter, self.adapter)
 
 
-class TestAsyncReceipts(unittest.IsolatedAsyncioTestCase):
-    """The async gate reads the same receipts the sync one writes."""
+class TestAsyncRehearsalRows(unittest.IsolatedAsyncioTestCase):
+    """The async gate reads the same rows the sync one writes."""
 
     def setUp(self):
         self.conn = sqlite3.connect(":memory:", check_same_thread=False)
@@ -488,7 +488,7 @@ class TestAsyncReceipts(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(rehearsal.recorded)
         self.assertTrue(await migrator.rehearsed(rehearsal.key))
         self.assertEqual(
-            await migrator.rehearsal_outcome(rehearsal.key), RECEIPT_PASSED
+            await migrator.rehearsal_outcome(rehearsal.key), REHEARSAL_PASSED
         )
 
     async def test_a_failing_rehearsal_records_the_failure(self):
@@ -497,7 +497,7 @@ class TestAsyncReceipts(unittest.IsolatedAsyncioTestCase):
         rehearsal = await migrator.rehearse()
         self.assertFalse(rehearsal.ok)
         self.assertEqual(
-            await migrator.rehearsal_outcome(rehearsal.key), RECEIPT_FAILED
+            await migrator.rehearsal_outcome(rehearsal.key), REHEARSAL_FAILED
         )
 
     async def test_an_unrehearsed_drop_is_refused(self):
@@ -513,7 +513,7 @@ class TestAsyncReceipts(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await migrator.up(), ["001_drop"])
         self.assertNotIn("gate_old", table_names(self.conn))
 
-    async def test_the_override_runs_without_a_receipt(self):
+    async def test_the_override_runs_without_a_rehearsal_row(self):
         migrator = AsyncMigrator(self.adapter, [self.drop])
         self.assertEqual(await migrator.up(unrehearsed=True), ["001_drop"])
 
@@ -545,9 +545,11 @@ class TestAsyncReceipts(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("gate_new", table_names(self.conn))
 
     async def test_a_key_recorded_by_the_sync_migrator_is_accepted(self):
-        from sustained.migrations import Migrator, receipt_key
+        from sustained.migrations import Migrator, rehearsal_key
 
-        Migrator(self.conn, [self.drop]).record_rehearsal(receipt_key([], [self.drop]))
+        Migrator(self.conn, [self.drop]).record_rehearsal(
+            rehearsal_key([], [self.drop])
+        )
         migrator = AsyncMigrator(self.adapter, [self.drop])
         self.assertEqual(await migrator.up(), ["001_drop"])
 

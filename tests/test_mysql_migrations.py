@@ -124,7 +124,7 @@ class TestMysqlRehearsal(unittest.TestCase):
         self.assertIn("CREATE TABLE t1 (id INT)", conn.log)
         self.assertIn("DROP TABLE t1", conn.log)
 
-    def test_a_scratch_rehearsal_records_no_receipt(self):
+    def test_a_scratch_rehearsal_records_no_row(self):
         conn = FakeMysqlConnection()
         migration = Migration(
             "one", up="CREATE TABLE t1 (id INT)", down="DROP TABLE t1"

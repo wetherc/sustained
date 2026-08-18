@@ -378,11 +378,11 @@ class TestSqliteRebuild(AutogenTestCase):
         migration = autogenerate(self.conn, [changed], id="rb1")
         self.assertIsNone(migration.down)
         # A SQLite rebuild drops the old table, so the run needs
-        # either a receipt or the recorded override.
+        # either a rehearsal row or the recorded override.
         Migrator(self.conn, [migration]).up(unrehearsed=True)
         rows = self.conn.execute("SELECT id, email FROM ag_users").fetchall()
         self.assertEqual(rows, [(1, "a@x")])
-        # The override the run recorded lives in the receipt table, which
+        # The override the run recorded lives in the rehearsal table, which
         # the models do not declare.
         self.assertTrue(
             diff_schema(
@@ -434,7 +434,7 @@ class TestSqliteRebuild(AutogenTestCase):
         self.User.tableColumns["status"] = String(10, nullable=False, backfill="new")
         migration = autogenerate(self.conn, [self.User], id="rb2")
         # A SQLite rebuild drops the old table, so the run needs
-        # either a receipt or the recorded override.
+        # either a rehearsal row or the recorded override.
         Migrator(self.conn, [migration]).up(unrehearsed=True)
         rows = self.conn.execute("SELECT status FROM ag_users").fetchall()
         self.assertEqual(rows, [("new",)])

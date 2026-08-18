@@ -165,12 +165,17 @@ raises `RehearsalRequired` when none covers the content. A callable step
 renders no SQL, so it never triggers the check.
 
 ```python
-receipt_key(applied, run) -> str
+rehearsal_key(applied, run) -> str
 ```
 
 The key both sides compute: a SHA-256 over the checksums of the successful
 rows in `applied`, then the checksums of the migrations in `run`. Ids are
 hashed only for a callable step with no checksum, as the token `id:<id>`.
+
+This function was called `receipt_key()` before version 2.20.0, and the
+outcome constants were `RECEIPT_PASSED`, `RECEIPT_FAILED`, and
+`RECEIPT_OVERRIDE`. The old names still import from `sustained.migrations`,
+raise a `DeprecationWarning`, and are removed in 3.0.
 
 ### Rendering without running
 
@@ -236,7 +241,7 @@ Three columns, named by default `sustained_rehearsals`, created on first use:
 
 | Column | Type | Holds |
 | --- | --- | --- |
-| `rehearsal_key` | `VARCHAR(64)` primary key | The key `receipt_key()` computes |
+| `rehearsal_key` | `VARCHAR(64)` primary key | The key `rehearsal_key()` computes |
 | `outcome` | `VARCHAR(16)` not null | `passed` or `failed` |
 | `rehearsed_at` | `TEXT` not null | When the rehearsal ran |
 
@@ -250,7 +255,7 @@ as drift or as an object a down step left behind.
 | `migration_checksum(migration)` | `str` or `None` | The checksum validation compares. `None` for a callable step with no explicit checksum. |
 | `create_table_migration(model)` | `Migration` | A create/drop pair derived from a model. |
 | `migration_sql(migration, direction='up')` | `list[str]` | One migration's statements, for offline review. A callable step renders as a comment. Raises `ValueError` when that step is `None`. |
-| `receipt_key(applied, run)` | `str` | The key a rehearsal row is stored under. |
+| `rehearsal_key(applied, run)` | `str` | The key a rehearsal row is stored under. |
 | `rehearsal_failed(result)` | `bool` | Whether one result stops a rehearsal from passing. |
 | `run_statements(run)` | `list[str]` | Every up statement a run would apply, callable steps skipped. |
 | `check_guards(guards, run, dialect, reported=None)` | `None` | Runs the guards over a run. Raises `GuardBlocked` on a blocking verdict, prints warnings on stderr. |

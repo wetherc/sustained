@@ -189,7 +189,7 @@ class TestLockingRun(unittest.TestCase):
         # psycopg, so it closes before BEGIN rather than warning.
         self.assertEqual(conn.log[begin_at - 1], "<rollback>")
 
-    def test_rehearsal_commits_only_its_receipt(self):
+    def test_rehearsal_commits_only_its_rehearsal_row(self):
         conn = FakePostgresConnection()
         migration = Migration(
             "one", up="CREATE TABLE t1 (id INTEGER)", down="DROP TABLE t1"
@@ -201,7 +201,7 @@ class TestLockingRun(unittest.TestCase):
         rollback_at = conn.log.index("ROLLBACK")
         commits = [i for i, line in enumerate(conn.log) if line == "<commit>"]
         # Everything the rehearsal itself ran is inside the rolled-back
-        # transaction; only the receipt written afterwards commits.
+        # transaction; only the rehearsal row written afterwards commits.
         self.assertTrue(commits)
         self.assertTrue(all(i > rollback_at for i in commits))
         self.assertIn(
@@ -210,13 +210,13 @@ class TestLockingRun(unittest.TestCase):
             conn.log,
         )
 
-    def test_receipt_lands_before_the_lock_is_released(self):
+    def test_the_row_lands_before_the_lock_is_released(self):
         conn = FakePostgresConnection()
         migration = Migration(
             "one", up="CREATE TABLE t1 (id INTEGER)", down="DROP TABLE t1"
         )
         self._migrator(conn, [migration]).rehearse()
-        receipt_at = max(
+        row_at = max(
             i
             for i, line in enumerate(conn.log)
             if line.startswith('INSERT INTO "sustained_rehearsals"')
@@ -224,7 +224,7 @@ class TestLockingRun(unittest.TestCase):
         unlock_at = conn.log.index(
             "SELECT pg_advisory_unlock(hashtext('sustained_migrations'))"
         )
-        self.assertLess(receipt_at, unlock_at)
+        self.assertLess(row_at, unlock_at)
 
 
 if __name__ == "__main__":

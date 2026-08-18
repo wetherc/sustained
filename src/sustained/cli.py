@@ -14,7 +14,7 @@ The config module names the pieces the migrator needs:
   between the models and the database (optional)
 - `dialect`: a Dialects member or its name, such as 'postgres' (optional)
 - `table`: the tracking table name (optional)
-- `rehearsal_table`: the receipt table name (optional)
+- `rehearsal_table`: the rehearsal table name (optional)
 - `tracking_table_options`: TableOptions for the tracking table (optional)
 - `get_rehearsal_connection()`: a connection to a scratch database, which
   `rehearse` then uses instead of the real one (optional)
@@ -77,8 +77,8 @@ from sustained.migrations import (
     RehearsalResult,
     _destructive_prefix_keys,
     migration_sql,
-    receipt_key,
     rehearsal_failed,
+    rehearsal_key,
 )
 from sustained.types import Connection
 
@@ -242,7 +242,7 @@ def _migrate_drift_statements(
     return migration_sql(migration, "up")
 
 
-def _receipt_covers(migrator: Migrator, config: ModuleType) -> bool:
+def _rehearsal_row_covers(migrator: Migrator, config: ModuleType) -> bool:
     """
     Whether a passing rehearsal already covers the run migrate would make,
     so the plan can point at migrate instead of rehearse.
@@ -253,13 +253,13 @@ def _receipt_covers(migrator: Migrator, config: ModuleType) -> bool:
     real run diffs the models after the pending migrations have applied,
     and a pending migration that changes the same tables moves the
     generated statements, and with them the key. A wrong guess costs a
-    stale suggestion; migrate still reads the receipt itself.
+    stale suggestion; migrate still reads the row itself.
     """
     pending = migrator.pending()
     if not pending:
         return False
     records = migrator.applied_records()
-    if migrator.rehearsed(receipt_key(records, pending)):
+    if migrator.rehearsed(rehearsal_key(records, pending)):
         return True
     models = getattr(config, "models", None)
     if not models:
@@ -267,7 +267,7 @@ def _receipt_covers(migrator: Migrator, config: ModuleType) -> bool:
     generated = migrator.plan(list(models))
     if generated is None:
         return False
-    return migrator.rehearsed(receipt_key(records, pending + [generated]))
+    return migrator.rehearsed(rehearsal_key(records, pending + [generated]))
 
 
 def _print_pending(summaries: List[PendingSummary]) -> None:
@@ -449,7 +449,7 @@ def _cmd_plan(migrator: Migrator, args: argparse.Namespace, config: ModuleType) 
         # migrate never generates drops, so a drift section holding
         # nothing else is not work it can do.
         closable = [s for s in drift or [] if not destructive_statements([s])]
-        if any(s.destructive for s in summaries) and not _receipt_covers(
+        if any(s.destructive for s in summaries) and not _rehearsal_row_covers(
             migrator, config
         ):
             # migrate refuses these until a rehearsal has proved them.
@@ -522,7 +522,7 @@ def _rehearsal_json(
     Prints the rehearsal as one JSON object. `landed` and `reversed` are
     null when the check did not run, an empty list when it passed, and
     the lines naming the trouble when it failed. `key` names the content
-    the run covered, and `recorded` says whether the receipt reached the
+    the run covered, and `recorded` says whether the row reached the
     database migrate will read.
     """
     _print_json(
@@ -546,18 +546,18 @@ def _rehearsal_json(
     )
 
 
-def _record_scratch_receipt(
+def _record_scratch_rehearsal_row(
     migrator: Migrator, results: Rehearsal
 ) -> Tuple[Optional[str], Optional[str]]:
     """
-    Writes the receipt a passing scratch rehearsal earned onto the real
+    Writes the row a passing scratch rehearsal earned onto the real
     database, where migrate will look for it. Returns the key and the
     line to print about it, either of which may be None.
 
     The scratch run starts from its own schema, so the key is computed
     against the real database's applied history and pending set. Nothing
     is written when the scratch run did not run every pending migration,
-    since the receipt would then cover statements nothing proved.
+    since the row would then cover statements nothing proved.
 
     A row also goes in for every destructive prefix of the versioned
     pending list, the keys a `migrate --target` reads. The scratch run
@@ -571,15 +571,15 @@ def _record_scratch_receipt(
     proved = {r.id for r in results if r.up_ok}
     if any(m.id not in proved for m in pending):
         return None, (
-            "receipt not recorded: the scratch run did not cover every "
+            "rehearsal row not recorded: the scratch run did not cover every "
             "pending migration"
         )
     records = migrator.applied_records()
-    key = receipt_key(records, pending)
+    key = rehearsal_key(records, pending)
     migrator.record_rehearsal(key)
     for prefix_key in _destructive_prefix_keys(records, pending):
         migrator.record_rehearsal(prefix_key)
-    return key, "receipt recorded"
+    return key, "rehearsal row recorded"
 
 
 def _cmd_rehearse(
@@ -593,7 +593,7 @@ def _cmd_rehearse(
         results = migrator.rehearse(models=models)
         key, recorded = results.key, results.recorded
         if recorded and results.ok:
-            note = "receipt recorded"
+            note = "rehearsal row recorded"
     else:
         connection = factory()
         try:
@@ -604,7 +604,7 @@ def _cmd_rehearse(
             _close_quietly(connection)
         key, recorded = results.key, False
         if results.ok:
-            target_key, note = _record_scratch_receipt(migrator, results)
+            target_key, note = _record_scratch_rehearsal_row(migrator, results)
             if target_key is not None:
                 key, recorded = target_key, True
     if args.json:
@@ -796,7 +796,7 @@ def _print_applied(error: BaseException) -> None:
     """
     Names the migrations that were already applied when a run stopped.
 
-    A run with models reads the guards and the receipt twice: once before
+    A run with models reads the guards and the rehearsal row twice: once before
     anything runs, and once more against the migration generated from the
     models, whose statements exist only after the registered migrations
     have applied. A stop at that second reading leaves work behind, and

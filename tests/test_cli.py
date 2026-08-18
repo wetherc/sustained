@@ -775,7 +775,7 @@ class RehearseCliTestCase(CliBase):
         self.assertEqual({r[0] for r in rows}, {"sustained_migrations"})
 
 
-class ReceiptCliTestCase(CliBase):
+class RehearsalRowCliTestCase(CliBase):
     """`migrate` asks for the proof `rehearse` left behind."""
 
     def setUp(self):
@@ -803,7 +803,7 @@ class ReceiptCliTestCase(CliBase):
     def test_rehearse_then_migrate_applies_it(self):
         code, out, _ = self.run_cli("rehearse")
         self.assertEqual(code, 0)
-        self.assertIn("receipt recorded", out)
+        self.assertIn("rehearsal row recorded", out)
         code, out, _ = self.run_cli("migrate")
         self.assertEqual(code, 0)
         self.assertIn("applied  003_trim", out)
@@ -820,7 +820,7 @@ class ReceiptCliTestCase(CliBase):
             rows = conn.execute("SELECT outcome FROM sustained_rehearsals").fetchall()
         self.assertEqual([r[0] for r in rows], ["override"])
 
-    def test_plan_points_at_migrate_once_the_receipt_covers_the_drop(self):
+    def test_plan_points_at_migrate_once_the_row_covers_the_drop(self):
         self.run_cli("rehearse")
         code, out, _ = self.run_cli("plan")
         self.assertEqual(code, 2)
@@ -834,7 +834,7 @@ class ReceiptCliTestCase(CliBase):
 
     def test_a_scratch_rehearsal_covers_a_targeted_run(self):
         # Two destructive migrations are pending, so the target stops
-        # short of the full pending set and reads a prefix receipt.
+        # short of the full pending set and reads a prefix row.
         self._write(
             os.path.join(self.dir.name, "migrations"),
             "004_users.up.sql",
@@ -868,7 +868,7 @@ class ReceiptCliTestCase(CliBase):
         self.assertIn("run: sustained rehearse", out)
         self.assertNotIn("run: sustained migrate", out)
 
-    def test_an_edit_after_the_rehearsal_voids_the_receipt(self):
+    def test_an_edit_after_the_rehearsal_voids_the_row(self):
         self.run_cli("rehearse")
         self._write(
             os.path.join(self.dir.name, "migrations"),
@@ -897,7 +897,7 @@ class ReceiptCliTestCase(CliBase):
         )
         # The scratch database already holds 003_trim, so the rehearsal
         # there runs 004_extra alone while both are pending on the real
-        # database. The receipt would cover a drop nothing proved.
+        # database. The row would cover a drop nothing proved.
         seed = f"scratch_seed_{id(self)}"
         with open(os.path.join(self.dir.name, f"{seed}.py"), "w") as f:
             f.write(CONFIG_TEMPLATE.replace('"cli.db"', '"scratch.db"'))
@@ -919,11 +919,11 @@ class ReceiptCliTestCase(CliBase):
         out = stdout.getvalue()
         self.assertEqual(code, 0)
         self.assertIn("rehearsed 004_extra", out)
-        self.assertIn("receipt not recorded", out)
+        self.assertIn("rehearsal row not recorded", out)
         self.assertNotIn("sustained_rehearsals", self.table_names())
 
     def test_a_scratch_rehearsal_records_on_the_real_database(self):
-        name = f"scratch_receipt_{id(self)}"
+        name = f"scratch_rehearsal_{id(self)}"
         with open(os.path.join(self.dir.name, f"{name}.py"), "w") as f:
             f.write(
                 CONFIG_TEMPLATE + "\n"
@@ -937,8 +937,8 @@ class ReceiptCliTestCase(CliBase):
         with contextlib.redirect_stdout(stdout):
             code = main(["rehearse", "--config", name])
         self.assertEqual(code, 0)
-        self.assertIn("receipt recorded", stdout.getvalue())
-        # The receipt landed on the real database, so the gate opens
+        self.assertIn("rehearsal row recorded", stdout.getvalue())
+        # The row landed on the real database, so the gate opens
         # there even though the proving happened elsewhere.
         code, out, _ = self.run_cli("migrate")
         self.assertEqual(code, 0)
