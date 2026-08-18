@@ -1,6 +1,6 @@
 # Changelog
 
-## 2.20.0 (2026-08-18)
+## 2.20.0
 
 ### Changed
 
@@ -11,7 +11,7 @@
 
 - `receipt_key()`, `RECEIPT_PASSED`, `RECEIPT_FAILED`, and `RECEIPT_OVERRIDE` in `sustained.migrations`. Each still imports and raises a `DeprecationWarning` naming its replacement, and goes away in 3.0.
 
-## 2.19.0 (2026-08-17)
+## 2.19.0
 
 ### Added
 
@@ -27,7 +27,7 @@
 - The MySQL advisory lock waits with a one-year timeout rather than a negative one. MariaDB returns NULL for a negative `GET_LOCK` timeout, so the lock was silently absent and two migrators could collide on the same statement.
 - SQL Server creates the tracking tables behind an `IF OBJECT_ID(...) IS NULL` check. T-SQL has no `CREATE TABLE IF NOT EXISTS`, so every migration run against SQL Server failed on its first statement.
 
-## 2.18.0 (2026-08-16)
+## 2.18.0
 
 ### Added
 
@@ -51,7 +51,7 @@
 - A whole `Text()` or `Json()` column takes neither a unique key, which MySQL wants a prefix length for, nor a literal `DEFAULT`, which it refuses.
 - An unsigned integer column has no `tableColumns` declaration that produces it, so one already in the database reports as drift that no migration closes.
 
-## 2.17.0 (2026-08-16)
+## 2.17.0
 
 ### Added
 
@@ -75,7 +75,7 @@
 - Filter and write values accept `datetime`, `date`, `Decimal`, and `bytes`. Comparing a timestamp column against a datetime was an error under a strict checker.
 - A sync savepoint that failed to open left the nesting depth one too high, so the next nested block reused a savepoint name.
 
-## 2.16.1 (2026-08-16)
+## 2.16.1
 
 ### Added
 
@@ -93,7 +93,7 @@
 - `ConnectionPool` closes connections by calling `close()` rather than probing for the attribute first. The DB-API requires the method.
 - The builder stubs declare `render()`, `has_clauses()`, the `compiler` argument, and the method maps that `QueryBuilder` reaches for, so a checker pointed at `builder.py` sees the same surface the runtime has.
 
-## 2.16.0 (2026-08-16)
+## 2.16.0
 
 ### Added
 
@@ -111,7 +111,7 @@
 
 - The select list does not narrow the result. `select('id')` still types as the whole model, and `to_dicts()` values stay `Any`. Reading a row's shape back out of the SQL is not something Python's type system can do.
 
-## 2.15.0 (2026-08-16)
+## 2.15.0
 
 ### Added
 
@@ -130,7 +130,7 @@
 - The guards run twice on a run that includes the diff against the models, since the generated statements are not known until the registered migrations have run. The second pass reads the whole run, so a rule about the run as a whole counts all of it, and a warning already printed is not printed again.
 - `rehearse` does not enforce guards. It runs against a database it is about to roll back, and blocking there would stop an operator from testing the statement they are fixing.
 
-## 2.14.0 (2026-08-16)
+## 2.14.0
 
 ### Added
 
@@ -150,7 +150,7 @@
 - Both Sustained tables are excluded from every diff against the models, so the new one never reads as drift or as an object a down step left behind.
 - `rehearsal_failed(result)` moved from `sustained.cli` to `sustained.migrations`, so the rule that decides whether a rehearsal passed lives with the API.
 
-## 2.13.0 (2026-08-16)
+## 2.13.0
 
 ### Added
 
@@ -176,7 +176,7 @@
 
 - `Migrator.sync()`. It raises a `DeprecationWarning` and delegates to `up(models=[...])`. It goes away in 3.0.
 
-## 2.12.0 (2026-08-16)
+## 2.12.0
 
 ### Added
 
@@ -190,7 +190,7 @@
 - `LENGTH` is registered once. It was registered twice, and the second registration, which carries the T-SQL `LEN` spelling, overwrote the first.
 - `IntrospectedTable` and `FunctionMetadata` default their mapping fields to read-only empty mappings. A NamedTuple shares one default object across every instance, so a mutable default lets one table's or one function's mapping become another's.
 
-## 2.11.0 (2026-08-14)
+## 2.11.0
 
 ### Fixed
 
@@ -208,7 +208,7 @@
 - The refusal message for rehearsing a non-rehearsable dialect mentions `scratch=True` for library callers alongside the config module hook.
 - The docs cover the default dialect's place on the rehearsable list, since the check reads the declared dialect rather than the engine, and scratch databases that keep rehearsed objects between runs.
 
-## 2.10.0 (2026-08-14)
+## 2.10.0
 
 ### Added
 
@@ -222,7 +222,7 @@
 
 - A failing statement on the command line prints as an error line naming the migration instead of a traceback. Drivers raise their own error classes, and only `MigrationError` and `ValueError` were caught before. The same applies to a connection that will not open and a migrations directory that will not load.
 
-## 2.9.0 (2026-08-14)
+## 2.9.0
 
 ### Added
 
@@ -230,7 +230,7 @@
 - Destructive labels: a statement that drops a table, drops a column, or truncates one is labelled in the plan. The new `sustained.analysis` module holds the scan as `destructive_statements(sql)` and `summarize(migration, state)`, which touch no database and so suit async callers too. The scan is textual, so a drop named inside a string literal is labelled as well. The label informs the operator; nothing is blocked and there is no flag to gate it.
 - `--json` on `status`, `validate`, and `plan`: one indented JSON object on stdout instead of the plain lines, with the exit codes unchanged. `status` prints `{"migrations": [{"id", "state"}]}`, `validate` prints `{"ok", "problems"}`, and `plan` prints `{"pending", "problems", "drift"}`. A pending entry with a callable step has a null statement count. The `drift` key is null rather than an empty list when the config module names no models, which separates "nothing was compared" from "compared and found no gap".
 
-## 2.8.0 (2026-08-14)
+## 2.8.0
 
 ### Added
 
@@ -243,7 +243,7 @@
 - `pending()` also returns repeatables whose checksum changed, since the next `up()` will run them.
 - `load_migrations()` now rejects a `.sql` file only when it matches none of the three suffixes; the error message names all of them.
 
-## 2.7.0 (2026-08-14)
+## 2.7.0
 
 ### Added
 
@@ -252,7 +252,7 @@
 - `Migrator.plan(models, ...)`: the migration `sync()` would generate, returned without registering or applying it, or `None` when the schema is current.
 - A command-line runner: the `sustained` console script and `python -m sustained` drive a `Migrator` from a config module. Commands: `status`, `migrate`, `down`, `validate`, `repair`, `script`, `baseline`. Exits 0 on success, 1 on failure.
 
-## 2.6.0 (2026-08-14)
+## 2.6.0
 
 ### Added
 
@@ -272,7 +272,7 @@
 
 - The tracking table upgrade backfill no longer overwrites values that already exist: it touches only the columns the current run added and only rows where they are still null, so a recorded failed attempt survives an interrupted earlier upgrade.
 
-## 2.5.0 (2026-08-14)
+## 2.5.0
 
 ### Added
 
@@ -283,7 +283,7 @@
 - The function registry recognizes Athena wherever it recognizes Presto, including `NOW()` and the `GETDATE()` translation.
 - Schema diffing normalizes Athena's STRING type, so tables created from models diff clean through `information_schema`.
 
-## 2.4.0 (2026-08-14)
+## 2.4.0
 
 ### Added
 
@@ -297,7 +297,7 @@
 - Offline scripts: `migration_sql()` and `Migrator.script()` render the SQL a run would execute for DBA review.
 - `AsyncMigrator`: the migration runner on an AsyncAdapter with transactional application and awaited callable steps.
 
-## 2.3.0 (2026-08-14)
+## 2.3.0
 
 ### Added
 
@@ -306,7 +306,7 @@
 - `Migrator.sync(models)`: diff, generate, register, and apply in one call, idempotent when the schema is current. `Migrator.down_to(id)` reverts newest-first until the target is the most recent applied migration.
 - Compilers render `ADD COLUMN` and `DROP COLUMN` statements, with the T-SQL `ADD` spelling on MSSQL.
 
-## 2.2.0 (2026-08-14)
+## 2.2.0
 
 ### Added
 
@@ -316,7 +316,7 @@
 - `ConnectionPool`: thread-safe, lazy, bounded pooling for DB-API connections. `Model.bind()` and all execution entry points accept a pool; transactions pin one checked-out connection to the thread; nested blocks reuse it via savepoints.
 - Async execution: `arun()`, `afirst()`, `ato_dicts()` through an adapter interface with `DbApiAsyncAdapter` (any sync driver via worker threads), `AiosqliteAdapter`, and `AsyncpgAdapter` (`%s` to `$n` conversion). `Model.bind_async()` and `async_transaction()` with ContextVar pinning. Async through-relation eager loading and nested async transactions are not supported yet.
 
-## 2.1.0 (2026-08-14)
+## 2.1.0
 
 ### Added
 
@@ -338,7 +338,7 @@
 - Through-relation (`ManyToManyRelation`) eager loading in `withGraphFetched()`.
 - Per-dialect function name translation: `NOW()` renders as `GETDATE()` on MSSQL and the reverse; `LENGTH()` renders as `LEN()` on MSSQL.
 
-## 2.0.0 (2026-08-14)
+## 2.0.0
 
 ### Breaking changes
 
@@ -381,4 +381,73 @@
 
 ## 1.1.0
 
-Initial public feature set: SELECT query building with joins, relations, CTEs, unions, window and CASE expressions, and dialect-aware compilation for the default, Postgres, MSSQL, and Presto dialects.
+### Added
+
+- Dialect-specific query compilation. A query builds once and compiles for a chosen dialect, starting with the default, PostgreSQL, MSSQL, and Presto compilers.
+- A function registry with per-dialect validation. `select_func()` and the fluent function methods check the function against the target dialect and raise `DialectError` at build time when the dialect does not support it.
+
+### Changed
+
+- Function rendering moved into the compiler, so every dialect renders function calls through one path.
+
+## 1.0.2
+
+### Fixed
+
+- The type stubs declare the join methods they were missing.
+
+## 1.0.1
+
+### Fixed
+
+- The package include path for the type stubs, so installs get them.
+
+## 1.0.0
+
+### Added
+
+- Type stub files for the builders, packaged with the distribution.
+- The deploy script tags each release.
+
+## 0.0.7
+
+### Added
+
+- `USING` clauses on joins, and subqueries in JOIN ON clauses.
+- LIKE and NULL checks in WHERE and HAVING clauses.
+
+## 0.0.6
+
+### Added
+
+- `distinct()` on the query builder.
+- `avg()`, `min()`, and `max()` aggregate methods.
+- `Func`, for calling any SQL function, and `Subquery`, for embedding a subquery in the SELECT list.
+
+## 0.0.5
+
+### Added
+
+- A select clause builder with fluent methods for complex select lists.
+- `Column`, for marking a value as a column reference rather than a literal.
+- The expression classes export from the top-level package.
+
+### Changed
+
+- `Any` annotations across the codebase were replaced with specific types.
+
+## 0.0.4
+
+### Added
+
+- ORDER BY, LIMIT, TOP, and OFFSET clauses.
+- UNION queries.
+- Subqueries in FROM expressions and in conditional clauses, and EXISTS and BETWEEN conditions.
+
+## 0.0.3
+
+First tagged release. SELECT query building with joins, WHERE, GROUP BY, and HAVING clauses, relation-aware joins through `joinRelated()`, and a builder split into per-clause components.
+
+### Fixed
+
+- `andWhere()` could start a WHERE clause on its own.

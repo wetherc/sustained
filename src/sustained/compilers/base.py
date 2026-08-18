@@ -343,6 +343,13 @@ class Compiler:
             f"{self.quote_identifier(constraint)}"
         )
 
+    def compile_drop_constraint(self, table_sql: str, constraint: str) -> str:
+        """Renders the statement that drops a named table constraint."""
+        return (
+            f"ALTER TABLE {table_sql} DROP CONSTRAINT "
+            f"{self.quote_identifier(constraint)}"
+        )
+
     def compile_rename_table(self, old_sql: str, new_sql: str) -> str:
         """Renders a table rename."""
         return f"ALTER TABLE {old_sql} RENAME TO {new_sql}"

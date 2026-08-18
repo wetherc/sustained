@@ -11,10 +11,10 @@ from unittest import mock
 
 from sustained import DialectError, Model
 from sustained.analysis import destructive_statements
-from sustained.autogenerate import SchemaDiff, autogenerate
+from sustained.autogenerate import SchemaDiff, autogenerate, diff_schema
 from sustained.dialects import Dialects
 from sustained.guards import no_drops
-from sustained.introspect import Snapshot
+from sustained.introspect import IntrospectedColumn, IntrospectedTable, Snapshot
 from sustained.migrations import create_table_migration
 from sustained.schema import Enum, Integer, String, collect_enum_types
 from sustained.types import Expression
@@ -255,20 +255,19 @@ class TestSqliteEnumEnforcement(unittest.TestCase):
 
 class TestAutogenerateEnumTypes(unittest.TestCase):
     """
-    The native-type path of autogenerate, with the diff and the snapshot
-    supplied directly: shared types create once, existing types are not
+    The native-type path of autogenerate, with the snapshot supplied
+    directly: shared types create once, existing types are not
     recreated, and created types drop last on the way down.
     """
 
-    def _generate(self, models, enum_types=None):
-        diff = SchemaDiff()
-        diff.missing_tables = list(models)
-        snapshot = Snapshot(enum_types=enum_types or {})
-        with (
-            mock.patch("sustained.autogenerate.diff_schema", return_value=diff),
-            mock.patch(
-                "sustained.autogenerate.introspect_schema", return_value=snapshot
-            ),
+    def _generate(self, models, enum_types=None, tables=None, enum_types_read=True):
+        snapshot = Snapshot(
+            tables=tables or {},
+            enum_types=enum_types or {},
+            enum_types_read=enum_types_read,
+        )
+        with mock.patch(
+            "sustained.autogenerate.introspect_schema", return_value=snapshot
         ):
             return autogenerate(None, models, id="m", dialect=Dialects.POSTGRES)
 
@@ -365,6 +364,314 @@ class TestDropTypeIsDestructive(unittest.TestCase):
         statement = "ALTER TABLE t DROP CONSTRAINT ck_t_status_enum"
         self.assertEqual(guard([statement], Dialects.POSTGRES), [])
         self.assertEqual(destructive_statements([statement]), [])
+
+
+def _posts_snapshot(enum_values=("draft", "published"), status_type="post_status"):
+    """A snapshot of the posts table with its enum column and type."""
+    status = IntrospectedColumn(
+        raw_type=status_type,
+        nullable=False,
+        primary_key=False,
+        default="'draft'::post_status",
+        enum_name=status_type if status_type == "post_status" else None,
+        enum_values=enum_values if status_type == "post_status" else (),
+    )
+    table = IntrospectedTable(
+        columns={
+            "id": IntrospectedColumn(
+                raw_type="integer", nullable=False, primary_key=True
+            ),
+            "status": status,
+        },
+        primary_key=("id",),
+    )
+    enum_types = {"post_status": tuple(enum_values)}
+    if status_type != "post_status":
+        enum_types = {}
+    return Snapshot(
+        tables={"posts": table}, enum_types=enum_types, enum_types_read=True
+    )
+
+
+class TestEnumTypeDiffing(unittest.TestCase):
+    """
+    Value changes on a native enum type: an appended value generates
+    ADD VALUE and loses the down; a removed or reordered value refuses
+    with the rebuild recipe; a matching column diffs clean.
+    """
+
+    def _diff(self, model, snapshot):
+        with mock.patch(
+            "sustained.autogenerate.introspect_schema", return_value=snapshot
+        ):
+            return diff_schema(None, [model], dialect=Dialects.POSTGRES)
+
+    def _generate(self, model, snapshot, **kwargs):
+        with mock.patch(
+            "sustained.autogenerate.introspect_schema", return_value=snapshot
+        ):
+            return autogenerate(
+                None, [model], id="m", dialect=Dialects.POSTGRES, **kwargs
+            )
+
+    def test_matching_enum_column_diffs_clean(self):
+        diff = self._diff(EnumPost, _posts_snapshot())
+        self.assertTrue(diff.is_empty(), diff.summary())
+
+    def test_appended_value_generates_add_value(self):
+        class Post(Model):
+            tableName = "posts"
+            tableColumns = {
+                "id": Integer(primary_key=True),
+                "status": Enum(
+                    "draft",
+                    "published",
+                    "archived",
+                    name="post_status",
+                    nullable=False,
+                    default="draft",
+                ),
+            }
+
+        diff = self._diff(Post, _posts_snapshot())
+        self.assertEqual(
+            diff.changed_enum_types,
+            [
+                (
+                    "post_status",
+                    ("draft", "published"),
+                    ("draft", "published", "archived"),
+                )
+            ],
+        )
+        self.assertIn("add value 'archived' to enum type post_status", diff.summary())
+        migration = self._generate(Post, _posts_snapshot())
+        self.assertEqual(
+            migration.up, ["ALTER TYPE \"post_status\" ADD VALUE 'archived'"]
+        )
+        self.assertIsNone(migration.down)
+
+    def test_removed_value_refuses_with_recipe(self):
+        class Post(Model):
+            tableName = "posts"
+            tableColumns = {
+                "id": Integer(primary_key=True),
+                "status": Enum(
+                    "draft", name="post_status", nullable=False, default="draft"
+                ),
+            }
+
+        diff = self._diff(Post, _posts_snapshot())
+        self.assertEqual(len(diff.changed_enum_types), 1)
+        self.assertIn(
+            "enum type 'post_status' has values", "\n".join(diff.outstanding())
+        )
+        with self.assertRaisesRegex(ValueError, "creates a new type"):
+            self._generate(Post, _posts_snapshot())
+
+    def test_reordered_values_refuse(self):
+        class Post(Model):
+            tableName = "posts"
+            tableColumns = {
+                "id": Integer(primary_key=True),
+                "status": Enum(
+                    "published",
+                    "draft",
+                    name="post_status",
+                    nullable=False,
+                    default="draft",
+                ),
+            }
+
+        with self.assertRaisesRegex(ValueError, "removed or reordered"):
+            self._generate(Post, _posts_snapshot())
+
+    def test_varchar_column_converts_with_a_type_cast(self):
+        snapshot = _posts_snapshot(status_type="character varying(255)")
+        diff = self._diff(EnumPost, snapshot)
+        self.assertEqual(len(diff.changed_columns), 1)
+        self.assertEqual(diff.new_enum_types, [("post_status", ("draft", "published"))])
+        migration = self._generate(
+            EnumPost,
+            _posts_snapshot(status_type="character varying(255)"),
+            type_casts={"posts.status": "status::post_status"},
+        )
+        self.assertEqual(
+            migration.up[0],
+            "CREATE TYPE \"post_status\" AS ENUM ('draft', 'published')",
+        )
+        self.assertIn(
+            'ALTER TABLE posts ALTER COLUMN "status" TYPE "post_status" '
+            "USING status::post_status",
+            migration.up,
+        )
+        self.assertEqual(migration.down[-1], 'DROP TYPE "post_status"')
+
+
+class TestEnumColumnAdded(unittest.TestCase):
+    """A new enum column on an existing table, per strategy."""
+
+    def _existing_table(self):
+        return IntrospectedTable(
+            columns={
+                "id": IntrospectedColumn(
+                    raw_type="integer", nullable=False, primary_key=True
+                )
+            },
+            primary_key=("id",),
+        )
+
+    def _generate(self, dialect, snapshot):
+        class Post(Model):
+            tableName = "posts"
+            tableColumns = {
+                "id": Integer(primary_key=True),
+                "status": Enum("draft", "published", name="post_status"),
+            }
+            _dialect = dialect
+
+        with mock.patch(
+            "sustained.autogenerate.introspect_schema", return_value=snapshot
+        ):
+            return autogenerate(None, [Post], id="m", dialect=dialect)
+
+    def test_postgres_creates_the_type_before_the_column(self):
+        snapshot = Snapshot(
+            tables={"posts": self._existing_table()}, enum_types_read=True
+        )
+        migration = self._generate(Dialects.POSTGRES, snapshot)
+        self.assertEqual(
+            migration.up,
+            [
+                "CREATE TYPE \"post_status\" AS ENUM ('draft', 'published')",
+                'ALTER TABLE "posts" ADD COLUMN "status" "post_status"',
+            ],
+        )
+        self.assertEqual(
+            migration.down,
+            [
+                'ALTER TABLE "posts" DROP COLUMN "status"',
+                'DROP TYPE "post_status"',
+            ],
+        )
+
+    def test_mssql_adds_the_check_beside_the_column(self):
+        snapshot = Snapshot(tables={"posts": self._existing_table()})
+        migration = self._generate(Dialects.MSSQL, snapshot)
+        self.assertEqual(
+            migration.up,
+            [
+                "ALTER TABLE [posts] ADD [status] NVARCHAR(9)",
+                "ALTER TABLE [posts] ADD CONSTRAINT [ck_posts_status_enum] "
+                "CHECK ([status] IN ('draft', 'published'))",
+            ],
+        )
+        self.assertEqual(
+            migration.down,
+            [
+                "ALTER TABLE [posts] DROP CONSTRAINT [ck_posts_status_enum]",
+                "ALTER TABLE [posts] DROP COLUMN [status]",
+            ],
+        )
+
+    def test_sqlite_rebuilds_the_table(self):
+        class Post(Model):
+            tableName = "posts"
+            tableColumns = {
+                "id": Integer(primary_key=True),
+                "status": Enum(
+                    "draft", "published", name="post_status", default="draft"
+                ),
+            }
+
+        conn = sqlite3.connect(":memory:")
+        conn.execute("CREATE TABLE posts (id INTEGER PRIMARY KEY)")
+        conn.execute("INSERT INTO posts (id) VALUES (1)")
+        migration = autogenerate(conn, [Post], id="m")
+        self.assertIsNone(migration.down)
+        for statement in migration.up:
+            conn.execute(statement)
+        self.assertEqual(
+            conn.execute("SELECT status FROM posts").fetchall(), [("draft",)]
+        )
+        with self.assertRaises(sqlite3.IntegrityError):
+            conn.execute("INSERT INTO posts (id, status) VALUES (2, 'gone')")
+        conn.close()
+
+    def test_not_null_enum_with_backfill_tightens_after_the_add(self):
+        class Post(Model):
+            tableName = "posts"
+            tableColumns = {
+                "id": Integer(primary_key=True),
+                "status": Enum(
+                    "draft",
+                    "published",
+                    name="post_status",
+                    nullable=False,
+                    backfill="draft",
+                ),
+            }
+            _dialect = Dialects.POSTGRES
+
+        snapshot = Snapshot(
+            tables={"posts": self._existing_table()}, enum_types_read=True
+        )
+        with mock.patch(
+            "sustained.autogenerate.introspect_schema", return_value=snapshot
+        ):
+            migration = autogenerate(None, [Post], id="m", dialect=Dialects.POSTGRES)
+        self.assertEqual(
+            migration.up,
+            [
+                "CREATE TYPE \"post_status\" AS ENUM ('draft', 'published')",
+                'ALTER TABLE "posts" ADD COLUMN "status" "post_status"',
+                'UPDATE "posts" SET "status" = \'draft\' WHERE "status" IS NULL',
+                'ALTER TABLE "posts" ALTER COLUMN "status" SET NOT NULL',
+            ],
+        )
+
+
+@unittest.skipUnless(HAS_DUCKDB, "duckdb not installed")
+class TestDuckDbEnumDiffing(unittest.TestCase):
+    """
+    DuckDB reads no enum type catalog, so presence is inferred from the
+    columns: an existing enum column diffs clean, and a value change is
+    detected from the inline type spelling and refused, since DuckDB
+    cannot add a value in place.
+    """
+
+    def _model(self, *values):
+        class Doc(Model):
+            tableName = "docs"
+            tableColumns = {
+                "id": Integer(primary_key=True),
+                "state": Enum(*values, name="doc_state"),
+            }
+            _dialect = Dialects.DUCKDB
+
+        return Doc
+
+    def test_existing_enum_column_diffs_clean(self):
+        Doc = self._model("new", "done")
+        conn = duckdb.connect(":memory:")
+        cursor = conn.cursor()
+        for statement in Doc.create_table_statements():
+            cursor.execute(statement)
+        diff = diff_schema(conn, [Doc], dialect=Dialects.DUCKDB)
+        self.assertEqual(diff.new_enum_types, [])
+        self.assertEqual(diff.changed_columns, [])
+        conn.close()
+
+    def test_value_change_is_refused(self):
+        Doc = self._model("new", "done")
+        conn = duckdb.connect(":memory:")
+        cursor = conn.cursor()
+        for statement in Doc.create_table_statements():
+            cursor.execute(statement)
+        Wider = self._model("new", "done", "archived")
+        with self.assertRaises(DialectError):
+            autogenerate(conn, [Wider], id="m", dialect=Dialects.DUCKDB)
+        conn.close()
 
 
 if __name__ == "__main__":

@@ -42,12 +42,14 @@ from sustained.introspect import (
     introspect_schema,
     normalize_default,
     normalize_type,
+    parse_inline_enum,
     type_params,
 )
 from sustained.migrations import Migration
 from sustained.schema import (
     build_create_table_sql,
     collect_enum_types,
+    enum_check_constraint_sql,
     render_column_sql,
 )
 from sustained.types import Connection
@@ -90,6 +92,8 @@ class SchemaDiff:
         self.changed_indexes: List[Tuple[Type["Model"], "Index", IntrospectedIndex]] = (
             []
         )
+        self.new_enum_types: List[Tuple[str, Tuple[str, ...]]] = []
+        self.changed_enum_types: List[Tuple[str, Tuple[str, ...], Tuple[str, ...]]] = []
         self.constraint_notes: List[str] = []
 
     def is_empty(self) -> bool:
@@ -102,6 +106,8 @@ class SchemaDiff:
             or self.new_indexes
             or self.extra_indexes
             or self.changed_indexes
+            or self.new_enum_types
+            or self.changed_enum_types
             or self.constraint_notes
         )
 
@@ -135,11 +141,32 @@ class SchemaDiff:
             lines.append(f"index '{index.name}' on '{model.tableName}' was not created")
         for model, index, _ in self.changed_indexes:
             lines.append(f"index '{index.name}' on '{model.tableName}' was not rebuilt")
+        for type_name, _ in self.new_enum_types:
+            lines.append(f"enum type '{type_name}' was not created")
+        for type_name, live_values, declared_values in self.changed_enum_types:
+            lines.append(
+                f"enum type '{type_name}' has values "
+                f"({', '.join(live_values)}), the models declare "
+                f"({', '.join(declared_values)})"
+            )
         return lines
 
     def summary(self) -> str:
         """A human-readable description of every difference."""
         lines: List[str] = []
+        for type_name, _ in self.new_enum_types:
+            lines.append(f"create enum type {type_name}")
+        for type_name, live_values, declared_values in self.changed_enum_types:
+            additions = _enum_value_additions(live_values, declared_values)
+            if additions is not None:
+                for value in additions:
+                    lines.append(f"add value '{value}' to enum type {type_name}")
+            else:
+                lines.append(
+                    f"change enum type {type_name}: database has "
+                    f"({', '.join(live_values)}), model declares "
+                    f"({', '.join(declared_values)})"
+                )
         for model in self.missing_tables:
             lines.append(f"create table {model.tableName}")
         for model, name, _ in self.new_columns:
@@ -162,6 +189,110 @@ class SchemaDiff:
         for note in self.constraint_notes:
             lines.append(f"note: {note} (not auto-migrated)")
         return "\n".join(lines) if lines else "schema up to date"
+
+
+def _enum_value_additions(
+    actual: Tuple[str, ...], expected: Tuple[str, ...]
+) -> Optional[Tuple[str, ...]]:
+    """
+    The values the models append to an enum type's existing list, or None
+    when the change is not a pure append. Postgres adds a value in place
+    but never removes or reorders one, so only an appended tail can be
+    generated.
+    """
+    if len(expected) > len(actual) and expected[: len(actual)] == actual:
+        return expected[len(actual) :]
+    return None
+
+
+def _declared_enum_types(
+    models: List[Type["Model"]],
+) -> Dict[str, Tuple[str, ...]]:
+    """
+    Every enum type the models declare, name to value tuple, merged
+    across models. The same name declared with different values in two
+    models raises: it would be one database object with two definitions.
+    """
+    types: Dict[str, Tuple[str, ...]] = {}
+    for model in models:
+        for type_name, values in collect_enum_types(model.tableColumns or {}).items():
+            known = types.get(type_name)
+            if known is not None and known != values:
+                raise ValueError(
+                    f"Enum '{type_name}' is declared with different "
+                    f"values in two models: {', '.join(known)} versus "
+                    f"{', '.join(values)}."
+                )
+            types[type_name] = values
+    return types
+
+
+def _diff_enum_types(
+    diff: SchemaDiff,
+    declared: Dict[str, Type["Model"]],
+    declared_types: Dict[str, Tuple[str, ...]],
+    actual: Snapshot,
+) -> None:
+    """
+    Compares the models' enum types against the database, on dialects
+    where an enum is a named type object. With a catalog read (Postgres),
+    absence and value changes come straight from it. Without one
+    (DuckDB), a type is taken as present when a column of it already
+    exists, and its live values are read from the column's own inline
+    type spelling when the engine writes one.
+    """
+    if actual.enum_types_read:
+        for type_name, values in declared_types.items():
+            existing = actual.enum_types.get(type_name.lower())
+            if existing is None:
+                diff.new_enum_types.append((type_name, values))
+            elif existing != values:
+                diff.changed_enum_types.append((type_name, existing, values))
+        return
+    present: Set[str] = set()
+    changed: Set[str] = set()
+    for table_key, model in declared.items():
+        actual_table = actual.get(table_key)
+        if actual_table is None:
+            continue
+        for name, coldef in (model.tableColumns or {}).items():
+            if coldef.type_name != "ENUM":
+                continue
+            actual_col = actual_table.columns.get(name.lower())
+            if actual_col is None or not _actual_column_is_enum(actual_col, coldef):
+                continue
+            assert coldef.enum_name is not None and coldef.enum_values is not None
+            present.add(coldef.enum_name.lower())
+            live_values = actual_col.enum_values or parse_inline_enum(
+                actual_col.raw_type
+            )
+            if (
+                live_values
+                and live_values != coldef.enum_values
+                and coldef.enum_name.lower() not in changed
+            ):
+                changed.add(coldef.enum_name.lower())
+                diff.changed_enum_types.append(
+                    (coldef.enum_name, tuple(live_values), coldef.enum_values)
+                )
+    for type_name, values in declared_types.items():
+        if type_name.lower() not in present:
+            diff.new_enum_types.append((type_name, values))
+
+
+def _actual_column_is_enum(actual_col: IntrospectedColumn, coldef: "ColumnDef") -> bool:
+    """
+    Whether the live column already holds the declared enum type. The
+    catalog says so directly when it names enum types; otherwise the
+    column's raw type either is the type's own name or spells the value
+    list inline, as DuckDB's information_schema does.
+    """
+    assert coldef.enum_name is not None
+    if actual_col.enum_name is not None:
+        return actual_col.enum_name == coldef.enum_name.lower()
+    if actual_col.raw_type.lower().strip('"`[]') == coldef.enum_name.lower():
+        return True
+    return bool(parse_inline_enum(actual_col.raw_type))
 
 
 def _apply_renames(
@@ -247,6 +378,10 @@ def diff_schema(
     actual = introspect_schema(connection, dialect)
     _apply_renames(actual, renames or {}, table_renames or {})
 
+    declared_types = _declared_enum_types(models)
+    if compiler.enum_strategy() == "native":
+        _diff_enum_types(diff, declared, declared_types, actual)
+
     for table_key, model in declared.items():
         assert model.tableColumns is not None
         actual_table = actual.get(table_key)
@@ -278,18 +413,24 @@ def _diff_columns(
             diff.new_columns.append((model, name, coldef))
             continue
         expected_rendered = compiler.compile_column_type(coldef)
-        type_changed = normalize_type(expected_rendered) != normalize_type(
-            actual_col.raw_type
-        )
-        if not type_changed:
-            expected_params = type_params(expected_rendered)
-            actual_params = type_params(actual_col.raw_type)
-            if (
-                expected_params is not None
-                and actual_params is not None
-                and expected_params != actual_params
-            ):
-                type_changed = True
+        if coldef.type_name == "ENUM" and compiler.enum_strategy() == "native":
+            # A native enum column matches on its type's name; value
+            # differences live on the type itself and are reported in
+            # changed_enum_types, not here.
+            type_changed = not _actual_column_is_enum(actual_col, coldef)
+        else:
+            type_changed = normalize_type(expected_rendered) != normalize_type(
+                actual_col.raw_type
+            )
+            if not type_changed:
+                expected_params = type_params(expected_rendered)
+                actual_params = type_params(actual_col.raw_type)
+                if (
+                    expected_params is not None
+                    and actual_params is not None
+                    and expected_params != actual_params
+                ):
+                    type_changed = True
         # SQLite reports INTEGER PRIMARY KEY as nullable, so nullability
         # is only compared on non-key columns.
         null_changed = (
@@ -588,30 +729,29 @@ def autogenerate(
             0, compiler.compile_rename_column(table_sql, new_name, old_name)
         )
 
-    # Enum types the new tables need, created once each, before any
-    # table that references them. A type already in the database is not
-    # recreated; a type two models share must agree on its values.
+    # Enum types first, before any table or column that references them.
+    # New types are created; declared values that extend the database's
+    # list are appended with ADD VALUE, which no engine takes back, so
+    # such a migration has no down. Any other value change cannot run in
+    # place and refuses with the recipe.
     created_enum_types: List[str] = []
-    if diff.missing_tables and compiler.enum_strategy() == "native":
-        needed_types: Dict[str, Tuple[str, ...]] = {}
-        for model in diff.missing_tables:
-            for type_name, values in collect_enum_types(
-                model.tableColumns or {}
-            ).items():
-                known = needed_types.get(type_name)
-                if known is not None and known != values:
-                    raise ValueError(
-                        f"Enum '{type_name}' is declared with different "
-                        f"values in two models: {', '.join(known)} versus "
-                        f"{', '.join(values)}."
-                    )
-                needed_types[type_name] = values
-        existing_types = {name.lower() for name in actual.enum_types}
-        for type_name, values in needed_types.items():
-            if type_name.lower() in existing_types:
-                continue
-            up_steps.append(compiler.compile_create_enum_type(type_name, list(values)))
-            created_enum_types.append(type_name)
+    for type_name, values in diff.new_enum_types:
+        up_steps.append(compiler.compile_create_enum_type(type_name, list(values)))
+        created_enum_types.append(type_name)
+    for type_name, actual_values, expected_values in diff.changed_enum_types:
+        additions = _enum_value_additions(actual_values, expected_values)
+        if additions is None:
+            raise ValueError(
+                f"Enum '{type_name}' has values removed or reordered: the "
+                f"database has ({', '.join(actual_values)}), the models "
+                f"declare ({', '.join(expected_values)}). The engine "
+                "cannot do that in place. Write a migration that creates "
+                "a new type, converts each column with ALTER COLUMN ... "
+                "USING, and drops the old type."
+            )
+        for value in additions:
+            up_steps.append(compiler.compile_add_enum_value(type_name, value))
+        reversible = False
 
     for model in diff.missing_tables:
         assert model.tableColumns is not None
@@ -631,11 +771,14 @@ def autogenerate(
                 continue
             table_sql = model._qualified_table_sql()
             expected_type = compiler.compile_column_type(coldef)
-            type_changed = normalize_type(expected_type) != normalize_type(
-                actual_col.raw_type
-            ) or (type_params(expected_type) or "") != (
-                type_params(actual_col.raw_type) or type_params(expected_type) or ""
-            )
+            if coldef.type_name == "ENUM" and compiler.enum_strategy() == "native":
+                type_changed = not _actual_column_is_enum(actual_col, coldef)
+            else:
+                type_changed = normalize_type(expected_type) != normalize_type(
+                    actual_col.raw_type
+                ) or (type_params(expected_type) or "") != (
+                    type_params(actual_col.raw_type) or type_params(expected_type) or ""
+                )
             if type_changed:
                 using = type_casts.get(f"{table}.{name}")
                 up_steps.extend(
@@ -678,6 +821,15 @@ def autogenerate(
                 ):
                     down_steps.insert(0, statement)
 
+    # An enum column held by a CHECK constraint needs the constraint
+    # added beside the new column. A dialect that cannot alter
+    # constraints in place (SQLite) rebuilds the table instead; the
+    # rebuilt CREATE TABLE carries the constraint.
+    if compiler.enum_strategy() == "check" and not compiler.supports_alter_column():
+        for model, _, coldef in diff.new_columns:
+            if coldef.type_name == "ENUM":
+                rebuild_tables[(model.tableName or "").lower()] = model
+
     # New columns on tables that are not being rebuilt.
     for model, name, coldef in diff.new_columns:
         table_key = (model.tableName or "").lower()
@@ -719,6 +871,9 @@ def autogenerate(
                 )
             )
             down_steps.insert(0, compiler.compile_drop_column(table_sql, name))
+            _add_enum_check(
+                compiler, up_steps, down_steps, table_sql, model, name, coldef
+            )
             _add_foreign_key(
                 compiler, up_steps, down_steps, table_sql, model, name, coldef
             )
@@ -726,6 +881,7 @@ def autogenerate(
         column_sql = render_column_sql(compiler, name, coldef, inline_pk=False)
         up_steps.append(compiler.compile_add_column(table_sql, column_sql))
         down_steps.insert(0, compiler.compile_drop_column(table_sql, name))
+        _add_enum_check(compiler, up_steps, down_steps, table_sql, model, name, coldef)
         _add_foreign_key(compiler, up_steps, down_steps, table_sql, model, name, coldef)
 
     # Table rebuilds for SQLite consume every remaining change on the table.
@@ -823,6 +979,33 @@ def _add_foreign_key(
     down_steps.insert(0, compiler.compile_drop_foreign_key(table_sql, constraint))
 
 
+def _add_enum_check(
+    compiler: "Compiler",
+    up_steps: List[str],
+    down_steps: List[str],
+    table_sql: str,
+    model: Type["Model"],
+    name: str,
+    coldef: "ColumnDef",
+) -> None:
+    """
+    Adds the named CHECK constraint that holds a newly added enum column
+    to its values, on dialects where an enum is a checked VARCHAR. The
+    down drops the constraint before the column it checks.
+    """
+    if coldef.type_name != "ENUM" or compiler.enum_strategy() != "check":
+        return
+    from sustained.schema import bare_table_name
+
+    table_name = bare_table_name(table_sql)
+    constraint_sql = enum_check_constraint_sql(compiler, table_name, name, coldef)
+    up_steps.append(f"ALTER TABLE {table_sql} ADD {constraint_sql}")
+    down_steps.insert(
+        0,
+        compiler.compile_drop_constraint(table_sql, f"ck_{table_name}_{name}_enum"),
+    )
+
+
 def _relaxed_copy(coldef: "ColumnDef") -> "ColumnDef":
     """A nullable copy of a ColumnDef, used for add-then-tighten steps."""
     from sustained.schema import ColumnDef
@@ -836,4 +1019,6 @@ def _relaxed_copy(coldef: "ColumnDef") -> "ColumnDef":
         unique=coldef.unique,
         default=coldef.default,
         references=coldef.references,
+        enum_name=coldef.enum_name,
+        enum_values=coldef.enum_values,
     )

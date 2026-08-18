@@ -115,9 +115,15 @@ class Snapshot(Dict[str, IntrospectedTable]):
         self,
         tables: Optional[Mapping[str, IntrospectedTable]] = None,
         enum_types: Optional[Mapping[str, Tuple[str, ...]]] = None,
+        enum_types_read: bool = False,
     ) -> None:
         super().__init__(tables or {})
         self.enum_types: Dict[str, Tuple[str, ...]] = dict(enum_types or {})
+        # Whether the engine's catalog of standalone enum types was read.
+        # Postgres reads pg_enum, so an absent type there really is
+        # absent. Engines without such a read leave this False, and a
+        # diff must not take an empty mapping as proof of absence.
+        self.enum_types_read = enum_types_read
 
 
 # Engine type spellings mapped to Sustained's logical types. Both sides of
@@ -693,6 +699,7 @@ def _postgres_plan() -> SchemaPlan:
         pass
 
     enum_types: Dict[str, Tuple[str, ...]] = {}
+    enum_types_read = False
     try:
         enum_rows = yield (
             "SELECT t.typname, e.enumlabel "
@@ -706,11 +713,12 @@ def _postgres_plan() -> SchemaPlan:
         for typname, label in enum_rows:
             values_by_type.setdefault(str(typname).lower(), []).append(str(label))
         enum_types = {name: tuple(vals) for name, vals in values_by_type.items()}
+        enum_types_read = True
     except Exception:
         # No pg_enum to read; degrade to no enum types.
         pass
 
-    schema = Snapshot(enum_types=enum_types)
+    schema = Snapshot(enum_types=enum_types, enum_types_read=enum_types_read)
     for table, columns in columns_by_table.items():
         pk = primary_keys.get(table, ())
         for pk_col in pk:
