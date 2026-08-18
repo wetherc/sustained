@@ -3,18 +3,13 @@ layout: default
 title: Predicates and expressions reference
 ---
 
-Everything in `sustained.expressions`, plus the function registry in
-`sustained.functions`. These are the objects that make a query builder
-something other than string concatenation: a typed column knows it is a
-column, a literal knows it is a literal, and neither can be mistaken for the
-other.
+Everything in `sustained.expressions`, plus the function registry in `sustained.functions`. These objects keep columns, literals, and conditions apart from one another, so the builder never has to guess which one a string was meant to be.
 
 Guide: [Filtering](/filtering).
 
 ## Typed columns
 
-`col(name)` returns a `ColumnExpr`. So does `Model.c.<column>`, which also
-checks the name against the model's declared columns.
+`col(name)` returns a `ColumnExpr`. `Model.c.<column>` returns one too, and also checks the name against the model's declared columns.
 
 ```python
 from sustained import col
@@ -25,18 +20,17 @@ Venue.c.capacity > 1400          # the same predicate, with a typo check
 
 ### `ColumnExpr`
 
-Attribute `name` holds the column path as written.
+The `name` attribute holds the column path as you wrote it.
 
-Comparison operators return a `Predicate`. A `ColumnExpr` on the right side
-renders as a column, not as a bound value.
+Comparison operators return a `Predicate`. A `ColumnExpr` on the right side of a comparison renders as a column, not as a bound value.
 
 | Operator | Renders | Notes |
 | --- | --- | --- |
 | `==` | `=` | `== None` renders `IS NULL`. |
 | `!=` | `!=` | `!= None` renders `IS NOT NULL`. |
-| `>` `>=` `<` `<=` | the same | Comparing to `None` raises `ValueError`. |
+| `>` `>=` `<` `<=` | the same operator | Comparing to `None` raises `ValueError`. |
 
-Methods, each returning a `Predicate`:
+Each method below returns a `Predicate`.
 
 | Signature | Renders |
 | --- | --- |
@@ -44,7 +38,7 @@ Methods, each returning a `Predicate`:
 | `not_like(pattern)` | `NOT LIKE` |
 | `ilike(pattern)` | `ILIKE`, native on Postgres and DuckDB, `LOWER() LIKE LOWER()` elsewhere |
 | `in_(values)` | `IN (...)` over a list or a `QueryBuilder`. An empty list raises `ValueError`. |
-| `not_in(values)` | `NOT IN (...)`, same rule |
+| `not_in(values)` | `NOT IN (...)`. An empty list raises `ValueError`. |
 | `between(low, high)` | `BETWEEN low AND high` |
 | `not_between(low, high)` | `NOT BETWEEN low AND high` |
 | `is_null()` | `IS NULL` |
@@ -52,8 +46,7 @@ Methods, each returning a `Predicate`:
 
 ### `Predicate`
 
-A composable condition. Pass one to `where()` or `having()` as the only
-argument.
+A composable condition. Pass a `Predicate` to `where()` or `having()` as the only argument.
 
 | Operator | Renders |
 | --- | --- |
@@ -61,39 +54,32 @@ argument.
 | `a \| b` | `(a OR b)` |
 | `~a` | `NOT (a)` |
 
-`bool(predicate)` always raises `TypeError`. That is deliberate: it turns
-`a and b` into a loud failure instead of a silent one that evaluates to a
-single side. Use `&` and `|`.
+`bool(predicate)` always raises `TypeError`, so `a and b` fails instead of evaluating to one side of the expression. Use `&` and `|`.
 
 ## Marking columns and literals
 
-Sustained has to decide whether a bare string is a column name or a value. In
-function arguments and CASE results it assumes a column; these two classes
-override that.
+Sustained decides whether a bare string is a column name or a value. In function arguments and CASE results it reads the string as a column. These two classes override that reading.
 
 | Class | Meaning |
 | --- | --- |
-| `Column(name)` | This string is a column reference or raw SQL. Do not quote it, do not treat it as a value. |
-| `Literal(value)` | This value is a literal, even where a column would be assumed. |
+| `Column(name)` | The string is a column reference or raw SQL. Sustained does not quote it and does not treat it as a value. |
+| `Literal(value)` | The value is a literal, even in a position where Sustained would read a column. |
 
 ```python
 from sustained import Literal
 
 query.select_func('COALESCE', 'nickname', 'name', Literal('unknown'), alias='display')
+
 # COALESCE(nickname, name, 'unknown') AS display
 ```
 
-A string argument that is not a plain column path raises `ValueError` at
-render, so a literal cannot silently become a column, or the reverse.
+A string argument that is not a plain column path raises `ValueError` at render time.
 
-`Expression(value)`, in `sustained.types` and re-exported from
-`sustained.schema`, is the same idea for schema defaults: raw SQL that renders
-verbatim in both the inline and the parameterized forms.
+`Expression(value)`, in `sustained.types` and re-exported from `sustained.schema`, does the same job for schema defaults: raw SQL that renders as written in both the inline and the parameterized forms.
 
 ## Expression objects
 
-The fluent methods on `QueryBuilder` build these. Construct one directly when
-you need a shape the fluent method does not cover.
+The fluent methods on `QueryBuilder` build these objects for you. Construct one directly when you need a shape the fluent method does not cover.
 
 | Class | Signature |
 | --- | --- |
@@ -103,52 +89,48 @@ you need a shape the fluent method does not cover.
 | `CaseExpression` | `CaseExpression(alias, else_result)` |
 | `Subquery` | `Subquery(query, alias)` |
 
-`CaseExpression.when(condition, result)` appends a WHEN/THEN pair and returns
-itself, so pairs chain. `CaseExpression.whens` returns a copy of the pairs.
+`CaseExpression.when(condition, result)` appends a WHEN/THEN pair and returns the `CaseExpression`, so pairs chain. `CaseExpression.whens` returns a copy of the pairs.
 
 `Subquery` embeds a `QueryBuilder` in a SELECT list or a join:
 
 ```python
 from sustained.expressions import Subquery
 
-ticket_count = Ticket.query().count().where('show_id', '=', Column('shows.id'))
+ticket_count = (Ticket.query()
+    .count()
+    .where('show_id', '=', Column('shows.id'))
+)
 
 Show.query().select('title', Subquery(ticket_count, 'tickets_sold'))
 ```
 
 ## Function registry
 
-`select_func()` and the fluent function methods check the name against
-`FunctionRegistry` in `sustained.functions`. A registered function that the
-active dialect cannot spell raises `DialectError` while the query builds. An
-unregistered name passes through unchecked, which is how you reach a function
-Sustained has never heard of.
+`select_func()` and the fluent function methods check the name against `FunctionRegistry` in `sustained.functions`. A registered function that the active dialect cannot spell raises `DialectError` while the query builds. An unregistered name passes through unchecked, so you can call a function the registry does not list.
 
 | Function | Available on | Per-dialect spelling |
 | --- | --- | --- |
-| `COUNT`, `SUM`, `AVG`, `MIN`, `MAX` | all six | one spelling |
-| `LOWER`, `UPPER`, `COALESCE`, `CONCAT`, `SUBSTRING`, `TRIM`, `ROUND`, `ABS`, `CEILING`, `FLOOR`, `MOD` | all six | one spelling |
-| `LENGTH` | all six | `LEN` on MSSQL |
+| `COUNT`, `SUM`, `AVG`, `MIN`, `MAX` | every dialect | one spelling |
+| `LOWER`, `UPPER`, `COALESCE`, `CONCAT`, `SUBSTRING`, `TRIM`, `ROUND`, `ABS`, `CEILING`, `FLOOR`, `MOD` | every dialect | one spelling |
+| `LENGTH` | every dialect | `LEN` on MSSQL |
 | `STRING_AGG` | Postgres, DuckDB, Presto, Athena | one spelling |
-| `NOW` | Postgres, DuckDB, Presto, Athena, MSSQL | `GETDATE` on MSSQL |
-| `GETDATE` | MSSQL, Postgres, DuckDB, Presto, Athena | `NOW` everywhere but MSSQL |
+| `NOW` | Postgres, MySQL, DuckDB, Presto, Athena | `GETDATE` on MSSQL |
+| `GETDATE` | MSSQL | `NOW` on Postgres, MySQL, DuckDB, Presto, and Athena |
 
-`NOW()` and `GETDATE()` are the pair worth knowing: write the one you know and
-the dialect gets the spelling it needs. Neither is available on the default
-dialect, so both raise `DialectError` there.
+Write either `NOW()` or `GETDATE()` and the dialect renders its own spelling. Neither one is registered for the default dialect, so both raise `DialectError` there.
+
+`STRING_AGG` is left off MySQL on purpose. MySQL spells the same idea as `GROUP_CONCAT`, which takes its separator as a `SEPARATOR` keyword rather than a second argument, so a renamed function would produce SQL that does not parse. Write `GROUP_CONCAT` through raw SQL there.
 
 ### Registry API
 
 | Signature | Returns | Description |
 | --- | --- | --- |
 | `FunctionRegistry.register(name, metadata)` | `None` | Registers or overwrites an entry. The key is the uppercased name. |
-| `FunctionRegistry.get_metadata(name)` | `FunctionMetadata` | Case-insensitive lookup. Raises `KeyError` when unregistered. |
+| `FunctionRegistry.get_metadata(name)` | `FunctionMetadata` | Case-insensitive lookup. Raises `KeyError` when the name is unregistered. |
 | `FunctionRegistry.resolve_name(name, dialect)` | `str` | The dialect's spelling, or the name uppercased. |
-| `FunctionRegistry.is_supported(name, dialect)` | `bool` | `True` for anything unregistered. |
+| `FunctionRegistry.is_supported(name, dialect)` | `bool` | `True` for any unregistered name. |
 
-`FunctionMetadata(supported_dialects, dialect_names={})` is a `NamedTuple`.
-Register your own to get build-time checking for a function Sustained does not
-know:
+`FunctionMetadata(supported_dialects, dialect_names={})` is a `NamedTuple`. Register your own metadata to get build-time checking for a function the registry does not list:
 
 ```python
 from sustained.dialects import Dialects
@@ -162,8 +144,7 @@ FunctionRegistry.register(
 
 ## Type aliases
 
-In `sustained.types`, for annotating code that accepts what the builder
-accepts.
+These live in `sustained.types`. Use them to annotate code that accepts what the builder accepts.
 
 | Alias | Definition |
 | --- | --- |
@@ -173,6 +154,4 @@ accepts.
 | `QueryResolvable` | `QueryBuilder \| Callable[..., QueryBuilder] \| str` |
 | `Join` | `BasicJoinMapping \| JoinMappingWithThrough` |
 
-The relation-mapping shapes are `TypedDict`s: `RelationMapping`,
-`BasicJoinMapping`, `JoinMappingWithThrough`, `ThroughJoinMapping`, and
-`ThroughJoinValue`. See [Model](/reference/model#relations).
+The relation-mapping shapes are `TypedDict`s: `RelationMapping`, `BasicJoinMapping`, `JoinMappingWithThrough`, `ThroughJoinMapping`, and `ThroughJoinValue`. See [Model](/reference/model#relations).

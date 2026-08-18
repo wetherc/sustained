@@ -3,16 +3,13 @@ layout: default
 title: Command line reference
 ---
 
-The `sustained` console script, installed with the package. It also runs as
-`python -m sustained`.
+The `sustained` console script installs with the package. It also runs as `python -m sustained`.
 
 ```
 sustained <command> [--config MODULE] [command options]
 ```
 
-Every command imports a config module, `sustained_config` by default, from the
-current directory. Every command accepts `--config MODULE` to name another
-one.
+Every command imports a config module from the current directory, `sustained_config` by default. Pass `--config MODULE` to name a different module.
 
 Guide: [Schema and Migrations](/schema#command-line).
 
@@ -42,28 +39,17 @@ Guide: [Schema and Migrations](/schema#command-line).
 | 3 | `plan` and `migrate`: a guard blocked a statement. |
 | 4 | `migrate` only: the run removes data and no rehearsal proved it. |
 
-`plan` is the one command with four outcomes: 0 when the database is current,
-2 when migrations are pending or the models have drifted, 3 when a guard
-blocked a statement, and 1 when validation found problems. Problems outrank a
-blocked statement, which outranks pending work.
+`plan` uses all of these codes. It exits 0 when the database is current, 2 when migrations are pending or the models have drifted, 3 when a guard blocked a statement, and 1 when validation found problems. Problems outrank a blocked statement, and a blocked statement outranks pending work.
 
-argparse also exits 2 on a usage error, so a script that treats 2 as "work is
-waiting" should check stderr for an `error:` line.
+argparse also exits 2 on a usage error. If your script treats 2 as "work is waiting", check stderr for an `error:` line first.
 
-`rehearse` exits 1 when an up or a down step failed, when the models did not
-land, or when the schema did not come back. A migration with no down step is
-not a failure, so it exits 0.
+`rehearse` exits 1 when an up step or a down step failed, when the models did not land, or when the schema did not come back. A migration with no down step is not a failure, so `rehearse` exits 0 for it.
 
-`migrate` exits 4 when the run would remove data and no passing rehearsal
-covers those statements. The message names them and both ways forward, with
-`--target` carried through when the run had one.
+`migrate` exits 4 when the run would remove data and no passing rehearsal covers those statements. The message names the statements and both ways forward, and carries `--target` through when the run had one.
 
-A block or a refusal on the migration generated from the models comes after
-the registered migrations have applied. Those ids print on stdout before the
-error, and they stay applied.
+A block or a refusal on the migration generated from the models happens after the registered migrations have applied. Those ids print on stdout before the error, and they stay applied.
 
-`validate` exits 1 when problems exist, 0 otherwise. Exit codes are the same
-with and without `--json`.
+`validate` exits 1 when it finds problems, and 0 when it finds none. The exit codes are the same with and without `--json`.
 
 ## The config module
 
@@ -85,11 +71,9 @@ with and without `--json`.
 | `after_migrate` | no | `(connection, applied) -> None` | not called |
 | `on_error` | no | `(connection, migration_id, error) -> None` | not called |
 
-Defining neither `connection` nor `get_connection` raises `ValueError`. An
-unknown dialect name raises `ValueError` listing the six valid ones.
+A config module that defines neither `connection` nor `get_connection` raises `ValueError`. An unknown dialect name raises `ValueError` listing the valid names.
 
-Migrations from `migrations_dir` are appended after `migrations`, so both
-sources can coexist.
+Migrations from `migrations_dir` are appended after the ones in `migrations`, so you can use both sources together.
 
 ```python
 # sustained_config.py
@@ -109,50 +93,29 @@ dialect = 'postgres'
 
 ### Guards
 
-`plan` runs the guards over every statement it lists, the pending migrations
-and the drift together, and prints a `guards` section beside the others. In
-`--json`, each verdict appears on the statement object it flags, as
-`{"rule", "verdict"}`.
+`plan` runs the guards over every statement it lists, the pending migrations and the drift together, and prints a `guards` section beside the other sections. With `--json`, each verdict appears on the statement object it flags, as `{"rule", "verdict"}`.
 
-`migrate` refuses a blocked run before any statement executes and exits 3, with
-the rule and the statement on stderr. A warning prints on stderr and the run
-goes on. `rehearse` does not enforce guards.
+`migrate` refuses a blocked run before any statement executes and exits 3, with the rule and the statement on stderr. A warning verdict prints on stderr and the run continues. `rehearse` does not enforce guards.
 
-There is no flag to skip a guard for one run. Fix the statement, or take the
-rule out of the config module.
+No flag skips a guard for one run. Fix the statement, or take the rule out of the config module.
 
 ### Callbacks
 
-Only `migrate` calls them. `rehearse` does not, because nothing real happened.
-The CLI collects them into a `Callbacks` object and hands them to the migrator,
-which is what calls them, so the same hooks are available through the API.
+Only `migrate` calls the callbacks. `rehearse` does not call them, because it rolls everything back. The CLI collects the callbacks into a `Callbacks` object and hands that object to the migrator, and the migrator makes the calls, so the same hooks are available through the API.
 
-`before_migrate` runs before the run starts, which is before validation and
-before the advisory lock. `after_migrate` runs only when at least one
-migration applied, so a run with nothing to do stays quiet. `on_error` runs
-after a failure and before it reaches the shell; `migration_id` is `None` when
-the run failed before reaching a migration, which is what a guard block or a
-validation problem looks like.
+`before_migrate` runs before the run starts, which is before validation and before the advisory lock. `after_migrate` runs only when at least one migration applied, so a run with nothing to do calls nothing. `on_error` runs after a failure and before the failure reaches the shell. Its `migration_id` argument is `None` when the run failed before it reached a migration, which is what a guard block or a validation problem looks like.
 
-A callback that is not callable is skipped. An `on_error` that raises has its
-own error printed to stderr, and the original migration error still decides
-the exit code.
+The CLI skips a callback that is not callable. When `on_error` itself raises, its error prints to stderr, and the original migration error still decides the exit code.
 
 ### Rehearsal connection
 
-When the config defines `get_rehearsal_connection()`, `rehearse` builds a
-second migrator on that connection and rehearses there instead. The dialect
-check does not apply, the changes may survive the rollback, and the footer
-says so. The scratch connection closes when the command ends.
+When the config defines `get_rehearsal_connection()`, `rehearse` builds a second migrator on that connection and rehearses on the scratch database instead. The dialect check does not apply there, the changes may survive the rollback, and the footer says so. The scratch connection closes when the command ends.
 
-The rehearsal row goes on the real database, not the scratch one, keyed against the
-real database's applied history and pending set. It is written only when the
-scratch run applied every migration pending there; otherwise the output says
-the row was not recorded.
+The rehearsal row goes on the real database rather than the scratch one, keyed against the real database's applied history and pending set. Sustained writes the row only when the scratch run applied every migration pending on the real database. Otherwise the output says the row was not recorded.
 
 ## Output
 
-Plain text, one record per line, nothing coloured.
+Output is plain text, one record per line, with no colour.
 
 ```console
 $ sustained status
@@ -176,13 +139,9 @@ drift
 run: sustained rehearse
 ```
 
-The footer points at `rehearse` when a pending migration removes data, since
-`migrate` refuses those without a rehearsal row, and at `migrate` otherwise. A
-blocked statement replaces it with
-`blocked: fix the statement, or take the rule out of guards`.
+The footer points at `rehearse` when a pending migration removes data, because `migrate` refuses that run without a rehearsal row. Otherwise the footer points at `migrate`. A blocked statement replaces the footer with `blocked: fix the statement, or take the rule out of guards`.
 
-A `guards` section follows the others when the config names `guards`, one line
-per verdict:
+A `guards` section follows the other sections when the config names `guards`, with one line per verdict:
 
 ```console
 guards
@@ -190,10 +149,7 @@ guards
   warn   no_table_rewrite  ALTER TABLE users ALTER COLUMN age TYPE BIGINT
 ```
 
-The drift section appears only when the config names `models`. It reports
-every difference, drops included, while `migrate` never generates a drop; a
-drift section holding only drops says so instead of offering the command. The
-`run:` line prints only when there are no problems.
+The drift section appears only when the config names `models`. It reports every difference, drops included, and `migrate` never generates a drop. A drift section that holds only drops says so instead of offering the command. The `run:` line prints only when validation found no problems.
 
 ```console
 $ sustained rehearse
@@ -204,14 +160,9 @@ rollback complete, database unchanged
 rehearsal row recorded
 ```
 
-`rehearsal row recorded` means the row was written where `migrate` will read it.
-The words after the id are the proofs, in order: `up ok`, `landed` for the
-migration generated from the config's `models`, `down ok`, and `reversed`. A
-check that failed reads `not landed` or `not reversed`, with the objects listed
-underneath and `run: sustained plan` at the end.
+`rehearsal row recorded` means Sustained wrote the row where `migrate` will read it. The words after the id are the checks that passed, in order: `up ok`, `landed` for the migration generated from the config's `models`, `down ok`, and `reversed`. A check that failed reads `not landed` or `not reversed`, with the objects listed underneath and `run: sustained plan` at the end.
 
-A failure names the statement that failed and the migrations under it that
-never got their turn:
+A failure names the statement that failed, and the migrations under it that never ran:
 
 ```console
 $ sustained rehearse
@@ -221,24 +172,15 @@ rollback complete, database unchanged
 run: sustained plan
 ```
 
-When the config names `models`, `migrate` reads the schema back after a
-successful run and prints `schema matches the models`, or one `drift    <gap>`
-line per difference left. It is a report; the exit code does not change.
+When the config names `models`, `migrate` reads the schema back after a successful run. It prints `schema matches the models`, or one `drift    <gap>` line per difference that is left. This report does not change the exit code.
 
-Other commands print `applied  <id>`, `reverted <id>`, `repaired <action>`, or
-`baselined <id>`, one per line, and `Nothing to apply.`, `Nothing to revert.`,
-`Nothing to repair.`, `Nothing to baseline.`, or `Nothing to rehearse.` when
-there was nothing to do. `validate` prints `OK` or one `problem  <text>` line
-per problem.
+The other commands print `applied  <id>`, `reverted <id>`, `repaired <action>`, or `baselined <id>`, one per line. With nothing to do they print `Nothing to apply.`, `Nothing to revert.`, `Nothing to repair.`, `Nothing to baseline.`, or `Nothing to rehearse.` `validate` prints `OK`, or one `problem  <text>` line per problem.
 
-Errors go to stderr as `error: <message>`, or
-`error in '<migration id>': <message>` when the failure came from a known
-migration.
+Errors go to stderr as `error: <message>`, or as `error in '<migration id>': <message>` when the failure came from a known migration.
 
 ## JSON output
 
-`status`, `validate`, `plan`, and `rehearse` take `--json` and print one object
-to stdout.
+`status`, `validate`, `plan`, and `rehearse` take `--json` and print one object to stdout.
 
 ```console
 $ sustained plan --json
@@ -263,13 +205,7 @@ $ sustained plan --json
 }
 ```
 
-Every place a command reports SQL uses that statement object, `drift`
-included. `drift` is `null`, not `[]`, when the config names no models, so a
-caller can tell "nothing was compared" from "compared and found no gap".
-`statements` is `null` for a callable step, which renders no SQL. Before
-version 2.13.0 it was a count. A guard verdict appears on the statement it
-flags, as `{"rule", "verdict"}`, and an unflagged statement carries `[]`. The
-key is present from 2.15.0 onward.
+Every place a command reports SQL uses that statement object, including `drift`. When the config names no models, `drift` is `null` rather than `[]`, so a caller can tell "nothing was compared" from "compared and found no gap". `statements` is `null` for a callable step, which renders no SQL; before version 2.13.0 `statements` was a count. A guard verdict appears on the statement it flags, as `{"rule", "verdict"}`, and a statement no guard flagged carries `[]`. The `guards` key is present from version 2.15.0 onward.
 
 `rehearse --json` prints:
 
@@ -293,10 +229,6 @@ $ sustained rehearse --json
 }
 ```
 
-`landed` and `reversed` are `null` when the check did not run, `[]` when it
-passed, and the lines naming the trouble when it failed. `key` names the
-content the run covered; `recorded` says whether the row was written where
-`migrate` will read it.
+`landed` and `reversed` are `null` when the check did not run, `[]` when the check passed, and the lines naming the trouble when the check failed. `key` names the content the run covered. `recorded` says whether Sustained wrote the row where `migrate` will read it.
 
-`status --json` prints `{"migrations": [{"id": ..., "state": ...}]}`.
-`validate --json` prints `{"ok": ..., "problems": [...]}`.
+`status --json` prints `{"migrations": [{"id": ..., "state": ...}]}`. `validate --json` prints `{"ok": ..., "problems": [...]}`.

@@ -21,21 +21,15 @@ Exception
 └── AttributeError
 ```
 
-`SustainedError` is the base for the four errors Sustained defines itself.
-`PoolTimeout` sits outside that tree, on `RuntimeError`, so an
-`except RuntimeError` around connection handling catches it.
+`SustainedError` is the base class for the errors Sustained defines itself. `PoolTimeout` sits outside that tree, on `RuntimeError`, so an `except RuntimeError` around connection handling catches a pool timeout.
 
-The rest are the standard builtins, raised where a builtin says the right
-thing. Sustained does not wrap driver exceptions: a syntax error or a
-constraint violation reaches you as your driver's own exception type.
+The rest are the standard builtins, raised where a builtin says the right thing. Sustained does not wrap driver exceptions, so a syntax error or a constraint violation reaches you as your driver's own exception type.
 
 ## `DialectError`
 
-A feature the active dialect does not support. Always raised while the
-statement builds, never in the database.
+The query or the schema uses a feature the active dialect does not support. Sustained raises `DialectError` while the statement builds, never in the database.
 
-The message names what is unsupported and, where there is one, the
-alternative:
+The message names the unsupported feature and, where there is one, the alternative:
 
 ```
 MSSQL does not support RETURNING. Use an OUTPUT clause via raw SQL.
@@ -50,31 +44,24 @@ See [Dialect support](/reference/dialects) for the full matrix.
 
 Migration validation found problems.
 
-Attribute: `problems`, a list of strings. The message is
-`Migration validation failed:` followed by one `- ` line per problem.
+The `problems` attribute holds a list of strings. The message is `Migration validation failed:` followed by one `- ` line per problem.
 
-Raised by `Migrator.up()` and by `Migrator.validate()`, unless you call
-`validate(raise_on_problems=False)`, which returns the list instead.
+`Migrator.up()` and `Migrator.validate()` raise it. Call `validate(raise_on_problems=False)` to get the list back instead.
 
-The four problems:
+The problems validation reports:
 
 | Problem | Fix |
 | --- | --- |
-| A migration has a failed attempt on record | Clean up any partial changes by hand, then `repair()` |
-| An applied id is not registered with this migrator | Register it, or you are pointing at the wrong migration set |
-| A checksum no longer matches | Restore the migration, or `repair()` to accept the new contents |
-| A pending migration is ordered before an applied one | `up(allow_out_of_order=True)` |
+| A migration has a failed attempt on record | Clean up any partial changes by hand, then call `repair()` |
+| An applied id is not registered with this migrator | Register the migration, or point the migrator at the right migration set |
+| A checksum no longer matches | Restore the migration, or call `repair()` to accept the new contents |
+| A pending migration is ordered before an applied one | Call `up(allow_out_of_order=True)` |
 
 ## `RehearsalRequired`
 
-A run would apply SQL that removes data, and no passing rehearsal covers that
-exact set of statements.
+A run would apply SQL that removes data, and no passing rehearsal covers that exact set of statements.
 
-Raised by `Migrator.up()` and `AsyncMigrator.up()`. The registered migrations
-are checked before any statement runs. A run with models is checked a second
-time against the migration generated from them, which exists only once the
-registered migrations have applied, so a refusal there leaves those applied
-and lists their ids on the exception's `applied` attribute.
+`Migrator.up()` and `AsyncMigrator.up()` raise it. Sustained checks the registered migrations before any statement runs. A run with models is checked a second time, against the migration generated from those models, which exists only once the registered migrations have applied. A refusal at that second check leaves the registered migrations applied and lists their ids on the exception's `applied` attribute.
 
 The message names the migration and the statement, then both ways forward:
 
@@ -85,22 +72,15 @@ Prove them first: sustained rehearse
 Or apply them without proof: sustained migrate --unrehearsed
 ```
 
-When a rehearsal of the same content ran and failed, the first line reads
-`The last rehearsal of these statements failed` instead.
+When a rehearsal of the same content ran and failed, the first line reads `The last rehearsal of these statements failed` instead.
 
-The CLI exits 4 on this error. `up(unrehearsed=True)` waives the check and
-records an `override` row under the same key, which never opens the gate for a
-later run. A run that only adds never triggers
-it, and neither does a callable step, which renders no SQL to scan. See
-[Rehearsal logging and tracking](/schema#rehearsal-logging-and-tracking).
+The CLI exits 4 on this error. `up(unrehearsed=True)` waives the check and records an `override` row under the same key, which does not open the gate for a later run. A run that only adds does not raise it, and neither does a callable step, which renders no SQL to scan. See [Rehearsal logging and tracking](/schema#rehearsal-logging-and-tracking).
 
 ## `GuardBlocked`
 
 A guard returned a blocking verdict on a statement the run would apply.
 
-Raised by `Migrator.up()` and `AsyncMigrator.up()` before any statement runs.
-`verdicts` holds the blocking verdicts, in the order the guards returned them.
-The message names each rule and the statement it read:
+`Migrator.up()` and `AsyncMigrator.up()` raise it before any statement runs. The `verdicts` attribute holds the blocking verdicts, in the order the guards returned them. The message names each rule and the statement it read:
 
 ```
 A guard blocked this run:
@@ -108,41 +88,35 @@ A guard blocked this run:
 Fix the statement, or take the rule out of the guard list to run it anyway.
 ```
 
-There is no flag that waives it. `sustained plan` and `sustained migrate` exit
-3 when it is raised. A warning verdict prints on stderr and raises nothing.
-See [Guards](/schema#guards).
+No flag waives a guard. `sustained plan` and `sustained migrate` exit 3 when a guard blocks the run. A warning verdict prints on stderr and raises nothing. See [Guards](/schema#guards).
 
 ## `PoolTimeout`
 
-`ConnectionPool` stayed exhausted past its timeout. The message names the
-timeout and the pool size. Raise `max_size`, shorten the work holding the
-connections, or catch it and shed load.
+`ConnectionPool` stayed exhausted past its timeout. The message names the timeout and the pool size. Raise `max_size`, shorten the work that holds the connections, or catch the timeout and shed load.
 
 ## `ValueError`
 
-Invalid input the builder can detect. Some are raised by the method you call,
-and some when the statement renders. The difference decides where the
-traceback points.
+Invalid input the builder can detect. The method you call raises some of these, and the render raises the rest, which decides where the traceback points.
 
 **At call time:**
 
 | Condition | Where |
 | --- | --- |
 | An empty list to `whereIn`, `in_()`, or `insert()` | Filters, writes |
-| A negative or non-integer row count | `limit`, `top`, `offset`, `page` |
-| `limit()` and `top()` in one query, or either set twice | Paging |
+| A row count that is negative or not an integer | `limit`, `top`, `offset`, `page` |
+| `limit()` and `top()` in one query, or either one set twice | Paging |
 | An operator outside the allowlist | `where`, `having` |
 | A `Predicate` passed with an operator or a value | `where`, `having` |
 | A subquery in `from_()` with no alias | FROM |
 | Rows in a multi-row insert with different columns | `insert` |
 | `merge()` or `ignore()` without `onConflict()` | Upserts |
 | Both `skip_locked` and `nowait` | `for_update` |
-| An index or migration with an empty name, or no columns | Schema, migrations |
-| `autoincrement` on a non-integer column, or without `primary_key` | `ColumnDef` |
+| An index or migration with an empty name, or with no columns | Schema, migrations |
+| `autoincrement` on a column that is not an integer, or without `primary_key` | `ColumnDef` |
 | `references` without a dot | `ColumnDef` |
 | Duplicate migration ids | `Migrator` |
-| A repeatable with a down step, or a callable step and no checksum | `Migration` |
-| An unresolvable model name in a relation | Relations |
+| A repeatable with a down step, or a callable step with no checksum | `Migration` |
+| A model name in a relation that does not resolve | Relations |
 | An unknown relation name | Joins, `withGraphFetched` |
 
 **At render time:**
@@ -167,47 +141,35 @@ traceback points.
 | Rehearsing on a dialect whose schema changes do not roll back |
 | Rehearsing on an autocommit connection, or inside a `transaction()` block |
 | Generation refusing a drop, a NOT NULL change, or a new primary key column |
-| A migration file matching none of the three naming patterns |
+| A migration file matching none of the naming patterns |
 | An empty migration file, or a down file with no up file |
-| An unknown or malformed `${placeholder}` |
+| A `${placeholder}` that is unknown or malformed |
 
 ## `TypeError`
 
-A wrong type where the shape matters: a non-`QueryBuilder` CTE or
-`insert_from` source, a non-list `using`, a non-string operator, a
-non-integer row count.
+A wrong type in a position where the shape matters: a CTE or an `insert_from` source that is not a `QueryBuilder`, a `using` value that is not a list, an operator that is not a string, a row count that is not an integer.
 
-`bool(predicate)` also raises `TypeError`, on purpose. It turns `a and b` on
-two predicates into a loud failure instead of a silent one that keeps only one
-side. Use `&` and `|`.
+`bool(predicate)` also raises `TypeError`, so `a and b` on two predicates fails instead of keeping only one side of the expression. Use `&` and `|`.
 
 ## `AttributeError`
 
-Access to a column a model does not declare. The message lists the declared
-set:
+You accessed a column the model does not declare. The message lists the declared columns:
 
 ```
 'Show' does not declare a column named 'titel'. Declared columns: id,
 venue_id, title, starts_at, sold_out.
 ```
 
-Declare `columns`, or `tableColumns`, to turn this on. Without a declaration
-every attribute resolves to a column name and a typo reaches the database.
+Declare `columns`, or `tableColumns`, to turn this check on. Without a declaration, every attribute resolves to a column name and a typo reaches the database.
 
 ## `RuntimeError`
 
-| Condition | Message names the fix |
+| Condition | The message names this fix |
 | --- | --- |
-| No connection resolved | `Model.bind(connection)`, or pass it to `run()` |
-| No async adapter resolved | `Model.bind_async(adapter)`, or pass it to `arun()` |
-| An `and`/`or` variant as the first condition in a chain | Use the plain form |
+| No connection resolved | `Model.bind(connection)`, or pass a connection to `run()` |
+| No async adapter resolved | `Model.bind_async(adapter)`, or pass an adapter to `arun()` |
+| An `and` or `or` variant as the first condition in a chain | Use the plain form |
 | `andOn` or `orOn` as the first join condition | Use `on` |
-| A join lambda that added no condition | Add one |
-| Nesting `async_transaction()` | There are no async savepoints |
+| A join lambda that added no condition | Add a condition |
 | Using a closed `ConnectionPool` | |
 | `to_df()` or `to_arrow()` without pandas or pyarrow | The install command |
-
-## `NotImplementedError`
-
-Async eager loading of a `through` relation. Join it instead, or load it with
-a synchronous connection.

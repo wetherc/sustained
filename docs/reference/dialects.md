@@ -3,14 +3,13 @@ layout: default
 title: Dialect support reference
 ---
 
-What each of the seven dialects supports, and what it refuses. Every refusal
-raises `DialectError` while the statement builds, never in the database.
+What each dialect supports, and what it refuses. Every refusal raises `DialectError` while the statement builds, never in the database.
 
 Guide: [SQL Dialects](/dialects).
 
 ## `Dialects`
 
-In `sustained.dialects`.
+The `Dialects` enum lives in `sustained.dialects`.
 
 | Member | Engine |
 | --- | --- |
@@ -22,13 +21,11 @@ In `sustained.dialects`.
 | `Dialects.ATHENA` | AWS Athena |
 | `Dialects.DUCKDB` | DuckDB |
 
-`Dialects.get_compiler(dialect)` returns the compiler instance. Set a dialect
-with `Model.set_dialect()`, or pass one to `Migrator(dialect=...)`.
+`Dialects.get_compiler(dialect)` returns the compiler instance. Set a dialect with `Model.set_dialect()`, or pass one to `Migrator(dialect=...)`.
 
 ## Drivers and placeholders
 
-The connection's parameter style must match the dialect's placeholder, or
-execution fails at the driver.
+The connection's parameter style has to match the dialect's placeholder, or execution fails at the driver.
 
 | Dialect | Driver | Placeholder | Identifier quoting |
 | --- | --- | --- | --- |
@@ -56,8 +53,7 @@ A blank cell means the feature works.
 | `WITH RECURSIVE` | | | | | plain `WITH` | | |
 | Booleans | `TRUE` / `FALSE` | | | | `1` / `0` | | |
 
-Emulated `ILIKE` compiles to `LOWER(col) LIKE LOWER(pattern)`, so it never
-raises.
+Emulated `ILIKE` compiles to `LOWER(col) LIKE LOWER(pattern)`, so `ILIKE` never raises.
 
 ## Write features
 
@@ -67,14 +63,9 @@ raises.
 | `returning()` | | | raises | | raises | raises | raises |
 | `create_table_as()` | | | | | raises | | raises when `temporary=True` |
 
-The MSSQL messages name the alternative: `OUTPUT` for RETURNING,
-`SELECT ... INTO` for CTAS. MySQL's names a second query or
-`LAST_INSERT_ID()`; MariaDB has RETURNING, but the shared dialect refuses
-it so one builder cannot emit SQL the other server rejects.
+The MSSQL messages name the alternative: `OUTPUT` for RETURNING, and `SELECT ... INTO` for CREATE TABLE AS. The MySQL message names a second query, or `LAST_INSERT_ID()`. MariaDB does have RETURNING, but the shared MySQL dialect refuses it, so one builder cannot emit SQL the other server rejects.
 
-`ON DUPLICATE KEY UPDATE` fires on any unique key the row collides with,
-not only the columns named in `onConflict()`. This is the one place the
-statement is wider on MySQL than elsewhere.
+`ON DUPLICATE KEY UPDATE` fires on any unique key the row collides with, not only on the columns named in `onConflict()`. The MySQL statement therefore covers more collisions than the same upsert does elsewhere.
 
 ## Schema features
 
@@ -91,12 +82,7 @@ statement is wider on MySQL than elsewhere.
 | Indexes | | | | | | | raises |
 | Table options | raises | raises | raises | raises | raises | raises | |
 
-The default dialect cannot alter a column, so migration generation rebuilds
-the table instead: create new, copy rows, replace. A rebuild is not
-reversible, so a migration containing one has no down step. Columns and
-indexes the models do not declare are carried across the rebuild unless
-`allow_drops=True`. An index on an expression cannot be introspected, so a
-rebuild loses it; recreate it by hand.
+The default dialect cannot alter a column, so migration generation rebuilds the table instead: it creates the new table, copies the rows over, and replaces the old table. A rebuild does not reverse, so a migration that contains one has no down step. The rebuild carries across the columns and indexes the models do not declare, unless you pass `allow_drops=True`. Introspection cannot read an index on an expression, so a rebuild loses that index; create it again by hand.
 
 ## Migration behaviour
 
@@ -106,35 +92,16 @@ rebuild loses it; recreate it by hand.
 | `rehearse()` | | | refuses | | refuses | refuses | refuses |
 | Advisory lock | none | `pg_advisory_lock` | `GET_LOCK` | none | `sp_getapplock` | none | none |
 
-Only the three dialects whose schema changes roll back may rehearse against
-the real database. The rest need `scratch=True` and a throwaway database.
+Only a dialect whose schema changes roll back may rehearse against the real database: the default dialect, Postgres, and DuckDB. On every other dialect, rehearse with `scratch=True` against a throwaway database.
 
-Athena has no transactions, and MySQL has them for rows but not for schema
-changes. Both run each migration bare, so a multi-step migration that fails
-leaves the steps before it applied. Both write a failed-attempt row, which
-makes the interrupted run visible and holds the next run back until `repair()`
-clears it.
+Athena has no transactions, and MySQL has transactions for rows but not for schema changes. Both dialects run each migration without a surrounding transaction, so a multi-step migration that fails leaves the steps before the failure applied. Both write a failed-attempt row, which makes the interrupted run visible and holds the next run back until `repair()` clears the row.
 
-SQLite and DuckDB have no advisory lock because they serialize writers
-themselves. Athena has none to take, so run one migrator at a time there.
-MySQL's `GET_LOCK` is session-scoped and reentrant, and releases on
-disconnect, like the Postgres and MSSQL locks.
+SQLite and DuckDB have no advisory lock, because they serialize writers themselves. Athena has no lock to take, so run one migrator at a time there. MySQL's `GET_LOCK` is scoped to the session, is reentrant, and releases on disconnect, the same way the Postgres and MSSQL locks do.
 
 ## Introspection
 
-The default dialect reads SQLite's PRAGMA tables. Every other dialect reads
-`information_schema`. Where the constraint views are unavailable,
-introspection degrades to column data alone rather than failing.
+The default dialect reads SQLite's PRAGMA tables. Every other dialect reads `information_schema`. When the constraint views are unavailable, introspection falls back to the column data alone rather than failing.
 
-MySQL diverges in three places. It reads `column_type` rather than
-`data_type`, so a column arrives as `varchar(120)` and compares against the
-compiler's own spelling. It scopes every query to `DATABASE()`, since a MySQL
-schema is a database. It matches schemas as well as names when joining the
-constraint views, since a MySQL constraint name is only unique within its
-schema.
+MySQL introspection differs from the rest. It reads `column_type` rather than `data_type`, so a column arrives as `varchar(120)` and compares against the compiler's own spelling. It scopes every query to `DATABASE()`, because a MySQL schema is a database. It matches schema names as well as constraint names when it joins the constraint views, because a MySQL constraint name is unique only within its schema.
 
-MariaDB stores a `Json()` column as `longtext` with a `json_valid` CHECK
-constraint, and reports the storage type. The read looks those constraints up
-and restores the JSON type, so the column does not report as drift no
-migration can close. MariaDB before 10.2.22 has no `check_constraints` view,
-and there the column does report as drift.
+MariaDB stores a `Json()` column as `longtext` with a `json_valid` CHECK constraint, and reports the storage type. Introspection looks those constraints up and restores the JSON type, so the column does not report as drift that no migration can close. MariaDB before 10.2.22 has no `check_constraints` view, so on those versions the column does report as drift.

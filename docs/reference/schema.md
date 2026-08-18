@@ -3,16 +3,13 @@ layout: default
 title: Schema types reference
 ---
 
-Everything in `sustained.schema`. These are the objects a model's
-`tableColumns`, `indexes`, and `tableOptions` hold, and the renderers that
-turn them into DDL.
+Everything in `sustained.schema`. These objects are what a model's `tableColumns`, `indexes`, and `tableOptions` hold, together with the renderers that turn them into DDL.
 
 Guide: [Schema and Migrations](/schema).
 
 ## Column types
 
-Each is a factory returning a `ColumnDef`. Every one accepts the full
-`ColumnDef` option set as keyword arguments.
+Each type is a factory that returns a `ColumnDef`. Every factory accepts the full `ColumnDef` option set as keyword arguments.
 
 | Signature | Logical type |
 | --- | --- |
@@ -29,18 +26,20 @@ Each is a factory returning a `ColumnDef`. Every one accepts the full
 
 ### How types render per dialect
 
-| Logical | Default, Presto | Postgres | MSSQL | Athena | DuckDB |
-| --- | --- | --- | --- | --- | --- |
-| INTEGER | `INTEGER` | `INTEGER` | `INTEGER` | `INT` | `INTEGER` |
-| BIGINT | `BIGINT` | `BIGINT` | `BIGINT` | `BIGINT` | `BIGINT` |
-| VARCHAR | `VARCHAR` | `VARCHAR` | `NVARCHAR` | `VARCHAR`, or `STRING` with no length | `VARCHAR` |
-| TEXT | `TEXT` | `TEXT` | `NVARCHAR(MAX)` | `STRING` | `TEXT` |
-| BOOLEAN | `BOOLEAN` | `BOOLEAN` | `BIT` | `BOOLEAN` | `BOOLEAN` |
-| FLOAT | `DOUBLE PRECISION` | `DOUBLE PRECISION` | `FLOAT` | `DOUBLE` | `DOUBLE PRECISION` |
-| NUMERIC | `NUMERIC` | `NUMERIC` | `NUMERIC` | `DECIMAL` | `NUMERIC` |
-| DATE | `DATE` | `DATE` | `DATE` | `DATE` | `DATE` |
-| TIMESTAMP | `TIMESTAMP` | `TIMESTAMP` | `DATETIME2` | `TIMESTAMP` | `TIMESTAMP` |
-| JSON | `JSON` | `JSONB` | `NVARCHAR(MAX)` | `STRING` | `JSON` |
+| Logical | Default, Presto | Postgres | MySQL | MSSQL | Athena | DuckDB |
+| --- | --- | --- | --- | --- | --- | --- |
+| INTEGER | `INTEGER` | `INTEGER` | `INT` | `INTEGER` | `INT` | `INTEGER` |
+| BIGINT | `BIGINT` | `BIGINT` | `BIGINT` | `BIGINT` | `BIGINT` | `BIGINT` |
+| VARCHAR | `VARCHAR` | `VARCHAR` | `VARCHAR` | `NVARCHAR` | `VARCHAR`, or `STRING` with no length | `VARCHAR` |
+| TEXT | `TEXT` | `TEXT` | `TEXT` | `NVARCHAR(MAX)` | `STRING` | `TEXT` |
+| BOOLEAN | `BOOLEAN` | `BOOLEAN` | `TINYINT(1)` | `BIT` | `BOOLEAN` | `BOOLEAN` |
+| FLOAT | `DOUBLE PRECISION` | `DOUBLE PRECISION` | `DOUBLE` | `FLOAT` | `DOUBLE` | `DOUBLE PRECISION` |
+| NUMERIC | `NUMERIC` | `NUMERIC` | `DECIMAL` | `NUMERIC` | `DECIMAL` | `NUMERIC` |
+| DATE | `DATE` | `DATE` | `DATE` | `DATE` | `DATE` | `DATE` |
+| TIMESTAMP | `TIMESTAMP` | `TIMESTAMP` | `DATETIME` | `DATETIME2` | `TIMESTAMP` | `TIMESTAMP` |
+| JSON | `JSON` | `JSONB` | `JSON` | `NVARCHAR(MAX)` | `STRING` | `JSON` |
+
+MySQL spells `BOOLEAN` as `TINYINT(1)` because its catalog reports the underlying type rather than the synonym. It spells `TIMESTAMP` as `DATETIME` because a MySQL `TIMESTAMP` column is four bytes, stops in 2038, and converts time zones, while `Timestamp()` describes a plain wall clock.
 
 ## `ColumnDef`
 
@@ -50,34 +49,33 @@ ColumnDef(type_name, *, length=None, precision=None, scale=None,
           references=None, autoincrement=False, backfill=None)
 ```
 
-Use the factories above rather than constructing this directly. Every keyword
-below works on any of them.
+Use the factories above rather than constructing a `ColumnDef` yourself. Every keyword below works on every factory.
 
 | Option | Type | Meaning |
 | --- | --- | --- |
-| `primary_key` | `bool` | Part of the primary key. Mark several columns for a composite key. |
-| `nullable` | `bool` | Whether NULL is allowed. A primary key column is always NOT NULL, whatever you pass. |
-| `unique` | `bool` | Adds UNIQUE. Skipped in DDL when the column is also a primary key. |
-| `default` | value or `Expression` | A literal default, or raw SQL: `Timestamp(default=Expression('CURRENT_TIMESTAMP'))`. |
-| `references` | `'table.column'` | Renders `REFERENCES table (column)`. Raises `ValueError` without the dot. |
-| `autoincrement` | `bool` | Identity values. Requires an integer type and `primary_key=True`, or `ValueError`. |
-| `backfill` | value or `Expression` | The value migration generation gives existing rows when it adds this column NOT NULL, or tightens it to NOT NULL. Not used by plain DDL. |
+| `primary_key` | `bool` | The column is part of the primary key. Mark several columns for a composite key. |
+| `nullable` | `bool` | Whether the column allows NULL. A primary key column is always NOT NULL, whatever you pass. |
+| `unique` | `bool` | Adds UNIQUE. The DDL leaves UNIQUE off when the column is also a primary key. |
+| `default` | value or `Expression` | A literal default, or raw SQL, as in `Timestamp(default=Expression('CURRENT_TIMESTAMP'))`. |
+| `references` | `'table.column'` | Renders `REFERENCES table (column)`. Raises `ValueError` when the string has no dot. |
+| `autoincrement` | `bool` | Identity values. Requires an integer type and `primary_key=True`, or the factory raises `ValueError`. |
+| `backfill` | value or `Expression` | The value migration generation gives existing rows when it adds this column NOT NULL, or tightens the column to NOT NULL. Plain DDL ignores `backfill`. |
 | `length` | `int` | VARCHAR length. |
 | `precision`, `scale` | `int` | NUMERIC precision and scale. |
 
-`default` fills new rows in the database. `backfill` fills the rows that are
-already there, at migration time. A NOT NULL change needs one or the other.
+`default` fills new rows in the database. `backfill` fills the rows that are already in the table, at migration time. A NOT NULL change needs one or the other.
 
 ### Identity per dialect
 
 | Dialect | `autoincrement` renders |
 | --- | --- |
-| Default (SQLite) | nothing; `INTEGER PRIMARY KEY` is a rowid alias |
+| Default (SQLite) | nothing, because `INTEGER PRIMARY KEY` is a rowid alias |
 | Postgres | `GENERATED BY DEFAULT AS IDENTITY` |
+| MySQL | `AUTO_INCREMENT` |
 | MSSQL | `IDENTITY(1,1)` |
 | DuckDB, Presto, Athena | `DialectError` |
 
-DuckDB's message names the alternative: a sequence with a DEFAULT expression.
+The DuckDB message names the alternative: a sequence with a DEFAULT expression.
 
 ## `Index`
 
@@ -85,8 +83,7 @@ DuckDB's message names the alternative: a sequence with a DEFAULT expression.
 Index(name, *columns, unique=False)
 ```
 
-Attributes: `name`, `columns`, `unique`. Raises `ValueError` for an empty name
-or no columns.
+An `Index` holds `name`, `columns`, and `unique`. It raises `ValueError` for an empty name or for no columns.
 
 ```python
 from sustained.schema import Index
@@ -97,8 +94,7 @@ class Show(Model):
     indexes = [Index('ix_shows_venue', 'venue_id')]
 ```
 
-`create_table()` creates them, and migration generation keeps them in step.
-Athena raises `DialectError`: it has no indexes, so partition instead.
+`create_table()` creates the indexes, and migration generation keeps them in step with the model. Athena raises `DialectError`, because Athena has no indexes; partition the table instead.
 
 ## `TableOptions`
 
@@ -106,9 +102,7 @@ Athena raises `DialectError`: it has no indexes, so partition instead.
 TableOptions(location=None, partitioned_by=None, properties=None)
 ```
 
-Storage clauses for engines that need them. Athena renders `PARTITIONED BY`,
-`LOCATION`, and `TBLPROPERTIES` after the column list; every other dialect
-raises `DialectError` when the model sets `tableOptions`.
+`TableOptions` holds storage clauses for engines that need them. Athena renders `PARTITIONED BY`, `LOCATION`, and `TBLPROPERTIES` after the column list. Every other dialect raises `DialectError` when the model sets `tableOptions`.
 
 ```python
 from sustained.schema import TableOptions
@@ -123,31 +117,28 @@ class Event(Model):
     )
 ```
 
-Partition entries pass through as written, so Iceberg transforms survive.
+Partition entries render as written, so an Iceberg transform reaches the engine unchanged.
 
 ## Athena column rules
 
-Athena tables are files in S3 and enforce no constraints, so
-`validate_column_def` raises `DialectError` for a column declaring
-`primary_key`, `unique`, `default`, `references`, `autoincrement`, or
-`nullable=False`. The message lists every problem it found at once. Declare
-Athena columns plain and nullable.
+Athena tables are files in S3 and enforce no constraints, so `validate_column_def` raises `DialectError` for a column that declares `primary_key`, `unique`, `default`, `references`, `autoincrement`, or `nullable=False`. The message lists every problem it found in the column. Declare Athena columns plain and nullable.
+
+## MySQL column rules
+
+MySQL needs a prefix length for a key on a `TEXT` or `JSON` column, so `validate_column_def` raises `DialectError` for a `Text()` or `Json()` column that declares `unique` or `primary_key`. Use `String(n)` with a length that fits, or declare the prefix index in a hand-written migration. MySQL also takes no literal DEFAULT on those two types, so a `default` on them raises as well. Set the value in the application, or give the column a `backfill` so the migration sets it.
 
 ## DDL rendering
 
-Both take a compiler, which you get from `Dialects.get_compiler(dialect)`.
-`Model.create_table_sql()` calls them for you.
+Both renderers take a compiler, which you get from `Dialects.get_compiler(dialect)`. `Model.create_table_sql()` calls them for you.
 
 | Signature | Returns |
 | --- | --- |
 | `render_column_sql(compiler, name, col, inline_pk)` | One column clause, for CREATE TABLE or ADD COLUMN. |
 | `build_create_table_sql(compiler, table_sql, columns, if_not_exists=False, options=None)` | The whole CREATE TABLE statement. |
 
-A single primary key column renders inline. Two or more become a table-level
-`PRIMARY KEY (...)` constraint.
+A single primary key column renders inline. Several primary key columns become a table-level `PRIMARY KEY (...)` constraint.
 
-`build_create_table_sql` raises `ValueError` when `columns` is empty, and when
-an autoincrement column is combined with a composite primary key.
+`build_create_table_sql` raises `ValueError` when `columns` is empty, and when an autoincrement column is combined with a composite primary key.
 
 ## `Expression`
 
@@ -155,8 +146,7 @@ an autoincrement column is combined with a composite primary key.
 Expression(value)
 ```
 
-Raw SQL that renders verbatim, in both `str(query)` and `to_sql()`. Use it for
-a default or a backfill the database computes:
+Raw SQL that renders as written, in both `str(query)` and `to_sql()`. Use an `Expression` for a default or a backfill the database computes:
 
 ```python
 from sustained.schema import Expression, Timestamp
@@ -164,4 +154,4 @@ from sustained.schema import Expression, Timestamp
 'created_at': Timestamp(default=Expression('CURRENT_TIMESTAMP'))
 ```
 
-Defined in `sustained.types` and re-exported here.
+`Expression` is defined in `sustained.types` and re-exported here.
