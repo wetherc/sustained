@@ -366,7 +366,7 @@ drift
 run: sustained rehearse
 ```
 
-A statement that drops a table, drops a column, or truncates one is labelled `destructive`. A column drop written without the COLUMN keyword, as MySQL allows, is labelled as well. The scan is textual, so a drop named inside a string literal is labelled too.
+A statement that drops a table, a column, an enum type, or a constraint, or truncates a table, is labelled `destructive`. A column drop written without the COLUMN keyword, as MySQL allows, is labelled as well. The scan is textual, so a drop named inside a string literal is labelled too.
 
 The footer points at `rehearse` rather than `migrate` when a pending migration carries one of these labels, because `migrate` will refuse it until a rehearsal has proved it. Once a rehearsal has recorded a row for that run, the footer reads `run: sustained migrate` again. With nothing destructive waiting, it reads `run: sustained migrate` from the start.
 
@@ -591,7 +591,7 @@ Both commands exit 3. There is no `--force` flag: fix the statement, or take the
 
 | Rule | Verdict | Flags |
 | --- | --- | --- |
-| `no_drops()` | block | A statement that drops a table, column, view, schema, or database |
+| `no_drops()` | block | A statement that drops a table, column, view, schema, database, enum type, or constraint |
 | `index_must_be_concurrent()` | block | `CREATE INDEX` without `CONCURRENTLY`, on Postgres only |
 | `no_table_rewrite()` | warn | A column type change, or a NOT NULL with nothing to fill existing rows |
 | `no_lock_without_timeout()` | block | An up run that alters or drops a table with no `SET lock_timeout` in it, on Postgres only |

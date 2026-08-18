@@ -346,7 +346,7 @@ These names live in `sustained.analysis`, and `sustained plan` uses them.
 
 | Signature | Returns | Description |
 | --- | --- | --- |
-| `destructive_statements(statements)` | `list[str]` | The statements that drop a table, drop a column, or truncate. Comments removed, whitespace collapsed. Skips constraint, index, and key drops. |
+| `destructive_statements(statements)` | `list[str]` | The statements that drop a table, a column, an enum type, or a constraint, or truncate. Comments removed, whitespace collapsed. Skips index and key drops. |
 | `summarize(migration, state)` | `PendingSummary` | One migration reduced to its id, state, repeatable flag, statement count, and destructive statements. |
 
 `PendingSummary(id, state, repeatable, statements, destructive)` holds that summary. `statements` is `None` for a callable step, which has no SQL to count.

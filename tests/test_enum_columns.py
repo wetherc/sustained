@@ -359,11 +359,12 @@ class TestDropTypeIsDestructive(unittest.TestCase):
         labelled = destructive_statements(['DROP TYPE "post_status"'])
         self.assertEqual(labelled, ['DROP TYPE "post_status"'])
 
-    def test_drop_constraint_still_passes(self):
+    def test_drop_constraint_is_destructive(self):
         guard = no_drops()
         statement = "ALTER TABLE t DROP CONSTRAINT ck_t_status_enum"
-        self.assertEqual(guard([statement], Dialects.POSTGRES), [])
-        self.assertEqual(destructive_statements([statement]), [])
+        verdicts = guard([statement], Dialects.POSTGRES)
+        self.assertEqual(len(verdicts), 1)
+        self.assertEqual(destructive_statements([statement]), [statement])
 
 
 def _posts_snapshot(enum_values=("draft", "published"), status_type="post_status"):

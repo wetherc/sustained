@@ -1,8 +1,8 @@
 """
 Static reading of migration SQL, for previews that touch no database.
 
-`destructive_statements()` finds the statements that remove data, so a
-preview can label them. `summarize()` reduces one migration to the count
+`destructive_statements()` finds the statements that remove data or
+drop a constraint, so a preview can label them. `summarize()` reduces one migration to the count
 and the labels the `plan` command prints.
 
 The scan is textual. A drop named inside a string literal is labelled
@@ -20,7 +20,8 @@ from sustained.migrations import Migration, migration_sql
 _COMMENT_RE = re.compile(r"--[^\n]*|/\*.*?\*/", re.DOTALL)
 _WHITESPACE_RE = re.compile(r"\s+")
 _DESTRUCTIVE_RE = re.compile(
-    r"\bDROP\s+TABLE\b|\bDROP\s+COLUMN\b|\bDROP\s+TYPE\b|\bTRUNCATE\b",
+    r"\bDROP\s+TABLE\b|\bDROP\s+COLUMN\b|\bDROP\s+TYPE\b|\bTRUNCATE\b"
+    r"|\bDROP\s+CONSTRAINT\b|\bDROP\s+CHECK\b|\bDROP\s+FOREIGN\s+KEY\b",
     re.IGNORECASE,
 )
 # MySQL lets a column drop omit the COLUMN keyword. This matches
@@ -45,13 +46,15 @@ def normalize_statement(statement: str) -> str:
 
 def destructive_statements(statements: Union[str, Sequence[str]]) -> List[str]:
     """
-    Returns the statements that remove data: DROP TABLE, DROP COLUMN,
-    DROP TYPE, TRUNCATE, and a MySQL-style column drop that omits the
-    COLUMN keyword (`ALTER TABLE t DROP col`). Drops of constraints, indexes,
-    and keys are not labelled. Comments are removed and whitespace is
-    collapsed, so each
-    statement comes back on one line and a commented-out drop is not
-    labelled. Both `--` and `/* */` comments are handled.
+    Returns the statements that remove something the schema cannot give
+    back: DROP TABLE, DROP COLUMN, DROP TYPE, TRUNCATE, a MySQL-style
+    column drop that omits the COLUMN keyword (`ALTER TABLE t DROP col`),
+    and constraint drops (DROP CONSTRAINT, DROP CHECK, DROP FOREIGN KEY).
+    A dropped constraint removes no rows, but re-adding it needs the data
+    to still satisfy it. Drops of indexes and keys are not labelled.
+    Comments are removed and whitespace is collapsed, so each statement
+    comes back on one line and a commented-out drop is not labelled. Both
+    `--` and `/* */` comments are handled.
     """
     if isinstance(statements, str):
         statements = [statements]

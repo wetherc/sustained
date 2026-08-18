@@ -36,11 +36,17 @@ class DestructiveStatementsTestCase(unittest.TestCase):
             ["alter table users drop legacy"],
         )
 
-    def test_constraint_drop_is_not_labelled(self):
+    def test_constraint_drops_are_labelled(self):
         statements = [
             "ALTER TABLE users DROP CONSTRAINT fk_x",
-            "ALTER TABLE users DROP INDEX idx_users_email",
             "ALTER TABLE users DROP FOREIGN KEY fk_x",
+            "ALTER TABLE users DROP CHECK ck_users_status_enum",
+        ]
+        self.assertEqual(destructive_statements(statements), statements)
+
+    def test_index_and_key_drops_are_not_labelled(self):
+        statements = [
+            "ALTER TABLE users DROP INDEX idx_users_email",
             "ALTER TABLE users DROP PRIMARY KEY",
             "DROP INDEX idx_users_email",
             "DROP VIEW active_users",

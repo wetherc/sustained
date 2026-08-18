@@ -40,9 +40,17 @@ class NoDropsTest(unittest.TestCase):
         verdicts = self.run_on(["DROP VIEW v", "DROP SCHEMA s", "DROP DATABASE d"])
         self.assertEqual([v.rule for v in verdicts], ["no_drops"] * 3)
 
-    def test_passes_constraint_and_index_drops(self):
+    def test_blocks_constraint_drops(self):
         statements = [
-            "ALTER TABLE users DROP CONSTRAINT users_pkey",
+            "ALTER TABLE users DROP CONSTRAINT users_email_key",
+            "ALTER TABLE users DROP CHECK ck_users_status_enum",
+            "ALTER TABLE users DROP FOREIGN KEY fk_users_org",
+        ]
+        verdicts = self.run_on(statements)
+        self.assertEqual([v.rule for v in verdicts], ["no_drops"] * 3)
+
+    def test_passes_index_and_key_drops(self):
+        statements = [
             "DROP INDEX users_email_idx",
             "ALTER TABLE users DROP KEY k",
         ]
