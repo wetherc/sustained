@@ -22,8 +22,15 @@ autogenerate() turns the diff into a Migration:
 - Dropping extra tables or columns requires allow_drops=True and is not
   reversible. Dropping extra indexes also requires allow_drops=True but
   reverses, since the index definition is known.
-- Primary key, foreign key, column-level unique, and default differences
-  are reported in the diff's constraint notes but never auto-migrated.
+- Declared tableConstraints diff by name on engines whose catalog reports
+  constraints. A missing constraint generates ADD CONSTRAINT with the
+  drop as its down step; a changed foreign key generates drop-plus-add
+  under allow_drops; SQLite routes constraint changes through the table
+  rebuild. A changed check expression on an engine that rewrites
+  expressions stays a note, never a drop.
+- Primary key, column-shorthand foreign key, column-level unique, and
+  default differences are reported in the diff's constraint notes but
+  never auto-migrated.
 """
 
 from __future__ import annotations
@@ -40,6 +47,7 @@ from sustained.introspect import (
     async_introspect_schema,
     diff_snapshots,
     introspect_schema,
+    normalize_check,
     normalize_default,
     normalize_type,
     parse_inline_enum,
@@ -47,6 +55,9 @@ from sustained.introspect import (
 )
 from sustained.migrations import Migration
 from sustained.schema import (
+    Check,
+    ForeignKey,
+    bare_table_name,
     build_create_table_sql,
     collect_enum_types,
     enum_check_constraint_sql,
@@ -94,6 +105,14 @@ class SchemaDiff:
         )
         self.new_enum_types: List[Tuple[str, Tuple[str, ...]]] = []
         self.changed_enum_types: List[Tuple[str, Tuple[str, ...], Tuple[str, ...]]] = []
+        self.new_foreign_keys: List[Tuple[Type["Model"], ForeignKey]] = []
+        self.changed_foreign_keys: List[
+            Tuple[Type["Model"], ForeignKey, IntrospectedForeignKey]
+        ] = []
+        self.extra_foreign_keys: List[Tuple[str, str, IntrospectedForeignKey]] = []
+        self.new_checks: List[Tuple[Type["Model"], Check]] = []
+        self.changed_checks: List[Tuple[Type["Model"], Check, str]] = []
+        self.extra_checks: List[Tuple[str, str, str]] = []
         self.constraint_notes: List[str] = []
 
     def is_empty(self) -> bool:
@@ -108,6 +127,12 @@ class SchemaDiff:
             or self.changed_indexes
             or self.new_enum_types
             or self.changed_enum_types
+            or self.new_foreign_keys
+            or self.changed_foreign_keys
+            or self.extra_foreign_keys
+            or self.new_checks
+            or self.changed_checks
+            or self.extra_checks
             or self.constraint_notes
         )
 
@@ -149,6 +174,15 @@ class SchemaDiff:
                 f"({', '.join(live_values)}), the models declare "
                 f"({', '.join(declared_values)})"
             )
+        # Changed and extra constraints stay out: their migration steps
+        # are gated by allow_drops, so a run that left them alone may
+        # still have landed everything it promised.
+        for model, fk in self.new_foreign_keys:
+            lines.append(
+                f"foreign key '{fk.name}' on '{model.tableName}' was not added"
+            )
+        for model, check in self.new_checks:
+            lines.append(f"check '{check.name}' on '{model.tableName}' was not added")
         return lines
 
     def summary(self) -> str:
@@ -181,6 +215,20 @@ class SchemaDiff:
             lines.append(f"drop column {table}.{name} (destructive)")
         for table, name, _ in self.extra_indexes:
             lines.append(f"drop index {name} on {table}")
+        for model, fk in self.new_foreign_keys:
+            lines.append(f"add foreign key {fk.name} on {model.tableName}")
+        for model, check in self.new_checks:
+            lines.append(f"add check {check.name} on {model.tableName}")
+        for model, fk, _ in self.changed_foreign_keys:
+            lines.append(
+                f"change foreign key {fk.name} on {model.tableName} (destructive)"
+            )
+        for model, check, _ in self.changed_checks:
+            lines.append(f"change check {check.name} on {model.tableName}")
+        for table, name, _ in self.extra_foreign_keys:
+            lines.append(f"drop foreign key {name} on {table} (destructive)")
+        for table, name, _ in self.extra_checks:
+            lines.append(f"drop check {name} on {table} (destructive)")
         for table, name, actual, expected in self.changed_columns:
             lines.append(
                 f"change column {table}.{name}: database has {actual}, "
@@ -390,7 +438,7 @@ def diff_schema(
             continue
         _diff_columns(compiler, diff, model, actual_table)
         _diff_indexes(diff, model, actual_table)
-        _diff_constraints(diff, model, actual_table)
+        _diff_constraints(compiler, diff, model, actual_table, actual)
 
     for table_key in actual:
         if table_key not in declared and table_key not in excluded:
@@ -478,11 +526,119 @@ def _diff_indexes(
         diff.extra_indexes.append((model.tableName or "", name, actual_index))
 
 
+def _fk_action(action: Optional[str]) -> str:
+    """An action name compared with the engine's implied NO ACTION."""
+    return "NO ACTION" if action is None else action.upper()
+
+
+def _fk_matches(declared: ForeignKey, actual: IntrospectedForeignKey) -> bool:
+    """
+    Whether a declared foreign key and the database's row agree. The
+    target and the actions only count when the engine's catalog reports
+    them: a '?' target says the read cannot tell, not that they differ.
+    """
+    if tuple(c.lower() for c in declared.columns) != actual.columns:
+        return False
+    if actual.target_table == "?":
+        return True
+    if declared.target_table.lower() != actual.target_table:
+        return False
+    if actual.target_columns and (
+        tuple(c.lower() for c in declared.target_columns) != actual.target_columns
+    ):
+        return False
+    return _fk_action(declared.on_delete) == _fk_action(actual.on_delete) and (
+        _fk_action(declared.on_update) == _fk_action(actual.on_update)
+    )
+
+
+def _implied_constraint_names(
+    compiler: "Compiler", model: Type["Model"]
+) -> Tuple[Set[str], Set[Tuple[str, ...]]]:
+    """
+    The constraint names and foreign key column tuples a model's columns
+    imply on their own: the ck_<table>_<column>_enum checks that hold
+    enum columns on check-strategy dialects, and the single-column
+    foreign keys of the references shorthand. Those belong to the
+    columns, so they are not extras and not missing tableConstraints.
+    """
+    table = bare_table_name(model.tableName or "")
+    check_names: Set[str] = set()
+    fk_columns: Set[Tuple[str, ...]] = set()
+    for name, coldef in (model.tableColumns or {}).items():
+        if coldef.type_name == "ENUM" and compiler.enum_strategy() == "check":
+            check_names.add(f"ck_{table}_{name}_enum".lower())
+        if coldef.references is not None:
+            fk_columns.add((name.lower(),))
+    return check_names, fk_columns
+
+
+def _diff_declared_constraints(
+    compiler: "Compiler",
+    diff: SchemaDiff,
+    model: Type["Model"],
+    actual_table: IntrospectedTable,
+    snapshot: Snapshot,
+) -> None:
+    """
+    Compares the model's tableConstraints against the database's named
+    constraints, on engines whose catalog reports them. A degraded read
+    diffs nothing: an empty mapping is not proof of absence.
+    """
+    table_name = model.tableName or ""
+    declared = model.tableConstraints or []
+    declared_fks = {c.name.lower(): c for c in declared if isinstance(c, ForeignKey)}
+    declared_checks = {c.name.lower(): c for c in declared if isinstance(c, Check)}
+    implied_checks, implied_fk_columns = _implied_constraint_names(compiler, model)
+
+    if snapshot.constraints_read:
+        for name, fk in declared_fks.items():
+            actual_fk = actual_table.foreign_keys.get(name)
+            if actual_fk is None:
+                diff.new_foreign_keys.append((model, fk))
+            elif not _fk_matches(fk, actual_fk):
+                diff.changed_foreign_keys.append((model, fk, actual_fk))
+        for name, actual_fk in actual_table.foreign_keys.items():
+            if name in declared_fks or actual_fk.columns in implied_fk_columns:
+                continue
+            diff.extra_foreign_keys.append((table_name, name, actual_fk))
+
+    if snapshot.checks_read:
+        for name, check in declared_checks.items():
+            actual_expression = actual_table.checks.get(name)
+            if actual_expression is None:
+                diff.new_checks.append((model, check))
+            elif normalize_check(check.expression) != normalize_check(
+                actual_expression
+            ):
+                if compiler.supports_alter_column():
+                    # The engine rewrites expressions on the way in, so a
+                    # mismatch here is a doubt, and a doubt never drops.
+                    diff.constraint_notes.append(
+                        f"{table_name} check '{check.name}' reads as "
+                        f"{actual_expression!r}, the model declares "
+                        f"{check.expression!r}"
+                    )
+                else:
+                    diff.changed_checks.append((model, check, actual_expression))
+        for name, expression in actual_table.checks.items():
+            if name in declared_checks or name in implied_checks:
+                continue
+            diff.extra_checks.append((table_name, name, expression))
+
+
 def _diff_constraints(
-    diff: SchemaDiff, model: Type["Model"], actual_table: IntrospectedTable
+    compiler: "Compiler",
+    diff: SchemaDiff,
+    model: Type["Model"],
+    actual_table: IntrospectedTable,
+    snapshot: Snapshot,
 ) -> None:
     assert model.tableColumns is not None
     table_name = model.tableName or ""
+
+    if compiler.supports_constraints():
+        _diff_declared_constraints(compiler, diff, model, actual_table, snapshot)
 
     expected_pk = tuple(
         sorted(n.lower() for n, c in model.tableColumns.items() if c.primary_key)
@@ -569,7 +725,17 @@ def _sqlite_rebuild_steps(
         _introspected_column_sql(name, col, unique=name in unique_undeclared)
         for name, col in undeclared.items()
     ]
-    steps = [build_create_table_sql(compiler, temp, model.tableColumns, extras=extras)]
+    if not allow_drops:
+        extras.extend(_carried_constraint_sql(compiler, model, actual_table))
+    steps = [
+        build_create_table_sql(
+            compiler,
+            temp,
+            model.tableColumns,
+            extras=extras,
+            constraints=model.tableConstraints,
+        )
+    ]
 
     select_parts: List[str] = []
     insert_columns: List[str] = []
@@ -604,6 +770,54 @@ def _sqlite_rebuild_steps(
         )
     )
     return steps
+
+
+def _carried_constraint_sql(
+    compiler: "Compiler",
+    model: Type["Model"],
+    actual_table: IntrospectedTable,
+) -> List[str]:
+    """
+    Constraints the model does not declare, rendered back into CREATE
+    TABLE parts so a rebuild carries them across. Declared constraints
+    render from the declaration; the ones a column implies (the enum
+    check, the references shorthand) render with the column. A foreign
+    key whose target the catalog did not report cannot be re-rendered
+    and is left behind.
+    """
+    declared_names = {c.name.lower() for c in model.tableConstraints or []}
+    implied_checks, implied_fk_columns = _implied_constraint_names(compiler, model)
+    fragments: List[str] = []
+    for name, expression in actual_table.checks.items():
+        if name in declared_names or name in implied_checks:
+            continue
+        fragments.append(
+            f"CONSTRAINT {compiler.quote_identifier(name)} CHECK ({expression})"
+        )
+    for name, fk in actual_table.foreign_keys.items():
+        if (
+            name in declared_names
+            or fk.columns in implied_fk_columns
+            or fk.target_table == "?"
+        ):
+            continue
+        columns_sql = ", ".join(compiler.quote_identifier(c) for c in fk.columns)
+        target_sql = compiler.quote_fully_qualified_identifier(fk.target_table)
+        sql = (
+            f"CONSTRAINT {compiler.quote_identifier(name)} "
+            f"FOREIGN KEY ({columns_sql}) REFERENCES {target_sql}"
+        )
+        if fk.target_columns:
+            targets_sql = ", ".join(
+                compiler.quote_identifier(c) for c in fk.target_columns
+            )
+            sql += f" ({targets_sql})"
+        if fk.on_delete is not None and fk.on_delete.upper() != "NO ACTION":
+            sql += f" ON DELETE {fk.on_delete.upper()}"
+        if fk.on_update is not None and fk.on_update.upper() != "NO ACTION":
+            sql += f" ON UPDATE {fk.on_update.upper()}"
+        fragments.append(sql)
+    return fragments
 
 
 def _introspected_column_sql(
@@ -695,7 +909,13 @@ def autogenerate(
     models_by_table = {m.tableName.lower(): m for m in models if m.tableName}
 
     if (
-        (diff.extra_tables or diff.extra_columns or diff.extra_indexes)
+        (
+            diff.extra_tables
+            or diff.extra_columns
+            or diff.extra_indexes
+            or diff.extra_foreign_keys
+            or diff.extra_checks
+        )
         and not allow_drops
         and not ignore_undeclared
     ):
@@ -703,6 +923,8 @@ def autogenerate(
             list(diff.extra_tables)
             + [f"{t}.{c}" for t, c in diff.extra_columns]
             + [f"index {n}" for _, n, _ in diff.extra_indexes]
+            + [f"foreign key {n}" for _, n, _ in diff.extra_foreign_keys]
+            + [f"check {n}" for _, n, _ in diff.extra_checks]
         )
         raise ValueError(
             "The database has objects the models do not declare: "
@@ -884,6 +1106,27 @@ def autogenerate(
         _add_enum_check(compiler, up_steps, down_steps, table_sql, model, name, coldef)
         _add_foreign_key(compiler, up_steps, down_steps, table_sql, model, name, coldef)
 
+    # A dialect that cannot alter a table in place takes its constraint
+    # changes through the rebuild: the rebuilt CREATE TABLE renders the
+    # declared tableConstraints. Extra and changed constraints only
+    # trigger a rebuild under allow_drops, since replacing the table
+    # drops what the declaration does not carry.
+    if not compiler.supports_alter_column():
+        constrained_tables = [model for model, _ in diff.new_foreign_keys]
+        constrained_tables += [model for model, _ in diff.new_checks]
+        constrained_tables += [model for model, _, _ in diff.changed_checks]
+        if allow_drops:
+            constrained_tables += [model for model, _, _ in diff.changed_foreign_keys]
+            constrained_tables += [
+                models_by_table[table.lower()]
+                for table, _, _ in diff.extra_foreign_keys
+            ]
+            constrained_tables += [
+                models_by_table[table.lower()] for table, _, _ in diff.extra_checks
+            ]
+        for model in constrained_tables:
+            rebuild_tables[(model.tableName or "").lower()] = model
+
     # Table rebuilds for SQLite consume every remaining change on the table.
     for table_key, model in rebuild_tables.items():
         up_steps.extend(
@@ -916,6 +1159,56 @@ def autogenerate(
         )
         down_steps.insert(0, compiler.compile_drop_index(index.name, table_sql))
 
+    # Constraint changes on dialects that alter in place. A table headed
+    # for a rebuild gets its constraints from the rebuilt CREATE TABLE.
+    for model, check in diff.new_checks:
+        if (model.tableName or "").lower() in rebuild_tables:
+            continue
+        table_sql = model._qualified_table_sql()
+        up_steps.append(
+            compiler.compile_add_check(table_sql, check.name, check.expression)
+        )
+        down_steps.insert(0, compiler.compile_drop_constraint(table_sql, check.name))
+    for model, fk in diff.new_foreign_keys:
+        if (model.tableName or "").lower() in rebuild_tables:
+            continue
+        table_sql = model._qualified_table_sql()
+        up_steps.append(_declared_fk_sql(compiler, table_sql, fk))
+        down_steps.insert(0, compiler.compile_drop_foreign_key(table_sql, fk.name))
+    if allow_drops:
+        for model, fk, actual_fk in diff.changed_foreign_keys:
+            if (model.tableName or "").lower() in rebuild_tables:
+                continue
+            table_sql = model._qualified_table_sql()
+            up_steps.append(compiler.compile_drop_foreign_key(table_sql, fk.name))
+            up_steps.append(_declared_fk_sql(compiler, table_sql, fk))
+            restore = _introspected_fk_sql(compiler, table_sql, fk.name, actual_fk)
+            if restore is None:
+                reversible = False
+            else:
+                down_steps.insert(0, restore)
+                down_steps.insert(
+                    0, compiler.compile_drop_foreign_key(table_sql, fk.name)
+                )
+        for table, name, actual_fk in diff.extra_foreign_keys:
+            if table.lower() in rebuild_tables:
+                continue
+            table_sql = compiler.quote_fully_qualified_identifier(table)
+            up_steps.append(compiler.compile_drop_foreign_key(table_sql, name))
+            restore = _introspected_fk_sql(compiler, table_sql, name, actual_fk)
+            if restore is None:
+                reversible = False
+            else:
+                down_steps.insert(0, restore)
+        for table, name, expression in diff.extra_checks:
+            if table.lower() in rebuild_tables:
+                continue
+            table_sql = compiler.quote_fully_qualified_identifier(table)
+            up_steps.append(compiler.compile_drop_constraint(table_sql, name))
+            down_steps.insert(
+                0, compiler.compile_add_check(table_sql, name, expression)
+            )
+
     if allow_drops:
         for table, name, actual_index in diff.extra_indexes:
             table_sql = compiler.quote_fully_qualified_identifier(table)
@@ -946,6 +1239,45 @@ def autogenerate(
         return None
     return Migration(
         id=id, up=up_steps, down=down_steps if reversible and down_steps else None
+    )
+
+
+def _declared_fk_sql(compiler: "Compiler", table_sql: str, fk: ForeignKey) -> str:
+    """Renders a declared ForeignKey as an ADD CONSTRAINT statement."""
+    return compiler.compile_add_foreign_key(
+        table_sql,
+        fk.name,
+        fk.columns,
+        compiler.quote_fully_qualified_identifier(fk.target_table),
+        fk.target_columns,
+        fk.on_delete,
+        fk.on_update,
+    )
+
+
+def _introspected_fk_sql(
+    compiler: "Compiler",
+    table_sql: str,
+    name: str,
+    fk: IntrospectedForeignKey,
+) -> Optional[str]:
+    """
+    Renders an introspected foreign key back into an ADD CONSTRAINT
+    statement, for the down step of a drop. None when the catalog did not
+    say where the key points, which makes the drop irreversible.
+    """
+    if fk.target_table == "?" or not fk.target_columns:
+        return None
+    on_delete = None if fk.on_delete is None else fk.on_delete.upper()
+    on_update = None if fk.on_update is None else fk.on_update.upper()
+    return compiler.compile_add_foreign_key(
+        table_sql,
+        name,
+        fk.columns,
+        compiler.quote_fully_qualified_identifier(fk.target_table),
+        fk.target_columns,
+        None if on_delete == "NO ACTION" else on_delete,
+        None if on_update == "NO ACTION" else on_update,
     )
 
 

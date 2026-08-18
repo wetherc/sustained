@@ -116,6 +116,8 @@ class Snapshot(Dict[str, IntrospectedTable]):
         tables: Optional[Mapping[str, IntrospectedTable]] = None,
         enum_types: Optional[Mapping[str, Tuple[str, ...]]] = None,
         enum_types_read: bool = False,
+        constraints_read: bool = False,
+        checks_read: bool = False,
     ) -> None:
         super().__init__(tables or {})
         self.enum_types: Dict[str, Tuple[str, ...]] = dict(enum_types or {})
@@ -124,6 +126,12 @@ class Snapshot(Dict[str, IntrospectedTable]):
         # absent. Engines without such a read leave this False, and a
         # diff must not take an empty mapping as proof of absence.
         self.enum_types_read = enum_types_read
+        # Whether foreign key constraints were read by name, and whether
+        # check constraints were read at all. A degraded read leaves the
+        # flag False, and a diff must not take an empty mapping as proof
+        # that a constraint is absent.
+        self.constraints_read = constraints_read
+        self.checks_read = checks_read
 
 
 # Engine type spellings mapped to Sustained's logical types. Both sides of
@@ -185,6 +193,23 @@ def type_params(raw: str) -> Optional[str]:
     if not match:
         return None
     return re.sub(r"\s+", "", match.group(1)).upper()
+
+
+def normalize_check(expression: str) -> str:
+    """
+    Reduces a check expression to a comparable form: whitespace collapsed,
+    balanced outer parentheses stripped, and casefolded. Engines rewrite
+    expressions further than this repairs, so two spellings that compare
+    equal are the same check, while a mismatch is only a doubt.
+    """
+    value = re.sub(r"\s+", " ", expression).strip()
+    while (
+        value.startswith("(")
+        and value.endswith(")")
+        and _balanced_paren_body(value, 0) == value[1:-1]
+    ):
+        value = value[1:-1].strip()
+    return value.casefold()
 
 
 def normalize_default(raw: Optional[str]) -> Optional[str]:
@@ -368,7 +393,7 @@ def _sqlite_plan() -> SchemaPlan:
         "AND name NOT LIKE 'sqlite_%'"
     )
     tables = [(row[0], row[1]) for row in rows]
-    schema = Snapshot()
+    schema = Snapshot(constraints_read=True, checks_read=True)
     for table, create_sql in tables:
         columns: Dict[str, IntrospectedColumn] = {}
         primary_key: List[str] = []
@@ -504,6 +529,7 @@ def _information_schema_plan(catalog: Catalog = ANSI_CATALOG) -> SchemaPlan:
     schema_join = (
         "AND tc.table_schema = kcu.table_schema " if catalog.join_on_schema else ""
     )
+    constraints_read = False
     try:
         constraint_rows = yield (
             "SELECT tc.table_name, tc.constraint_type, tc.constraint_name, "
@@ -533,11 +559,12 @@ def _information_schema_plan(catalog: Catalog = ANSI_CATALOG) -> SchemaPlan:
                 foreign_keys.setdefault(table, {})[cname] = IntrospectedForeignKey(
                     columns=tuple(cols), target_table="?"
                 )
+        constraints_read = True
     except Exception:
         # The engine does not expose constraint views; degrade to columns.
         pass
 
-    schema = Snapshot()
+    schema = Snapshot(constraints_read=constraints_read)
     for table, columns in columns_by_table.items():
         pk = tuple(primary_keys.get(table, ()))
         for pk_col in pk:
@@ -642,6 +669,7 @@ def _postgres_plan() -> SchemaPlan:
         pass
 
     foreign_keys: Dict[str, Dict[str, IntrospectedForeignKey]] = {}
+    constraints_read = False
     try:
         fk_rows = yield (
             "SELECT rc.constraint_name, src.table_name, src.column_name, "
@@ -670,11 +698,13 @@ def _postgres_plan() -> SchemaPlan:
                 on_delete=None if first[5] is None else str(first[5]),
                 on_update=None if first[6] is None else str(first[6]),
             )
+        constraints_read = True
     except Exception:
         # No referential views to read; degrade to no foreign keys.
         pass
 
     checks: Dict[str, Dict[str, str]] = {}
+    checks_read = False
     try:
         check_rows = yield (
             "SELECT tc.table_name, tc.constraint_name, cc.check_clause "
@@ -694,6 +724,7 @@ def _postgres_plan() -> SchemaPlan:
             if name.endswith("_not_null") and "IS NOT NULL" in expression.upper():
                 continue
             checks.setdefault(str(table).lower(), {})[name] = expression
+        checks_read = True
     except Exception:
         # No check views to read; degrade to no checks.
         pass
@@ -718,7 +749,12 @@ def _postgres_plan() -> SchemaPlan:
         # No pg_enum to read; degrade to no enum types.
         pass
 
-    schema = Snapshot(enum_types=enum_types, enum_types_read=enum_types_read)
+    schema = Snapshot(
+        enum_types=enum_types,
+        enum_types_read=enum_types_read,
+        constraints_read=constraints_read,
+        checks_read=checks_read,
+    )
     for table, columns in columns_by_table.items():
         pk = primary_keys.get(table, ())
         for pk_col in pk:
