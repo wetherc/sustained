@@ -584,6 +584,17 @@ figure.highlight {
 
 .prose td code { white-space: nowrap; }
 
+/* A signature sits in the first column of every reference table. A long one
+   wraps between parameters instead of forcing the table to scroll sideways.
+   The hanging indent keeps continuation lines inside the signature, so a
+   wrapped signature still reads as one entry. */
+.prose td:first-child code {
+  display: inline-block;
+  white-space: normal;
+  padding-left: 1.4em;
+  text-indent: -1.4em;
+}
+
 /* --------------------------------------------------------- on this page */
 
 .onthispage {
