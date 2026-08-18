@@ -49,6 +49,7 @@ from typing import (
     cast,
 )
 
+from sustained.ddl import DdlStep
 from sustained.dialects import Dialects
 from sustained.execution import transaction
 from sustained.types import Connection
@@ -68,7 +69,83 @@ adapter for AsyncMigrator."""
 # A callback returns nothing, or an awaitable the async migrator awaits.
 CallbackResult = Optional[Awaitable[None]]
 
-MigrationStep = Union[str, List[str], Callable[[CallbackTarget], CallbackResult]]
+MigrationStep = Union[
+    str,
+    DdlStep,
+    Sequence[Union[str, DdlStep]],
+    Callable[[CallbackTarget], CallbackResult],
+]
+
+
+class _DeriveDown:
+    """
+    The default for Migration's down parameter: derive it from the up
+    step when the up step is all reversible ddl steps, and use None
+    otherwise. Passing down=None explicitly declares the migration
+    irreversible instead.
+    """
+
+
+_DERIVE = _DeriveDown()
+
+
+def _step_elements(step: MigrationStep) -> Optional[List[Union[str, DdlStep]]]:
+    """A step's statements as a list, or None for a callable step."""
+    if isinstance(step, (str, DdlStep)):
+        return [step]
+    if callable(step):
+        return None
+    return list(step)
+
+
+def _default_compiler() -> "Compiler":
+    return Dialects.get_compiler(Dialects.DEFAULT)
+
+
+def _render_elements(
+    elements: List[Union[str, DdlStep]], compiler: Optional["Compiler"]
+) -> List[str]:
+    """The SQL statements a step's elements run on one dialect."""
+    statements: List[str] = []
+    for element in elements:
+        if isinstance(element, DdlStep):
+            statements.extend(element.render(compiler or _default_compiler()))
+        else:
+            statements.append(element)
+    return statements
+
+
+def _derived_down(
+    migration_id: str, up: MigrationStep
+) -> Optional[List[Union[str, DdlStep]]]:
+    """
+    The down step a ddl up step implies: the inverses, newest first.
+    A step that cannot reverse refuses the derivation; the migration
+    then needs an explicit down step or an explicit down=None. An up
+    step with no ddl steps in it derives nothing, as before.
+    """
+    elements = _step_elements(up)
+    if elements is None or not any(isinstance(e, DdlStep) for e in elements):
+        return None
+    blockers = [
+        (e.op if isinstance(e, DdlStep) else "a raw SQL string")
+        for e in elements
+        if not (isinstance(e, DdlStep) and e.reversible)
+    ]
+    if blockers:
+        raise ValueError(
+            f"Migration '{migration_id}' cannot derive its down step: "
+            f"{', '.join(blockers)} does not reverse. Pass an explicit "
+            "down step, or down=None to declare the migration "
+            "irreversible."
+        )
+    inverses: List[Union[str, DdlStep]] = []
+    for element in reversed(elements):
+        assert isinstance(element, DdlStep)
+        inverse = element.inverse()
+        assert inverse is not None
+        inverses.append(inverse)
+    return inverses
 
 
 class Callbacks(NamedTuple):
@@ -106,18 +183,27 @@ class Migration:
     A repeatable migration re-runs whenever its checksum changes, for
     views, functions, and seed data. Repeatables have no down step and
     run after every versioned migration.
+
+    When the up step is a list of reversible ddl steps and no down is
+    given, the down step derives itself: the inverses of the up steps,
+    newest first. A ddl step that cannot reverse (a drop, add_enum_value,
+    raw sql()) refuses the derivation; pass an explicit down step, or
+    down=None to declare the migration irreversible. Repeatables never
+    derive a down step.
     """
 
     def __init__(
         self,
         id: str,
         up: MigrationStep,
-        down: Optional[MigrationStep] = None,
+        down: Union[Optional[MigrationStep], _DeriveDown] = _DERIVE,
         checksum: Optional[str] = None,
         repeatable: bool = False,
     ) -> None:
         if not id:
             raise ValueError("A migration needs a non-empty id.")
+        if isinstance(down, _DeriveDown):
+            down = None if repeatable else _derived_down(id, up)
         if repeatable and down is not None:
             raise ValueError(
                 f"Repeatable migration '{id}' cannot have a down step; "
@@ -139,17 +225,21 @@ def migration_checksum(migration: Migration) -> Optional[str]:
     """
     The SHA-256 hex digest of a migration's up statements, each stripped of
     surrounding whitespace. Callable steps have no SQL to hash and return
-    the migration's explicit checksum, or None when it has none.
+    the migration's explicit checksum, or None when it has none. A ddl
+    step hashes as its canonical signature rather than its rendered SQL,
+    so the checksum stays the same on every dialect.
     """
     if migration.checksum is not None:
         return migration.checksum
-    step = migration.up
-    if callable(step):
+    elements = _step_elements(migration.up)
+    if elements is None:
         return None
-    statements = [step] if isinstance(step, str) else list(step)
     digest = hashlib.sha256()
-    for statement in statements:
-        digest.update(statement.strip().encode("utf-8"))
+    for element in elements:
+        if isinstance(element, DdlStep):
+            digest.update(element.signature().encode("utf-8"))
+        else:
+            digest.update(element.strip().encode("utf-8"))
         digest.update(b"\n")
     return digest.hexdigest()
 
@@ -289,11 +379,14 @@ def rehearsal_key(applied: Sequence[AppliedRecord], run: Sequence[Migration]) ->
     return digest.hexdigest()
 
 
-def _destructive_in(run: Sequence[Migration]) -> List[Tuple[str, str]]:
+def _destructive_in(
+    run: Sequence[Migration], compiler: Optional["Compiler"] = None
+) -> List[Tuple[str, str]]:
     """
     The (migration id, statement) pairs in a run that remove data. A
     callable step renders no SQL and is invisible here, the same limit the
-    plan command's labels carry.
+    plan command's labels carry. Ddl steps render for the given compiler's
+    dialect, so the labels read the SQL the run would run.
     """
     from sustained.analysis import destructive_statements
 
@@ -301,13 +394,16 @@ def _destructive_in(run: Sequence[Migration]) -> List[Tuple[str, str]]:
     for migration in run:
         if callable(migration.up):
             continue
-        for statement in destructive_statements(migration_sql(migration, "up")):
+        statements = migration_sql(migration, "up", compiler)
+        for statement in destructive_statements(statements):
             found.append((migration.id, statement))
     return found
 
 
 def _destructive_prefix_keys(
-    applied: Sequence[AppliedRecord], pending: Sequence[Migration]
+    applied: Sequence[AppliedRecord],
+    pending: Sequence[Migration],
+    compiler: Optional["Compiler"] = None,
 ) -> List[str]:
     """
     The keys a targeted run would look for.
@@ -324,22 +420,25 @@ def _destructive_prefix_keys(
     keys = []
     for size in range(1, len(versioned) + 1):
         prefix = versioned[:size]
-        if _destructive_in(prefix):
+        if _destructive_in(prefix, compiler):
             keys.append(rehearsal_key(applied, prefix))
     return keys
 
 
-def run_statements(run: Sequence[Migration]) -> List[str]:
+def run_statements(
+    run: Sequence[Migration], compiler: Optional["Compiler"] = None
+) -> List[str]:
     """
     Every up statement a run would apply, in order. Callable steps render
     no SQL and are skipped, so a guard cannot read them, the same limit
-    the destructive labels carry.
+    the destructive labels carry. Ddl steps render for the given
+    compiler's dialect, which is why the guards can read them.
     """
     statements: List[str] = []
     for migration in run:
         if callable(migration.up):
             continue
-        statements.extend(migration_sql(migration, "up"))
+        statements.extend(migration_sql(migration, "up", compiler))
     return statements
 
 
@@ -369,7 +468,8 @@ def check_guards(
 
     if not guards:
         return
-    verdicts = run_guards(guards, run_statements(run), dialect)
+    compiler = Dialects.get_compiler(dialect)
+    verdicts = run_guards(guards, run_statements(run, compiler), dialect)
     blockers = blocking(verdicts)
     if blockers:
         raise GuardBlocked(blockers)
@@ -604,26 +704,35 @@ def create_table_migration(model: Type["Model"]) -> Migration:
     )
 
 
-def migration_sql(migration: Migration, direction: str = "up") -> List[str]:
+def migration_sql(
+    migration: Migration,
+    direction: str = "up",
+    compiler: Optional["Compiler"] = None,
+) -> List[str]:
     """
     Renders a migration's statements for offline review. Callable steps
-    cannot be rendered and appear as a comment.
+    cannot be rendered and appear as a comment. Ddl steps render for the
+    given compiler's dialect, or ANSI when none is given.
     """
     step = migration.up if direction == "up" else migration.down
     if step is None:
         raise ValueError(f"Migration '{migration.id}' has no {direction} step.")
-    if callable(step):
+    elements = _step_elements(step)
+    if elements is None:
         return [f"-- migration '{migration.id}': callable step, run online"]
-    return [step] if isinstance(step, str) else list(step)
+    return _render_elements(elements, compiler)
 
 
-def _run_step(connection: Connection, step: MigrationStep) -> None:
-    if callable(step):
+def _run_step(
+    connection: Connection, step: MigrationStep, compiler: Optional["Compiler"] = None
+) -> None:
+    elements = _step_elements(step)
+    if elements is None:
+        assert callable(step)
         step(connection)
         return
-    statements = [step] if isinstance(step, str) else list(step)
     cursor = connection.cursor()
-    for statement in statements:
+    for statement in _render_elements(elements, compiler):
         cursor.execute(statement)
 
 
@@ -753,7 +862,9 @@ def _tag_migration(error: BaseException, migration_id: str) -> None:
         pass
 
 
-def _stored_steps(migration: Migration, generated: bool) -> Optional[str]:
+def _stored_steps(
+    migration: Migration, generated: bool, compiler: Optional["Compiler"] = None
+) -> Optional[str]:
     """
     The JSON a generated migration's tracking row carries: its up and down
     statements, so a later process can revert it.
@@ -763,11 +874,15 @@ def _stored_steps(migration: Migration, generated: bool) -> Optional[str]:
     row already says whether they changed since. A generated migration has
     no such home: the diff produced it, applied it, and the process ended.
     A callable step cannot be stored, and the diff never produces one.
+    The row stores rendered SQL, so ddl steps render for the given
+    compiler's dialect, the one the run executed.
     """
     if not generated or callable(migration.up):
         return None
-    down = None if migration.down is None else migration_sql(migration, "down")
-    return json.dumps({"up": migration_sql(migration, "up"), "down": down})
+    down = (
+        None if migration.down is None else migration_sql(migration, "down", compiler)
+    )
+    return json.dumps({"up": migration_sql(migration, "up", compiler), "down": down})
 
 
 def _restore_migration(migration_id: str, steps: Optional[str]) -> Optional[Migration]:
@@ -926,6 +1041,11 @@ class Migrator:
     def dialect(self) -> Dialects:
         """The dialect this migrator compiles for."""
         return self._dialect
+
+    @property
+    def compiler(self) -> "Compiler":
+        """The compiler that renders this migrator's ddl steps."""
+        return self._compiler
 
     def _table_sql(self) -> str:
         return self._compiler.quote_identifier(self._table)
@@ -1295,7 +1415,7 @@ class Migrator:
                         None,
                         False,
                         generated,
-                        _stored_steps(migration, generated),
+                        _stored_steps(migration, generated, self._compiler),
                         migration.id,
                     ),
                 )
@@ -1310,7 +1430,7 @@ class Migrator:
                         None,
                         False,
                         generated,
-                        _stored_steps(migration, generated),
+                        _stored_steps(migration, generated, self._compiler),
                     ),
                 )
             self._commit_quietly()
@@ -1508,7 +1628,7 @@ class Migrator:
                 if record is None:
                     next_seq += 1
                 applied_now.append(migration.id)
-            if unrehearsed and _destructive_in(final_run):
+            if unrehearsed and _destructive_in(final_run, self._compiler):
                 # The proof was waived, so the row says so. It never
                 # unlocks a later run: only 'passed' does that.
                 self.record_rehearsal(
@@ -1532,7 +1652,7 @@ class Migrator:
 
         if unrehearsed:
             return
-        destructive = _destructive_in(run)
+        destructive = _destructive_in(run, self._compiler)
         if not destructive:
             return
         outcome = self.rehearsal_outcome(rehearsal_key(records, run))
@@ -1552,7 +1672,7 @@ class Migrator:
         try:
             with self._migration_scope():
                 started = time.perf_counter()
-                _run_step(self._connection, migration.up)
+                _run_step(self._connection, migration.up, self._compiler)
                 elapsed_ms = int((time.perf_counter() - started) * 1000)
                 timestamp = datetime.now(timezone.utc).isoformat()
                 checksum = migration_checksum(migration)
@@ -1566,7 +1686,7 @@ class Migrator:
                             elapsed_ms,
                             True,
                             generated,
-                            _stored_steps(migration, generated),
+                            _stored_steps(migration, generated, self._compiler),
                             migration.id,
                         ),
                     )
@@ -1581,7 +1701,7 @@ class Migrator:
                             elapsed_ms,
                             True,
                             generated,
-                            _stored_steps(migration, generated),
+                            _stored_steps(migration, generated, self._compiler),
                         ),
                     )
         except Exception as error:
@@ -1769,7 +1889,9 @@ class Migrator:
                     # also proved.
                     self.record_rehearsal(rehearsal_key(record_list, pending))
                 if passed:
-                    for prefix_key in _destructive_prefix_keys(record_list, pending):
+                    for prefix_key in _destructive_prefix_keys(
+                        record_list, pending, self._compiler
+                    ):
                         self.record_rehearsal(prefix_key)
                 recorded = True
             return Rehearsal(results, key, recorded)
@@ -1865,7 +1987,11 @@ class Migrator:
             else:
                 try:
                     with self._migration_scope():
-                        _run_step(self._connection, cast(MigrationStep, migration.down))
+                        _run_step(
+                            self._connection,
+                            cast(MigrationStep, migration.down),
+                            self._compiler,
+                        )
                         self._connection.cursor().execute(
                             f"DELETE FROM {self._table_sql()} WHERE "
                             f"{self._compiler.quote_identifier('id')} = "
@@ -2029,7 +2155,9 @@ class Migrator:
                 if migration.id in applied:
                     continue
                 lines.append(f"-- up: {migration.id}")
-                lines.extend(f"{s};" for s in migration_sql(migration, "up"))
+                lines.extend(
+                    f"{s};" for s in migration_sql(migration, "up", self._compiler)
+                )
                 lines.append(
                     f"INSERT INTO {self._table_sql()} "
                     f"({insert_columns}) "
@@ -2045,7 +2173,9 @@ class Migrator:
                 if _is_current(record, checksum, True):
                     continue
                 lines.append(f"-- repeat: {migration.id}")
-                lines.extend(f"{s};" for s in migration_sql(migration, "up"))
+                lines.extend(
+                    f"{s};" for s in migration_sql(migration, "up", self._compiler)
+                )
                 if record is None:
                     lines.append(
                         f"INSERT INTO {self._table_sql()} "
@@ -2077,7 +2207,9 @@ class Migrator:
                     )
                     break
                 lines.append(f"-- down: {migration_id}")
-                lines.extend(f"{s};" for s in migration_sql(registered, "down"))
+                lines.extend(
+                    f"{s};" for s in migration_sql(registered, "down", self._compiler)
+                )
                 lines.append(
                     f"DELETE FROM {self._table_sql()} WHERE {column('id')} = "
                     f"{format_value(migration_id)};"
@@ -2154,7 +2286,7 @@ class Migrator:
                 if migration.down is None:
                     raise ValueError(f"Migration '{migration_id}' has no down step.")
                 with self._migration_scope():
-                    _run_step(self._connection, migration.down)
+                    _run_step(self._connection, migration.down, self._compiler)
                     self._connection.cursor().execute(
                         f"DELETE FROM {self._table_sql()} WHERE "
                         f"{self._compiler.quote_identifier('id')} = "

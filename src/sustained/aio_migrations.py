@@ -51,8 +51,10 @@ from sustained.migrations import (
     _rehearsal_column_defs,
     _rehearsal_message,
     _rehearsal_results,
+    _render_elements,
     _restore_migration,
     _reversal_provable,
+    _step_elements,
     _tag_migration,
     _tracking_column_defs,
     _upgrade_column_def,
@@ -69,6 +71,7 @@ from sustained.migrations import (
 
 if TYPE_CHECKING:
     from sustained.autogenerate import IntrospectedTable
+    from sustained.compilers.base import Compiler
     from sustained.guards import Guard
     from sustained.schema import TableOptions
 
@@ -114,17 +117,23 @@ class AsyncMigrator:
         """The dialect this migrator compiles for."""
         return self._dialect
 
+    @property
+    def compiler(self) -> "Compiler":
+        """The compiler that renders this migrator's ddl steps."""
+        return self._compiler
+
     def _table_sql(self) -> str:
         return self._compiler.quote_identifier(self._table)
 
     async def _run_step(self, step: MigrationStep) -> None:
-        if callable(step):
+        elements = _step_elements(step)
+        if elements is None:
+            assert callable(step)
             result = step(self._adapter)
             if inspect.isawaitable(result):
                 await result
             return
-        statements = [step] if isinstance(step, str) else list(step)
-        for statement in statements:
+        for statement in _render_elements(elements, self._compiler):
             await self._adapter.execute(statement, ())
 
     @asynccontextmanager
@@ -275,7 +284,7 @@ class AsyncMigrator:
 
         if unrehearsed:
             return
-        destructive = _destructive_in(run)
+        destructive = _destructive_in(run, self._compiler)
         if not destructive:
             return
         outcome = await self.rehearsal_outcome(rehearsal_key(records, run))
@@ -686,7 +695,7 @@ class AsyncMigrator:
                 if record is None:
                     next_seq += 1
                 applied_now.append(migration.id)
-            if unrehearsed and _destructive_in(run):
+            if unrehearsed and _destructive_in(run, self._compiler):
                 # The proof was waived, so the row says so. It never
                 # unlocks a later run: only 'passed' does that.
                 await self.record_rehearsal(
@@ -831,7 +840,9 @@ class AsyncMigrator:
                     key, REHEARSAL_PASSED if passed else REHEARSAL_FAILED
                 )
                 if passed:
-                    for prefix_key in _destructive_prefix_keys(record_list, pending):
+                    for prefix_key in _destructive_prefix_keys(
+                        record_list, pending, self._compiler
+                    ):
                         await self.record_rehearsal(prefix_key)
                 recorded = True
             return Rehearsal(results, key, recorded)

@@ -13,9 +13,12 @@ never blocks a run.
 from __future__ import annotations
 
 import re
-from typing import List, NamedTuple, Optional, Sequence, Union
+from typing import TYPE_CHECKING, List, NamedTuple, Optional, Sequence, Union
 
 from sustained.migrations import Migration, migration_sql
+
+if TYPE_CHECKING:
+    from sustained.compilers.base import Compiler
 
 _COMMENT_RE = re.compile(r"--[^\n]*|/\*.*?\*/", re.DOTALL)
 _WHITESPACE_RE = re.compile(r"\s+")
@@ -81,15 +84,18 @@ class PendingSummary(NamedTuple):
     destructive: List[str]
 
 
-def summarize(migration: Migration, state: str) -> PendingSummary:
+def summarize(
+    migration: Migration, state: str, compiler: Optional["Compiler"] = None
+) -> PendingSummary:
     """
     Reduces one migration to its id, its state ('pending' or, for a
     repeatable whose contents changed, 'changed'), the statements its up
-    step would run, and the ones that remove data.
+    step would run, and the ones that remove data. Ddl steps render for
+    the given compiler's dialect, or ANSI when none is given.
     """
     if callable(migration.up):
         return PendingSummary(migration.id, state, migration.repeatable, None, [])
-    statements = migration_sql(migration, "up")
+    statements = migration_sql(migration, "up", compiler)
     return PendingSummary(
         migration.id,
         state,

@@ -219,7 +219,7 @@ def _drift_statements(migrator: Migrator, config: ModuleType) -> Optional[List[s
     migration = migrator.plan(list(models), allow_drops=True)
     if migration is None:
         return []
-    return migration_sql(migration, "up")
+    return migration_sql(migration, "up", migrator.compiler)
 
 
 def _migrate_drift_statements(
@@ -239,7 +239,7 @@ def _migrate_drift_statements(
     migration = migrator.plan(list(models))
     if migration is None:
         return []
-    return migration_sql(migration, "up")
+    return migration_sql(migration, "up", migrator.compiler)
 
 
 def _rehearsal_row_covers(migrator: Migrator, config: ModuleType) -> bool:
@@ -379,7 +379,10 @@ def _print_guards(verdicts: List[Verdict]) -> None:
 
 def _cmd_plan(migrator: Migrator, args: argparse.Namespace, config: ModuleType) -> int:
     states = dict(migrator.statuses())
-    summaries = [summarize(m, states.get(m.id, "pending")) for m in migrator.pending()]
+    summaries = [
+        summarize(m, states.get(m.id, "pending"), migrator.compiler)
+        for m in migrator.pending()
+    ]
     problems = migrator.validate(raise_on_problems=False)
     drift = _drift_statements(migrator, config)
     by_statement = _plan_verdicts(
@@ -577,7 +580,7 @@ def _record_scratch_rehearsal_row(
     records = migrator.applied_records()
     key = rehearsal_key(records, pending)
     migrator.record_rehearsal(key)
-    for prefix_key in _destructive_prefix_keys(records, pending):
+    for prefix_key in _destructive_prefix_keys(records, pending, migrator.compiler):
         migrator.record_rehearsal(prefix_key)
     return key, "rehearsal row recorded"
 
