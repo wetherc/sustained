@@ -1,4 +1,4 @@
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Optional, Sequence, Union
 
 from .base import Compiler
 
@@ -19,6 +19,38 @@ class PrestoCompiler(Compiler):
                 "list. Use String() and validate values in the "
                 "application."
             )
+
+    def supports_constraints(self) -> bool:
+        # Presto and Trino query external storage; there are no CHECK or
+        # FOREIGN KEY constraints to declare or enforce.
+        return False
+
+    def compile_add_check(
+        self, table_sql: str, constraint: str, expression: str
+    ) -> str:
+        from sustained.exceptions import DialectError
+
+        raise DialectError(
+            f"{self.dialect_name().capitalize()} tables have no CHECK "
+            "constraints. Validate rows in the application."
+        )
+
+    def compile_add_foreign_key(
+        self,
+        table_sql: str,
+        constraint: str,
+        column: "Union[str, Sequence[str]]",
+        ref_table_sql: str,
+        ref_column: "Union[str, Sequence[str]]",
+        on_delete: Optional[str] = None,
+        on_update: Optional[str] = None,
+    ) -> str:
+        from sustained.exceptions import DialectError
+
+        raise DialectError(
+            f"{self.dialect_name().capitalize()} tables have no foreign "
+            "keys. Enforce the relationship in the application."
+        )
 
     def compile_upsert_statement(
         self,

@@ -20,7 +20,7 @@ from sustained.types import Binding, CaseResult, Connection, RelationMapping
 if TYPE_CHECKING:
     from sustained.aio import AsyncAdapter
     from sustained.expressions import ColumnExpr
-    from sustained.schema import ColumnDef, Index, TableOptions
+    from sustained.schema import ColumnDef, Index, TableConstraint, TableOptions
 
 
 _MODEL_REGISTRY: Dict[str, Type["Model"]] = {}
@@ -161,6 +161,7 @@ class Model(metaclass=ModelMeta):
     columns: Optional[Tuple[str, ...]] = None
     tableColumns: Optional[Dict[str, "ColumnDef"]] = None
     indexes: Optional[list["Index"]] = None
+    tableConstraints: Optional[list["TableConstraint"]] = None
     tableOptions: Optional["TableOptions"] = None
     _dialect: Dialects = Dialects.DEFAULT
     _connection: Optional[Binding] = None
@@ -304,6 +305,7 @@ class Model(metaclass=ModelMeta):
             cls.tableColumns,
             if_not_exists,
             options=cls.tableOptions,
+            constraints=cls.tableConstraints,
         )
 
     @classmethod

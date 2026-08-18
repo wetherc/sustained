@@ -1,5 +1,5 @@
 import re
-from typing import TYPE_CHECKING, Optional, Union
+from typing import TYPE_CHECKING, Optional, Sequence, Union
 
 from sustained.expressions import (
     AggregateExpression,
@@ -47,6 +47,10 @@ _VALID_OPERATORS = frozenset(
 class Compiler:
     def __init__(self, dialect: "Dialects") -> None:
         self._dialect = dialect
+
+    def dialect_name(self) -> str:
+        """The dialect's name, for error messages."""
+        return self._dialect.name
 
     def quote_identifier(self, identifier: str) -> str:
         return identifier
@@ -321,19 +325,43 @@ class Compiler:
         self,
         table_sql: str,
         constraint: str,
-        column: str,
+        column: "Union[str, Sequence[str]]",
         ref_table_sql: str,
-        ref_column: str,
+        ref_column: "Union[str, Sequence[str]]",
+        on_delete: Optional[str] = None,
+        on_update: Optional[str] = None,
     ) -> str:
         """
-        Renders a named foreign key added to an existing table, for the
-        dialects that cannot declare one beside the column.
+        Renders a named foreign key added to an existing table. `column`
+        and `ref_column` take one name or a matching sequence of names
+        for a composite key. Actions render as given; validate them
+        before calling.
+        """
+        columns = (column,) if isinstance(column, str) else tuple(column)
+        targets = (ref_column,) if isinstance(ref_column, str) else tuple(ref_column)
+        columns_sql = ", ".join(self.quote_identifier(c) for c in columns)
+        targets_sql = ", ".join(self.quote_identifier(c) for c in targets)
+        sql = (
+            f"ALTER TABLE {table_sql} ADD CONSTRAINT "
+            f"{self.quote_identifier(constraint)} FOREIGN KEY "
+            f"({columns_sql}) REFERENCES {ref_table_sql} ({targets_sql})"
+        )
+        if on_delete is not None:
+            sql += f" ON DELETE {on_delete}"
+        if on_update is not None:
+            sql += f" ON UPDATE {on_update}"
+        return sql
+
+    def compile_add_check(
+        self, table_sql: str, constraint: str, expression: str
+    ) -> str:
+        """
+        Renders a named CHECK constraint added to an existing table. The
+        expression is SQL and renders as written.
         """
         return (
             f"ALTER TABLE {table_sql} ADD CONSTRAINT "
-            f"{self.quote_identifier(constraint)} FOREIGN KEY "
-            f"({self.quote_identifier(column)}) REFERENCES {ref_table_sql} "
-            f"({self.quote_identifier(ref_column)})"
+            f"{self.quote_identifier(constraint)} CHECK ({expression})"
         )
 
     def compile_drop_foreign_key(self, table_sql: str, constraint: str) -> str:

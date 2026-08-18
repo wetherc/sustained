@@ -147,6 +147,111 @@ class TableOptions:
         self.properties = dict(properties) if properties else {}
 
 
+# The referential actions SQL defines for ON DELETE and ON UPDATE.
+FOREIGN_KEY_ACTIONS = ("CASCADE", "SET NULL", "RESTRICT", "NO ACTION", "SET DEFAULT")
+
+
+class Check:
+    """
+    A named CHECK constraint on a table. List instances in the model's
+    `tableConstraints` attribute.
+
+    The expression is SQL and renders as written, so column names inside
+    it follow the dialect's quoting only if you quote them yourself. The
+    name is required: diffs and down steps address a constraint by name.
+
+    Attributes:
+        name: The constraint name; must be unique within the table.
+        expression: The SQL expression each row must satisfy.
+    """
+
+    def __init__(self, name: str, expression: str) -> None:
+        if not name:
+            raise ValueError("A check constraint needs a name.")
+        if not expression or not expression.strip():
+            raise ValueError(f"Check '{name}' needs a SQL expression.")
+        self.name = name
+        self.expression = expression.strip()
+
+
+class ForeignKey:
+    """
+    A named foreign key constraint on a table. List instances in the
+    model's `tableConstraints` attribute. For a single column with no
+    actions, ColumnDef's `references` shorthand does the same thing.
+
+    Attributes:
+        name: The constraint name; must be unique within the table.
+        columns: The constrained columns, in order.
+        references: The target, as 'table.column' strings, one per
+            constrained column. Every target column must belong to the
+            same table.
+        on_delete, on_update: Referential actions. One of CASCADE,
+            SET NULL, RESTRICT, NO ACTION, SET DEFAULT.
+    """
+
+    def __init__(
+        self,
+        name: str,
+        columns: Union[str, Sequence[str]],
+        references: Union[str, Sequence[str]],
+        on_delete: Optional[str] = None,
+        on_update: Optional[str] = None,
+    ) -> None:
+        if not name:
+            raise ValueError("A foreign key needs a name.")
+        self.name = name
+        self.columns = (columns,) if isinstance(columns, str) else tuple(columns)
+        targets = (references,) if isinstance(references, str) else tuple(references)
+        if not self.columns:
+            raise ValueError(f"Foreign key '{name}' needs at least one column.")
+        if len(targets) != len(self.columns):
+            raise ValueError(
+                f"Foreign key '{name}' constrains {len(self.columns)} "
+                f"column(s) but references {len(targets)} target column(s)."
+            )
+        tables = []
+        target_columns = []
+        for target in targets:
+            if "." not in target:
+                raise ValueError(
+                    f"Foreign key '{name}' references must be "
+                    f"'table.column' strings; got {target!r}."
+                )
+            table, column = target.rsplit(".", 1)
+            tables.append(table)
+            target_columns.append(column)
+        if len(set(tables)) != 1:
+            raise ValueError(
+                f"Foreign key '{name}' references more than one table: "
+                f"{', '.join(sorted(set(tables)))}. One constraint targets "
+                "one table."
+            )
+        self.target_table = tables[0]
+        self.target_columns = tuple(target_columns)
+        self.on_delete = _checked_fk_action(name, "on_delete", on_delete)
+        self.on_update = _checked_fk_action(name, "on_update", on_update)
+
+
+TableConstraint = Union[Check, ForeignKey]
+
+
+def _checked_fk_action(
+    fk_name: str, parameter: str, action: Optional[str]
+) -> Optional[str]:
+    """Validates and normalizes a referential action."""
+    if action is None:
+        return None
+    normalized = " ".join(action.upper().split())
+    if normalized not in FOREIGN_KEY_ACTIONS:
+        raise ValueError(
+            f"Foreign key '{fk_name}' {parameter}={action!r} is not a "
+            f"referential action. Use one of: "
+            f"{', '.join(FOREIGN_KEY_ACTIONS)}."
+        )
+    return normalized
+
+
 class Index:
     """
     Declares a named index on a model. List instances in the model's
@@ -312,6 +417,46 @@ def enum_check_constraint_sql(
     return f"CONSTRAINT {constraint} CHECK ({column_sql} IN ({values_sql}))"
 
 
+def check_constraint_sql(compiler: "Compiler", check: Check) -> str:
+    """Renders a named CHECK constraint for a table body or ADD."""
+    constraint = compiler.quote_identifier(check.name)
+    return f"CONSTRAINT {constraint} CHECK ({check.expression})"
+
+
+def foreign_key_constraint_sql(compiler: "Compiler", fk: ForeignKey) -> str:
+    """Renders a named FOREIGN KEY constraint for a table body or ADD."""
+    constraint = compiler.quote_identifier(fk.name)
+    columns_sql = ", ".join(compiler.quote_identifier(c) for c in fk.columns)
+    target_table = compiler.quote_fully_qualified_identifier(fk.target_table)
+    target_sql = ", ".join(compiler.quote_identifier(c) for c in fk.target_columns)
+    sql = (
+        f"CONSTRAINT {constraint} FOREIGN KEY ({columns_sql}) "
+        f"REFERENCES {target_table} ({target_sql})"
+    )
+    if fk.on_delete is not None:
+        sql += f" ON DELETE {fk.on_delete}"
+    if fk.on_update is not None:
+        sql += f" ON UPDATE {fk.on_update}"
+    return sql
+
+
+def table_constraint_sql(compiler: "Compiler", constraint: TableConstraint) -> str:
+    """Renders one declared table constraint, checking dialect support."""
+    if not compiler.supports_constraints():
+        from sustained.exceptions import DialectError
+
+        kind = "check" if isinstance(constraint, Check) else "foreign key"
+        raise DialectError(
+            f"The '{compiler.dialect_name()}' dialect enforces no table "
+            f"constraints, so the {kind} constraint "
+            f"'{constraint.name}' cannot be declared. Remove it from "
+            "tableConstraints and validate rows in the application."
+        )
+    if isinstance(constraint, Check):
+        return check_constraint_sql(compiler, constraint)
+    return foreign_key_constraint_sql(compiler, constraint)
+
+
 def render_column_sql(
     compiler: "Compiler",
     name: str,
@@ -353,11 +498,14 @@ def build_create_table_sql(
     if_not_exists: bool = False,
     options: Optional[TableOptions] = None,
     extras: Optional[List[str]] = None,
+    constraints: Optional[Sequence[TableConstraint]] = None,
 ) -> str:
     """
     Renders a CREATE TABLE statement from typed column definitions using
     the given dialect compiler. `extras` are pre-rendered column parts
-    appended after the declared columns.
+    appended after the declared columns. `constraints` are declared
+    Check and ForeignKey table constraints, rendered after the
+    constraints the columns themselves imply.
     """
     if not columns:
         raise ValueError("Cannot create a table with no columns.")
@@ -397,6 +545,9 @@ def build_create_table_sql(
                     enum_check_constraint_sql(compiler, table_name, name, col)
                 )
 
+    for declared in constraints or []:
+        table_constraints.append(table_constraint_sql(compiler, declared))
+
     body = ", ".join(column_parts + list(extras or []) + table_constraints)
     suffix = compiler.compile_table_options(options)
     suffix_sql = f" {suffix}" if suffix else ""
@@ -404,8 +555,11 @@ def build_create_table_sql(
 
 
 __all__ = [
+    "Check",
     "ColumnDef",
+    "ForeignKey",
     "Index",
+    "TableConstraint",
     "TableOptions",
     "Integer",
     "BigInteger",
@@ -419,7 +573,10 @@ __all__ = [
     "Json",
     "Enum",
     "build_create_table_sql",
+    "check_constraint_sql",
     "collect_enum_types",
     "enum_check_constraint_sql",
+    "foreign_key_constraint_sql",
+    "table_constraint_sql",
     "Expression",
 ]
