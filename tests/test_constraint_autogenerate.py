@@ -231,6 +231,140 @@ class TestSqliteEnumCheckNotExtra(SqliteConstraintTestCase):
         self.assertIsNone(autogenerate(self.conn, [model], id="m1"))
 
 
+class TestChecksWithoutTheCkPrefix(SqliteConstraintTestCase):
+    """
+    Declared checks carry whatever name the model gives them. The reader
+    has to hand those names back, or every run diffs the same check as
+    new and rebuilds the table again.
+    """
+
+    def _model(self, constraints):
+        model = make_model(
+            f"Np_{self.id().rsplit('.', 1)[-1]}",
+            "np_items",
+            {"id": Integer(primary_key=True), "price": Integer()},
+        )
+        model.tableConstraints = constraints
+        return model
+
+    def test_a_declared_check_settles_after_one_migration(self):
+        self.conn.execute("CREATE TABLE np_items (id INTEGER PRIMARY KEY, price INT)")
+        model = self._model([Check("price_positive", "price > 0")])
+        self._run(autogenerate(self.conn, [model], id="m1"))
+        self.assertIsNone(
+            autogenerate(self.conn, [model], id="m2", ignore_undeclared=True)
+        )
+
+    def test_an_undeclared_named_check_survives_a_rebuild(self):
+        self.conn.execute(
+            "CREATE TABLE np_items (id INTEGER PRIMARY KEY, price INT, "
+            "CONSTRAINT price_positive CHECK (price > 0))"
+        )
+        model = self._model([])
+        model.tableColumns["note"] = String(40, nullable=False, backfill="")
+        migration = autogenerate(self.conn, [model], id="m1", ignore_undeclared=True)
+        self._run(migration)
+        snapshot = introspect_schema(self.conn)
+        self.assertIn("price_positive", snapshot["np_items"].checks)
+
+    def test_an_undeclared_named_check_refuses_by_default(self):
+        self.conn.execute(
+            "CREATE TABLE np_items (id INTEGER PRIMARY KEY, price INT, "
+            "CONSTRAINT price_positive CHECK (price > 0))"
+        )
+        model = self._model([])
+        model.tableColumns["note"] = String(40, nullable=False, backfill="")
+        with self.assertRaises(ValueError) as caught:
+            autogenerate(self.conn, [model], id="m1")
+        self.assertIn("price_positive", str(caught.exception))
+
+
+class TestRenameRewritesChecks(SqliteConstraintTestCase):
+    def test_a_renamed_column_is_rewritten_inside_its_check(self):
+        self.conn.execute(
+            "CREATE TABLE rn_items (id INTEGER PRIMARY KEY, price INT, "
+            "CONSTRAINT amount_positive CHECK (price > 0))"
+        )
+        model = make_model(
+            "RnItems",
+            "rn_items",
+            {"id": Integer(primary_key=True), "cost": Integer()},
+        )
+        model.tableConstraints = [Check("amount_positive", "cost > 0")]
+        migration = autogenerate(
+            self.conn, [model], id="m1", renames={"rn_items.price": "cost"}
+        )
+        # The rename is the whole difference: the check matches once its
+        # column is compared under the new name, so no rebuild runs.
+        self.assertTrue(any("RENAME COLUMN" in s for s in migration.up))
+        self.assertFalse(any("rn_items_sustained_new" in s for s in migration.up))
+        self._run(migration)
+        self.assertIsNone(
+            autogenerate(self.conn, [model], id="m2", ignore_undeclared=True)
+        )
+
+    def test_rewriting_skips_string_literals_and_handles_quotes(self):
+        from sustained.autogenerate import _rename_in_expression
+
+        self.assertEqual(
+            _rename_in_expression("price > 0 AND note <> 'price'", "price", "cost"),
+            "cost > 0 AND note <> 'price'",
+        )
+        self.assertEqual(
+            _rename_in_expression('"price" > 0', "price", "cost"),
+            '"cost" > 0',
+        )
+        self.assertEqual(
+            _rename_in_expression("priced > 0", "price", "cost"),
+            "priced > 0",
+        )
+
+
+class TestForeignKeyRestoreWithoutTargetColumns(unittest.TestCase):
+    def test_an_implicit_primary_key_reference_renders_without_a_list(self):
+        from sustained.autogenerate import _introspected_fk_sql
+
+        compiler = Dialects.get_compiler(Dialects.DEFAULT)
+        fk = IntrospectedForeignKey(
+            columns=("owner_id",), target_table="owners", target_columns=()
+        )
+        sql = _introspected_fk_sql(compiler, "items", "fk_items_owner", fk)
+        self.assertEqual(
+            sql,
+            "ALTER TABLE items ADD CONSTRAINT fk_items_owner "
+            "FOREIGN KEY (owner_id) REFERENCES owners",
+        )
+
+    def test_an_unknown_target_table_stays_irreversible(self):
+        from sustained.autogenerate import _introspected_fk_sql
+
+        compiler = Dialects.get_compiler(Dialects.DEFAULT)
+        fk = IntrospectedForeignKey(
+            columns=("owner_id",), target_table="?", target_columns=()
+        )
+        self.assertIsNone(_introspected_fk_sql(compiler, "items", "fk_items_owner", fk))
+
+
+class TestDuplicateConstraintNames(unittest.TestCase):
+    def test_diff_schema_rejects_a_reused_name(self):
+        model = make_model(
+            "DupC",
+            "dup_items",
+            {"id": Integer(primary_key=True), "price": Integer()},
+        )
+        model.tableConstraints = [
+            Check("ck_dup", "price > 0"),
+            Check("CK_DUP", "price < 100"),
+        ]
+        conn = sqlite3.connect(":memory:")
+        try:
+            with self.assertRaises(ValueError) as caught:
+                diff_schema(conn, [model])
+        finally:
+            conn.close()
+        self.assertIn("CK_DUP", str(caught.exception))
+
+
 class RoutingCursor:
     """Serves canned catalog rows for Postgres-dialect constraint tests."""
 

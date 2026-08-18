@@ -322,11 +322,11 @@ def _strip_identifier(name: str) -> str:
     return name.strip().strip('"`[]').lower()
 
 
-# A named constraint in a CREATE TABLE statement. Only names Sustained
-# itself writes are recovered: checks are read when the name starts with
-# ck_, and foreign keys match their pragma rows by column list.
+# A named constraint in a CREATE TABLE statement. Checks are read by
+# name; a CHECK written without a CONSTRAINT name stays unread. Foreign
+# keys match their pragma rows by column list.
 _SQLITE_CHECK_RE = re.compile(
-    r"CONSTRAINT\s+[\"`\[]?(ck_\w+)[\"`\]]?\s+CHECK\s*\(",
+    r"CONSTRAINT\s+[\"`\[]?(\w+)[\"`\]]?\s+CHECK\s*\(",
     re.IGNORECASE,
 )
 _SQLITE_FK_NAME_RE = re.compile(
@@ -362,9 +362,9 @@ def _balanced_paren_body(text: str, start: int) -> Optional[str]:
 
 def _sqlite_table_checks(create_sql: str) -> Dict[str, str]:
     """
-    The named ck_ check constraints in a CREATE TABLE statement. SQLite
-    has no catalog view for checks, so the ones Sustained generated are
-    read back out of the SQL it wrote. Hand-written checks stay unread.
+    The named check constraints in a CREATE TABLE statement. SQLite has
+    no catalog view for checks, so they are read back out of the stored
+    CREATE TABLE SQL. A CHECK with no CONSTRAINT name stays unread.
     """
     checks: Dict[str, str] = {}
     for match in _SQLITE_CHECK_RE.finditer(create_sql):

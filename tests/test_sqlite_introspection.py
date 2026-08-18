@@ -107,12 +107,19 @@ class TestSqliteChecks(unittest.TestCase):
         )
         self.assertEqual(schema["posts"].checks, {"ck_posts_tag": "tag <> ')'"})
 
-    def test_a_check_without_the_ck_prefix_stays_unread(self):
+    def test_a_check_without_the_ck_prefix_is_read_back(self):
         schema = self.read(
             "CREATE TABLE shows (seats INTEGER, "
             "CONSTRAINT positive_seats CHECK (seats > 0))"
         )
-        self.assertEqual(dict(schema["shows"].checks), {})
+        self.assertEqual(dict(schema["shows"].checks), {"positive_seats": "seats > 0"})
+
+    def test_a_quoted_constraint_name_is_read_back(self):
+        schema = self.read(
+            'CREATE TABLE shows (seats INTEGER, CONSTRAINT "seat_floor" '
+            "CHECK (seats >= 0))"
+        )
+        self.assertEqual(dict(schema["shows"].checks), {"seat_floor": "seats >= 0"})
 
     def test_an_unnamed_check_stays_unread(self):
         schema = self.read("CREATE TABLE shows (seats INTEGER CHECK (seats > 0))")

@@ -10,7 +10,17 @@ supported dialect.
 from __future__ import annotations
 
 import enum as _pyenum
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Tuple, Union
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Dict,
+    List,
+    Optional,
+    Sequence,
+    Set,
+    Tuple,
+    Union,
+)
 
 from sustained.types import Expression, SqlValue
 
@@ -234,6 +244,25 @@ class ForeignKey:
 
 
 TableConstraint = Union[Check, ForeignKey]
+
+
+def checked_constraint_names(
+    table_name: str, constraints: Optional[Sequence[TableConstraint]]
+) -> None:
+    """
+    Rejects a constraint list that uses one name twice. Names compare
+    case-insensitively, the way the database's catalog reports them.
+    """
+    seen: Set[str] = set()
+    for constraint in constraints or []:
+        key = constraint.name.lower()
+        if key in seen:
+            raise ValueError(
+                f"Table '{table_name}' declares two constraints named "
+                f"'{constraint.name}'. Constraint names must be unique "
+                "within the table."
+            )
+        seen.add(key)
 
 
 def _checked_fk_action(
@@ -509,6 +538,7 @@ def build_create_table_sql(
     """
     if not columns:
         raise ValueError("Cannot create a table with no columns.")
+    checked_constraint_names(bare_table_name(table_sql), constraints)
 
     primary_keys = [name for name, col in columns.items() if col.primary_key]
     autoincrement_cols = [name for name, col in columns.items() if col.autoincrement]
@@ -573,6 +603,7 @@ __all__ = [
     "Json",
     "Enum",
     "build_create_table_sql",
+    "checked_constraint_names",
     "check_constraint_sql",
     "collect_enum_types",
     "enum_check_constraint_sql",

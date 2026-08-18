@@ -35,6 +35,7 @@ autogenerate() turns the diff into a Migration:
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING, Dict, List, Optional, Set, Tuple, Type
 
 from sustained.dialects import Dialects
@@ -59,6 +60,7 @@ from sustained.schema import (
     ForeignKey,
     bare_table_name,
     build_create_table_sql,
+    checked_constraint_names,
     collect_enum_types,
     enum_check_constraint_sql,
     render_column_sql,
@@ -343,6 +345,19 @@ def _actual_column_is_enum(actual_col: IntrospectedColumn, coldef: "ColumnDef") 
     return bool(parse_inline_enum(actual_col.raw_type))
 
 
+def _rename_in_expression(expression: str, old: str, new: str) -> str:
+    """
+    The expression with every reference to the column `old` rewritten to
+    `new`. Bare and quoted identifiers are rewritten; text inside
+    single-quoted string literals is left alone.
+    """
+    identifier = re.compile(rf"([\"`\[]?)\b{re.escape(old)}\b([\"`\]]?)", re.IGNORECASE)
+    parts = re.split(r"('(?:[^']|'')*')", expression)
+    for index in range(0, len(parts), 2):
+        parts[index] = identifier.sub(rf"\g<1>{new}\g<2>", parts[index])
+    return "".join(parts)
+
+
 def _apply_renames(
     actual: Dict[str, IntrospectedTable],
     renames: Dict[str, str],
@@ -385,12 +400,17 @@ def _apply_renames(
             )
             for name, fk in old_table.foreign_keys.items()
         }
+        renamed_checks = {
+            name: _rename_in_expression(expression, old_key, new_key)
+            for name, expression in old_table.checks.items()
+        }
         actual[table_key] = old_table._replace(
             primary_key=tuple(
                 new_key if c == old_key else c for c in old_table.primary_key
             ),
             foreign_keys=renamed_fks,
             indexes=renamed_indexes,
+            checks=renamed_checks,
         )
 
 
@@ -420,6 +440,7 @@ def diff_schema(
         key = model.tableName.lower()
         if key in declared:
             raise ValueError(f"Two models declare the table '{model.tableName}'.")
+        checked_constraint_names(model.tableName, model.tableConstraints)
         declared[key] = model
 
     excluded = {t.lower() for t in exclude_tables}
@@ -1264,9 +1285,11 @@ def _introspected_fk_sql(
     """
     Renders an introspected foreign key back into an ADD CONSTRAINT
     statement, for the down step of a drop. None when the catalog did not
-    say where the key points, which makes the drop irreversible.
+    say where the key points, which makes the drop irreversible. An empty
+    target column list renders without one: the key references the target
+    table's primary key.
     """
-    if fk.target_table == "?" or not fk.target_columns:
+    if fk.target_table == "?":
         return None
     on_delete = None if fk.on_delete is None else fk.on_delete.upper()
     on_update = None if fk.on_update is None else fk.on_update.upper()

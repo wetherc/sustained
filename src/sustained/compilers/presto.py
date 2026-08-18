@@ -7,6 +7,12 @@ if TYPE_CHECKING:
 
 
 class PrestoCompiler(Compiler):
+    # How each dialect's name is written in prose, for error messages.
+    _DISPLAY_NAMES = {"PRESTO": "Presto", "ATHENA": "Athena"}
+
+    def display_name(self) -> str:
+        return self._DISPLAY_NAMES.get(self.dialect_name(), self.dialect_name())
+
     def quote_identifier(self, identifier: str) -> str:
         return f'"{identifier}"'
 
@@ -31,7 +37,7 @@ class PrestoCompiler(Compiler):
         from sustained.exceptions import DialectError
 
         raise DialectError(
-            f"{self.dialect_name().capitalize()} tables have no CHECK "
+            f"{self.display_name()} tables have no CHECK "
             "constraints. Validate rows in the application."
         )
 
@@ -48,7 +54,7 @@ class PrestoCompiler(Compiler):
         from sustained.exceptions import DialectError
 
         raise DialectError(
-            f"{self.dialect_name().capitalize()} tables have no foreign "
+            f"{self.display_name()} tables have no foreign "
             "keys. Enforce the relationship in the application."
         )
 

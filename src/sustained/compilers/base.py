@@ -340,12 +340,16 @@ class Compiler:
         columns = (column,) if isinstance(column, str) else tuple(column)
         targets = (ref_column,) if isinstance(ref_column, str) else tuple(ref_column)
         columns_sql = ", ".join(self.quote_identifier(c) for c in columns)
-        targets_sql = ", ".join(self.quote_identifier(c) for c in targets)
         sql = (
             f"ALTER TABLE {table_sql} ADD CONSTRAINT "
             f"{self.quote_identifier(constraint)} FOREIGN KEY "
-            f"({columns_sql}) REFERENCES {ref_table_sql} ({targets_sql})"
+            f"({columns_sql}) REFERENCES {ref_table_sql}"
         )
+        if targets:
+            # An empty target list means the key references the target
+            # table's primary key, so the column list is left off.
+            targets_sql = ", ".join(self.quote_identifier(c) for c in targets)
+            sql += f" ({targets_sql})"
         if on_delete is not None:
             sql += f" ON DELETE {on_delete}"
         if on_update is not None:
