@@ -206,6 +206,20 @@ top = (Event.query()
 )
 ```
 
+## Enum columns
+
+An `Enum` column declares its values once, and each engine holds the column to them with the mechanism it has:
+
+| Dialect | Strategy | Renders |
+| --- | --- | --- |
+| `POSTGRES` | named type | `CREATE TYPE post_status AS ENUM (...)`, referenced by the column. Values append in place with `ALTER TYPE ... ADD VALUE`. |
+| `DUCKDB` | named type | `CREATE TYPE ... AS ENUM (...)`. Appending a value in place raises `DialectError`. |
+| `MYSQL` | inline | `ENUM('draft', 'published')` written into the column type. Value changes restate the list with `MODIFY COLUMN`. |
+| `DEFAULT`, `MSSQL` | CHECK constraint | A VARCHAR sized to the longest value, held to the list by `CONSTRAINT ck_<table>_<column>_enum CHECK (col IN (...))`. |
+| `PRESTO`, `ATHENA` | refused | `DialectError` at DDL time, because neither engine can enforce the list. |
+
+On Postgres, `ALTER TYPE ... ADD VALUE` rolls back inside a transaction on PostgreSQL 12 and later, which is what lets `rehearse` prove a migration that carries one. See [Schema and Migrations](./schema#enum-columns) for how enum changes generate.
+
 ## Writing dialect-portable code
 
 If you build queries through the builder's methods rather than raw SQL, one model definition serves every dialect: quoting, placeholders, booleans, `LIMIT` spelling, upsert syntax, and function names (`NOW()`, `LENGTH()`) all follow `set_dialect()`. The differences that cannot be papered over raise `DialectError` with a message naming the alternative, so porting is mostly a matter of running your test suite and reading the errors it raises.

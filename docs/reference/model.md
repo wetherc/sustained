@@ -17,6 +17,7 @@ Guide: [Models](/models).
 | `tableColumns` | `dict[str, ColumnDef]` | `None` | Typed column definitions. Drives `create_table_sql()` and migration generation. |
 | `columns` | `tuple[str, ...]` | `None` | Declared column names. When set, access to any other name raises `AttributeError`. |
 | `indexes` | `list[Index]` | `None` | Named indexes, created alongside the table. |
+| `tableConstraints` | `list[Check or ForeignKey]` | `None` | Named table constraints, rendered into CREATE TABLE and kept in step by migration generation. |
 | `tableOptions` | `TableOptions` | `None` | Storage clauses. Athena only; every other dialect raises `DialectError`. |
 | `relationMappings` | `dict[str, RelationMapping]` | `{}` | Relations, keyed by the name you join or fetch by. |
 

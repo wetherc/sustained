@@ -3,17 +3,17 @@ layout: default
 title: Migrations reference
 ---
 
-`sustained.migrations`, `sustained.aio_migrations`, `sustained.autogenerate`, `sustained.migration_files`, and `sustained.analysis`. Import these names from their module path, because the package root does not re-export them.
+`sustained.migrations`, `sustained.aio_migrations`, `sustained.autogenerate`, `sustained.migration_files`, `sustained.ddl`, and `sustained.analysis`. Import these names from their module path, because the package root does not re-export them; the `ddl` module itself imports as `from sustained import ddl`.
 
 Guide: [Schema and Migrations](/schema).
 
 ## `Migration`
 
 ```python
-Migration(id, up, down=None, checksum=None, repeatable=False)
+Migration(id, up, down=..., checksum=None, repeatable=False)
 ```
 
-A `Migration` is one schema change. A step is a SQL string, a list of statements, or a callable that receives the connection.
+A `Migration` is one schema change. A step is a SQL string, a list of statements, a [ddl step](#typed-ddl-steps), or a callable that receives the connection. A list may mix strings and ddl steps.
 
 | Attribute | Type | Meaning |
 | --- | --- | --- |
@@ -23,7 +23,40 @@ A `Migration` is one schema change. A step is a SQL string, a list of statements
 | `checksum` | `str` or `None` | Pins a checksum. Needed only for a callable step, which has no SQL to hash. |
 | `repeatable` | `bool` | Re-runs whenever its checksum changes, instead of running once. |
 
+When `down` is not given and `up` is a list of reversible ddl steps, the down step derives itself: the inverses of the up steps, newest first. An up step that holds an irreversible ddl step then raises `ValueError`, naming the step; pass an explicit down step, or `down=None` to declare the migration irreversible. An up step with no ddl steps in it derives nothing, and `down` stays `None` as before. Repeatables never derive a down step.
+
 `Migration` raises `ValueError` when the id is empty, when a repeatable declares a `down` step, and when a repeatable has a callable step and no explicit `checksum`.
+
+## Typed ddl steps
+
+These names live in `sustained.ddl`. A `DdlStep` names one schema change and renders to SQL through a dialect compiler when the migration runs, so one migration serves every dialect. Build steps with the factories below, not with `DdlStep` directly.
+
+| Signature | Reverses as |
+| --- | --- |
+| `create_table(model_or_name, columns=None, constraints=None, options=None, indexes=None)` | `drop_table`, dropping the columns' enum types after the table |
+| `drop_table(model_or_name)` | irreversible |
+| `add_column(table, name, column)` | `drop_column` |
+| `drop_column(table, name)` | irreversible |
+| `rename_column(table, old, new)` | the rename, backwards |
+| `rename_table(old, new)` | the rename, backwards |
+| `add_foreign_key(table, foreign_key)` | `drop_foreign_key` |
+| `drop_foreign_key(table, name)` | irreversible |
+| `add_check(table, check)` | `drop_constraint` |
+| `drop_constraint(table, name)` | irreversible |
+| `create_index(table, index)` | `drop_index` |
+| `drop_index(table, name)` | irreversible |
+| `create_enum(name, *values)` | `drop_enum` |
+| `drop_enum(name)` | irreversible |
+| `add_enum_value(name, value)` | irreversible: Postgres has no `DROP VALUE` |
+| `sql(text)` | irreversible: one raw statement, rendered as written on every dialect |
+
+A `table` argument takes a Model class or a table name string. `create_table(model)` reads the model's columns, constraints, options, and indexes when the step is built, so a later model edit changes the migration's checksum; pass explicit `columns` when the migration must outlive the model. The `column`, `check`, `foreign_key`, and `index` arguments take the same `ColumnDef`, `Check`, `ForeignKey`, and `Index` objects a model declares.
+
+On a `DdlStep`, `render(compiler)` returns the SQL statements for that compiler's dialect, `reversible` says whether the step knows its inverse, `inverse()` returns that step or `None`, and `signature()` returns the canonical form the checksum hashes: the operation name and its arguments, serialized the same way on every dialect.
+
+`create_enum`, `drop_enum`, and `add_enum_value` raise `DialectError` at render time on a dialect without named enum types. Each factory raises `ValueError` for a missing name or an empty argument.
+
+Guide: [Typed migration steps](/schema#typed-migration-steps).
 
 ## `Migrator`
 
@@ -38,7 +71,7 @@ Migrator(connection, migrations, table='sustained_migrations',
 
 `guards` is a list of rules over the statements an up run would apply. See [Guards](#guards) below. `callbacks` is a `Callbacks` object, whose functions `up()` calls around the run.
 
-`Migrator` exposes `connection` and `dialect` as properties.
+`Migrator` exposes `connection`, `dialect`, and `compiler` as properties. The compiler is what the migrator renders ddl steps through.
 
 ### Inspecting
 
@@ -199,12 +232,12 @@ Every diff against the models excludes both tables, so neither table reads as dr
 
 | Signature | Returns | Description |
 | --- | --- | --- |
-| `migration_checksum(migration)` | `str` or `None` | The checksum validation compares. `None` for a callable step with no explicit checksum. |
+| `migration_checksum(migration)` | `str` or `None` | The checksum validation compares. A ddl step hashes as its canonical signature, so the checksum is the same on every dialect. `None` for a callable step with no explicit checksum. |
 | `create_table_migration(model)` | `Migration` | A create/drop pair derived from a model. |
-| `migration_sql(migration, direction='up')` | `list[str]` | One migration's statements, for offline review. A callable step renders as a comment. Raises `ValueError` when that step is `None`. |
+| `migration_sql(migration, direction='up', compiler=None)` | `list[str]` | One migration's statements, for offline review. Ddl steps render for the given compiler's dialect, or ANSI when none is given. A callable step renders as a comment. Raises `ValueError` when that step is `None`. |
 | `rehearsal_key(applied, run)` | `str` | The key a rehearsal row is stored under. |
 | `rehearsal_failed(result)` | `bool` | Whether one result stops a rehearsal from passing. |
-| `run_statements(run)` | `list[str]` | Every up statement a run would apply, callable steps skipped. |
+| `run_statements(run, compiler=None)` | `list[str]` | Every up statement a run would apply, callable steps skipped. Ddl steps render for the given compiler's dialect, which is how the guards read them. |
 | `check_guards(guards, run, dialect, reported=None)` | `None` | Runs the guards over a run. Raises `GuardBlocked` on a blocking verdict, prints warnings on stderr. |
 
 ### `Callbacks`
@@ -223,7 +256,7 @@ Guards live in `sustained.guards`. A guard is a `Callable[[Sequence[str], Dialec
 
 | Signature | Returns | Description |
 | --- | --- | --- |
-| `no_drops()` | `Guard` | Blocks a table, column, view, schema, or database drop. Constraint, index, and key drops pass. |
+| `no_drops()` | `Guard` | Blocks a table, column, view, schema, database, enum type, or constraint drop. Index and key drops pass. |
 | `index_must_be_concurrent()` | `Guard` | Blocks `CREATE INDEX` without `CONCURRENTLY`. Postgres only; silent elsewhere. |
 | `no_table_rewrite()` | `Guard` | Warns on a column type change, or a NOT NULL with no default for existing rows. |
 | `no_lock_without_timeout()` | `Guard` | Blocks a run that alters or drops a table with no `SET lock_timeout` anywhere in it. Postgres only; silent elsewhere. |
@@ -245,7 +278,7 @@ AsyncMigrator(adapter, migrations, table='sustained_migrations',
               callbacks=None)
 ```
 
-`AsyncMigrator` is the same runner on an `AsyncAdapter`: the same tracking table, the same `Migration` objects, and the same validation rules and refusal messages. Guards and callbacks work the same way, except that a callback receives the adapter, and is awaited when it returns an awaitable. `AsyncMigrator` exposes `adapter` and `dialect` as properties.
+`AsyncMigrator` is the same runner on an `AsyncAdapter`: the same tracking table, the same `Migration` objects, and the same validation rules and refusal messages. Guards and callbacks work the same way, except that a callback receives the adapter, and is awaited when it returns an awaitable. `AsyncMigrator` exposes `adapter`, `dialect`, and `compiler` as properties.
 
 Every method is a coroutine:
 
@@ -323,11 +356,15 @@ These names live in `sustained.autogenerate`. `plan()` and `up(models=[...])` ar
 | `extra_columns` | `(table, column)` |
 | `changed_columns` | `(table, column, actual, expected)` |
 | `new_indexes`, `extra_indexes`, `changed_indexes` | Index differences |
+| `new_enum_types` | `(name, values)` for enum types the models declare and the database lacks |
+| `changed_enum_types` | `(name, live_values, declared_values)` for enum types whose values differ |
+| `new_foreign_keys`, `changed_foreign_keys`, `extra_foreign_keys` | Foreign key differences, by constraint name |
+| `new_checks`, `changed_checks`, `extra_checks` | CHECK constraint differences, by constraint name |
 | `constraint_notes` | Differences that are reported but never auto-migrated |
 
 `is_empty()` returns whether the diff holds any difference. `summary()` returns one readable line per difference, with the destructive ones marked, or `schema up to date` when there is no difference.
 
-Primary key, foreign key, column-level UNIQUE, and default differences always land in `constraint_notes`. Generation never migrates those differences for you.
+The enum buckets fill on the dialects with named types. Postgres compares against `pg_enum`, and DuckDB reads the values from the column's inline type spelling. Missing foreign keys and checks generate `ADD CONSTRAINT`; changed and extra ones are gated by `allow_drops`. Primary key set changes, column-level UNIQUE, and default differences always land in `constraint_notes`, and a Postgres check expression whose difference survives normalization lands there too. Generation never migrates a note for you.
 
 ### What generation refuses
 
@@ -347,7 +384,7 @@ These names live in `sustained.analysis`, and `sustained plan` uses them.
 | Signature | Returns | Description |
 | --- | --- | --- |
 | `destructive_statements(statements)` | `list[str]` | The statements that drop a table, a column, an enum type, or a constraint, or truncate. Comments removed, whitespace collapsed. Skips index and key drops. |
-| `summarize(migration, state)` | `PendingSummary` | One migration reduced to its id, state, repeatable flag, statement count, and destructive statements. |
+| `summarize(migration, state, compiler=None)` | `PendingSummary` | One migration reduced to its id, state, repeatable flag, statement count, and destructive statements. Ddl steps render for the given compiler's dialect, or ANSI when none is given. |
 
 `PendingSummary(id, state, repeatable, statements, destructive)` holds that summary. `statements` is `None` for a callable step, which has no SQL to count.
 

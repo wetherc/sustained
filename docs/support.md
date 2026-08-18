@@ -30,7 +30,7 @@ never described as partly supported.
 
 | Database | Level | Where it runs | Covered | Notes |
 | --- | --- | --- | --- | --- |
-| PostgreSQL | `runs` | Container (postgres:14-alpine) | queries, migrations | Rehearsal, advisory locks, and transactional DDL all run here. |
+| PostgreSQL | `runs` | Container (postgres:14-alpine) | queries, migrations | Rehearsal, advisory locks, and transactional DDL all run here. Enum ADD VALUE needs PostgreSQL 12 or later to rehearse. |
 | MySQL | `runs` | Container (mysql:8.4) | queries, migrations | No transactional DDL, so rehearse needs scratch=True. |
 | MariaDB | `runs` | Container (mariadb:11.4) | queries, migrations | Same dialect as MySQL. JSON columns read back through their json_valid check. |
 | SQL Server | `runs` | Container (mcr.microsoft.com/mssql/server:2022-latest) | queries, migrations | Off the rehearsal allowlist, so rehearse refuses without scratch=True. pyodbc needs the ODBC driver installed. |

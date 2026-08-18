@@ -128,11 +128,11 @@ Autogeneration refuses to guess about anything that loses data or fails on popul
 
 Renames cannot be detected from the catalog, so pass hints: `up(models=models, renames={'users.name': 'full_name'}, table_renames={'old': 'new'})` emits reversible RENAME statements instead of a destructive drop-plus-add.
 
-Primary key, foreign key, column-level unique, and default differences are reported as constraint notes in the diff, but never auto-migrated.
+Foreign keys and CHECK constraints declared in `tableConstraints` are diffed and migrated; see [Table constraints](#table-constraints). Primary key set changes, column-level unique, and default differences are reported as constraint notes in the diff, but never auto-migrated.
 
 ## Typed columns
 
-`tableColumns` maps column names to typed definitions: `Integer`, `BigInteger`, `String(length)`, `Text`, `Boolean`, `Float`, `Numeric(precision, scale)`, `Date`, `Timestamp`, `Json`.
+`tableColumns` maps column names to typed definitions: `Integer`, `BigInteger`, `String(length)`, `Text`, `Boolean`, `Float`, `Numeric(precision, scale)`, `Date`, `Timestamp`, `Json`, and `Enum(*values, name=...)`.
 
 ```python
 from sustained.schema import Boolean, Integer, String, Timestamp
@@ -160,6 +160,68 @@ class User(Model):
 ```
 
 `autoincrement` requires a single integer primary key. DuckDB and Presto raise `DialectError` because they have no identity columns. A model with `tableColumns` also gets strict column-name access automatically, so a typo'd column raises `AttributeError`.
+
+## Enum columns
+
+`Enum` declares a column whose values come from a named, ordered list:
+
+```python
+from sustained.schema import Enum, Integer
+
+class Post(Model):
+    tableName = 'posts'
+    tableColumns = {
+        'id': Integer(primary_key=True, autoincrement=True),
+        'status': Enum(
+            'draft', 'published', 'archived',
+            name='post_status', nullable=False, default='draft',
+        ),
+    }
+```
+
+Pass the values as strings, or pass one Python `enum.Enum` class whose member values are strings. Hydrated values stay plain strings either way; Sustained never coerces them back into the Python class. A `default` is checked against the values when the column is declared.
+
+`name` is required. A Postgres enum is a database object with its own identity, so an explicit name gives the diff something stable to compare, and it lets two models share one type: the same name with the same values in two models is one type, and the same name with different values raises `ValueError`.
+
+Rendering follows the dialect. Postgres and DuckDB create a named type with `CREATE TYPE ... AS ENUM` and reference it by name. MySQL writes the value list into the column type as `ENUM('draft', 'published', ...)`. ANSI, SQLite, and MSSQL have no enum type, so the column renders as a VARCHAR sized to the longest value, held to the list by a CHECK constraint named `ck_<table>_<column>_enum`. Presto and Athena refuse the column with `DialectError`, because neither engine can enforce it. [SQL Dialects](./dialects#enum-columns) has the full table.
+
+On the dialects with a named type, `CREATE TYPE` renders before the table that uses it, and dropping the table drops the type with it once no remaining model references it, under the same `allow_drops=True` the table drop needs. `DROP TYPE` is destructive: `plan` labels it, `no_drops()` blocks it, and the rehearsal gate covers it.
+
+### Changing an enum's values
+
+Appending a value to the model generates the change: `ALTER TYPE ... ADD VALUE` on Postgres, a restated value list through `MODIFY COLUMN` on MySQL, and a re-created CHECK constraint on the check-strategy dialects. On Postgres the generated migration is irreversible, because Postgres has no `DROP VALUE`; its `down` is `None`. PostgreSQL 12 and later roll `ADD VALUE` back inside a transaction, which is what lets `rehearse` prove it; the [support policy](./support) states that floor. DuckDB cannot append to a type in place and refuses.
+
+Removing or reordering values refuses with a recipe instead of generating: create a new type, move the column over with a `USING` cast, then drop the old type. Converting an existing VARCHAR column to an enum works through the same `type_casts` hints as any other Postgres type change.
+
+## Table constraints
+
+Models declare named CHECK and FOREIGN KEY constraints in `tableConstraints`, parallel to `indexes` and `tableOptions`:
+
+```python
+from sustained.schema import Check, ForeignKey, Integer, Numeric
+
+class Ticket(Model):
+    tableName = 'tickets'
+    tableColumns = {
+        'id': Integer(primary_key=True, autoincrement=True),
+        'show_id': Integer(nullable=False),
+        'price': Numeric(10, 2),
+    }
+    tableConstraints = [
+        Check('ck_tickets_price_positive', 'price > 0'),
+        ForeignKey('fk_tickets_show', 'show_id', 'shows.id', on_delete='CASCADE'),
+    ]
+```
+
+Every constraint takes a name, because diffs and down steps address a constraint by its name. A `Check` expression is raw SQL and renders as written, so quote any identifiers inside it yourself.
+
+A `ForeignKey` takes its columns as a string or a sequence, and its targets as `'table.column'` strings, one per constrained column, all pointing at one table. `on_delete` and `on_update` accept `CASCADE`, `SET NULL`, `RESTRICT`, `NO ACTION`, and `SET DEFAULT`. For a single column with no actions, the `references='table.column'` shorthand on the column definition does the same thing. There is no Unique constraint object: `Index(name, *columns, unique=True)` already covers it.
+
+Constraint differences generate migrations. A constraint the model declares and the database lacks generates `ADD CONSTRAINT`, with the matching drop as the down step. A changed foreign key generates a drop plus an add under `allow_drops=True`; the down step restores the introspected key when its target is known, and the migration is irreversible otherwise. Constraints in the database that no model declares follow the same rules as extra indexes: they block generation unless `ignore_undeclared` is set, and they drop only under `allow_drops=True`.
+
+Check expressions compare normalized, because engines rewrite them: Postgres stores `price > 0` as `((price > 0))`, and keyword case and whitespace vary. A difference that survives normalization is reported as a constraint note on Postgres rather than generating a drop, so a cosmetic rewrite never costs you a constraint. SQLite cannot add or drop a table constraint in place, so those changes route through the same table rebuild as its column changes.
+
+Presto and Athena enforce no table constraints and raise `DialectError` when a model declares them there. Primary key set changes stay reported as notes and are never generated, because a safe primary key migration needs a table rebuild on most engines.
 
 ## Generating and running DDL directly
 
@@ -227,7 +289,7 @@ It also means `rehearse` refuses MySQL against the real database, and asks for [
 
 ## Hand-written migrations
 
-Anything autogeneration will not express, you write explicitly. A `Migration` pairs an id with an up step and an optional down step. Steps are a SQL string, a list of statements, or a callable receiving the connection. Hand-written and generated migrations share one ordered list and one tracking table.
+Anything autogeneration will not express, you write explicitly. A `Migration` pairs an id with an up step and an optional down step. A step is a SQL string, a list of statements, a [typed ddl step](#typed-migration-steps), or a callable receiving the connection. Hand-written and generated migrations share one ordered list and one tracking table.
 
 ```python
 from sustained.migrations import Migration, Migrator, create_table_migration
@@ -249,6 +311,31 @@ migrator.up()                        # apply all pending
 migrator.up(target='create_users')   # stop after a target
 migrator.status()                    # [(id, applied), ...]
 ```
+
+### Typed migration steps
+
+A step can also be a typed `ddl` step instead of a SQL string. Each step names one schema change and renders through the dialect compiler when the migration runs, or when `script()` prints it, so one hand-written migration serves every dialect:
+
+```python
+from sustained import ddl
+from sustained.migrations import Migration
+from sustained.schema import Index, String
+
+migrations = [
+    Migration('add_nickname', up=[
+        ddl.add_column('users', 'nickname', String(60)),
+        ddl.create_index('users', Index('ix_users_nickname', 'nickname')),
+    ]),
+]
+```
+
+The available steps are `create_table`, `drop_table`, `add_column`, `drop_column`, `rename_column`, `rename_table`, `add_foreign_key`, `drop_foreign_key`, `add_check`, `drop_constraint`, `create_index`, `drop_index`, `create_enum`, `drop_enum`, `add_enum_value`, and `sql()` for one raw statement. The [migrations reference](./reference/migrations#typed-ddl-steps) has every signature.
+
+The migration above declares no down step, and it does not need one: a step that creates, adds, or renames something knows the step that takes it back, so a migration whose up is all reversible ddl steps derives its down automatically, the inverses newest first. The example's derived down drops the index, then drops the column. A step that cannot reverse, which is any drop, `add_enum_value`, or `sql()`, refuses the derivation with `ValueError`; give that migration an explicit down step, or `down=None` to declare it irreversible. An explicit down step always wins over the derivation.
+
+Guards, the `destructive` labels, and the rehearsal gate all read a ddl step's rendered SQL, which none of them can do for a callable step. When a change fits the typed steps, prefer them over a callable for that reason.
+
+The checksum of a ddl step hashes its operation name and arguments rather than its rendered SQL, so it is the same on every dialect, and moving a project from SQLite to Postgres never invalidates an applied migration. One caveat: `ddl.create_table(model)` reads the model's columns when the step is built, so a later model edit changes the migration's checksum. Pass an explicit `columns` mapping when the migration must outlive the model.
 
 ## Migrations as SQL files
 

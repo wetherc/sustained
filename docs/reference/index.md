@@ -12,8 +12,8 @@ If you are looking for how to do something specific, [Recipes](/recipes) is the 
 | [Model](/reference/model) | `Model`, its class attributes, `create_model`, relation mappings, `RelationType` |
 | [QueryBuilder](/reference/query-builder) | Every query method: SELECT, joins, filters, groups, paging, writes, execution |
 | [Predicates and expressions](/reference/predicates) | `col`, `Predicate`, `Column`, `Literal`, `Func`, `Subquery`, the function registry |
-| [Schema types](/reference/schema) | Column types, `ColumnDef` options, `Index`, `TableOptions`, DDL rendering |
-| [Migrations](/reference/migrations) | `Migration`, `Migrator`, `AsyncMigrator`, autogeneration, guards, SQL files, analysis |
+| [Schema types](/reference/schema) | Column types, `ColumnDef` options, `Enum`, `Check`, `ForeignKey`, `Index`, `TableOptions`, DDL rendering |
+| [Migrations](/reference/migrations) | `Migration`, `Migrator`, `AsyncMigrator`, ddl steps, autogeneration, guards, SQL files, analysis |
 | [Execution and pooling](/reference/execution) | Transactions, `ConnectionPool`, async adapters, the statement listener |
 | [Command line](/reference/cli) | Every subcommand, flag, exit code, and config-module attribute |
 | [Dialect support](/reference/dialects) | What each dialect supports, and what it refuses |
@@ -34,8 +34,10 @@ from sustained import DialectError, GuardBlocked, MigrationError, RehearsalRequi
 
 # from submodules
 from sustained.dialects import Dialects
-from sustained.schema import Integer, String, Index, TableOptions, Expression
+from sustained.schema import Integer, String, Enum, Check, ForeignKey
+from sustained.schema import Index, TableOptions, Expression
 from sustained.migrations import Migration, Migrator
+from sustained import ddl
 from sustained.aio_migrations import AsyncMigrator
 from sustained.migration_files import load_migrations
 from sustained.autogenerate import autogenerate, diff_schema

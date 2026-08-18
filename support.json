@@ -18,7 +18,7 @@
       "dsn_env": "SUSTAINED_TEST_POSTGRES_DSN",
       "dsn": "postgresql://sustained:sustained@127.0.0.1:55432/sustained",
       "covers": ["queries", "migrations"],
-      "note": "Rehearsal, advisory locks, and transactional DDL all run here."
+      "note": "Rehearsal, advisory locks, and transactional DDL all run here. Enum ADD VALUE needs PostgreSQL 12 or later to rehearse."
     },
     {
       "name": "mysql",

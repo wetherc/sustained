@@ -23,6 +23,7 @@ Each type is a factory that returns a `ColumnDef`. Every factory accepts the ful
 | `Date(**options)` | `DATE` |
 | `Timestamp(**options)` | `TIMESTAMP` |
 | `Json(**options)` | `JSON` |
+| `Enum(*values, name, **options)` | `ENUM` (see [`Enum`](#enum)) |
 
 ### How types render per dialect
 
@@ -38,6 +39,9 @@ Each type is a factory that returns a `ColumnDef`. Every factory accepts the ful
 | DATE | `DATE` | `DATE` | `DATE` | `DATE` | `DATE` | `DATE` |
 | TIMESTAMP | `TIMESTAMP` | `TIMESTAMP` | `DATETIME` | `DATETIME2` | `TIMESTAMP` | `TIMESTAMP` |
 | JSON | `JSON` | `JSONB` | `JSON` | `NVARCHAR(MAX)` | `STRING` | `JSON` |
+| ENUM | `VARCHAR(n)` + CHECK | the named type | `ENUM(...)` | `NVARCHAR(n)` + CHECK | `DialectError` | the named type |
+
+An ENUM column renders per the dialect's enum strategy. Postgres and DuckDB reference a named type created with `CREATE TYPE`. MySQL writes the value list inline. The default dialect and MSSQL render a VARCHAR sized to the longest value, held to the list by a CHECK constraint named `ck_<table>_<column>_enum`. Presto raises like Athena. [SQL Dialects](/dialects#enum-columns) has the details.
 
 MySQL spells `BOOLEAN` as `TINYINT(1)` because its catalog reports the underlying type rather than the synonym. It spells `TIMESTAMP` as `DATETIME` because a MySQL `TIMESTAMP` column is four bytes, stops in 2038, and converts time zones, while `Timestamp()` describes a plain wall clock.
 
@@ -46,7 +50,8 @@ MySQL spells `BOOLEAN` as `TINYINT(1)` because its catalog reports the underlyin
 ```python
 ColumnDef(type_name, *, length=None, precision=None, scale=None,
           primary_key=False, nullable=True, unique=False, default=None,
-          references=None, autoincrement=False, backfill=None)
+          references=None, autoincrement=False, backfill=None,
+          enum_name=None, enum_values=None)
 ```
 
 Use the factories above rather than constructing a `ColumnDef` yourself. Every keyword below works on every factory.
@@ -62,8 +67,45 @@ Use the factories above rather than constructing a `ColumnDef` yourself. Every k
 | `backfill` | value or `Expression` | The value migration generation gives existing rows when it adds this column NOT NULL, or tightens the column to NOT NULL. Plain DDL ignores `backfill`. |
 | `length` | `int` | VARCHAR length. |
 | `precision`, `scale` | `int` | NUMERIC precision and scale. |
+| `enum_name`, `enum_values` | `str`, values | The type name and permitted values of an ENUM column. Valid only there; use the `Enum` factory, which fills both. |
 
 `default` fills new rows in the database. `backfill` fills the rows that are already in the table, at migration time. A NOT NULL change needs one or the other.
+
+## `Enum`
+
+```python
+Enum(*values, name, **options)
+```
+
+`Enum` returns an ENUM `ColumnDef`: a named, ordered list of permitted string values. Pass the values as strings, or pass one Python `enum.Enum` class whose member values are strings. Hydrated values stay plain strings.
+
+`name` is a required keyword. The same name with the same values in two models is one type; the same name with different values raises `ValueError` when the tables render or diff.
+
+`Enum` raises `ValueError` for a missing or empty name, an empty value list, a value that is not a non-empty string, a duplicate value, and a `default` that is not one of the values.
+
+Guide: [Enum columns](/schema#enum-columns).
+
+## `Check`
+
+```python
+Check(name, expression)
+```
+
+A named CHECK constraint. List instances in the model's `tableConstraints` attribute. The expression is SQL and renders as written. `Check` raises `ValueError` for an empty name or an empty expression.
+
+## `ForeignKey`
+
+```python
+ForeignKey(name, columns, references, on_delete=None, on_update=None)
+```
+
+A named FOREIGN KEY constraint, listed in `tableConstraints`. `columns` is a string or a sequence of the constrained columns, in order. `references` is a `'table.column'` string, or a sequence of them, one per constrained column; every target column must belong to the same table. `on_delete` and `on_update` accept `CASCADE`, `SET NULL`, `RESTRICT`, `NO ACTION`, and `SET DEFAULT`, case-insensitively; `FOREIGN_KEY_ACTIONS` holds that tuple.
+
+`ForeignKey` raises `ValueError` for an empty name, no columns, a column and target count that differ, a target without a dot, targets in more than one table, and an action outside the list.
+
+For a single column with no actions, `references='table.column'` on the column definition renders the same constraint. `TableConstraint` is the union type of `Check` and `ForeignKey`, which is what `tableConstraints` holds.
+
+Guide: [Table constraints](/schema#table-constraints).
 
 ### Identity per dialect
 
@@ -134,7 +176,7 @@ Both renderers take a compiler, which you get from `Dialects.get_compiler(dialec
 | Signature | Returns |
 | --- | --- |
 | `render_column_sql(compiler, name, col, inline_pk)` | One column clause, for CREATE TABLE or ADD COLUMN. |
-| `build_create_table_sql(compiler, table_sql, columns, if_not_exists=False, options=None)` | The whole CREATE TABLE statement. |
+| `build_create_table_sql(compiler, table_sql, columns, if_not_exists=False, options=None, extras=None, constraints=None)` | The whole CREATE TABLE statement. `constraints` is a sequence of declared `Check` and `ForeignKey` objects, rendered after the constraints the columns themselves imply. |
 
 A single primary key column renders inline. Several primary key columns become a table-level `PRIMARY KEY (...)` constraint.
 
