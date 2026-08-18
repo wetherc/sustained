@@ -232,5 +232,41 @@ class TestRuntimeSurfaceIsStubbed(unittest.TestCase):
             )
 
 
+class TestDeclaredSurfaceResolves(unittest.TestCase):
+    """
+    ddl and schema are typed inline and carry no stub, so their __all__
+    lists are the declared surface. A name listed there but not defined,
+    or defined publicly but not listed, is the same drift a stale stub
+    would be.
+    """
+
+    @staticmethod
+    def declared_all(relative_path):
+        tree = ast.parse((SRC / relative_path).read_text())
+        for node in tree.body:
+            if isinstance(node, ast.Assign) and any(
+                getattr(target, "id", None) == "__all__" for target in node.targets
+            ):
+                return {constant.value for constant in node.value.elts}
+        raise AssertionError(f"{relative_path} declares no __all__")
+
+    def test_every_ddl_name_is_exported_and_resolves(self):
+        import sustained.ddl as ddl
+
+        top, _ = runtime_definitions("ddl.py")
+        exported = self.declared_all("ddl.py")
+        self.assertEqual(sorted(top - exported), [], "ddl.py hides public names")
+        for name in exported:
+            self.assertTrue(hasattr(ddl, name), f"ddl.__all__ lists missing {name}")
+
+    def test_every_schema_export_resolves(self):
+        import sustained.schema as schema
+
+        for name in self.declared_all("schema.py"):
+            self.assertTrue(
+                hasattr(schema, name), f"schema.__all__ lists missing {name}"
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

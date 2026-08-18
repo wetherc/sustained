@@ -389,6 +389,32 @@ class TestMigratorIntegration(unittest.TestCase):
         script = migrator.script("up")
         self.assertIn("CREATE TABLE shelves", script)
 
+    def test_rehearse_runs_the_derived_down(self):
+        migration = Migration(
+            "001_shelves",
+            up=[
+                create_table(
+                    "shelves",
+                    columns={
+                        "id": Integer(primary_key=True),
+                        "label": String(40, nullable=False),
+                    },
+                ),
+                add_column("shelves", "room", String(20)),
+            ],
+        )
+        migrator = Migrator(self.connection, [migration], dialect=Dialects.DEFAULT)
+        rehearsal = migrator.rehearse()
+        self.assertTrue(rehearsal.ok)
+        for result in rehearsal:
+            self.assertEqual([], result.reversed)
+        # The rehearsal rolled everything back.
+        self.assertEqual(self._columns("shelves"), [])
+        # The derived down still applies for real after the rehearsal.
+        self.assertEqual(migrator.up(), ["001_shelves"])
+        self.assertEqual(migrator.down(), ["001_shelves"])
+        self.assertEqual(self._columns("shelves"), [])
+
     def test_validate_accepts_a_reapplied_ddl_migration(self):
         def build():
             return Migration(

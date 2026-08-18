@@ -17,7 +17,7 @@ from sustained.dialects import Dialects
 from sustained.introspect import introspect_schema
 from sustained.migrations import Migration, Migrator
 from sustained.model import Model
-from sustained.schema import Integer, Json, String, Text
+from sustained.schema import Enum, Integer, Json, String, Text
 
 from . import harness
 
@@ -50,10 +50,12 @@ def statements_of(migration):
 
 def drop_everything(connection, dialect):
     """Leaves the database as the test found it."""
-    quote = Dialects.get_compiler(dialect).quote_identifier
+    compiler = Dialects.get_compiler(dialect)
     cursor = connection.cursor()
     for table in TABLES + TRACKING:
-        cursor.execute(f"DROP TABLE IF EXISTS {quote(table)}")
+        cursor.execute(f"DROP TABLE IF EXISTS {compiler.quote_identifier(table)}")
+    if compiler.enum_strategy() == "native":
+        cursor.execute(compiler.compile_drop_enum_type("it_mood", if_exists=True))
     if hasattr(connection, "commit"):
         connection.commit()
 
@@ -231,6 +233,33 @@ class ServerCase(unittest.TestCase):
         migrator = self.migrator()
         migrator.up(models=[self.Widget])
         self.assertIsNone(migrator.plan([self.Widget]))
+
+    def test_an_enum_column_round_trips(self):
+        """
+        The enum rendering the dialect chooses (a named type, an inline
+        list, or a check constraint) has to read back as the same column,
+        or every later run would regenerate the same migration.
+        """
+        strategy = Dialects.get_compiler(self.DIALECT).enum_strategy()
+        self.Widget.tableColumns["mood"] = Enum("sad", "ok", "great", name="it_mood")
+        migrator = self.migrator()
+        migrator.up(models=[self.Widget])
+
+        snapshot = self.tables()
+        self.assertIn("mood", snapshot["it_widgets"].columns)
+        if strategy == "native" and snapshot.enum_types_read:
+            # Postgres reads pg_enum; the type and its values come back.
+            self.assertEqual(("sad", "ok", "great"), snapshot.enum_types.get("it_mood"))
+        self.assertIsNone(migrator.plan([self.Widget]))
+
+        self.Widget.query().insert(
+            [{"id": 1, "name": "hinge", "size": 3, "mood": "ok"}]
+        ).run()
+        row = self.Widget.query().where("id", "=", 1).orderBy("id").first()
+        self.assertEqual("ok", row.mood)
+
+        migrator.down()
+        self.assertNotIn("it_widgets", self.tables())
 
     # Queries
 
