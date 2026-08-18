@@ -32,7 +32,10 @@
   --rail: 2px;
   --rail-gap: 1.75rem;
   --sidebar: 17rem;
-  --measure: 44rem;
+  /* Wide enough that a code block of 80 characters fits without scrolling:
+     80 monospace characters at 0.83rem, plus the rail, the padding of the
+     pre, and room for a scrollbar. */
+  --measure: 46rem;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -154,7 +157,7 @@ body {
   display: grid;
   grid-template-columns: var(--sidebar) minmax(0, 1fr);
   gap: 0 3.5rem;
-  max-width: 84rem;
+  max-width: 86rem;
   margin: 0 auto;
   padding: 0 2rem 2.5rem;
 }
