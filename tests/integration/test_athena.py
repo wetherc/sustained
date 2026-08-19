@@ -20,3 +20,18 @@ class AthenaQueries(queries.QueriesCase):
     SOURCE = "information_schema.tables"
     PROBE = ("table_name", "table_schema", "information_schema")
     EXPECTED = None
+
+    def test_a_string_function_and_limit_run_on_the_catalog(self):
+        rows = (
+            self.Reader.query()
+            .select("table_name")
+            .select_func("UPPER", "table_name", alias="loud_name")
+            .from_(self.SOURCE)
+            .where("table_schema", "=", "information_schema")
+            .limit(3)
+            .run()
+        )
+        self.assertTrue(rows)
+        self.assertLessEqual(len(rows), 3)
+        for row in rows:
+            self.assertEqual(row.table_name.upper(), row.loud_name)
