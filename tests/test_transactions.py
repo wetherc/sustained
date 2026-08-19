@@ -169,7 +169,16 @@ class TestSavepointSpelling(unittest.TestCase):
                 with transaction(conn, Dialects.DUCKDB):
                     pass
         self.assertIn("DUCKDB", str(raised.exception))
-        self.assertEqual(conn.statements, [])
+        # The DuckDB driver runs autocommit, so the outer block opens and
+        # commits in SQL; the refused nesting itself sent nothing.
+        self.assertEqual(conn.statements, ["BEGIN", "COMMIT"])
+
+    def test_duckdb_transactions_run_in_sql_on_one_cursor(self):
+        conn = RefusingConnection()
+        with self.assertRaises(RuntimeError):
+            with transaction(conn, Dialects.DUCKDB):
+                raise RuntimeError("boom")
+        self.assertEqual(conn.statements, ["BEGIN", "ROLLBACK"])
 
     def test_a_refused_nesting_leaves_the_outer_block_usable(self):
         conn = sqlite3.connect(":memory:")

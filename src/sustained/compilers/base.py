@@ -473,6 +473,24 @@ class Compiler:
         """
         return "ROLLBACK" if self.supports_transactions() else None
 
+    def commit_transaction_sql(self) -> Optional[str]:
+        """
+        The statement that commits the transaction begin_transaction_sql()
+        opened, or None on engines that have no transactions.
+        """
+        return "COMMIT" if self.supports_transactions() else None
+
+    def driver_transaction_control(self) -> bool:
+        """
+        Reports whether the driver's own commit() and rollback() calls
+        control the transaction a transaction() block opens, which is what
+        DB-API 2.0 promises. DuckDB's driver does not: it runs every
+        statement in autocommit and gives every cursor its own session, so
+        transaction() drives it with BEGIN, COMMIT, and ROLLBACK statements
+        on one cursor instead.
+        """
+        return True
+
     def savepoint_sql(self, name: str) -> Optional[str]:
         """
         The statement that sets a savepoint inside an open transaction, or

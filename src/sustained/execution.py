@@ -44,8 +44,11 @@ if TYPE_CHECKING:
 
 # Connections with an open transaction, keyed by id(). The value holds a
 # strong reference to the connection, so the id cannot be reused while the
-# entry exists, plus the current savepoint nesting depth.
-_ACTIVE_TRANSACTIONS: Dict[int, Tuple[Connection, int]] = {}
+# entry exists, the current savepoint nesting depth, and the cursor the
+# transaction runs on. Statements inside the block share that cursor:
+# DuckDB gives every cursor its own session, so a statement on a fresh
+# cursor would run outside the transaction there.
+_ACTIVE_TRANSACTIONS: Dict[int, Tuple[Connection, int, Cursor]] = {}
 
 # Optional observer called after every executed statement.
 _statement_listener: Optional[Callable[[str, Tuple[SqlValue, ...], float], None]] = None
@@ -134,6 +137,19 @@ def in_transaction(connection: Connection) -> bool:
     return entry is not None and entry[0] is connection
 
 
+def open_cursor(connection: Connection) -> Cursor:
+    """
+    The cursor statements should run on: the transaction's own cursor when
+    a transaction() block is open on the connection, and a new one when
+    not. On DuckDB every cursor is its own session, so a statement on a
+    fresh cursor would run outside the open transaction.
+    """
+    entry = _ACTIVE_TRANSACTIONS.get(id(connection))
+    if entry is not None and entry[0] is connection:
+        return entry[2]
+    return connection.cursor()
+
+
 @contextmanager
 def transaction(
     connection: Binding, dialect: "Dialects | None" = None
@@ -191,29 +207,49 @@ def transaction(
                 "transaction() block cannot roll back on its own. Run the "
                 "statements inside the outer block instead."
             )
-        _ACTIVE_TRANSACTIONS[key] = (connection, depth)
+        cursor = entry[2]
+        _ACTIVE_TRANSACTIONS[key] = (connection, depth, cursor)
         try:
-            connection.cursor().execute(set_sql)
+            cursor.execute(set_sql)
             try:
                 yield connection
             except BaseException:
                 rollback_sql = compiler.rollback_savepoint_sql(savepoint)
                 if rollback_sql is not None:
-                    connection.cursor().execute(rollback_sql)
+                    cursor.execute(rollback_sql)
                 raise
             release_sql = compiler.release_savepoint_sql(savepoint)
             if release_sql is not None:
-                connection.cursor().execute(release_sql)
+                cursor.execute(release_sql)
         finally:
-            _ACTIVE_TRANSACTIONS[key] = (connection, depth - 1)
+            _ACTIVE_TRANSACTIONS[key] = (connection, depth - 1, cursor)
         return
 
-    _ACTIVE_TRANSACTIONS[key] = (connection, 0)
+    compiler = Dialects.get_compiler(dialect)
+    cursor = connection.cursor()
+    driver_control = compiler.driver_transaction_control()
+    if not driver_control:
+        # The driver runs autocommit, so the transaction is opened, kept,
+        # and closed in SQL on this one cursor.
+        begin_sql = compiler.begin_transaction_sql()
+        if begin_sql is not None:
+            cursor.execute(begin_sql)
+    _ACTIVE_TRANSACTIONS[key] = (connection, 0, cursor)
     try:
         yield connection
-        connection.commit()
+        if driver_control:
+            connection.commit()
+        else:
+            commit_sql = compiler.commit_transaction_sql()
+            if commit_sql is not None:
+                cursor.execute(commit_sql)
     except BaseException:
-        connection.rollback()
+        if driver_control:
+            connection.rollback()
+        else:
+            rollback_sql = compiler.rollback_transaction_sql()
+            if rollback_sql is not None:
+                cursor.execute(rollback_sql)
         raise
     finally:
         del _ACTIVE_TRANSACTIONS[key]

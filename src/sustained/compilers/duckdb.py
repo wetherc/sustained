@@ -70,6 +70,12 @@ class DuckDbCompiler(Compiler):
         exists_sql = "IF EXISTS " if if_exists else ""
         return f"DROP TYPE {exists_sql}{self.quote_identifier(name)}"
 
+    def driver_transaction_control(self) -> bool:
+        # The duckdb driver autocommits every statement and gives every
+        # cursor its own session, so transaction() runs BEGIN, COMMIT, and
+        # ROLLBACK itself on the one cursor the block shares.
+        return False
+
     def savepoint_sql(self, name: str) -> Optional[str]:
         # DuckDB has transactions but no savepoints, so transaction()
         # cannot nest on it.

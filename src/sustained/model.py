@@ -366,10 +366,10 @@ class Model(metaclass=ModelMeta):
         Executes CREATE TABLE for this model on the connection, followed by
         the model's CREATE INDEX statements.
         """
-        from sustained.execution import connection_scope
+        from sustained.execution import connection_scope, open_cursor
 
         with connection_scope(connection, cls._connection) as conn:
-            cursor = conn.cursor()
+            cursor = open_cursor(conn)
             for statement in cls.create_table_statements(if_not_exists=if_not_exists):
                 cursor.execute(statement)
 
@@ -406,10 +406,10 @@ class Model(metaclass=ModelMeta):
         Executes DROP TABLE for this model on the connection, followed by
         DROP TYPE for its enum types on dialects that have them.
         """
-        from sustained.execution import connection_scope
+        from sustained.execution import connection_scope, open_cursor
 
         with connection_scope(connection, cls._connection) as conn:
-            cursor = conn.cursor()
+            cursor = open_cursor(conn)
             for statement in cls.drop_table_statements(if_exists=if_exists):
                 cursor.execute(statement)
 

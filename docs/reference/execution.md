@@ -42,6 +42,8 @@ transaction(connection, dialect=None)
 
 A context manager. Commits when the block finishes, and rolls back on any exception. The dialect chooses the savepoint spelling for nested blocks; `Model.transaction()` passes the model's dialect for you.
 
+Statements inside the block share one cursor. That matters on DuckDB, whose driver autocommits every statement and gives every cursor its own session: the block opens, commits, and rolls back the transaction with SQL on that shared cursor.
+
 ```python
 in_transaction(connection) -> bool
 ```

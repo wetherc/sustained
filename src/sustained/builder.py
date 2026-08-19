@@ -760,12 +760,12 @@ class QueryBuilder:
         """
         import time
 
-        from sustained.execution import connection_scope, notify_statement
+        from sustained.execution import connection_scope, notify_statement, open_cursor
 
         sql, params = self.to_sql()
         prefix = self._compiler.compile_explain(analyze)
         with connection_scope(connection, self._model_class._connection) as conn:
-            cursor = conn.cursor()
+            cursor = open_cursor(conn)
             started = time.perf_counter()
             cursor.execute(f"{prefix} {sql}", params)
             notify_statement(f"{prefix} {sql}", params, time.perf_counter() - started)
@@ -1104,10 +1104,10 @@ class QueryBuilder:
 
         if self._stmt_type != "select":
             raise ValueError("Only SELECT queries return result sets.")
-        from sustained.execution import connection_scope
+        from sustained.execution import connection_scope, open_cursor
 
         with connection_scope(connection, self._model_class._connection) as conn:
-            cursor = conn.cursor()
+            cursor = open_cursor(conn)
             sql, params = self.to_sql()
             started = time.perf_counter()
             cursor.execute(sql, params)
@@ -1186,10 +1186,11 @@ class QueryBuilder:
             fetch_models,
             in_transaction,
             notify_statement,
+            open_cursor,
         )
 
         with connection_scope(connection, self._model_class._connection) as conn:
-            cursor = conn.cursor()
+            cursor = open_cursor(conn)
 
             use_executemany = (
                 self._stmt_type == "insert"
