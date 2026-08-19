@@ -27,6 +27,7 @@ from .file_migrations import FileMigrationTests
 
 TABLES = (
     "it_widgets",
+    "it_makers",
     "it_widgets_copy",
     "it_ctas",
     "it_events",
