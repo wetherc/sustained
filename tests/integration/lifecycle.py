@@ -20,7 +20,14 @@ from sustained.schema import Enum, Integer, Json, String, Text
 
 from . import harness
 
-TABLES = ("it_widgets", "it_events", "it_lock_a", "it_lock_b")
+TABLES = (
+    "it_widgets",
+    "it_widgets_copy",
+    "it_ctas",
+    "it_events",
+    "it_lock_a",
+    "it_lock_b",
+)
 TRACKING = ("sustained_migrations", "sustained_rehearsals")
 
 
