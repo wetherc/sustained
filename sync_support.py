@@ -79,11 +79,33 @@ def load(path: Path) -> Dict[str, Any]:
                 "docker/compose.yaml. Add the service, or set the row's "
                 "server to none."
             )
+        latest = row.get("latest")
+        if latest is None:
+            continue
+        if row["server"] != "container":
+            raise ValueError(f"{name}: only a container row can carry latest")
+        for key in ("image", "version", "service", "dsn_env", "dsn"):
+            if not latest.get(key):
+                raise ValueError(f"{name}: latest must name {key}")
+        if latest["service"] not in services:
+            raise ValueError(
+                f"{name}: no '{latest['service']}' service in "
+                "docker/compose.yaml. Add the service, or drop the row's "
+                "latest block."
+            )
+        if latest["dsn_env"] == row["dsn_env"]:
+            raise ValueError(
+                f"{name}: latest needs its own connection variable, so "
+                "either server can be pointed elsewhere on its own"
+            )
     return data
 
 
 def _where(row: Dict[str, Any]) -> str:
     if row["server"] == "container":
+        latest = row.get("latest")
+        if latest:
+            return f"Container ({row['image']}, {latest['image']})"
         return f"Container ({row['image']})"
     if row["server"] == "in-process":
         return "In process"
@@ -102,6 +124,9 @@ def _versions(row: Dict[str, Any]) -> str:
     if not floor:
         return "Any"
     tested = row.get("version")
+    latest = row.get("latest")
+    if tested and latest:
+        return f"{floor} and later; suite runs {tested} and {latest['version']}"
     if tested:
         return f"{floor} and later; suite runs {tested}"
     return f"{floor} and later"

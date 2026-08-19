@@ -8,13 +8,19 @@ that this machine can serve.
 
     python3 matrix.py                      # every server
     python3 matrix.py postgres mysql       # only these
+    python3 matrix.py postgres-latest      # the newest release the vendor supports
     python3 matrix.py python               # the unit suite on each interpreter
     python3 matrix.py --check              # what would run, and what is missing
 
+Each container server also has a `-latest` target. It runs the same test
+module against the newest release the vendor supports, as pinned in the
+row's `latest` block in support.json.
+
 Containers come from docker/compose.yaml and are removed afterwards, unless
 --keep. Set a server's connection variable, for example
-SUSTAINED_TEST_POSTGRES_DSN, and that server is used as given and no
-container is started.
+SUSTAINED_TEST_POSTGRES_DSN (or SUSTAINED_TEST_POSTGRES_LATEST_DSN for the
+latest variant), and that server is used as given and no container is
+started.
 
 Exit codes: 0 every selected target ran clean, 1 a failure, 2 nothing
 failed but something was skipped.
@@ -33,7 +39,33 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 SUPPORT = json.loads((ROOT / "support.json").read_text())
-ROWS = {row["name"]: row for row in SUPPORT["databases"]}
+
+
+def expand(rows):
+    """
+    One row per target. A row with a `latest` block gets a second target,
+    `<name>-latest`, that runs the same test module against the newest
+    release the vendor supports. `suite` names that module, and `env` is
+    the variable the test harness reads, which the runner points at the
+    latest server.
+    """
+    expanded = {}
+    for row in rows:
+        expanded[row["name"]] = row
+        latest = row.get("latest")
+        if not latest:
+            continue
+        variant = dict(row, **latest)
+        variant["name"] = f"{row['name']}-latest"
+        variant["title"] = f"{row['title']} {latest['version']}"
+        variant["suite"] = row["name"]
+        variant["env"] = row["dsn_env"]
+        del variant["latest"]
+        expanded[variant["name"]] = variant
+    return expanded
+
+
+ROWS = expand(SUPPORT["databases"])
 SERVERS = [name for name, row in ROWS.items() if row["server"] != "none"]
 PYTHON = "python"
 TARGETS = SERVERS + [PYTHON]
@@ -215,11 +247,16 @@ def run_server(name):
     """The integration suite for one server, with skips turned into failures."""
     row = ROWS[name]
     extra = {"SUSTAINED_TEST_STRICT": "1"}
-    if row["dsn_env"] and row["dsn"] and not os.environ.get(row["dsn_env"]):
-        extra[row["dsn_env"]] = row["dsn"]
+    if row["dsn_env"] and row["dsn"]:
+        # A latest variant has its own connection variable, but the test
+        # module reads the base row's, so the value moves across under the
+        # name in `env`.
+        value = os.environ.get(row["dsn_env"]) or row["dsn"]
+        extra[row.get("env") or row["dsn_env"]] = value
+    suite = row.get("suite", name)
     return run_tests(
         name,
-        [sys.executable, "-m", "unittest", f"tests.integration.test_{name}"],
+        [sys.executable, "-m", "unittest", f"tests.integration.test_{suite}"],
         suite_env(extra),
         suffix=f", {', '.join(row['covers'])}",
     )

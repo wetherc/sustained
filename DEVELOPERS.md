@@ -76,17 +76,24 @@ documentation page, and a pre-commit hook fails when the page is stale.
 `matrix.py` starts each server and runs the integration suite against it:
 
 ```bash
-python3 matrix.py            # every server this machine can serve
-python3 matrix.py postgres   # one of them
-python3 matrix.py python     # the unit suite on each interpreter on PATH
-python3 matrix.py --check    # what would run, and what is missing
+python3 matrix.py                  # every server this machine can serve
+python3 matrix.py postgres         # one of them
+python3 matrix.py postgres-latest  # the newest release the vendor supports
+python3 matrix.py python           # the unit suite on each interpreter on PATH
+python3 matrix.py --check          # what would run, and what is missing
 ```
+
+Each container row also carries a `latest` block in `support.json`. That
+block pins the newest release the vendor supports, and the runner shows it
+as a `-latest` target. The target runs the same test module against that
+release.
 
 Servers other than SQLite and DuckDB come from `docker/compose.yaml`, which
 the runner starts and removes for you. Ports are the usual port plus 50000,
-so a server you already run locally is left alone. Set a row's connection
-variable, for example `SUSTAINED_TEST_POSTGRES_DSN`, to use your own server
-instead of a container.
+or plus 50100 for a `-latest` service, so a server you already run locally
+is left alone. Set a row's connection variable, for example
+`SUSTAINED_TEST_POSTGRES_DSN` or `SUSTAINED_TEST_POSTGRES_LATEST_DSN`, to
+use your own server instead of a container.
 
 Each driver has to match the paramstyle its dialect emits, which is why
 SQL Server uses `pyodbc` and needs the Microsoft ODBC driver installed:

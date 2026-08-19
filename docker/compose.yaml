@@ -1,6 +1,7 @@
 # Servers the integration suite runs against. Ports are shifted out of the
 # way of a server you may already run locally: add 50000 to the usual port.
-# support.json holds the matching connection strings.
+# The -latest services run the newest release each vendor supports; their
+# ports add 50100. support.json holds the matching connection strings.
 name: sustained-support
 
 services:
@@ -12,6 +13,20 @@ services:
       POSTGRES_DB: sustained
     ports:
       - "55432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sustained -d sustained"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  postgres-latest:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: sustained
+      POSTGRES_PASSWORD: sustained
+      POSTGRES_DB: sustained
+    ports:
+      - "55532:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U sustained -d sustained"]
       interval: 2s
@@ -32,6 +47,20 @@ services:
       timeout: 5s
       retries: 40
 
+  mysql-latest:
+    image: mysql:26.7
+    command: --local-infile=0
+    environment:
+      MYSQL_ROOT_PASSWORD: sustained
+      MYSQL_DATABASE: sustained
+    ports:
+      - "53406:3306"
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -psustained"]
+      interval: 2s
+      timeout: 5s
+      retries: 40
+
   mariadb:
     image: mariadb:11.4
     environment:
@@ -39,6 +68,19 @@ services:
       MARIADB_DATABASE: sustained
     ports:
       - "53307:3306"
+    healthcheck:
+      test: ["CMD-SHELL", "mariadb-admin ping -h 127.0.0.1 -uroot -psustained"]
+      interval: 2s
+      timeout: 5s
+      retries: 40
+
+  mariadb-latest:
+    image: mariadb:12.3
+    environment:
+      MARIADB_ROOT_PASSWORD: sustained
+      MARIADB_DATABASE: sustained
+    ports:
+      - "53407:3306"
     healthcheck:
       test: ["CMD-SHELL", "mariadb-admin ping -h 127.0.0.1 -uroot -psustained"]
       interval: 2s
@@ -61,10 +103,36 @@ services:
       timeout: 5s
       retries: 40
 
+  mssql-latest:
+    image: mcr.microsoft.com/mssql/server:2025-latest
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: "Sustained1!"
+      MSSQL_PID: Developer
+    ports:
+      - "51533:1433"
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P 'Sustained1!' -C -Q 'SELECT 1'"
+      interval: 3s
+      timeout: 5s
+      retries: 40
+
   presto:
     image: trinodb/trino:468
     ports:
       - "58080:8080"
+    healthcheck:
+      test: ["CMD", "/usr/lib/trino/bin/health-check"]
+      interval: 3s
+      timeout: 10s
+      retries: 40
+
+  presto-latest:
+    image: trinodb/trino:483
+    ports:
+      - "58180:8080"
     healthcheck:
       test: ["CMD", "/usr/lib/trino/bin/health-check"]
       interval: 3s

@@ -17,6 +17,13 @@
       "module": "psycopg",
       "dsn_env": "SUSTAINED_TEST_POSTGRES_DSN",
       "dsn": "postgresql://sustained:sustained@127.0.0.1:55432/sustained",
+      "latest": {
+        "image": "postgres:18-alpine",
+        "version": "18",
+        "service": "postgres-latest",
+        "dsn_env": "SUSTAINED_TEST_POSTGRES_LATEST_DSN",
+        "dsn": "postgresql://sustained:sustained@127.0.0.1:55532/sustained"
+      },
       "covers": ["queries", "writes", "transactions", "migrations", "async"],
       "note": "Rehearsal, advisory locks, and transactional DDL all run here. Enum ADD VALUE inside a transaction sets the floor."
     },
@@ -33,6 +40,13 @@
       "module": "pymysql",
       "dsn_env": "SUSTAINED_TEST_MYSQL_DSN",
       "dsn": "mysql://root:sustained@127.0.0.1:53306/sustained",
+      "latest": {
+        "image": "mysql:26.7",
+        "version": "26.7",
+        "service": "mysql-latest",
+        "dsn_env": "SUSTAINED_TEST_MYSQL_LATEST_DSN",
+        "dsn": "mysql://root:sustained@127.0.0.1:53406/sustained"
+      },
       "covers": ["queries", "writes", "transactions", "migrations"],
       "note": "No transactional DDL, so rehearse needs scratch=True. ALTER TABLE DROP CONSTRAINT sets the floor."
     },
@@ -49,6 +63,13 @@
       "module": "pymysql",
       "dsn_env": "SUSTAINED_TEST_MARIADB_DSN",
       "dsn": "mysql://root:sustained@127.0.0.1:53307/sustained",
+      "latest": {
+        "image": "mariadb:12.3",
+        "version": "12.3",
+        "service": "mariadb-latest",
+        "dsn_env": "SUSTAINED_TEST_MARIADB_LATEST_DSN",
+        "dsn": "mysql://root:sustained@127.0.0.1:53407/sustained"
+      },
       "covers": ["queries", "writes", "transactions", "migrations"],
       "note": "Same dialect as MySQL. SKIP LOCKED sets the floor. JSON columns read back through their json_valid check."
     },
@@ -65,6 +86,13 @@
       "module": "pyodbc",
       "dsn_env": "SUSTAINED_TEST_MSSQL_DSN",
       "dsn": "mssql://sa:Sustained1!@127.0.0.1:51433/sustained",
+      "latest": {
+        "image": "mcr.microsoft.com/mssql/server:2025-latest",
+        "version": "2025",
+        "service": "mssql-latest",
+        "dsn_env": "SUSTAINED_TEST_MSSQL_LATEST_DSN",
+        "dsn": "mssql://sa:Sustained1!@127.0.0.1:51533/sustained"
+      },
       "covers": ["queries", "writes", "transactions", "migrations"],
       "note": "Off the rehearsal allowlist, so rehearse refuses without scratch=True. OFFSET with FETCH sets the floor. pyodbc needs the ODBC driver installed."
     },
@@ -81,6 +109,13 @@
       "module": "trino",
       "dsn_env": "SUSTAINED_TEST_PRESTO_DSN",
       "dsn": "trino://sustained@127.0.0.1:58080/tpch",
+      "latest": {
+        "image": "trinodb/trino:483",
+        "version": "483",
+        "service": "presto-latest",
+        "dsn_env": "SUSTAINED_TEST_PRESTO_LATEST_DSN",
+        "dsn": "trino://sustained@127.0.0.1:58180/tpch"
+      },
       "covers": ["queries"],
       "note": "Reads the tpch catalog. Neither server takes the migration surface. The floor is the first release under the Trino name; PrestoDB works for the surface its engine has, untested here."
     },
