@@ -64,6 +64,11 @@ def load(path: Path) -> Dict[str, Any]:
             continue
         if not row["covers"]:
             raise ValueError(f"{name}: a runs row must cover something")
+        if not row.get("floor"):
+            raise ValueError(
+                f"{name}: a runs row must name a floor, the oldest server "
+                "release every statement Sustained generates is valid on"
+            )
         module = root / "tests" / "integration" / f"test_{name}.py"
         if not module.exists():
             raise ValueError(
@@ -93,11 +98,22 @@ def _covers(row: Dict[str, Any]) -> str:
     return ", ".join(row["covers"]) if row["covers"] else "SQL text only"
 
 
+def _versions(row: Dict[str, Any]) -> str:
+    """The claimed range and the one version the suite runs."""
+    floor = row.get("floor")
+    if not floor:
+        return "Any"
+    tested = row.get("version")
+    if tested:
+        return f"{floor} and later; suite runs {tested}"
+    return f"{floor} and later"
+
+
 def render_databases(data: Dict[str, Any]) -> str:
     """The database table, one row per dialect, runs before builds."""
     header = [
-        "| Database | Level | Where it runs | Covered | Notes |",
-        "| --- | --- | --- | --- | --- |",
+        "| Database | Level | Versions | Where it runs | Covered | Notes |",
+        "| --- | --- | --- | --- | --- | --- |",
     ]
     rows: List[str] = []
     for level in LEVELS:
@@ -105,8 +121,8 @@ def render_databases(data: Dict[str, Any]) -> str:
             if row["level"] != level:
                 continue
             rows.append(
-                f"| {row['title']} | `{row['level']}` | {_where(row)} "
-                f"| {_covers(row)} | {row['note']} |"
+                f"| {row['title']} | `{row['level']}` | {_versions(row)} "
+                f"| {_where(row)} | {_covers(row)} | {row['note']} |"
             )
     return "\n".join(header + rows)
 

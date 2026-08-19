@@ -13,12 +13,13 @@
       "service": "postgres",
       "image": "postgres:14-alpine",
       "version": "14",
+      "floor": "12",
       "driver": "psycopg[binary]",
       "module": "psycopg",
       "dsn_env": "SUSTAINED_TEST_POSTGRES_DSN",
       "dsn": "postgresql://sustained:sustained@127.0.0.1:55432/sustained",
       "covers": ["queries", "migrations"],
-      "note": "Rehearsal, advisory locks, and transactional DDL all run here. Enum ADD VALUE needs PostgreSQL 12 or later to rehearse."
+      "note": "Rehearsal, advisory locks, and transactional DDL all run here. Enum ADD VALUE inside a transaction sets the floor."
     },
     {
       "name": "mysql",
@@ -29,12 +30,13 @@
       "service": "mysql",
       "image": "mysql:8.4",
       "version": "8.4",
+      "floor": "8.0.19",
       "driver": "pymysql",
       "module": "pymysql",
       "dsn_env": "SUSTAINED_TEST_MYSQL_DSN",
       "dsn": "mysql://root:sustained@127.0.0.1:53306/sustained",
       "covers": ["queries", "migrations"],
-      "note": "No transactional DDL, so rehearse needs scratch=True."
+      "note": "No transactional DDL, so rehearse needs scratch=True. ALTER TABLE DROP CONSTRAINT sets the floor."
     },
     {
       "name": "mariadb",
@@ -45,12 +47,13 @@
       "service": "mariadb",
       "image": "mariadb:11.4",
       "version": "11.4",
+      "floor": "10.6",
       "driver": "pymysql",
       "module": "pymysql",
       "dsn_env": "SUSTAINED_TEST_MARIADB_DSN",
       "dsn": "mysql://root:sustained@127.0.0.1:53307/sustained",
       "covers": ["queries", "migrations"],
-      "note": "Same dialect as MySQL. JSON columns read back through their json_valid check."
+      "note": "Same dialect as MySQL. SKIP LOCKED sets the floor. JSON columns read back through their json_valid check."
     },
     {
       "name": "mssql",
@@ -61,12 +64,13 @@
       "service": "mssql",
       "image": "mcr.microsoft.com/mssql/server:2022-latest",
       "version": "2022",
+      "floor": "2012",
       "driver": "pyodbc",
       "module": "pyodbc",
       "dsn_env": "SUSTAINED_TEST_MSSQL_DSN",
       "dsn": "mssql://sa:Sustained1!@127.0.0.1:51433/sustained",
       "covers": ["queries", "migrations"],
-      "note": "Off the rehearsal allowlist, so rehearse refuses without scratch=True. pyodbc needs the ODBC driver installed."
+      "note": "Off the rehearsal allowlist, so rehearse refuses without scratch=True. OFFSET with FETCH sets the floor. pyodbc needs the ODBC driver installed."
     },
     {
       "name": "presto",
@@ -77,12 +81,13 @@
       "service": "presto",
       "image": "trinodb/trino:468",
       "version": "468",
+      "floor": "351",
       "driver": "trino",
       "module": "trino",
       "dsn_env": "SUSTAINED_TEST_PRESTO_DSN",
       "dsn": "trino://sustained@127.0.0.1:58080/tpch",
       "covers": ["queries"],
-      "note": "Reads the tpch catalog. Neither server takes the migration surface."
+      "note": "Reads the tpch catalog. Neither server takes the migration surface. The floor is the first release under the Trino name; PrestoDB works for the surface its engine has, untested here."
     },
     {
       "name": "sqlite",
@@ -95,7 +100,8 @@
       "dsn_env": "SUSTAINED_TEST_SQLITE_DSN",
       "dsn": ":memory:",
       "covers": ["queries", "migrations"],
-      "note": "Standard library. The table rebuild path lives here."
+      "floor": "3.35",
+      "note": "Standard library. The table rebuild path lives here. RETURNING and DROP COLUMN set the floor; sqlite3.sqlite_version says what your Python links."
     },
     {
       "name": "duckdb",
@@ -108,7 +114,8 @@
       "dsn_env": "SUSTAINED_TEST_DUCKDB_DSN",
       "dsn": ":memory:",
       "covers": ["queries", "migrations"],
-      "note": "In-process, so no container and no advisory lock."
+      "floor": "1.0",
+      "note": "In-process, so no container and no advisory lock. Releases before 1.0 are not claimed."
     },
     {
       "name": "athena",
@@ -121,7 +128,8 @@
       "dsn_env": "SUSTAINED_TEST_ATHENA_S3_DIR",
       "dsn": null,
       "covers": ["queries"],
-      "note": "Your AWS account, with a staging S3 directory. Athena's migration surface is not exercised, since the tables it needs live in your buckets."
+      "floor": "engine version 3",
+      "note": "Your AWS account, with a staging S3 directory. Iceberg MERGE sets the floor at engine version 3. Athena's migration surface is not exercised, since the tables it needs live in your buckets."
     },
     {
       "name": "default",
@@ -134,6 +142,7 @@
       "dsn_env": null,
       "dsn": null,
       "covers": [],
+      "floor": null,
       "note": "The portable compiler. Any DB-API 2.0 driver that takes this SQL will work, untested here."
     }
   ]

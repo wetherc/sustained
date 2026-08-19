@@ -28,17 +28,17 @@ never described as partly supported.
 
 <!-- databases: generated from support.json -->
 
-| Database | Level | Where it runs | Covered | Notes |
-| --- | --- | --- | --- | --- |
-| PostgreSQL | `runs` | Container (postgres:14-alpine) | queries, migrations | Rehearsal, advisory locks, and transactional DDL all run here. Enum ADD VALUE needs PostgreSQL 12 or later to rehearse. |
-| MySQL | `runs` | Container (mysql:8.4) | queries, migrations | No transactional DDL, so rehearse needs scratch=True. |
-| MariaDB | `runs` | Container (mariadb:11.4) | queries, migrations | Same dialect as MySQL. JSON columns read back through their json_valid check. |
-| SQL Server | `runs` | Container (mcr.microsoft.com/mssql/server:2022-latest) | queries, migrations | Off the rehearsal allowlist, so rehearse refuses without scratch=True. pyodbc needs the ODBC driver installed. |
-| Presto and Trino | `runs` | Container (trinodb/trino:468) | queries | Reads the tpch catalog. Neither server takes the migration surface. |
-| SQLite | `runs` | In process | queries, migrations | Standard library. The table rebuild path lives here. |
-| DuckDB | `runs` | In process | queries, migrations | In-process, so no container and no advisory lock. |
-| AWS Athena | `runs` | Your AWS account | queries | Your AWS account, with a staging S3 directory. Athena's migration surface is not exercised, since the tables it needs live in your buckets. |
-| ANSI (default) | `builds` | Nothing to run | SQL text only | The portable compiler. Any DB-API 2.0 driver that takes this SQL will work, untested here. |
+| Database | Level | Versions | Where it runs | Covered | Notes |
+| --- | --- | --- | --- | --- | --- |
+| PostgreSQL | `runs` | 12 and later; suite runs 14 | Container (postgres:14-alpine) | queries, migrations | Rehearsal, advisory locks, and transactional DDL all run here. Enum ADD VALUE inside a transaction sets the floor. |
+| MySQL | `runs` | 8.0.19 and later; suite runs 8.4 | Container (mysql:8.4) | queries, migrations | No transactional DDL, so rehearse needs scratch=True. ALTER TABLE DROP CONSTRAINT sets the floor. |
+| MariaDB | `runs` | 10.6 and later; suite runs 11.4 | Container (mariadb:11.4) | queries, migrations | Same dialect as MySQL. SKIP LOCKED sets the floor. JSON columns read back through their json_valid check. |
+| SQL Server | `runs` | 2012 and later; suite runs 2022 | Container (mcr.microsoft.com/mssql/server:2022-latest) | queries, migrations | Off the rehearsal allowlist, so rehearse refuses without scratch=True. OFFSET with FETCH sets the floor. pyodbc needs the ODBC driver installed. |
+| Presto and Trino | `runs` | 351 and later; suite runs 468 | Container (trinodb/trino:468) | queries | Reads the tpch catalog. Neither server takes the migration surface. The floor is the first release under the Trino name; PrestoDB works for the surface its engine has, untested here. |
+| SQLite | `runs` | 3.35 and later | In process | queries, migrations | Standard library. The table rebuild path lives here. RETURNING and DROP COLUMN set the floor; sqlite3.sqlite_version says what your Python links. |
+| DuckDB | `runs` | 1.0 and later | In process | queries, migrations | In-process, so no container and no advisory lock. Releases before 1.0 are not claimed. |
+| AWS Athena | `runs` | engine version 3 and later | Your AWS account | queries | Your AWS account, with a staging S3 directory. Iceberg MERGE sets the floor at engine version 3. Athena's migration surface is not exercised, since the tables it needs live in your buckets. |
+| ANSI (default) | `builds` | Any | Nothing to run | SQL text only | The portable compiler. Any DB-API 2.0 driver that takes this SQL will work, untested here. |
 
 <!-- end databases -->
 
@@ -49,14 +49,24 @@ plus reading the schema back.
 
 ## Database versions
 
-One version of each server runs, and the table names it. It is the oldest
-release the vendor still supports, because that is where a compatibility
-problem shows up first. A newer release is expected to work and is not
-tested here.
+The **Versions** column makes two claims, and they are different kinds of claim.
 
-When a vendor ends support for the version in the table, the table moves to
-the next one in the same minor release of Sustained. The changelog says which
-version left.
+The floor is the oldest release of that server on which every statement Sustained generates is valid. It is a property of the compiler: each dialect's floor is set by the newest SQL construct it emits, and the row's note names that construct. On a release older than the floor, the statements that use that construct fail in the server, and everything else works. The floor moves only in a major release of Sustained, because code running against an old server depends on it.
+
+The suite version is the one release the integration tests run against. It is the oldest release the vendor still supports, because that is where a compatibility problem shows up first. When the vendor ends support for it, the suite version moves to the next release in a minor release of Sustained, and the changelog says which version left.
+
+A release between the floor and the suite version takes the same SQL the suite version does, so it is inside the claim. A release newer than the suite version is expected to work.
+
+To check your exact version, point the suite at your server and run it:
+
+```console
+$ SUSTAINED_TEST_POSTGRES_DSN=postgresql://user:pass@host/db python3 matrix.py postgres
+ran     postgres    10 tests, queries, migrations
+```
+
+A clean run is the same evidence the table rests on, produced against your release. [Run it yourself](#run-it-yourself) describes the runner.
+
+SQLite has no server: the release that matters is the one your Python links, and `sqlite3.sqlite_version` prints it.
 
 ## Python versions
 
