@@ -35,17 +35,15 @@ The **Covered** column names the feature sets the integration suite runs against
 - `migrations` is the migration lifecycle: `migrate`, `rehearse`, `down`, `validate`, and `repair`, plus schema introspection, column type round trips, and SQL file migrations.
 - `async` is `arun()`, `async_transaction()`, and `AsyncMigrator` on an async driver.
 
-Where a dialect refuses a feature, for example RETURNING on MySQL, the cover tests the refusal: `to_sql()` raises `DialectError` and nothing reaches the server.
+Where a dialect does not implement a feature (for example `RETURNING` on MySQL) we test that `to_sql()` raises `DialectError` and that nothing reaches the server.
 
-The column is not a claim we type by hand. A contract test, `tests/integration/test_contract.py`, reads this table's source and fails the suite when a database names a cover its test class does not run, or runs a cover its row does not name. Databases that don't support transactions (Presto) are not tested against writes or migrations. SQL dialects that have no execution engine (ANSI) only evaluate the syntactic correctness of generated SQL.
+Databases that don't support transactions (Presto) are not tested against writes or migrations. SQL dialects that have no execution engine (ANSI) only evaluate the syntactic correctness of generated SQL.
 
 ## Database versions
 
-The **Versions** column lists a floor and a suite version. The floor is the oldest release of that server on which every statement Sustained generates is valid. It is a property of the compiler: each dialect's floor is set by the newest SQL construct it emits, and the row's note names that construct. On a release older than the floor, the statements that use that construct fail in the server; everything else continues to work. The floor version will only ever be updated in a major release of Sustained.
+The **Versions** column lists a floor and a suite version. Each dialect's floor is set by the oldest database version able to execute Sustained's full set of SQL statements. The statement(s) added in that version are listed in the Notes column. On a release older than the floor, only those unsupported statements fail; everything else continues to work. The floor version will only ever be updated in a major release of Sustained.
 
-The suite version is the database version that the integration tests run against and is the oldest release the vendor still supports. When the vendor ends support for it, the suite version moves to the next release in a minor release of Sustained, and is noted in the changelog.
-
-All database releases newer than the suite version are expected to work.
+The suite version is the database version that the integration tests run against and is the oldest release the vendor still supports. When the vendor ends support for it, the suite version moves to the next release in a minor release of Sustained, and is noted in the changelog. The latest version released by the vendor is also tested and noted as the upper bound of the suite version.
 
 To check your exact version, point the suite at your server and run it:
 
