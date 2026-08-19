@@ -12,7 +12,10 @@ lives in queries.py, under the `queries` cover.
 import threading
 import unittest
 
+from sustained.analysis import destructive_statements
 from sustained.dialects import Dialects
+from sustained.exceptions import GuardBlocked, MigrationError, RehearsalRequired
+from sustained.guards import no_drops
 from sustained.introspect import introspect_schema
 from sustained.migrations import Migration, Migrator
 from sustained.model import Model
@@ -98,10 +101,22 @@ class ServerCase(unittest.TestCase):
         drop_everything(self.connection, self.DIALECT)
         self.Widget.unbind()
 
-    def migrator(self, migrations=(), connection=None):
+    def migrator(self, migrations=(), connection=None, guards=None):
         return Migrator(
-            connection or self.connection, list(migrations), dialect=self.DIALECT
+            connection or self.connection,
+            list(migrations),
+            dialect=self.DIALECT,
+            guards=guards,
         )
+
+    def execute(self, sql, params=()):
+        cursor = self.connection.cursor()
+        if params:
+            cursor.execute(sql, params)
+        else:
+            cursor.execute(sql)
+        if hasattr(self.connection, "commit"):
+            self.connection.commit()
 
     def tables(self, connection=None):
         return introspect_schema(connection or self.connection, self.DIALECT)
@@ -190,6 +205,162 @@ class ServerCase(unittest.TestCase):
         finally:
             drop_everything(scratch, self.DIALECT)
             scratch.close()
+
+    # Validation and repair
+
+    def tamper_checksum(self, migration_id):
+        """Rewrites a stored checksum as an out-of-band edit would."""
+        compiler = Dialects.get_compiler(self.DIALECT)
+        quote = compiler.quote_identifier
+        self.execute(
+            f"UPDATE {quote('sustained_migrations')} "
+            f"SET {quote('checksum')} = {compiler.placeholder()} "
+            f"WHERE {quote('id')} = {compiler.placeholder()}",
+            ("0" * 64, migration_id),
+        )
+
+    def test_validate_names_an_edited_migration_and_repair_accepts_it(self):
+        migrator = self.migrator(self.registered())
+        migrator.up()
+        self.tamper_checksum("001_events")
+
+        problems = migrator.validate(raise_on_problems=False)
+        self.assertTrue(any("001_events" in problem for problem in problems))
+
+        actions = migrator.repair()
+        self.assertTrue(
+            any("checksum" in action and "001_events" in action for action in actions)
+        )
+        self.assertEqual([], migrator.validate(raise_on_problems=False))
+
+    def test_validate_refuses_an_out_of_order_migration(self):
+        quote = Dialects.get_compiler(self.DIALECT).quote_identifier
+        first, second = [
+            Migration(
+                migration_id,
+                up=f"CREATE TABLE {quote(table)} (id INT NOT NULL)",
+                down=f"DROP TABLE {quote(table)}",
+            )
+            for migration_id, table in (
+                ("001_first", "it_lock_a"),
+                ("002_second", "it_lock_b"),
+            )
+        ]
+        self.migrator([second]).up()
+
+        migrator = self.migrator([first, second])
+        problems = migrator.validate(raise_on_problems=False)
+        self.assertTrue(any("001_first" in problem for problem in problems))
+        with self.assertRaises(MigrationError):
+            migrator.up()
+
+        self.assertEqual(["001_first"], migrator.up(allow_out_of_order=True))
+        self.assertIn("it_lock_a", self.tables())
+
+    def test_a_failed_migration_is_repaired_and_rerun(self):
+        quote = Dialects.get_compiler(self.DIALECT).quote_identifier
+        events = quote("it_events")
+        create = f"CREATE TABLE {events} (id INT NOT NULL)"
+        broken = Migration(
+            "001_events", up=[create, "THIS IS NOT SQL"], down=f"DROP TABLE {events}"
+        )
+        migrator = self.migrator([broken])
+        with self.assertRaises(Exception):
+            migrator.up()
+
+        if Dialects.get_compiler(self.DIALECT).supports_transactional_ddl():
+            # The whole migration rolled back; nothing to repair.
+            self.assertNotIn("it_events", self.tables())
+            self.assertEqual([], migrator.validate(raise_on_problems=False))
+        else:
+            # The first statement stayed applied and a failure row landed.
+            problems = migrator.validate(raise_on_problems=False)
+            self.assertTrue(any("001_events" in problem for problem in problems))
+            actions = migrator.repair()
+            self.assertTrue(any("failed" in action for action in actions))
+            self.assertEqual([], migrator.validate(raise_on_problems=False))
+            self.execute(f"DROP TABLE IF EXISTS {events}")
+
+        fixed = Migration("001_events", up=create, down=f"DROP TABLE {events}")
+        rerun = self.migrator([fixed])
+        self.assertEqual(["001_events"], rerun.up())
+        self.assertIn("it_events", self.tables())
+
+    # Guards and the rehearsal gate
+
+    def test_no_drops_blocks_before_any_statement_runs(self):
+        quote = Dialects.get_compiler(self.DIALECT).quote_identifier
+        events = quote("it_events")
+        create = Migration(
+            "001_events",
+            up=f"CREATE TABLE {events} (id INT NOT NULL)",
+            down=f"DROP TABLE {events}",
+        )
+        self.migrator([create]).up()
+
+        drop = Migration("002_drop", up=f"DROP TABLE {events}")
+        guarded = self.migrator([create, drop], guards=[no_drops()])
+        with self.assertRaises(GuardBlocked):
+            guarded.up()
+
+        self.assertIn("it_events", self.tables())
+        self.assertNotIn("002_drop", guarded.applied())
+
+    def test_a_rehearsed_drop_proceeds_with_allow_drops(self):
+        if not self.REHEARSES_IN_PLACE:
+            self.skipTest(f"{self.NAME} rehearses on a scratch database")
+        migrator = self.migrator()
+        migrator.up(models=[self.Widget])
+        self.Widget.query().insert([{"id": 1, "name": "hinge", "size": 3}]).run()
+
+        del self.Widget.tableColumns["size"]
+        with self.assertRaises(RehearsalRequired):
+            migrator.up(models=[self.Widget], allow_drops=True)
+        self.assertIn("size", set(self.tables()["it_widgets"].columns))
+
+        rehearsal = migrator.rehearse(models=[self.Widget], allow_drops=True)
+        self.assertTrue(rehearsal.ok)
+        migrator.up(models=[self.Widget], allow_drops=True)
+
+        self.assertNotIn("size", set(self.tables()["it_widgets"].columns))
+        row = self.Widget.query().where("id", "=", 1).orderBy("id").first()
+        self.assertEqual("hinge", row.name)
+
+    # Model diff safety rails
+
+    def test_a_not_null_add_backfills_existing_rows(self):
+        migrator = self.migrator()
+        migrator.up(models=[self.Widget])
+        self.Widget.query().insert([{"id": 1, "name": "hinge", "size": 3}]).run()
+
+        self.Widget.tableColumns["grade"] = String(12, nullable=False, backfill="raw")
+        generated = migrator.plan([self.Widget])
+        if destructive_statements(statements_of(generated)):
+            # SQLite spells the change as a table rebuild, which drops the
+            # old table, so the rehearsal gate asks for proof first.
+            self.assertTrue(migrator.rehearse(models=[self.Widget]).ok)
+        migrator.up(models=[self.Widget])
+
+        row = self.Widget.query().where("id", "=", 1).orderBy("id").first()
+        self.assertEqual("raw", row.grade)
+        self.assertIsNone(migrator.plan([self.Widget]))
+
+    def test_a_rename_hint_keeps_the_data(self):
+        migrator = self.migrator()
+        migrator.up(models=[self.Widget])
+        self.Widget.query().insert([{"id": 1, "name": "hinge", "size": 3}]).run()
+
+        columns = widget_columns()
+        columns["width"] = columns.pop("size")
+        renamed = make_model("WidgetRenamed", "it_widgets", self.DIALECT, columns)
+        renamed.bind(self.connection)
+        try:
+            migrator.up(models=[renamed], renames={"it_widgets.size": "width"})
+            self.assertIsNone(migrator.plan([renamed]))
+            row = renamed.query().where("id", "=", 1).orderBy("id").first()
+            self.assertEqual(3, row.width)
+        finally:
+            renamed.unbind()
 
     # Concurrency
 
