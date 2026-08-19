@@ -51,7 +51,7 @@ from typing import (
 
 from sustained.ddl import DdlStep
 from sustained.dialects import Dialects
-from sustained.execution import transaction
+from sustained.execution import open_cursor, transaction
 from sustained.types import Connection
 
 if TYPE_CHECKING:
@@ -731,7 +731,7 @@ def _run_step(
         assert callable(step)
         step(connection)
         return
-    cursor = connection.cursor()
+    cursor = open_cursor(connection)
     for statement in _render_elements(elements, compiler):
         cursor.execute(statement)
 
@@ -1676,7 +1676,7 @@ class Migrator:
                 elapsed_ms = int((time.perf_counter() - started) * 1000)
                 timestamp = datetime.now(timezone.utc).isoformat()
                 checksum = migration_checksum(migration)
-                cursor = self._connection.cursor()
+                cursor = open_cursor(self._connection)
                 if update:
                     cursor.execute(
                         self._update_sql(),
@@ -2287,7 +2287,7 @@ class Migrator:
                     raise ValueError(f"Migration '{migration_id}' has no down step.")
                 with self._migration_scope():
                     _run_step(self._connection, migration.down, self._compiler)
-                    self._connection.cursor().execute(
+                    open_cursor(self._connection).execute(
                         f"DELETE FROM {self._table_sql()} WHERE "
                         f"{self._compiler.quote_identifier('id')} = "
                         f"{placeholder}",

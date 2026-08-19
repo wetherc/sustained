@@ -6,7 +6,15 @@ import sqlite3
 import unittest
 from unittest import mock
 
+try:
+    import duckdb
+
+    HAS_DUCKDB = True
+except ImportError:
+    HAS_DUCKDB = False
+
 from sustained import Model
+from sustained.dialects import Dialects
 from sustained.exceptions import MigrationError, RehearsalRequired
 from sustained.migrations import (
     REHEARSAL_FAILED,
@@ -1378,6 +1386,39 @@ class TestDestructiveGate(MigrationTestCase):
         # The rehearsal ran the drop and the generated migration; a run
         # without models applies the drop alone, which it also proved.
         self.assertEqual(Migrator(self.conn, [self.drop]).up(), ["001_drop"])
+
+
+@unittest.skipUnless(HAS_DUCKDB, "duckdb not installed")
+class TestDuckdbMigrationRollback(unittest.TestCase):
+    """
+    On DuckDB every cursor is its own session, so a migration statement on
+    a fresh cursor would commit outside the migration's transaction. The
+    runner routes its statements through the transaction's own cursor, and
+    a migration that fails halfway leaves no schema behind.
+    """
+
+    def test_a_failed_migration_leaves_no_schema_behind(self):
+        conn = duckdb.connect(":memory:")
+        bad = Migration(
+            "001_bad",
+            up=[
+                "CREATE TABLE duck_things (id INTEGER)",
+                "CREATE TABLE duck_things (id INTEGER)",
+            ],
+            down="DROP TABLE duck_things",
+        )
+        migrator = Migrator(conn, [bad], dialect=Dialects.DUCKDB)
+        with self.assertRaises(Exception):
+            migrator.up()
+        tables = [
+            row[0]
+            for row in conn.cursor()
+            .execute("SELECT table_name FROM information_schema.tables")
+            .fetchall()
+        ]
+        self.assertNotIn("duck_things", tables)
+        self.assertEqual([], migrator.validate(raise_on_problems=False))
+        self.assertEqual([("001_bad", "pending")], migrator.statuses())
 
 
 if __name__ == "__main__":
