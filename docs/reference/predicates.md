@@ -51,7 +51,7 @@ A composable condition. Pass a `Predicate` to `where()` or `having()` as the onl
 | Operator | Renders |
 | --- | --- |
 | `a & b` | `(a AND b)` |
-| `a \| b` | `(a OR b)` |
+| <code>a &#124; b</code> | `(a OR b)` |
 | `~a` | `NOT (a)` |
 
 `bool(predicate)` always raises `TypeError`, so `a and b` fails instead of evaluating to one side of the expression. Use `&` and `|`.
@@ -201,10 +201,10 @@ These live in `sustained.types`. Use them to annotate code that accepts what the
 
 | Alias | Definition |
 | --- | --- |
-| `DbReturnValue` | `str \| int \| float \| bool \| datetime \| date \| Decimal \| bytes` |
+| `DbReturnValue` | <code>str &#124; int &#124; float &#124; bool &#124; datetime &#124; date &#124; Decimal &#124; bytes</code> |
 | `Selectable` | Anything `select()` takes |
-| `CaseResult` | `DbReturnValue \| Column` |
-| `QueryResolvable` | `QueryBuilder \| Callable[..., QueryBuilder] \| str` |
-| `Join` | `BasicJoinMapping \| JoinMappingWithThrough` |
+| `CaseResult` | <code>DbReturnValue &#124; Column</code> |
+| `QueryResolvable` | <code>QueryBuilder &#124; Callable[..., QueryBuilder] &#124; str</code> |
+| `Join` | <code>BasicJoinMapping &#124; JoinMappingWithThrough</code> |
 
 The relation-mapping shapes are `TypedDict`s: `RelationMapping`, `BasicJoinMapping`, `JoinMappingWithThrough`, `ThroughJoinMapping`, and `ThroughJoinValue`. See [Model](/reference/model#relations).
