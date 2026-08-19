@@ -51,6 +51,22 @@ class DuckDbCompiler(Compiler):
         action = "DROP NOT NULL" if nullable else "SET NOT NULL"
         return [f"ALTER TABLE {table_sql} ALTER COLUMN {column_sql} {action}"]
 
+    def compile_backfill(
+        self,
+        table_sql: str,
+        column_name: str,
+        type_sql: str,
+        filler_sql: str,
+    ) -> "list[str]":
+        # An UPDATE followed by SET NOT NULL in the same transaction fails
+        # with "Cannot create index with outstanding updates". Rewriting
+        # the column through USING fills the NULLs without an UPDATE.
+        column_sql = self.quote_identifier(column_name)
+        return [
+            f"ALTER TABLE {table_sql} ALTER COLUMN {column_sql} SET DATA "
+            f"TYPE {type_sql} USING coalesce({column_sql}, {filler_sql})"
+        ]
+
     def compile_identity(self) -> str:
         from sustained.exceptions import DialectError
 

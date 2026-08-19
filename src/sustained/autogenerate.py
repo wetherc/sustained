@@ -1047,10 +1047,13 @@ def autogenerate(
                             f"Tightening '{table}.{name}' to NOT NULL needs "
                             "a backfill or default value for existing NULLs."
                         )
-                    quoted = compiler.quote_identifier(name)
-                    up_steps.append(
-                        f"UPDATE {table_sql} SET {quoted} = "
-                        f"{compiler.format_value(filler)} WHERE {quoted} IS NULL"
+                    up_steps.extend(
+                        compiler.compile_backfill(
+                            table_sql,
+                            name,
+                            expected_type,
+                            compiler.format_value(filler),
+                        )
                     )
                 up_steps.extend(
                     compiler.compile_alter_column_nullability(
@@ -1102,11 +1105,14 @@ def autogenerate(
                 _relaxed_copy(coldef),
                 inline_pk=False,
             )
-            quoted = compiler.quote_identifier(name)
             up_steps.append(compiler.compile_add_column(table_sql, relaxed))
-            up_steps.append(
-                f"UPDATE {table_sql} SET {quoted} = "
-                f"{compiler.format_value(coldef.backfill)} WHERE {quoted} IS NULL"
+            up_steps.extend(
+                compiler.compile_backfill(
+                    table_sql,
+                    name,
+                    compiler.compile_column_type(coldef),
+                    compiler.format_value(coldef.backfill),
+                )
             )
             up_steps.extend(
                 compiler.compile_alter_column_nullability(

@@ -39,6 +39,22 @@ class TestDuckDbRendering(unittest.TestCase):
     def test_registered_functions(self):
         self.assertIn("NOW()", str(Duck.query().now(alias="ts")))
 
+    def test_backfill_rewrites_the_column_instead_of_updating(self):
+        """
+        An UPDATE before SET NOT NULL fails on DuckDB ("Cannot create
+        index with outstanding updates"), so the backfill rewrites the
+        column through USING.
+        """
+        compiler = Dialects.get_compiler(Dialects.DUCKDB)
+        statements = compiler.compile_backfill('"events"', "kind", "VARCHAR(12)", "'x'")
+        self.assertEqual(
+            [
+                'ALTER TABLE "events" ALTER COLUMN "kind" SET DATA TYPE '
+                "VARCHAR(12) USING coalesce(\"kind\", 'x')"
+            ],
+            statements,
+        )
+
 
 @unittest.skipUnless(HAS_DUCKDB, "duckdb not installed")
 class TestDuckDbExecution(unittest.TestCase):

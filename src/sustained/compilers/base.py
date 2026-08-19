@@ -577,6 +577,23 @@ class Compiler:
             "nullability in place."
         )
 
+    def compile_backfill(
+        self,
+        table_sql: str,
+        column_name: str,
+        type_sql: str,
+        filler_sql: str,
+    ) -> "list[str]":
+        """
+        Renders the statements that give every NULL in a column a value,
+        run before the column tightens to NOT NULL. A plain UPDATE works
+        everywhere but DuckDB, which overrides this.
+        """
+        quoted = self.quote_identifier(column_name)
+        return [
+            f"UPDATE {table_sql} SET {quoted} = {filler_sql} " f"WHERE {quoted} IS NULL"
+        ]
+
     def compile_returning(self, columns_sql: str) -> str:
         """
         Renders a RETURNING clause for DML statements. Dialects without
