@@ -436,7 +436,7 @@ class Model(metaclass=ModelMeta):
                 "No database connection. Bind one with Model.bind(connection) "
                 "or pass it to transaction()."
             )
-        return transaction(conn)
+        return transaction(conn, cls._dialect)
 
     @classmethod
     def query(cls: Type[TModel]) -> "QueryBuilder[TModel]":

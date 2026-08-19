@@ -1072,7 +1072,7 @@ class Migrator:
             yield
             return
         if self._compiler.supports_transactional_ddl():
-            with transaction(self._connection):
+            with transaction(self._connection, self._dialect):
                 yield
             return
         yield

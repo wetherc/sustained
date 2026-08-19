@@ -7,6 +7,8 @@ import sqlite3
 import unittest
 
 from sustained import Model
+from sustained.dialects import Dialects
+from sustained.exceptions import DialectError
 from sustained.execution import in_transaction, set_statement_listener, transaction
 
 
@@ -136,6 +138,62 @@ class TestSavepointDepth(TransactionTestCase):
                 "RELEASE SAVEPOINT sustained_sp_1",
             ],
         )
+
+
+class TestSavepointSpelling(unittest.TestCase):
+    def test_mssql_savepoints_use_save_transaction(self):
+        """
+        T-SQL spells SAVEPOINT as SAVE TRANSACTION and has no RELEASE, so a
+        successful inner block sends nothing on the way out.
+        """
+        conn = RefusingConnection()
+        with transaction(conn, Dialects.MSSQL):
+            with transaction(conn, Dialects.MSSQL):
+                pass
+            with self.assertRaises(RuntimeError):
+                with transaction(conn, Dialects.MSSQL):
+                    raise RuntimeError("boom")
+        self.assertEqual(
+            conn.statements,
+            [
+                "SAVE TRANSACTION sustained_sp_1",
+                "SAVE TRANSACTION sustained_sp_1",
+                "ROLLBACK TRANSACTION sustained_sp_1",
+            ],
+        )
+
+    def test_nesting_refuses_where_the_dialect_has_no_savepoints(self):
+        conn = RefusingConnection()
+        with transaction(conn, Dialects.DUCKDB):
+            with self.assertRaises(DialectError) as raised:
+                with transaction(conn, Dialects.DUCKDB):
+                    pass
+        self.assertIn("DUCKDB", str(raised.exception))
+        self.assertEqual(conn.statements, [])
+
+    def test_a_refused_nesting_leaves_the_outer_block_usable(self):
+        conn = sqlite3.connect(":memory:")
+        conn.execute("CREATE TABLE users (id INTEGER PRIMARY KEY)")
+        with transaction(conn, Dialects.DUCKDB):
+            with self.assertRaises(DialectError):
+                with transaction(conn, Dialects.DUCKDB):
+                    pass
+            conn.execute("INSERT INTO users (id) VALUES (1)")
+        total = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+        self.assertEqual(total, 1)
+        conn.close()
+
+    def test_savepoint_statements_per_dialect(self):
+        ansi = Dialects.get_compiler(Dialects.DEFAULT)
+        self.assertEqual("SAVEPOINT sp", ansi.savepoint_sql("sp"))
+        self.assertEqual("ROLLBACK TO SAVEPOINT sp", ansi.rollback_savepoint_sql("sp"))
+        self.assertEqual("RELEASE SAVEPOINT sp", ansi.release_savepoint_sql("sp"))
+        athena = Dialects.get_compiler(Dialects.ATHENA)
+        self.assertIsNone(athena.savepoint_sql("sp"))
+        self.assertIsNone(athena.rollback_savepoint_sql("sp"))
+        self.assertIsNone(athena.release_savepoint_sql("sp"))
+        mssql = Dialects.get_compiler(Dialects.MSSQL)
+        self.assertIsNone(mssql.release_savepoint_sql("sp"))
 
 
 class TestStatementListener(TransactionTestCase):

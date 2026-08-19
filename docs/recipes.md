@@ -361,7 +361,7 @@ with Model.transaction():
     Ticket.query().insert({'show_id': 4, 'price': 40.0}).run()
 ```
 
-The block commits when it finishes and rolls back on any exception. Inside a transaction, `run()` stops committing per statement. Nested blocks use savepoints, so an inner failure rolls back only the inner block.
+The block commits when it finishes and rolls back on any exception. Inside a transaction, `run()` stops committing per statement. Nested blocks use savepoints, so an inner failure rolls back only the inner block. DuckDB has no savepoints, so a nested block raises `DialectError` there.
 
 ---
 

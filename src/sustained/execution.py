@@ -37,6 +37,7 @@ from sustained.types import (
 )
 
 if TYPE_CHECKING:
+    from sustained.dialects import Dialects
     from sustained.model import Model
     from sustained.types import AnyQuery
 
@@ -134,32 +135,40 @@ def in_transaction(connection: Connection) -> bool:
 
 
 @contextmanager
-def transaction(connection: Binding) -> Iterator[Connection]:
+def transaction(
+    connection: Binding, dialect: "Dialects | None" = None
+) -> Iterator[Connection]:
     """
     Runs the block atomically on the connection. Commits when the block
     finishes and rolls back when it raises. While the context is open,
     run() stops committing per statement.
 
-    Nested contexts on the same connection use ANSI savepoints, so an inner
-    failure rolls back only the inner block.
+    Nested contexts on the same connection use savepoints, spelled the way
+    the dialect spells them; the default is the ANSI SAVEPOINT statement.
+    Nesting raises DialectError on a dialect with no savepoints, such as
+    DuckDB. Model.transaction() passes the model's dialect for you.
 
     When given a ConnectionPool, one connection is checked out, pinned to
     the calling thread for the duration of the block, and released after.
     """
+    from sustained.dialects import Dialects
     from sustained.pool import ConnectionPool
+
+    if dialect is None:
+        dialect = Dialects.DEFAULT
 
     if isinstance(connection, ConnectionPool):
         pinned = _pinned_connection()
         if pinned is not None:
             # A transaction is already open on this thread; nest on its
             # connection with a savepoint instead of checking out another.
-            with transaction(pinned):
+            with transaction(pinned, dialect):
                 yield pinned
             return
         conn = connection.acquire_raw()
         _pin(conn)
         try:
-            with transaction(conn):
+            with transaction(conn, dialect):
                 yield conn
         finally:
             _unpin()
@@ -170,17 +179,31 @@ def transaction(connection: Binding) -> Iterator[Connection]:
     entry = _ACTIVE_TRANSACTIONS.get(key)
 
     if entry is not None and entry[0] is connection:
+        from sustained.exceptions import DialectError
+
+        compiler = Dialects.get_compiler(dialect)
         depth = entry[1] + 1
-        _ACTIVE_TRANSACTIONS[key] = (connection, depth)
         savepoint = f"sustained_sp_{depth}"
+        set_sql = compiler.savepoint_sql(savepoint)
+        if set_sql is None:
+            raise DialectError(
+                f"{dialect.name} has no savepoints, so a nested "
+                "transaction() block cannot roll back on its own. Run the "
+                "statements inside the outer block instead."
+            )
+        _ACTIVE_TRANSACTIONS[key] = (connection, depth)
         try:
-            connection.cursor().execute(f"SAVEPOINT {savepoint}")
+            connection.cursor().execute(set_sql)
             try:
                 yield connection
             except BaseException:
-                connection.cursor().execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+                rollback_sql = compiler.rollback_savepoint_sql(savepoint)
+                if rollback_sql is not None:
+                    connection.cursor().execute(rollback_sql)
                 raise
-            connection.cursor().execute(f"RELEASE SAVEPOINT {savepoint}")
+            release_sql = compiler.release_savepoint_sql(savepoint)
+            if release_sql is not None:
+                connection.cursor().execute(release_sql)
         finally:
             _ACTIVE_TRANSACTIONS[key] = (connection, depth - 1)
         return

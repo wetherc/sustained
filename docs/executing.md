@@ -255,7 +255,7 @@ with Show.transaction():
     )
 ```
 
-Nested blocks use savepoints, so a failure inside an inner block rolls back only that block and the outer transaction carries on.
+Nested blocks use savepoints, so a failure inside an inner block rolls back only that block and the outer transaction carries on. The savepoint statement follows the model's dialect: MSSQL gets `SAVE TRANSACTION`, everything else the ANSI `SAVEPOINT`. DuckDB has no savepoints, so a nested block raises `DialectError` there.
 
 ## Eager loading relations
 

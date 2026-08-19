@@ -172,6 +172,17 @@ class MssqlCompiler(Compiler):
     def rollback_transaction_sql(self) -> Optional[str]:
         return "ROLLBACK TRANSACTION"
 
+    def savepoint_sql(self, name: str) -> Optional[str]:
+        # T-SQL spells the ANSI SAVEPOINT statement as SAVE TRANSACTION.
+        return f"SAVE TRANSACTION {name}"
+
+    def rollback_savepoint_sql(self, name: str) -> Optional[str]:
+        return f"ROLLBACK TRANSACTION {name}"
+
+    def release_savepoint_sql(self, name: str) -> Optional[str]:
+        # T-SQL has no RELEASE; savepoints last until the transaction ends.
+        return None
+
     def migration_lock_sql(self, name: str) -> "list[str]":
         # Session-owned and reentrant; released on disconnect. The negative
         # timeout waits until the lock is free.

@@ -36,11 +36,11 @@ The two protocols list only the methods Sustained calls, so a driver connection 
 These live in `sustained.execution`. Reach them through `Model.transaction()` rather than calling them yourself.
 
 ```python
-transaction(connection)
+transaction(connection, dialect=None)
 ```
 {: .sig #transaction}
 
-A context manager. Commits when the block finishes, and rolls back on any exception.
+A context manager. Commits when the block finishes, and rolls back on any exception. The dialect chooses the savepoint spelling for nested blocks; `Model.transaction()` passes the model's dialect for you.
 
 ```python
 in_transaction(connection) -> bool
@@ -56,7 +56,7 @@ connection_scope(explicit, binding)
 
 The resolution above, as a context manager.
 
-Nested blocks on one connection use savepoints named `sustained_sp_<depth>`, so a failure in an inner block rolls back only that block. Inside a transaction, `run()` stops committing per statement.
+Nested blocks on one connection use savepoints named `sustained_sp_<depth>`, so a failure in an inner block rolls back only that block. The statement follows the dialect: ANSI `SAVEPOINT` everywhere except MSSQL, which gets `SAVE TRANSACTION`. DuckDB has no savepoints, so a nested block raises `DialectError` before any statement runs. Inside a transaction, `run()` stops committing per statement.
 
 With a pool, the first block checks a connection out and pins it to the thread. Every statement in the block uses that one connection, and nested blocks reuse it as savepoints.
 

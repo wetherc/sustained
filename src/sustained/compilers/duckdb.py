@@ -1,3 +1,5 @@
+from typing import Optional
+
 from .base import Compiler
 
 
@@ -67,6 +69,17 @@ class DuckDbCompiler(Compiler):
     def compile_drop_enum_type(self, name: str, if_exists: bool = False) -> str:
         exists_sql = "IF EXISTS " if if_exists else ""
         return f"DROP TYPE {exists_sql}{self.quote_identifier(name)}"
+
+    def savepoint_sql(self, name: str) -> Optional[str]:
+        # DuckDB has transactions but no savepoints, so transaction()
+        # cannot nest on it.
+        return None
+
+    def rollback_savepoint_sql(self, name: str) -> Optional[str]:
+        return None
+
+    def release_savepoint_sql(self, name: str) -> Optional[str]:
+        return None
 
     def compile_add_enum_value(self, name: str, value: str) -> str:
         from sustained.exceptions import DialectError

@@ -92,7 +92,7 @@ Model.transaction(connection=None)
 ```
 {: .sig #transaction}
 
-A context that commits on success and rolls back on any exception. Nested blocks use savepoints. Raises `RuntimeError` when no connection resolves.
+A context that commits on success and rolls back on any exception. Nested blocks use savepoints, spelled per dialect; on DuckDB, which has none, a nested block raises `DialectError`. Raises `RuntimeError` when no connection resolves.
 
 ```python
 Model.async_transaction(adapter=None)

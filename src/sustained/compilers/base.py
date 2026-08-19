@@ -473,6 +473,28 @@ class Compiler:
         """
         return "ROLLBACK" if self.supports_transactions() else None
 
+    def savepoint_sql(self, name: str) -> Optional[str]:
+        """
+        The statement that sets a savepoint inside an open transaction, or
+        None on engines that have no savepoints. transaction() sets one per
+        nested block, so an inner failure rolls back only that block.
+        """
+        return f"SAVEPOINT {name}" if self.supports_transactions() else None
+
+    def rollback_savepoint_sql(self, name: str) -> Optional[str]:
+        """The statement that rolls back to the named savepoint."""
+        if not self.supports_transactions():
+            return None
+        return f"ROLLBACK TO SAVEPOINT {name}"
+
+    def release_savepoint_sql(self, name: str) -> Optional[str]:
+        """
+        The statement that discards the named savepoint once its block
+        succeeds, or None on engines that keep savepoints until the
+        transaction ends.
+        """
+        return f"RELEASE SAVEPOINT {name}" if self.supports_transactions() else None
+
     def migration_lock_sql(self, name: str) -> "list[str]":
         """
         Statements that take an exclusive, session-scoped advisory lock so
