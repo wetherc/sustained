@@ -9,6 +9,7 @@ from sustained import DialectError, Model
 from sustained.dialects import Dialects
 from sustained.schema import (
     BigInteger,
+    Binary,
     Boolean,
     ColumnDef,
     Date,
@@ -132,6 +133,24 @@ class TestConstraints(unittest.TestCase):
         with self.assertRaises(ValueError):
             Empty.create_table_sql()
 
+    def test_binary_type_per_dialect(self):
+        class Blobby(Model):
+            tableName = "blobby"
+            tableColumns = {"data": Binary()}
+
+        try:
+            self.assertIn("data BLOB", Blobby.create_table_sql())
+            Blobby.set_dialect(Dialects.POSTGRES)
+            self.assertIn('"data" BYTEA', Blobby.create_table_sql())
+            Blobby.set_dialect(Dialects.MSSQL)
+            self.assertIn("[data] VARBINARY(MAX)", Blobby.create_table_sql())
+            Blobby.set_dialect(Dialects.PRESTO)
+            self.assertIn('"data" VARBINARY', Blobby.create_table_sql())
+            Blobby.set_dialect(Dialects.ATHENA)
+            self.assertIn("BINARY", Blobby.create_table_sql())
+        finally:
+            Blobby.set_dialect(Dialects.DEFAULT)
+
     def test_float_and_date_types(self):
         class Mixed(Model):
             tableName = "mixed"
@@ -157,6 +176,21 @@ class TestLiveDdl(unittest.TestCase):
             DdlUser.drop_table(conn)
         finally:
             DdlUser.unbind()
+            conn.close()
+
+    def test_binary_round_trip_on_sqlite(self):
+        class Blob(Model):
+            tableName = "blobs"
+            tableColumns = {"id": Integer(primary_key=True), "data": Binary()}
+
+        conn = sqlite3.connect(":memory:")
+        Blob.create_table(conn)
+        Blob.bind(conn)
+        try:
+            Blob.query().insert({"id": 1, "data": b"\x00\xff"}).run()
+            self.assertEqual(Blob.query().first().data, b"\x00\xff")
+        finally:
+            Blob.unbind()
             conn.close()
 
     def test_create_table_without_connection_raises(self):

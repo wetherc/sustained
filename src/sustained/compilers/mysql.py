@@ -15,7 +15,7 @@ _ALL_ROWS = 18446744073709551615
 
 # Types that MySQL stores off the row, which it will not index whole and
 # will not take a literal DEFAULT for.
-_OFF_ROW_TYPES = ("TEXT", "JSON")
+_OFF_ROW_TYPES = ("TEXT", "JSON", "BINARY")
 
 # How long a migrator waits for the advisory lock. Both servers accept a
 # year; neither reads it as anything but a long wait.

@@ -51,6 +51,10 @@ class TestNormalizeType(unittest.TestCase):
         self.assertEqual(normalize_type("jsonb"), "JSON")
         self.assertEqual(normalize_type("DATETIME2"), "TIMESTAMP")
         self.assertEqual(normalize_type("BIT"), "BOOLEAN")
+        self.assertEqual(normalize_type("bytea"), "BINARY")
+        self.assertEqual(normalize_type("BLOB"), "BINARY")
+        self.assertEqual(normalize_type("longblob"), "BINARY")
+        self.assertEqual(normalize_type("VARBINARY(MAX)"), "BINARY")
 
     def test_unknown_passthrough(self):
         self.assertEqual(normalize_type("GEOMETRY"), "GEOMETRY")

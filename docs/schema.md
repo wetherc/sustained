@@ -132,7 +132,7 @@ Foreign keys and CHECK constraints declared in `tableConstraints` are diffed and
 
 ## Typed columns
 
-`tableColumns` maps column names to typed definitions: `Integer`, `BigInteger`, `String(length)`, `Text`, `Boolean`, `Float`, `Numeric(precision, scale)`, `Date`, `Timestamp`, `Json`, and `Enum(*values, name=...)`.
+`tableColumns` maps column names to typed definitions: `Integer`, `BigInteger`, `String(length)`, `Text`, `Boolean`, `Float`, `Numeric(precision, scale)`, `Date`, `Timestamp`, `Binary`, `Json`, and `Enum(*values, name=...)`.
 
 ```python
 from sustained.schema import Boolean, Integer, String, Timestamp

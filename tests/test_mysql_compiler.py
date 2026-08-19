@@ -8,6 +8,7 @@ from sustained import DialectError, Model
 from sustained.dialects import Dialects
 from sustained.schema import (
     BigInteger,
+    Binary,
     Boolean,
     Float,
     Integer,
@@ -97,6 +98,7 @@ class TestColumnTypes(unittest.TestCase):
             "DOUBLE": Float(),
             "DECIMAL(18, 6)": Numeric(),
             "DATETIME": Timestamp(),
+            "BLOB": Binary(),
             "JSON": Json(),
         }
         for sql, coldef in expected.items():
@@ -147,8 +149,21 @@ class TestColumnValidation(unittest.TestCase):
             compiler().validate_column_def(Json(default="{}"))
         self.assertIn("no literal DEFAULT", str(caught.exception))
 
+    def test_unique_binary_column_raises(self):
+        with self.assertRaises(DialectError) as caught:
+            compiler().validate_column_def(Binary(unique=True))
+        self.assertIn("prefix length", str(caught.exception))
+
+    def test_default_on_a_binary_column_raises(self):
+        with self.assertRaises(DialectError) as caught:
+            compiler().validate_column_def(Binary(default=b"\x00"))
+        self.assertIn("no literal DEFAULT", str(caught.exception))
+
     def test_plain_text_column_passes(self):
         self.assertIsNone(compiler().validate_column_def(Text()))
+
+    def test_plain_binary_column_passes(self):
+        self.assertIsNone(compiler().validate_column_def(Binary()))
 
     def test_a_sized_string_may_be_unique(self):
         self.assertIsNone(compiler().validate_column_def(String(120, unique=True)))

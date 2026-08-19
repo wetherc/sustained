@@ -351,6 +351,11 @@ def Timestamp(**kwargs: Any) -> ColumnDef:
     return ColumnDef("TIMESTAMP", **kwargs)
 
 
+def Binary(**kwargs: Any) -> ColumnDef:
+    """A byte string column. Renders as BYTEA on Postgres, VARBINARY(MAX) on MSSQL."""
+    return ColumnDef("BINARY", **kwargs)
+
+
 def Json(**kwargs: Any) -> ColumnDef:
     """A JSON document column. Renders as JSONB on Postgres."""
     return ColumnDef("JSON", **kwargs)
@@ -600,6 +605,7 @@ __all__ = [
     "Numeric",
     "Date",
     "Timestamp",
+    "Binary",
     "Json",
     "Enum",
     "build_create_table_sql",

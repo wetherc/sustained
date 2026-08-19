@@ -34,6 +34,7 @@ class AthenaCompiler(PrestoCompiler):
         "NUMERIC": "DECIMAL",
         "DATE": "DATE",
         "TIMESTAMP": "TIMESTAMP",
+        "BINARY": "BINARY",
         "JSON": "STRING",
     }
 

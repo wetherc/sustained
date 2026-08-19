@@ -10,6 +10,8 @@ class PrestoCompiler(Compiler):
     # How each dialect's name is written in prose, for error messages.
     _DISPLAY_NAMES = {"PRESTO": "Presto", "ATHENA": "Athena"}
 
+    _TYPE_MAP = {**Compiler._TYPE_MAP, "BINARY": "VARBINARY"}
+
     def display_name(self) -> str:
         return self._DISPLAY_NAMES.get(self.dialect_name(), self.dialect_name())
 

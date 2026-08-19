@@ -127,7 +127,7 @@ Column types render in the spelling `information_schema` reports back, so a colu
 
 `Timestamp()` maps to `DATETIME` rather than `TIMESTAMP`. MySQL's `TIMESTAMP` is four bytes, stops in 2038, and converts time zones on the way in and out, which is not what `Timestamp()` describes.
 
-RETURNING raises `DialectError`, even though MariaDB, which supports it: since Sustained shares one dialect for both, it needs to take a more conservative approach. Read the row back with a second query, or use `LAST_INSERT_ID()` through raw SQL. `STRING_AGG` raises as well, rather than translating to `GROUP_CONCAT`, whose separator is a keyword and not a second argument. A whole `Text()` or `Json()` column takes neither a unique key nor a literal `DEFAULT`: MySQL wants a prefix length for the first and refuses the second.
+RETURNING raises `DialectError`, even though MariaDB, which supports it: since Sustained shares one dialect for both, it needs to take a more conservative approach. Read the row back with a second query, or use `LAST_INSERT_ID()` through raw SQL. `STRING_AGG` raises as well, rather than translating to `GROUP_CONCAT`, whose separator is a keyword and not a second argument. A whole `Text()`, `Json()`, or `Binary()` column takes neither a unique key nor a literal `DEFAULT`: MySQL wants a prefix length for the first and refuses the second.
 
 A `references` declaration becomes a table-level `FOREIGN KEY` in `CREATE TABLE`, and a named `ADD CONSTRAINT` statement when the column is added to a table that already exists. InnoDB parses a `REFERENCES` clause written beside a column and creates nothing, so a clause written there would look like a foreign key while not enforcing anything.
 

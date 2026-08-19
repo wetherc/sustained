@@ -22,6 +22,7 @@ Each type is a factory that returns a `ColumnDef`. Every factory accepts the ful
 | `Numeric(precision=18, scale=6, **options)` | `NUMERIC(precision, scale)` |
 | `Date(**options)` | `DATE` |
 | `Timestamp(**options)` | `TIMESTAMP` |
+| `Binary(**options)` | `BINARY` |
 | `Json(**options)` | `JSON` |
 | `Enum(*values, name, **options)` | `ENUM` (see [`Enum`](#enum)) |
 
@@ -38,6 +39,7 @@ Each type is a factory that returns a `ColumnDef`. Every factory accepts the ful
 | NUMERIC | `NUMERIC` | `NUMERIC` | `DECIMAL` | `NUMERIC` | `DECIMAL` | `NUMERIC` |
 | DATE | `DATE` | `DATE` | `DATE` | `DATE` | `DATE` | `DATE` |
 | TIMESTAMP | `TIMESTAMP` | `TIMESTAMP` | `DATETIME` | `DATETIME2` | `TIMESTAMP` | `TIMESTAMP` |
+| BINARY | `BLOB`, or `VARBINARY` on Presto | `BYTEA` | `BLOB` | `VARBINARY(MAX)` | `BINARY` | `BLOB` |
 | JSON | `JSON` | `JSONB` | `JSON` | `NVARCHAR(MAX)` | `STRING` | `JSON` |
 | ENUM | `VARCHAR(n)` + CHECK | the named type | `ENUM(...)` | `NVARCHAR(n)` + CHECK | `DialectError` | the named type |
 
@@ -170,7 +172,7 @@ Athena tables are files in S3 and enforce no constraints, so `validate_column_de
 
 ## MySQL column rules
 
-MySQL needs a prefix length for a key on a `TEXT` or `JSON` column, so `validate_column_def` raises `DialectError` for a `Text()` or `Json()` column that declares `unique` or `primary_key`. Use `String(n)` with a length that fits, or declare the prefix index in a hand-written migration. MySQL also takes no literal DEFAULT on those two types, so a `default` on them raises as well. Set the value in the application, or give the column a `backfill` so the migration sets it.
+MySQL needs a prefix length for a key on a `TEXT`, `JSON`, or `BLOB` column, so `validate_column_def` raises `DialectError` for a `Text()`, `Json()`, or `Binary()` column that declares `unique` or `primary_key`. Use `String(n)` with a length that fits, or declare the prefix index in a hand-written migration. MySQL also takes no literal DEFAULT on those types, so a `default` on them raises as well. Set the value in the application, or give the column a `backfill` so the migration sets it.
 
 ## DDL rendering
 

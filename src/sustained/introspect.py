@@ -173,6 +173,15 @@ _TYPE_SYNONYMS = {
     "DATETIME2": "TIMESTAMP",
     "JSON": "JSON",
     "JSONB": "JSON",
+    # Binary columns. MySQL sizes them in the type name the way it sizes
+    # text; Postgres calls the type bytea; MSSQL reports varbinary.
+    "BYTEA": "BINARY",
+    "BLOB": "BINARY",
+    "TINYBLOB": "BINARY",
+    "MEDIUMBLOB": "BINARY",
+    "LONGBLOB": "BINARY",
+    "VARBINARY": "BINARY",
+    "BINARY VARYING": "BINARY",
 }
 
 _TYPE_PARAMS_RE = re.compile(r"\s*\((.*)\)\s*$")

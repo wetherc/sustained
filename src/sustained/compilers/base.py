@@ -205,6 +205,7 @@ class Compiler:
         "NUMERIC": "NUMERIC",
         "DATE": "DATE",
         "TIMESTAMP": "TIMESTAMP",
+        "BINARY": "BLOB",
         "JSON": "JSON",
     }
 

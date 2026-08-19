@@ -68,6 +68,7 @@ class MssqlCompiler(Compiler):
         "BOOLEAN": "BIT",
         "FLOAT": "FLOAT",
         "TIMESTAMP": "DATETIME2",
+        "BINARY": "VARBINARY(MAX)",
         "JSON": "NVARCHAR(MAX)",
     }
 
