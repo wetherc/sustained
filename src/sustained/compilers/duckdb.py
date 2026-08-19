@@ -21,6 +21,9 @@ class DuckDbCompiler(Compiler):
     def supports_qualify(self) -> bool:
         return True
 
+    def parenthesized_set_members(self) -> bool:
+        return True
+
     def compile_distinct_on(self, columns_sql: "list[str]") -> str:
         return f"DISTINCT ON ({', '.join(columns_sql)})"
 

@@ -15,6 +15,9 @@ class MssqlCompiler(Compiler):
     def compile_top(self, value: int) -> str:
         return f"TOP {value}"
 
+    def parenthesized_set_members(self) -> bool:
+        return True
+
     def compile_upsert_statement(
         self,
         table_sql: str,

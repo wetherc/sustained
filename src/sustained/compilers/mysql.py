@@ -41,6 +41,9 @@ class MysqlCompiler(Compiler):
     def quote_identifier(self, identifier: str) -> str:
         return f"`{identifier}`"
 
+    def parenthesized_set_members(self) -> bool:
+        return True
+
     def placeholder(self) -> str:
         # The %s style used by PyMySQL, mysqlclient, and mysql-connector.
         return "%s"

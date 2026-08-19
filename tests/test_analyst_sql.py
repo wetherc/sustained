@@ -38,11 +38,32 @@ class TestRecursiveCtes(unittest.TestCase):
 class TestSetOperations(unittest.TestCase):
     def test_intersect(self):
         sql = str(User.query().select("id").intersect(User.query().select("id")))
-        self.assertIn(") INTERSECT (", sql)
+        self.assertIn(" INTERSECT SELECT ", sql)
 
     def test_except(self):
         sql = str(User.query().select("id").except_(User.query().select("id")))
-        self.assertIn(") EXCEPT (", sql)
+        self.assertIn(" EXCEPT SELECT ", sql)
+
+    def test_default_members_render_bare(self):
+        # SQLite rejects a parenthesized set-operation member, so the
+        # default dialect renders members without parentheses.
+        sql = str(User.query().select("id").union(User.query().select("id")))
+        self.assertEqual("SELECT id FROM users UNION SELECT id FROM users", sql)
+
+    def test_parenthesizing_dialects_keep_member_clauses(self):
+        capped = Pg.query().select("id").orderBy("id").limit(1)
+        sql = str(Pg.query().select("id").union(capped))
+        self.assertEqual(
+            '(SELECT "id" FROM "pt") UNION '
+            '(SELECT "id" FROM "pt" ORDER BY "id" ASC LIMIT 1)',
+            sql,
+        )
+
+    def test_a_bare_member_refuses_its_own_order_and_limit(self):
+        capped = User.query().select("id").orderBy("id").limit(1)
+        with self.assertRaises(DialectError) as raised:
+            str(User.query().select("id").union(capped))
+        self.assertIn("without parentheses", str(raised.exception))
 
 
 class TestDistinctOn(unittest.TestCase):

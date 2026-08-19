@@ -160,7 +160,7 @@ class TestQueryBuilder(unittest.TestCase):
         query = active_users.union(active_customers)
         self.assertEqual(
             str(query),
-            "(SELECT id, name FROM users WHERE active = TRUE) UNION (SELECT id, name FROM customers WHERE active = TRUE)",
+            "SELECT id, name FROM users WHERE active = TRUE UNION SELECT id, name FROM customers WHERE active = TRUE",
         )
 
     def test_simple_union_all(self):
@@ -178,7 +178,7 @@ class TestQueryBuilder(unittest.TestCase):
         query = active_users.unionAll(active_customers)
         self.assertEqual(
             str(query),
-            "(SELECT id, name FROM users WHERE active = TRUE) UNION ALL (SELECT id, name FROM customers WHERE active = TRUE)",
+            "SELECT id, name FROM users WHERE active = TRUE UNION ALL SELECT id, name FROM customers WHERE active = TRUE",
         )
 
     def test_union_with_offset(self):
@@ -196,7 +196,7 @@ class TestQueryBuilder(unittest.TestCase):
         query = active_users.union(active_customers).offset(10)
         self.assertEqual(
             str(query),
-            "(SELECT id, name FROM users WHERE active = TRUE) UNION (SELECT id, name FROM customers WHERE active = TRUE) OFFSET 10",
+            "SELECT id, name FROM users WHERE active = TRUE UNION SELECT id, name FROM customers WHERE active = TRUE OFFSET 10",
         )
 
     def test_union_with_cte_hoisting(self):
@@ -229,7 +229,7 @@ class TestQueryBuilder(unittest.TestCase):
 
         self.assertEqual(
             str(query),
-            "WITH user_regions AS (SELECT id FROM regions WHERE type = 'user'), customer_regions AS (SELECT id FROM regions WHERE type = 'customer') (SELECT id FROM users JOIN user_regions ON users.region_id = user_regions.id) UNION (SELECT id FROM customers JOIN customer_regions ON customers.region_id = customer_regions.id)",
+            "WITH user_regions AS (SELECT id FROM regions WHERE type = 'user'), customer_regions AS (SELECT id FROM regions WHERE type = 'customer') SELECT id FROM users JOIN user_regions ON users.region_id = user_regions.id UNION SELECT id FROM customers JOIN customer_regions ON customers.region_id = customer_regions.id",
         )
 
     def test_simple_limit(self):
@@ -259,7 +259,7 @@ class TestQueryBuilder(unittest.TestCase):
         query = users.union(customers).limit(10)
         self.assertEqual(
             str(query),
-            "(SELECT id FROM users) UNION (SELECT id FROM customers) LIMIT 10",
+            "SELECT id FROM users UNION SELECT id FROM customers LIMIT 10",
         )
 
     def test_multiple_limit_calls_raise_error(self):
@@ -334,7 +334,7 @@ class TestQueryBuilder(unittest.TestCase):
         query = users.union(customers).orderBy("name").limit(10)
         self.assertEqual(
             str(query),
-            "(SELECT id, name FROM users WHERE status = 'active') UNION (SELECT id, name FROM customers WHERE status = 'active') ORDER BY name ASC LIMIT 10",
+            "SELECT id, name FROM users WHERE status = 'active' UNION SELECT id, name FROM customers WHERE status = 'active' ORDER BY name ASC LIMIT 10",
         )
 
 

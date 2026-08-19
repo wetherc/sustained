@@ -4,7 +4,7 @@ Tests for parameterized rendering, operator validation, and CTE handling.
 
 import unittest
 
-from sustained import create_model
+from sustained import DialectError, create_model
 from sustained.dialects import Dialects
 
 User = create_model("ParamUser", "users")
@@ -93,10 +93,17 @@ class TestNoneValueHandling(unittest.TestCase):
 
 
 class TestUnionAndCteIntegrity(unittest.TestCase):
-    def test_union_member_limit_preserved(self):
+    def test_union_member_limit_preserved_where_parentheses_scope_it(self):
+        Pg = create_model("ParamPgUser", "users")
+        Pg.set_dialect(Dialects.POSTGRES)
+        member = Pg.query().select("id").limit(1)
+        sql = str(Pg.query().select("id").union(member))
+        self.assertIn('(SELECT "id" FROM "users" LIMIT 1)', sql)
+
+    def test_union_member_limit_refused_where_members_render_bare(self):
         member = User.query().select("id").limit(1)
-        sql = str(User.query().select("id").union(member))
-        self.assertIn("(SELECT id FROM users LIMIT 1)", sql)
+        with self.assertRaises(DialectError):
+            str(User.query().select("id").union(member))
 
     def test_duplicate_cte_alias_conflict_raises(self):
         c1 = User.query().select("a")

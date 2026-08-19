@@ -18,6 +18,9 @@ class PrestoCompiler(Compiler):
     def quote_identifier(self, identifier: str) -> str:
         return f'"{identifier}"'
 
+    def parenthesized_set_members(self) -> bool:
+        return True
+
     def validate_column_def(self, column: "ColumnDef") -> None:
         if column.type_name == "ENUM":
             from sustained.exceptions import DialectError

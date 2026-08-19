@@ -104,6 +104,15 @@ class Compiler:
         """Renders the WITH keyword, adding RECURSIVE where required."""
         return "WITH RECURSIVE" if recursive else "WITH"
 
+    def parenthesized_set_members(self) -> bool:
+        """
+        Reports whether UNION, INTERSECT, and EXCEPT members render inside
+        parentheses. SQLite rejects a parenthesized member outright, so the
+        portable default renders members bare; a bare member cannot carry
+        its own ORDER BY or LIMIT, and the builder refuses one that does.
+        """
+        return False
+
     def compile_distinct_on(self, columns_sql: "list[str]") -> str:
         """
         Renders DISTINCT ON. A Postgres extension also supported by DuckDB;

@@ -484,6 +484,24 @@ class QueryBuilder:
             ctes.extend(query._collect_ctes())
         return ctes
 
+    def _refuse_set_member_clauses(self) -> None:
+        """
+        Raises when this query joins a set operation bare and carries a
+        clause that only parentheses could scope to it alone.
+        """
+        if (
+            str(self._order_by_builder)
+            or self._limit_value is not None
+            or (self._offset_value is not None)
+        ):
+            raise DialectError(
+                f"The '{self._dialect.name}' dialect renders UNION, "
+                "INTERSECT, and EXCEPT members without parentheses, so a "
+                "member cannot carry its own ORDER BY, LIMIT, or OFFSET. "
+                "Order and cap the combined result instead, or wrap the "
+                "member in a subquery via from_()."
+            )
+
     def _render_sql(self, ctx: RenderContext, include_ctes: bool = True) -> str:
         """Renders the full statement with the given context."""
         if self._stmt_type == "ctas":
@@ -525,14 +543,24 @@ class QueryBuilder:
         base_select = self._build_base_select_sql(ctx)
 
         if self._union_clauses:
-            # Wrap each SELECT in parentheses. Members render their own
-            # ORDER BY and LIMIT inside the parentheses, so per-member
-            # clauses are honored rather than silently dropped.
-            query_parts.append(f"({base_select})")
-            for union_type, query in self._union_clauses:
-                query_parts.append(union_type)
-                rendered_member = query._render_sql(ctx, include_ctes=False)
-                query_parts.append(f"({rendered_member})")
+            if self._compiler.parenthesized_set_members():
+                # Wrap each SELECT in parentheses. Members render their own
+                # ORDER BY and LIMIT inside the parentheses, so per-member
+                # clauses are honored rather than silently dropped.
+                query_parts.append(f"({base_select})")
+                for union_type, query in self._union_clauses:
+                    query_parts.append(union_type)
+                    rendered_member = query._render_sql(ctx, include_ctes=False)
+                    query_parts.append(f"({rendered_member})")
+            else:
+                # SQLite rejects parenthesized members, so they render
+                # bare. A bare member's ORDER BY or LIMIT would read as the
+                # whole compound's, so a member that carries one is refused.
+                query_parts.append(base_select)
+                for union_type, query in self._union_clauses:
+                    query._refuse_set_member_clauses()
+                    query_parts.append(union_type)
+                    query_parts.append(query._render_sql(ctx, include_ctes=False))
         else:
             query_parts.append(base_select)
 

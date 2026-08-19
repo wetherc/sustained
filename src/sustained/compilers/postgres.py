@@ -13,6 +13,9 @@ class PostgresCompiler(Compiler):
         # Postgres supports ILIKE natively.
         return f"{column_sql} {operator} {pattern_sql}"
 
+    def parenthesized_set_members(self) -> bool:
+        return True
+
     _TYPE_MAP = {**Compiler._TYPE_MAP, "JSON": "JSONB", "BINARY": "BYTEA"}
 
     def compile_identity(self) -> str:
