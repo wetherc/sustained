@@ -28,12 +28,12 @@ never described as partly supported.
 
 | Database | Versions | Where it runs | Covered | Notes |
 | --- | --- | --- | --- | --- |
-| PostgreSQL | 12 and later; suite runs 14 | Container (postgres:14-alpine) | queries, writes, transactions, migrations | Rehearsal, advisory locks, and transactional DDL all run here. Enum ADD VALUE inside a transaction sets the floor. |
+| PostgreSQL | 12 and later; suite runs 14 | Container (postgres:14-alpine) | queries, writes, transactions, migrations, async | Rehearsal, advisory locks, and transactional DDL all run here. Enum ADD VALUE inside a transaction sets the floor. |
 | MySQL | 8.0.19 and later; suite runs 8.4 | Container (mysql:8.4) | queries, writes, transactions, migrations | No transactional DDL, so rehearse needs scratch=True. ALTER TABLE DROP CONSTRAINT sets the floor. |
 | MariaDB | 10.6 and later; suite runs 11.4 | Container (mariadb:11.4) | queries, writes, transactions, migrations | Same dialect as MySQL. SKIP LOCKED sets the floor. JSON columns read back through their json_valid check. |
 | SQL Server | 2012 and later; suite runs 2022 | Container (mcr.microsoft.com/mssql/server:2022-latest) | queries, writes, transactions, migrations | Off the rehearsal allowlist, so rehearse refuses without scratch=True. OFFSET with FETCH sets the floor. pyodbc needs the ODBC driver installed. |
 | Presto and Trino | 351 and later; suite runs 468 | Container (trinodb/trino:468) | queries | Reads the tpch catalog. Neither server takes the migration surface. The floor is the first release under the Trino name; PrestoDB works for the surface its engine has, untested here. |
-| SQLite | 3.35 and later | In process | queries, writes, transactions, migrations | Standard library. The table rebuild path lives here. RETURNING and DROP COLUMN set the floor; sqlite3.sqlite_version says what your Python links. |
+| SQLite | 3.35 and later | In process | queries, writes, transactions, migrations, async | Standard library. The table rebuild path lives here. RETURNING and DROP COLUMN set the floor; sqlite3.sqlite_version says what your Python links. |
 | DuckDB | 1.0 and later | In process | queries, writes, transactions, migrations | In-process, so no container and no advisory lock. Releases before 1.0 are not claimed. |
 | AWS Athena | engine version 3 and later | Your AWS account | queries | Your AWS account, with a staging S3 directory. Iceberg MERGE sets the floor at engine version 3. Athena's migration surface is not exercised, since the tables it needs live in your buckets. |
 | ANSI (default) | Any | Nothing to run | SQL text only | The portable compiler. Any DB-API 2.0 driver that takes this SQL will work, untested here. |

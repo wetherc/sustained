@@ -2,7 +2,7 @@
 
 from sustained.dialects import Dialects
 
-from . import lifecycle, queries, transactions, writes
+from . import aio_lifecycle, lifecycle, queries, transactions, writes
 
 
 class SqliteLifecycle(lifecycle.ServerCase):
@@ -23,5 +23,10 @@ class SqliteWrites(writes.WritesCase):
 
 
 class SqliteTransactions(transactions.TransactionsCase):
+    NAME = "sqlite"
+    DIALECT = Dialects.DEFAULT
+
+
+class SqliteAsync(aio_lifecycle.AsyncCase):
     NAME = "sqlite"
     DIALECT = Dialects.DEFAULT

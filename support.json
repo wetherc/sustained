@@ -17,7 +17,7 @@
       "module": "psycopg",
       "dsn_env": "SUSTAINED_TEST_POSTGRES_DSN",
       "dsn": "postgresql://sustained:sustained@127.0.0.1:55432/sustained",
-      "covers": ["queries", "writes", "transactions", "migrations"],
+      "covers": ["queries", "writes", "transactions", "migrations", "async"],
       "note": "Rehearsal, advisory locks, and transactional DDL all run here. Enum ADD VALUE inside a transaction sets the floor."
     },
     {
@@ -93,7 +93,7 @@
       "module": "sqlite3",
       "dsn_env": "SUSTAINED_TEST_SQLITE_DSN",
       "dsn": ":memory:",
-      "covers": ["queries", "writes", "transactions", "migrations"],
+      "covers": ["queries", "writes", "transactions", "migrations", "async"],
       "floor": "3.35",
       "note": "Standard library. The table rebuild path lives here. RETURNING and DROP COLUMN set the floor; sqlite3.sqlite_version says what your Python links."
     },
