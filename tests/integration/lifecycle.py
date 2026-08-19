@@ -22,6 +22,7 @@ from sustained.model import Model
 from sustained.schema import Enum, Integer, Json, String, Text
 
 from . import harness
+from .column_types import ColumnTypeTests
 
 TABLES = (
     "it_widgets",
@@ -69,7 +70,7 @@ def drop_everything(connection, dialect):
         connection.commit()
 
 
-class ServerCase(unittest.TestCase):
+class ServerCase(ColumnTypeTests, unittest.TestCase):
     """
     Base for one server. Subclasses set NAME to a row in support.json and
     DIALECT to the dialect that row names.
