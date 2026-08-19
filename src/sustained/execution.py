@@ -131,6 +131,25 @@ def connection_scope(
         yield binding
 
 
+def _begin_where_ddl_autocommits(connection: Connection, cursor: Cursor) -> None:
+    """
+    Opens the transaction explicitly on a sqlite3 connection in legacy
+    transaction control. That driver starts its implicit transaction
+    before data statements only; a schema statement runs outside it and
+    commits at once, so a rollback would keep the change. An explicit
+    BEGIN puts every statement of the block under the commit or rollback
+    that closes it. Connections in the new autocommit=False control open
+    their transaction before every statement already and are left alone.
+    """
+    if type(connection).__module__.partition(".")[0] != "sqlite3":
+        return
+    if getattr(connection, "autocommit", -1) != -1:
+        return
+    if getattr(connection, "in_transaction", False):
+        return
+    cursor.execute("BEGIN")
+
+
 def in_transaction(connection: Connection) -> bool:
     """Reports whether the connection has an open transaction() context."""
     entry = _ACTIVE_TRANSACTIONS.get(id(connection))
@@ -234,6 +253,8 @@ def transaction(
         begin_sql = compiler.begin_transaction_sql()
         if begin_sql is not None:
             cursor.execute(begin_sql)
+    else:
+        _begin_where_ddl_autocommits(connection, cursor)
     _ACTIVE_TRANSACTIONS[key] = (connection, 0, cursor)
     try:
         yield connection

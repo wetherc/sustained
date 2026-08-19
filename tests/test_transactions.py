@@ -55,6 +55,29 @@ class TestTransactions(TransactionTestCase):
         rows = self.conn.execute("SELECT id FROM users ORDER BY id").fetchall()
         self.assertEqual([r[0] for r in rows], [1, 3])
 
+    def test_rollback_takes_back_schema_changes(self):
+        """
+        The sqlite3 driver opens its implicit transaction before data
+        statements only. A CREATE TABLE inside the block must still roll
+        back, which needs the explicit BEGIN the context sends.
+        """
+        with self.assertRaises(RuntimeError):
+            with transaction(self.conn):
+                self.conn.execute("CREATE TABLE tx_ddl (id INTEGER)")
+                raise RuntimeError("boom")
+        remaining = self.conn.execute(
+            "SELECT name FROM sqlite_master WHERE name = 'tx_ddl'"
+        ).fetchall()
+        self.assertEqual([], remaining)
+
+    def test_commit_keeps_schema_changes(self):
+        with transaction(self.conn):
+            self.conn.execute("CREATE TABLE tx_ddl (id INTEGER)")
+        remaining = self.conn.execute(
+            "SELECT name FROM sqlite_master WHERE name = 'tx_ddl'"
+        ).fetchall()
+        self.assertEqual(1, len(remaining))
+
     def test_in_transaction_flag_clears(self):
         self.assertFalse(in_transaction(self.conn))
         with TxUser.transaction():
