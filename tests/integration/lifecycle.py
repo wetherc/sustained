@@ -5,9 +5,8 @@ and says which of the optional behaviours it has.
 
 What runs here is what the support page calls `migrations`: apply the
 models, read the schema back, take it down, rehearse, validate, repair, and
-hold the advisory lock while two migrators run at once. The query round
-trip runs here too, so a server that cannot execute a parameterized
-statement fails in the same place.
+hold the advisory lock while two migrators run at once. The read surface
+lives in queries.py, under the `queries` cover.
 """
 
 import threading
@@ -260,26 +259,3 @@ class ServerCase(unittest.TestCase):
 
         migrator.down()
         self.assertNotIn("it_widgets", self.tables())
-
-    # Queries
-
-    def test_a_query_round_trips_through_the_driver(self):
-        self.migrator().up(models=[self.Widget])
-
-        self.Widget.query().insert(
-            [
-                {"id": 1, "name": "hinge", "size": 3},
-                {"id": 2, "name": "bracket", "size": 9},
-            ]
-        ).run()
-
-        rows = self.Widget.query().where("size", ">", 5).run()
-        self.assertEqual(["bracket"], [row.name for row in rows])
-
-        self.Widget.query().update({"size": 12}).where("id", "=", 2).run()
-        # first() caps the rows, and MSSQL will not cap without an order.
-        updated = self.Widget.query().where("id", "=", 2).orderBy("id").first()
-        self.assertEqual(12, updated.size)
-
-        self.Widget.query().delete().where("id", "=", 1).run()
-        self.assertEqual(1, len(self.Widget.query().run()))

@@ -7,48 +7,24 @@ the rows come back hydrated. The tpch catalog ships with the container, so
 nothing has to be created first.
 """
 
-import unittest
-
 from sustained.dialects import Dialects
-from sustained.model import Model
 
-from . import harness
+from . import queries
 
 NATION = "tpch.tiny.nation"
 
 
-class PrestoQueries(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        cls.connection = harness.connect("presto")
-
-    @classmethod
-    def tearDownClass(cls):
-        connection = getattr(cls, "connection", None)
-        if connection is not None:
-            connection.close()
-
-    def setUp(self):
-        self.Nation = type("Nation", (Model,), {"_dialect": Dialects.PRESTO})
-        self.Nation.bind(self.connection)
-
-    def tearDown(self):
-        self.Nation.unbind()
-
-    def test_a_parameterized_select_returns_rows(self):
-        rows = (
-            self.Nation.query()
-            .select("name")
-            .from_(NATION)
-            .where("nationkey", "=", 1)
-            .run()
-        )
-        self.assertEqual(1, len(rows))
-        self.assertEqual("ARGENTINA", rows[0].name)
+class PrestoQueries(queries.QueriesCase):
+    NAME = "presto"
+    DIALECT = Dialects.PRESTO
+    READ_ONLY = True
+    SOURCE = NATION
+    PROBE = ("name", "nationkey", 1)
+    EXPECTED = ("ARGENTINA",)
 
     def test_an_aggregate_with_a_group_by_returns_one_row_per_region(self):
         rows = (
-            self.Nation.query()
+            self.Reader.query()
             .select("regionkey")
             .count("*", alias="nations")
             .from_(NATION)

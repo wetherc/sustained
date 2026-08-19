@@ -3,7 +3,7 @@ runs on a scratch database."""
 
 from sustained.dialects import Dialects
 
-from . import lifecycle
+from . import lifecycle, queries
 
 
 class MssqlLifecycle(lifecycle.ServerCase):
@@ -11,3 +11,8 @@ class MssqlLifecycle(lifecycle.ServerCase):
     DIALECT = Dialects.MSSQL
     REHEARSES_IN_PLACE = False
     HAS_ADVISORY_LOCK = True
+
+
+class MssqlQueries(queries.QueriesCase):
+    NAME = "mssql"
+    DIALECT = Dialects.MSSQL
