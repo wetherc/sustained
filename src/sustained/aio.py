@@ -49,6 +49,7 @@ from sustained.types import (
 )
 
 if TYPE_CHECKING:
+    from sustained.dialects import Dialects
     from sustained.model import Model
     from sustained.types import AnyQuery
 
@@ -308,36 +309,58 @@ def in_async_transaction(adapter: AsyncAdapter) -> bool:
 
 
 @asynccontextmanager
-async def async_transaction(adapter: AsyncAdapter) -> AsyncIterator[AsyncAdapter]:
+async def async_transaction(
+    adapter: AsyncAdapter, dialect: "Dialects | None" = None
+) -> AsyncIterator[AsyncAdapter]:
     """
     Runs the block atomically on the adapter: commit on success, rollback
     on exception. The adapter pins to the current task context, so arun()
     calls inside the block use it without passing it around.
 
-    Nested blocks on the same adapter use ANSI savepoints, so an inner
-    failure rolls back only the inner block.
+    Nested blocks on the same adapter use savepoints, spelled the way the
+    dialect spells them; the default is the ANSI SAVEPOINT statement.
+    Nesting raises DialectError on a dialect with no savepoints.
+    Model.async_transaction() passes the model's dialect for you.
 
     Nesting is tracked per adapter, not per task. Two tasks that open a
     block on one adapter at the same time share one transaction, and the
     second one is read as nested. Give each concurrent task its own adapter,
     as a connection carries one transaction at a time in any case.
     """
+    from sustained.dialects import Dialects
+
+    if dialect is None:
+        dialect = Dialects.DEFAULT
+    compiler = Dialects.get_compiler(dialect)
     key = id(adapter)
     entry = _active_async_transactions.get(key)
 
     if entry is not None and entry[0] is adapter:
+        from sustained.exceptions import DialectError
+
         depth = entry[1] + 1
-        _active_async_transactions[key] = (adapter, depth)
         savepoint = f"sustained_sp_{depth}"
+        set_sql = compiler.savepoint_sql(savepoint)
+        if set_sql is None:
+            raise DialectError(
+                f"{dialect.name} has no savepoints, so a nested "
+                "async_transaction() block cannot roll back on its own. Run "
+                "the statements inside the outer block instead."
+            )
+        _active_async_transactions[key] = (adapter, depth)
         token = _pinned_adapter.set(adapter)
         try:
-            await adapter.execute(f"SAVEPOINT {savepoint}", ())
+            await adapter.execute(set_sql, ())
             try:
                 yield adapter
             except BaseException:
-                await adapter.execute(f"ROLLBACK TO SAVEPOINT {savepoint}", ())
+                rollback_sql = compiler.rollback_savepoint_sql(savepoint)
+                if rollback_sql is not None:
+                    await adapter.execute(rollback_sql, ())
                 raise
-            await adapter.execute(f"RELEASE SAVEPOINT {savepoint}", ())
+            release_sql = compiler.release_savepoint_sql(savepoint)
+            if release_sql is not None:
+                await adapter.execute(release_sql, ())
         finally:
             _pinned_adapter.reset(token)
             _active_async_transactions[key] = (adapter, depth - 1)
@@ -348,13 +371,19 @@ async def async_transaction(adapter: AsyncAdapter) -> AsyncIterator[AsyncAdapter
     try:
         # Explicit statements rather than adapter.commit(), because drivers
         # in autocommit mode (asyncpg) treat commit() as a no-op.
-        await adapter.execute("BEGIN", ())
+        begin_sql = compiler.begin_transaction_sql()
+        if begin_sql is not None:
+            await adapter.execute(begin_sql, ())
         try:
             yield adapter
         except BaseException:
-            await adapter.execute("ROLLBACK", ())
+            rollback_sql = compiler.rollback_transaction_sql()
+            if rollback_sql is not None:
+                await adapter.execute(rollback_sql, ())
             raise
-        await adapter.execute("COMMIT", ())
+        commit_sql = compiler.commit_transaction_sql()
+        if commit_sql is not None:
+            await adapter.execute(commit_sql, ())
     finally:
         _pinned_adapter.reset(token)
         del _active_async_transactions[key]

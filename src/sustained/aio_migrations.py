@@ -149,7 +149,7 @@ class AsyncMigrator:
             yield
             return
         if self._compiler.supports_transactional_ddl():
-            async with async_transaction(self._adapter):
+            async with async_transaction(self._adapter, self._dialect):
                 yield
             return
         yield

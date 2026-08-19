@@ -99,7 +99,7 @@ Model.async_transaction(adapter=None)
 ```
 {: .sig #async_transaction}
 
-The async equivalent. Nested blocks use savepoints.
+The async equivalent. Nested blocks use savepoints, spelled the way the model's dialect spells them.
 
 The connection's parameter style must match the dialect's placeholder. See [Dialect support](/reference/dialects).
 

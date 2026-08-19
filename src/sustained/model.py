@@ -258,7 +258,8 @@ class Model(metaclass=ModelMeta):
         Opens an async transaction context on the bound adapter, or the one
         passed in. Statements inside the block share one transaction that
         commits on success and rolls back on an exception. Nested blocks
-        use savepoints, so an inner failure rolls back only the inner block.
+        use savepoints, spelled the way this model's dialect spells them,
+        so an inner failure rolls back only the inner block.
         """
         from sustained.aio import async_transaction
 
@@ -268,7 +269,7 @@ class Model(metaclass=ModelMeta):
                 "No async adapter. Bind one with Model.bind_async(adapter) "
                 "or pass it to async_transaction()."
             )
-        return async_transaction(resolved)
+        return async_transaction(resolved, cls._dialect)
 
     @classmethod
     def _qualified_table_sql(cls) -> str:

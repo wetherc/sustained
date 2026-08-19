@@ -11,6 +11,8 @@ from sustained.aio import (
     async_transaction,
     convert_format_to_numbered,
 )
+from sustained.dialects import Dialects
+from sustained.exceptions import DialectError
 from sustained.execution import set_statement_listener
 from sustained.schema import Integer, String
 
@@ -244,6 +246,63 @@ class TestAsyncTransactions(AsyncTestCase):
         AioOwner.bind_async(self.adapter)
         owners = await AioOwner.query().arun()
         self.assertEqual(len(owners), 1)
+
+
+class FakeAdapter(DbApiAsyncAdapter):
+    """Records statements without running them, for dialect spelling tests."""
+
+    def __init__(self):
+        self.statements = []
+
+    async def execute(self, sql, params):
+        self.statements.append(sql)
+        return 0
+
+
+class TestAsyncTransactionDialects(unittest.IsolatedAsyncioTestCase):
+    async def test_mssql_spells_save_transaction(self):
+        fake = FakeAdapter()
+        async with async_transaction(fake, Dialects.MSSQL):
+            async with async_transaction(fake, Dialects.MSSQL):
+                pass
+        self.assertEqual(
+            fake.statements,
+            [
+                "BEGIN TRANSACTION",
+                "SAVE TRANSACTION sustained_sp_1",
+                "COMMIT",
+            ],
+        )
+
+    async def test_mssql_inner_failure_rolls_back_to_the_savepoint(self):
+        fake = FakeAdapter()
+        async with async_transaction(fake, Dialects.MSSQL):
+            with self.assertRaises(RuntimeError):
+                async with async_transaction(fake, Dialects.MSSQL):
+                    raise RuntimeError("boom")
+        self.assertIn("ROLLBACK TRANSACTION sustained_sp_1", fake.statements)
+
+    async def test_duckdb_nesting_raises_before_any_statement(self):
+        fake = FakeAdapter()
+        async with async_transaction(fake, Dialects.DUCKDB):
+            before = list(fake.statements)
+            with self.assertRaises(DialectError):
+                async with async_transaction(fake, Dialects.DUCKDB):
+                    pass
+            self.assertEqual(fake.statements, before)
+
+    async def test_model_block_uses_the_model_dialect(self):
+        fake = FakeAdapter()
+
+        class MssqlOwner(Model):
+            tableName = "aio_owners"
+            tableColumns = {"id": Integer(primary_key=True)}
+
+        MssqlOwner.set_dialect(Dialects.MSSQL)
+        async with MssqlOwner.async_transaction(fake):
+            async with MssqlOwner.async_transaction(fake):
+                pass
+        self.assertIn("SAVE TRANSACTION sustained_sp_1", fake.statements)
 
 
 class TestAsyncNestedEagerLoad(unittest.IsolatedAsyncioTestCase):

@@ -186,11 +186,11 @@ Wraps asyncpg. Converts `%s` placeholders to `$1..$n`. asyncpg is autocommit, so
 ### Async helpers
 
 ```python
-async_transaction(adapter)
+async_transaction(adapter, dialect=None)
 ```
 {: .sig #async_transaction}
 
-An async context manager that issues `BEGIN`, `COMMIT`, and `ROLLBACK`. Nested blocks on one adapter use `SAVEPOINT sustained_sp_<depth>`. Sustained tracks the nesting per adapter, so give each concurrent task its own adapter.
+An async context manager that opens, commits, and rolls back the transaction with the dialect's own statements; the default dialect issues `BEGIN`, `COMMIT`, and `ROLLBACK`. Nested blocks on one adapter use savepoints named `sustained_sp_<depth>`, spelled per dialect; a dialect with no savepoints raises `DialectError` on nesting. `Model.async_transaction()` passes the model's dialect. Sustained tracks the nesting per adapter, so give each concurrent task its own adapter.
 
 ```python
 in_async_transaction(adapter) -> bool
