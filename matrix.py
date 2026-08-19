@@ -34,7 +34,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 SUPPORT = json.loads((ROOT / "support.json").read_text())
 ROWS = {row["name"]: row for row in SUPPORT["databases"]}
-SERVERS = [name for name, row in ROWS.items() if row["level"] == "runs"]
+SERVERS = [name for name, row in ROWS.items() if row["server"] != "none"]
 PYTHON = "python"
 TARGETS = SERVERS + [PYTHON]
 

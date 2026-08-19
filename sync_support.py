@@ -17,7 +17,6 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
-LEVELS = ("runs", "builds")
 SERVERS = ("container", "in-process", "account", "none")
 SERVICE_LINE = re.compile(r"^ {2}[A-Za-z0-9_-]+:\s*$")
 
@@ -44,42 +43,41 @@ def compose_services(path: Path) -> List[str]:
 
 def load(path: Path) -> Dict[str, Any]:
     """
-    Read support.json and check that every row is well formed. A `runs` row
-    is a claim that the suite runs against that server, so the row has to
-    name a test module, and a container row has to name a compose service.
-    Without these checks the table could claim coverage that does not exist.
+    Read support.json and check that every row is well formed. A row with a
+    server is a claim that the suite runs against it, so the row has to name
+    a test module, and a container row has to name a compose service. Without
+    these checks the table could claim coverage that does not exist.
     """
     root = path.parent
     data: Dict[str, Any] = json.loads(path.read_text())
     services = compose_services(root / "docker" / "compose.yaml")
     for row in data["databases"]:
         name = row["name"]
-        if row["level"] not in LEVELS:
-            raise ValueError(f"{name}: level must be one of {LEVELS}")
         if row["server"] not in SERVERS:
             raise ValueError(f"{name}: server must be one of {SERVERS}")
-        if row["level"] == "builds" and row["covers"]:
-            raise ValueError(f"{name}: a builds row covers nothing")
-        if row["level"] != "runs":
+        if row["server"] == "none":
+            if row["covers"]:
+                raise ValueError(f"{name}: a row with no server covers nothing")
             continue
         if not row["covers"]:
-            raise ValueError(f"{name}: a runs row must cover something")
+            raise ValueError(f"{name}: a row with a server must cover something")
         if not row.get("floor"):
             raise ValueError(
-                f"{name}: a runs row must name a floor, the oldest server "
-                "release every statement Sustained generates is valid on"
+                f"{name}: a row with a server must name a floor, the oldest "
+                "server release every statement Sustained generates is valid on"
             )
         module = root / "tests" / "integration" / f"test_{name}.py"
         if not module.exists():
             raise ValueError(
-                f"{name}: a runs row needs {module.relative_to(root)}. "
-                "Add the module, or move the row down to builds."
+                f"{name}: a row with a server needs "
+                f"{module.relative_to(root)}. Add the module, or set the "
+                "row's server to none."
             )
         if row["server"] == "container" and row.get("service") not in services:
             raise ValueError(
                 f"{name}: no '{row.get('service')}' service in "
-                "docker/compose.yaml. Add the service, or move the row down "
-                "to builds."
+                "docker/compose.yaml. Add the service, or set the row's "
+                "server to none."
             )
     return data
 
@@ -110,20 +108,17 @@ def _versions(row: Dict[str, Any]) -> str:
 
 
 def render_databases(data: Dict[str, Any]) -> str:
-    """The database table, one row per dialect, runs before builds."""
+    """The database table, one row per dialect, in support.json order."""
     header = [
-        "| Database | Level | Versions | Where it runs | Covered | Notes |",
-        "| --- | --- | --- | --- | --- | --- |",
+        "| Database | Versions | Where it runs | Covered | Notes |",
+        "| --- | --- | --- | --- | --- |",
     ]
     rows: List[str] = []
-    for level in LEVELS:
-        for row in data["databases"]:
-            if row["level"] != level:
-                continue
-            rows.append(
-                f"| {row['title']} | `{row['level']}` | {_versions(row)} "
-                f"| {_where(row)} | {_covers(row)} | {row['note']} |"
-            )
+    for row in data["databases"]:
+        rows.append(
+            f"| {row['title']} | {_versions(row)} "
+            f"| {_where(row)} | {_covers(row)} | {row['note']} |"
+        )
     return "\n".join(header + rows)
 
 

@@ -9,36 +9,34 @@ tables come from `support.json` in the repository, and a pre-commit hook
 fails when this page and that file disagree. The claim on this page and the
 list the test suite reads are the same list.
 
-## Two levels of support
+## What support means
 
-A database is at one of two levels.
+For every database with a server in the table, the integration suite applies
+migrations to a real server of that database and reads the schema back
+afterwards. A container starts, the tests run against it, and the container
+stops. SQLite and DuckDB run in process, and Athena runs in your own AWS
+account, but the suite is the same suite.
 
-**`runs`** means the integration suite applies migrations to a real server of
-that database and reads the schema back afterwards. A container starts, the
-tests run against it, and the container stops. SQLite and DuckDB run in
-process, and Athena runs in your own AWS account, but the suite is the same
-suite.
-
-**`builds`** means Sustained compiles SQL for it, and unit tests check the SQL
-text. Nothing executes. The SQL is correct as far as the compiler is
-concerned, and your driver is where you find out the rest.
+The ANSI dialect has no server to run. Sustained compiles SQL for it, and
+unit tests check the SQL text. Nothing executes. The SQL is correct as far
+as the compiler is concerned, and your driver is where you find out the rest.
 
 Nothing sits between the two. A database Sustained cannot run against is
 never described as partly supported.
 
 <!-- databases: generated from support.json -->
 
-| Database | Level | Versions | Where it runs | Covered | Notes |
-| --- | --- | --- | --- | --- | --- |
-| PostgreSQL | `runs` | 12 and later; suite runs 14 | Container (postgres:14-alpine) | queries, migrations | Rehearsal, advisory locks, and transactional DDL all run here. Enum ADD VALUE inside a transaction sets the floor. |
-| MySQL | `runs` | 8.0.19 and later; suite runs 8.4 | Container (mysql:8.4) | queries, migrations | No transactional DDL, so rehearse needs scratch=True. ALTER TABLE DROP CONSTRAINT sets the floor. |
-| MariaDB | `runs` | 10.6 and later; suite runs 11.4 | Container (mariadb:11.4) | queries, migrations | Same dialect as MySQL. SKIP LOCKED sets the floor. JSON columns read back through their json_valid check. |
-| SQL Server | `runs` | 2012 and later; suite runs 2022 | Container (mcr.microsoft.com/mssql/server:2022-latest) | queries, migrations | Off the rehearsal allowlist, so rehearse refuses without scratch=True. OFFSET with FETCH sets the floor. pyodbc needs the ODBC driver installed. |
-| Presto and Trino | `runs` | 351 and later; suite runs 468 | Container (trinodb/trino:468) | queries | Reads the tpch catalog. Neither server takes the migration surface. The floor is the first release under the Trino name; PrestoDB works for the surface its engine has, untested here. |
-| SQLite | `runs` | 3.35 and later | In process | queries, migrations | Standard library. The table rebuild path lives here. RETURNING and DROP COLUMN set the floor; sqlite3.sqlite_version says what your Python links. |
-| DuckDB | `runs` | 1.0 and later | In process | queries, migrations | In-process, so no container and no advisory lock. Releases before 1.0 are not claimed. |
-| AWS Athena | `runs` | engine version 3 and later | Your AWS account | queries | Your AWS account, with a staging S3 directory. Iceberg MERGE sets the floor at engine version 3. Athena's migration surface is not exercised, since the tables it needs live in your buckets. |
-| ANSI (default) | `builds` | Any | Nothing to run | SQL text only | The portable compiler. Any DB-API 2.0 driver that takes this SQL will work, untested here. |
+| Database | Versions | Where it runs | Covered | Notes |
+| --- | --- | --- | --- | --- |
+| PostgreSQL | 12 and later; suite runs 14 | Container (postgres:14-alpine) | queries, migrations | Rehearsal, advisory locks, and transactional DDL all run here. Enum ADD VALUE inside a transaction sets the floor. |
+| MySQL | 8.0.19 and later; suite runs 8.4 | Container (mysql:8.4) | queries, migrations | No transactional DDL, so rehearse needs scratch=True. ALTER TABLE DROP CONSTRAINT sets the floor. |
+| MariaDB | 10.6 and later; suite runs 11.4 | Container (mariadb:11.4) | queries, migrations | Same dialect as MySQL. SKIP LOCKED sets the floor. JSON columns read back through their json_valid check. |
+| SQL Server | 2012 and later; suite runs 2022 | Container (mcr.microsoft.com/mssql/server:2022-latest) | queries, migrations | Off the rehearsal allowlist, so rehearse refuses without scratch=True. OFFSET with FETCH sets the floor. pyodbc needs the ODBC driver installed. |
+| Presto and Trino | 351 and later; suite runs 468 | Container (trinodb/trino:468) | queries | Reads the tpch catalog. Neither server takes the migration surface. The floor is the first release under the Trino name; PrestoDB works for the surface its engine has, untested here. |
+| SQLite | 3.35 and later | In process | queries, migrations | Standard library. The table rebuild path lives here. RETURNING and DROP COLUMN set the floor; sqlite3.sqlite_version says what your Python links. |
+| DuckDB | 1.0 and later | In process | queries, migrations | In-process, so no container and no advisory lock. Releases before 1.0 are not claimed. |
+| AWS Athena | engine version 3 and later | Your AWS account | queries | Your AWS account, with a staging S3 directory. Iceberg MERGE sets the floor at engine version 3. Athena's migration surface is not exercised, since the tables it needs live in your buckets. |
+| ANSI (default) | Any | Nothing to run | SQL text only | The portable compiler. Any DB-API 2.0 driver that takes this SQL will work, untested here. |
 
 <!-- end databases -->
 
@@ -141,8 +139,9 @@ When a public name goes away, it goes in three steps.
 `sync()` is the worked example. It was replaced by `up(models=[...])` in
 2.13.0, still runs, warns, and goes in 3.0.
 
-A database moving from `runs` down to `builds` follows the same rule: the
-release before the move says it is coming, and the changelog says why.
+A database losing its server, and with it everything in its Covered column,
+follows the same rule: the release before the move says it is coming, and
+the changelog says why.
 
 ## What a version number promises
 
