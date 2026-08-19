@@ -2,7 +2,7 @@
 
 from sustained.dialects import Dialects
 
-from . import lifecycle, queries, writes
+from . import lifecycle, queries, transactions, writes
 
 
 class SqliteLifecycle(lifecycle.ServerCase):
@@ -18,5 +18,10 @@ class SqliteQueries(queries.QueriesCase):
 
 
 class SqliteWrites(writes.WritesCase):
+    NAME = "sqlite"
+    DIALECT = Dialects.DEFAULT
+
+
+class SqliteTransactions(transactions.TransactionsCase):
     NAME = "sqlite"
     DIALECT = Dialects.DEFAULT

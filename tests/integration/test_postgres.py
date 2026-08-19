@@ -2,7 +2,7 @@
 
 from sustained.dialects import Dialects
 
-from . import lifecycle, queries, writes
+from . import lifecycle, queries, transactions, writes
 
 
 class PostgresLifecycle(lifecycle.ServerCase):
@@ -18,5 +18,10 @@ class PostgresQueries(queries.QueriesCase):
 
 
 class PostgresWrites(writes.WritesCase):
+    NAME = "postgres"
+    DIALECT = Dialects.POSTGRES
+
+
+class PostgresTransactions(transactions.TransactionsCase):
     NAME = "postgres"
     DIALECT = Dialects.POSTGRES

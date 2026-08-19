@@ -3,7 +3,7 @@ rehearsal runs on a scratch database."""
 
 from sustained.dialects import Dialects
 
-from . import lifecycle, queries, writes
+from . import lifecycle, queries, transactions, writes
 
 
 class MysqlLifecycle(lifecycle.ServerCase):
@@ -22,3 +22,8 @@ class MysqlWrites(writes.WritesCase):
     NAME = "mysql"
     DIALECT = Dialects.MYSQL
     HAS_RETURNING = False
+
+
+class MysqlTransactions(transactions.TransactionsCase):
+    NAME = "mysql"
+    DIALECT = Dialects.MYSQL

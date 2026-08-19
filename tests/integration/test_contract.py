@@ -12,11 +12,12 @@ on every plain test run, not only under matrix.py.
 import importlib
 import unittest
 
-from . import harness, lifecycle, queries, writes
+from . import harness, lifecycle, queries, transactions, writes
 
 COVERS = {
     "queries": queries.QueriesCase,
     "writes": writes.WritesCase,
+    "transactions": transactions.TransactionsCase,
     "migrations": lifecycle.ServerCase,
 }
 

@@ -2,7 +2,7 @@
 
 from sustained.dialects import Dialects
 
-from . import lifecycle, queries, writes
+from . import lifecycle, queries, transactions, writes
 
 
 class DuckdbLifecycle(lifecycle.ServerCase):
@@ -18,5 +18,10 @@ class DuckdbQueries(queries.QueriesCase):
 
 
 class DuckdbWrites(writes.WritesCase):
+    NAME = "duckdb"
+    DIALECT = Dialects.DUCKDB
+
+
+class DuckdbTransactions(transactions.TransactionsCase):
     NAME = "duckdb"
     DIALECT = Dialects.DUCKDB

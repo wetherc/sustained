@@ -2,7 +2,7 @@
 
 from sustained.dialects import Dialects
 
-from . import lifecycle, queries, writes
+from . import lifecycle, queries, transactions, writes
 
 
 class MariadbLifecycle(lifecycle.ServerCase):
@@ -21,3 +21,8 @@ class MariadbWrites(writes.WritesCase):
     NAME = "mariadb"
     DIALECT = Dialects.MYSQL
     HAS_RETURNING = False
+
+
+class MariadbTransactions(transactions.TransactionsCase):
+    NAME = "mariadb"
+    DIALECT = Dialects.MYSQL
