@@ -1,6 +1,6 @@
 """
 The async surface, run against a real server through its async driver.
-A server module subclasses AsyncServerCase, and the support page calls
+A server module subclasses AsyncCase, and the support page calls
 what runs here `async`: AsyncMigrator applies, rehearses, and reverts,
 arun() round-trips rows into models, and async_transaction() nests
 through savepoints. Each server connects through the adapter named in

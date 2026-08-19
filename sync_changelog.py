@@ -15,12 +15,9 @@ layout: default
 title: Changelog
 ---
 
-Every released version of Sustained, newest first. The same text lives in
-`CHANGELOG.md` in the repository; this page is generated from it.
+Every released version of Sustained, newest first. The same text lives in `CHANGELOG.md` in the repository; this page is generated from it.
 
-Version numbers follow semantic versioning. A major version marks a change
-that can break working code. A minor version adds behaviour. A patch version
-fixes a defect without changing the surface.
+Version numbers follow semantic versioning. A major version marks a change that can break working code. A minor version adds new features. A patch version fixes a defect without changing public API signatures or introducing new functionality.
 """
 
 

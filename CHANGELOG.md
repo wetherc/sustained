@@ -1,5 +1,23 @@
 # Changelog
 
+## 2.22.0
+
+### Added
+
+- `Binary()` in `sustained.schema` declares a bytes column. It renders `BLOB` on the default dialect, `BYTEA` on Postgres, `VARBINARY(MAX)` on SQL Server, `VARBINARY` on Presto, and `BINARY` on Athena. Introspection folds `bytea`, the `blob` variants, and `varbinary` back to the one type, so the column never drifts against its own DDL. MySQL treats it as off-row like `TEXT` and `JSON`: no unique constraint, no literal default.
+- The **Covered** column on the [support page](https://sustained.tbmh.org/support) is now a proven claim. Each cover name maps to one test module in `tests/integration`, and a contract test fails the suite when `support.json` and a server's test class disagree in either direction. The integration suite behind it grew from the migration lifecycle to five covers: `queries` (joins, eager loading, aggregates, window functions, CTEs, set operations, subqueries, hydration), `writes` (upserts, RETURNING, `INSERT ... SELECT`, CREATE TABLE AS), `transactions` (commit and rollback observed from a second connection, savepoint nesting, pooling), `migrations` (now with validation failures, guards, column type round trips, and SQL file migrations), and `async` (`arun()`, `async_transaction()`, and `AsyncMigrator` on asyncpg and aiosqlite). Where a dialect refuses a feature, the suite asserts the `DialectError` and that nothing reached the server.
+- `matrix.py` gains a `<name>-latest` target per container database, for example `postgres-latest`. It runs the same tests against the newest release the vendor supports, as pinned in `support.json`, so the suite runs both ends of each claimed version range.
+
+### Fixed
+
+- `transaction()` spells nested-transaction savepoints per dialect. It rendered ANSI `SAVEPOINT` everywhere, which SQL Server spells `SAVE TRANSACTION` and DuckDB does not have. The compiler now provides the spellings, and nesting on DuckDB raises `DialectError` before any statement is sent.
+- `transaction()` now works on the duckdb driver. That driver autocommits every statement and gives every cursor its own session, so a block never opened a real transaction: inserts committed instantly and rollback failed. A transaction now pins one cursor for all statements inside it, including a migration's statements and its tracking write, so a failed multi-statement migration on DuckDB rolls back.
+- `async_transaction()` renders its transaction control through the dialect compiler the same way, and nesting on a dialect with no savepoint spelling raises `DialectError`.
+- sqlite3 connections in the default legacy transaction control never begin before DDL, so a rolled-back `transaction()` block kept its schema changes. `transaction()` now sends an explicit `BEGIN` on such connections.
+- A NOT NULL change with a `backfill` on DuckDB compiles to `ALTER COLUMN ... SET DATA TYPE ... USING coalesce(...)`, because DuckDB refuses `SET NOT NULL` after an `UPDATE` in the same transaction.
+- Plain indexes are read back on MySQL, MariaDB, SQL Server, and DuckDB. The shared `information_schema` read saw unique constraints only, so a declared index drifted on every plan and the second `up()` failed recreating it. Indexes that back foreign keys are recognized and never demand `allow_drops`.
+- Set-operation members render without parentheses on the default dialect, because SQLite rejects them outright, so `union()` and its siblings now run on the default dialect's own engine. A bare member that carries its own ORDER BY or LIMIT raises `DialectError`; every other dialect keeps the parentheses and per-member clauses.
+
 ## 2.21.0
 
 ### Added

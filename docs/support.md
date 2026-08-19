@@ -27,7 +27,17 @@ Note that the ANSI dialect has no server to run. Sustained compiles SQL for it, 
 
 <!-- end databases -->
 
-The **Covered** column says what Sustained features are integration tested for that database. `queries` includes building and executing SELECT, INSERT, UPDATE, and DELETE. `migrations` is the migration lifecycle: `migrate`, `rehearse`, `down`, `validate`, and `repair`, plus reading the schema back. Databases that don't support transactions (Presto) are not tested against migrations. SQL dialects that have no execution engine (ANSI) only evaluate the syntactic correctness of generated SQL.
+The **Covered** column names the feature sets the integration suite runs against that database. Each name maps to one test module in `tests/integration`:
+
+- `queries` is the read surface: joins, eager loading, aggregates, window functions, CTEs, set operations, subqueries, LIMIT and OFFSET, and hydration to models, dicts, DataFrames, and Arrow tables.
+- `writes` is INSERT, UPDATE, DELETE, upserts through `onConflict()`, RETURNING, `INSERT ... SELECT`, and CREATE TABLE AS.
+- `transactions` is commit and rollback as observed from a second connection, savepoint nesting, and `ConnectionPool`.
+- `migrations` is the migration lifecycle: `migrate`, `rehearse`, `down`, `validate`, and `repair`, plus schema introspection, column type round trips, and SQL file migrations.
+- `async` is `arun()`, `async_transaction()`, and `AsyncMigrator` on an async driver.
+
+Where a dialect refuses a feature, for example RETURNING on MySQL, the cover tests the refusal: `to_sql()` raises `DialectError` and nothing reaches the server.
+
+The column is not a claim we type by hand. A contract test, `tests/integration/test_contract.py`, reads this table's source and fails the suite when a database names a cover its test class does not run, or runs a cover its row does not name. Databases that don't support transactions (Presto) are not tested against writes or migrations. SQL dialects that have no execution engine (ANSI) only evaluate the syntactic correctness of generated SQL.
 
 ## Database versions
 
@@ -41,7 +51,7 @@ To check your exact version, point the suite at your server and run it:
 
 ```console
 $ SUSTAINED_TEST_POSTGRES_DSN=postgresql://user:pass@host/db python3 matrix.py postgres
-ran     postgres    10 tests, queries, migrations
+ran     postgres         59 tests, queries, writes, transactions, migrations, async
 ```
 
 A clean run verifies your exact release the same way the suite verifies the versions in the table. [Run it yourself](#run-it-yourself) describes the runner.
@@ -64,18 +74,23 @@ Running `matrix.py` in the repository starts each database server evaluated and 
 
 ```console
 $ python3 matrix.py
-starting postgres, mysql, mariadb, mssql, presto
-ran     postgres    10 tests, queries, migrations
-ran     mysql       10 tests, queries, migrations
-ran     mariadb     10 tests, queries, migrations
-ran     mssql       10 tests, queries, migrations
-ran     presto      2 tests, queries
-ran     sqlite      10 tests, queries, migrations
-ran     duckdb      10 tests, queries, migrations
-waiting athena      SUSTAINED_TEST_ATHENA_S3_DIR is not set
-removing postgres, mysql, mariadb, mssql, presto
+starting postgres, postgres-latest, mysql, mysql-latest, mariadb, mariadb-latest, mssql, mssql-latest, presto, presto-latest
+ran     postgres         59 tests, queries, writes, transactions, migrations, async
+ran     postgres-latest  59 tests, queries, writes, transactions, migrations, async
+ran     mysql            53 tests, queries, writes, transactions, migrations
+ran     mysql-latest     53 tests, queries, writes, transactions, migrations
+ran     mariadb          53 tests, queries, writes, transactions, migrations
+ran     mariadb-latest   53 tests, queries, writes, transactions, migrations
+ran     mssql            53 tests, queries, writes, transactions, migrations
+ran     mssql-latest     53 tests, queries, writes, transactions, migrations
+ran     presto           19 tests, queries
+ran     presto-latest    19 tests, queries
+ran     sqlite           59 tests, queries, writes, transactions, migrations, async
+ran     duckdb           53 tests, queries, writes, transactions, migrations
+waiting athena           SUSTAINED_TEST_ATHENA_S3_DIR is not set
+removing postgres, postgres-latest, mysql, mysql-latest, mariadb, mariadb-latest, mssql, mssql-latest, presto, presto-latest
 
-1 of 8 still waiting
+1 of 13 still waiting
 ```
 
 Containers are defined in `docker/compose.yaml` and are removed at the end of the test suite. Docker is obviously a prerequisite, although the test suite doesn't require you interact with it directly. You can name a target database engine to run only tests against that database:
@@ -86,7 +101,9 @@ $ python3 matrix.py python
 $ python3 matrix.py --check
 ```
 
-Aa skipped test is reported as a failure. Exit codes are 0 for a clean run, 1 for a failure, and 2 when nothing failed and something was still waiting.
+Each container database also has a `<name>-latest` target, for example `postgres-latest`. It runs the same tests against the newest release the vendor supports.
+
+A skipped test is reported as a failure. Exit codes are 0 for a clean run, 1 for a failure, and 2 when nothing failed and something was still waiting.
 
 To test against an existing server, set its connection variable, for example `SUSTAINED_TEST_POSTGRES_DSN`, and the test runner will not start a separate container for it. Athena runs in your own AWS account: point `SUSTAINED_TEST_ATHENA_S3_DIR` at a staging directory and supply a profile with `--athena-profile`.
 
