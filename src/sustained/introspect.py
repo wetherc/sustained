@@ -264,9 +264,11 @@ def introspect_schema(
     visible, varchar lengths and numeric precision survive, enum columns
     report their type's name and values, foreign keys resolve with their
     names and actions, and the snapshot carries the database's enum
-    types. Other dialects read plain information_schema and degrade to
-    column-only data when constraint views are unavailable. Names are
-    keyed lowercase.
+    types. MySQL and MariaDB add information_schema.statistics, MSSQL
+    adds sys.indexes, and DuckDB adds duckdb_indexes(), so plain indexes
+    are visible on those engines too. Other dialects read plain
+    information_schema and degrade to column-only data when constraint
+    views are unavailable. Names are keyed lowercase.
     """
     plan = _schema_plan(dialect)
     cursor = connection.cursor()
@@ -323,6 +325,10 @@ def _schema_plan(dialect: Dialects) -> SchemaPlan:
         return _mysql_plan()
     if dialect == Dialects.POSTGRES:
         return _postgres_plan()
+    if dialect == Dialects.MSSQL:
+        return _mssql_plan()
+    if dialect == Dialects.DUCKDB:
+        return _duckdb_plan()
     return _information_schema_plan()
 
 
@@ -588,6 +594,102 @@ def _information_schema_plan(catalog: Catalog = ANSI_CATALOG) -> SchemaPlan:
     return schema
 
 
+def _merge_plain_indexes(
+    schema: Snapshot, plain: Dict[str, Dict[str, IntrospectedIndex]]
+) -> None:
+    """Adds engine-read indexes to the tables the shared read produced."""
+    for table, indexes in plain.items():
+        existing = schema.get(table)
+        if existing is None:
+            continue
+        merged = dict(existing.indexes)
+        merged.update(indexes)
+        schema[table] = existing._replace(indexes=merged)
+
+
+def _mssql_plan() -> SchemaPlan:
+    """
+    information_schema plus sys.indexes. The shared read sees unique
+    constraints only; plain indexes and CREATE UNIQUE INDEX indexes live
+    in sys.indexes. Without them, a model's declared index reads as
+    missing on every plan, and the second run fails creating it again.
+    """
+    schema = yield from _information_schema_plan()
+    try:
+        index_rows = yield (
+            "SELECT t.name, i.name, i.is_unique, c.name "
+            "FROM sys.indexes i "
+            "JOIN sys.tables t ON t.object_id = i.object_id "
+            "JOIN sys.index_columns ic ON ic.object_id = i.object_id "
+            "AND ic.index_id = i.index_id "
+            "JOIN sys.columns c ON c.object_id = ic.object_id "
+            "AND c.column_id = ic.column_id "
+            "WHERE i.is_primary_key = 0 AND i.is_unique_constraint = 0 "
+            "AND i.name IS NOT NULL AND ic.is_included_column = 0 "
+            "ORDER BY t.name, i.name, ic.key_ordinal"
+        )
+        parts: Dict[Tuple[str, str, bool], List[str]] = {}
+        for table, name, is_unique, column in index_rows:
+            key = (str(table).lower(), str(name).lower(), bool(is_unique))
+            parts.setdefault(key, []).append(str(column).lower())
+        plain: Dict[str, Dict[str, IntrospectedIndex]] = {}
+        for (table, name, unique), columns in parts.items():
+            plain.setdefault(table, {})[name] = IntrospectedIndex(
+                tuple(columns), unique
+            )
+        _merge_plain_indexes(schema, plain)
+    except Exception:
+        # No sys views to read; keep the constraint-derived indexes.
+        pass
+    return schema
+
+
+_DUCKDB_IDENTIFIER_RE = re.compile(r"^\w+$")
+
+
+def _duckdb_index_columns(expressions: str) -> Optional[Tuple[str, ...]]:
+    """
+    The column list in duckdb_indexes()'s expressions field, spelled
+    '[a, b]'. An expression index has parts that are not bare column
+    names; it cannot be compared against a model's column list, so it
+    reads as None and stays out of the schema.
+    """
+    parts = [
+        part.strip() for part in expressions.strip("[]").split(",") if part.strip()
+    ]
+    if not parts or any(not _DUCKDB_IDENTIFIER_RE.match(part) for part in parts):
+        return None
+    return tuple(part.lower() for part in parts)
+
+
+def _duckdb_plan() -> SchemaPlan:
+    """
+    information_schema plus duckdb_indexes(). DuckDB's shared read sees
+    unique constraints only, so a model's declared index would read as
+    missing on every plan, and the second run would fail creating it
+    again.
+    """
+    schema = yield from _information_schema_plan()
+    try:
+        index_rows = yield (
+            "SELECT table_name, index_name, is_unique, expressions "
+            "FROM duckdb_indexes() WHERE NOT is_primary"
+        )
+        plain: Dict[str, Dict[str, IntrospectedIndex]] = {}
+        for table, name, is_unique, expressions in index_rows:
+            columns = _duckdb_index_columns(str(expressions or ""))
+            if columns is None:
+                continue
+            plain.setdefault(str(table).lower(), {})[str(name).lower()] = (
+                IntrospectedIndex(columns, bool(is_unique))
+            )
+        _merge_plain_indexes(schema, plain)
+    except Exception:
+        # No duckdb_indexes() to read; keep the constraint-derived indexes.
+        pass
+    return schema
+
+
 def _postgres_column_type(
     data_type: str,
     udt_name: Optional[str],
@@ -814,6 +916,34 @@ def parse_inline_enum(raw_type: str) -> Tuple[str, ...]:
 def _mysql_plan() -> SchemaPlan:
     schema = yield from _information_schema_plan(MYSQL_CATALOG)
     yield from _recover_mariadb_json(schema)
+    try:
+        index_rows = yield (
+            "SELECT table_name, index_name, non_unique, column_name "
+            "FROM information_schema.statistics "
+            "WHERE table_schema = DATABASE() "
+            "ORDER BY table_name, index_name, seq_in_index"
+        )
+        parts: Dict[Tuple[str, str, bool], List[Optional[str]]] = {}
+        for table, name, non_unique, column in index_rows:
+            if str(name).upper() == "PRIMARY":
+                continue
+            key = (str(table).lower(), str(name).lower(), not int(str(non_unique)))
+            parts.setdefault(key, []).append(
+                None if column is None else str(column).lower()
+            )
+        plain: Dict[str, Dict[str, IntrospectedIndex]] = {}
+        for (table, name, unique), columns in parts.items():
+            if any(column is None for column in columns):
+                # A functional index part has no column name; it cannot
+                # be compared against a model's column list.
+                continue
+            plain.setdefault(table, {})[name] = IntrospectedIndex(
+                tuple(cast(str, column) for column in columns), unique
+            )
+        _merge_plain_indexes(schema, plain)
+    except Exception:
+        # No statistics view; keep the constraint-derived indexes.
+        pass
     for table in schema.values():
         for name, column in table.columns.items():
             values = parse_inline_enum(column.raw_type)

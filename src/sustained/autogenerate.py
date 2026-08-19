@@ -537,6 +537,11 @@ def _diff_indexes(
     for name, actual_index in actual_table.indexes.items():
         if name in declared_indexes or name.startswith("sqlite_autoindex"):
             continue
+        # An engine that requires an index behind a foreign key creates
+        # one named after the constraint. It belongs to the key, not to
+        # the model's index list, and dropping it would break the key.
+        if name in actual_table.foreign_keys:
+            continue
         # Unique indexes backing a declared column-level UNIQUE or the
         # primary key are not extras.
         if actual_index.unique and len(actual_index.columns) == 1:
