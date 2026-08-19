@@ -50,34 +50,102 @@ All three forms raise `AttributeError` when `tableName` is unset, when the name 
 
 ## Queries and dialect
 
-| Signature | Returns | Description |
-| --- | --- | --- |
-| `Model.query()` | `QueryBuilder` | A new builder on the model's table, using the model's dialect. |
-| `Model.set_dialect(dialect)` | `None` | Sets the dialect for every query, DDL statement, and migration built from this class. Call it on `Model` to cover every model, or on a subclass to scope it to that subclass. |
+```python
+Model.query() -> QueryBuilder
+```
+{: .sig #query}
+
+A new builder on the model's table, using the model's dialect.
+
+```python
+Model.set_dialect(dialect)
+```
+{: .sig #set_dialect}
+
+Sets the dialect for every query, DDL statement, and migration built from this class. Call it on `Model` to cover every model, or on a subclass to scope it to that subclass.
 
 ## Connections
 
-| Signature | Description |
-| --- | --- |
-| `Model.bind(connection)` | Attaches a DB-API 2.0 connection or a `ConnectionPool`. Binding on `Model` shares the connection with every model; binding on a subclass scopes it to that subclass. |
-| `Model.unbind()` | Removes the binding. |
-| `Model.bind_async(adapter)` | Attaches an `AsyncAdapter`. |
-| `Model.unbind_async()` | Removes the async adapter. |
-| `Model.transaction(connection=None)` | A context that commits on success and rolls back on any exception. Nested blocks use savepoints. Raises `RuntimeError` when no connection resolves. |
-| `Model.async_transaction(adapter=None)` | The async equivalent. Nested blocks use savepoints. |
+```python
+Model.bind(connection)
+```
+{: .sig #bind}
+
+Attaches a DB-API 2.0 connection or a `ConnectionPool`. Binding on `Model` shares the connection with every model; binding on a subclass scopes it to that subclass.
+
+```python
+Model.unbind()
+```
+{: .sig #unbind}
+
+Removes the binding.
+
+```python
+Model.bind_async(adapter)
+```
+{: .sig #bind_async}
+
+Attaches an `AsyncAdapter`. `Model.unbind_async()` removes it again.
+
+```python
+Model.transaction(connection=None)
+```
+{: .sig #transaction}
+
+A context that commits on success and rolls back on any exception. Nested blocks use savepoints. Raises `RuntimeError` when no connection resolves.
+
+```python
+Model.async_transaction(adapter=None)
+```
+{: .sig #async_transaction}
+
+The async equivalent. Nested blocks use savepoints.
 
 The connection's parameter style must match the dialect's placeholder. See [Dialect support](/reference/dialects).
 
 ## DDL
 
-| Signature | Returns | Description |
-| --- | --- | --- |
-| `Model.create_table_sql(if_not_exists=False)` | `str` | The CREATE TABLE statement from `tableColumns` and `tableOptions`. Raises `ValueError` when the model sets no `tableColumns` or no `tableName`. |
-| `Model.create_indexes_sql()` | `list[str]` | One CREATE INDEX statement per entry in `indexes`. Empty when `indexes` is unset. |
-| `Model.create_table_statements(if_not_exists=False)` | `list[str]` | The CREATE TABLE statement plus the CREATE INDEX statements. |
-| `Model.create_table(connection=None, if_not_exists=False)` | `None` | Executes the CREATE TABLE and CREATE INDEX statements. |
-| `Model.drop_table_sql(if_exists=True)` | `str` | The DROP TABLE statement. Raises `ValueError` when the model sets no `tableName`. |
-| `Model.drop_table(connection=None, if_exists=True)` | `None` | Executes the DROP TABLE statement. |
+```python
+Model.create_table_sql(if_not_exists=False) -> str
+```
+{: .sig #create_table_sql}
+
+The CREATE TABLE statement from `tableColumns` and `tableOptions`. Raises `ValueError` when the model sets no `tableColumns` or no `tableName`.
+
+```python
+Model.create_indexes_sql() -> list[str]
+```
+{: .sig #create_indexes_sql}
+
+One CREATE INDEX statement per entry in `indexes`. Empty when `indexes` is unset.
+
+```python
+Model.create_table_statements(if_not_exists=False) -> list[str]
+```
+{: .sig #create_table_statements}
+
+The CREATE TABLE statement plus the CREATE INDEX statements.
+
+```python
+Model.create_table(connection=None, if_not_exists=False)
+```
+{: .sig #create_table}
+
+Executes the CREATE TABLE and CREATE INDEX statements.
+
+```python
+Model.drop_table_sql(if_exists=True) -> str
+```
+{: .sig #drop_table_sql}
+
+The DROP TABLE statement. Raises `ValueError` when the model sets no `tableName`.
+
+```python
+Model.drop_table(connection=None, if_exists=True)
+```
+{: .sig #drop_table}
+
+Executes the DROP TABLE statement.
 
 Column types render per dialect. See [Schema types](/reference/schema).
 
@@ -85,10 +153,19 @@ Column types render per dialect. See [Schema types](/reference/schema).
 
 `run()` and `first()` return instances with one attribute per result column. Instances do not lazy load, do not track changes, and have no `save()` method.
 
-| Signature | Description |
-| --- | --- |
-| `Model(**kwargs)` | Sets each keyword as an attribute. |
-| `repr(instance)` | `ClassName(key=value, ...)` over the instance's attributes. |
+```python
+Model(**kwargs)
+```
+{: .sig #model}
+
+Sets each keyword as an attribute.
+
+```python
+repr(instance)
+```
+{: .sig #repr}
+
+`ClassName(key=value, ...)` over the instance's attributes.
 
 ## Relations
 
@@ -123,17 +200,26 @@ String names in `modelClass` resolve through the model registry: every subclass 
 
 These live in `sustained.model`.
 
-| Signature | Returns | Description |
-| --- | --- | --- |
-| `get_registered_model(name)` | `type[Model]` or `None` | Looks up a model by class name. |
-| `resolve_model_reference(reference, context_module=None)` | `type[Model]` | Returns a class unchanged, or resolves a string through the registry, then through `context_module`. Raises `ValueError` when neither one finds the class. |
+```python
+get_registered_model(name) -> type[Model] | None
+```
+{: .sig #get_registered_model}
+
+Looks up a model by class name.
+
+```python
+resolve_model_reference(reference, context_module=None) -> type[Model]
+```
+{: .sig #resolve_model_reference}
+
+Returns a class unchanged, or resolves a string through the registry, then through `context_module`. Raises `ValueError` when neither one finds the class.
 
 ## Building a model at runtime
 
 ```python
-create_model(name, table_name, mappings=None, table_schema=None,
-             database=None, columns=None)
+create_model(name, table_name, mappings=None, table_schema=None, database=None, columns=None)
 ```
+{: .sig #create_model}
 
 `create_model` returns a new `Model` subclass. `mappings` becomes `relationMappings`, and `columns` sets the strict column tuple. The result behaves like a class you wrote by hand, and registers itself the same way.
 

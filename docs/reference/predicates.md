@@ -32,7 +32,7 @@ Comparison operators return a `Predicate`. A `ColumnExpr` on the right side of a
 
 Each method below returns a `Predicate`.
 
-| Signature | Renders |
+| Method | Renders |
 | --- | --- |
 | `like(pattern)` | `LIKE` |
 | `not_like(pattern)` | `NOT LIKE` |
@@ -60,10 +60,19 @@ A composable condition. Pass a `Predicate` to `where()` or `having()` as the onl
 
 Sustained decides whether a bare string is a column name or a value. In function arguments and CASE results it reads the string as a column. These two classes override that reading.
 
-| Class | Meaning |
-| --- | --- |
-| `Column(name)` | The string is a column reference or raw SQL. Sustained does not quote it and does not treat it as a value. |
-| `Literal(value)` | The value is a literal, even in a position where Sustained would read a column. |
+```python
+Column(name)
+```
+{: .sig #column}
+
+The string is a column reference or raw SQL. Sustained does not quote it and does not treat it as a value.
+
+```python
+Literal(value)
+```
+{: .sig #literal}
+
+The value is a literal, even in a position where Sustained would read a column.
 
 ```python
 from sustained import Literal
@@ -81,17 +90,40 @@ A string argument that is not a plain column path raises `ValueError` at render 
 
 The fluent methods on `QueryBuilder` build these objects for you. Construct one directly when you need a shape the fluent method does not cover.
 
-| Class | Signature |
-| --- | --- |
-| `Func` | `Func(function_name, *args, alias=None)` |
-| `AggregateExpression` | `AggregateExpression(function_name, column, alias=None)` |
-| `WindowExpression` | `WindowExpression(function_name, alias, partition_by=None, order_by=None, args=None, frame=None)` |
-| `CaseExpression` | `CaseExpression(alias, else_result)` |
-| `Subquery` | `Subquery(query, alias)` |
+```python
+Func(function_name, *args, alias=None)
+```
+{: .sig #func}
 
-`CaseExpression.when(condition, result)` appends a WHEN/THEN pair and returns the `CaseExpression`, so pairs chain. `CaseExpression.whens` returns a copy of the pairs.
+A function call, the object `select_func()` builds.
 
-`Subquery` embeds a `QueryBuilder` in a SELECT list or a join:
+```python
+AggregateExpression(function_name, column, alias=None)
+```
+{: .sig #aggregateexpression}
+
+An aggregate, the object `count()` and its siblings build.
+
+```python
+WindowExpression(function_name, alias, partition_by=None, order_by=None, args=None, frame=None)
+```
+{: .sig #windowexpression}
+
+A window function, the object `select_window()` builds.
+
+```python
+CaseExpression(alias, else_result)
+```
+{: .sig #caseexpression}
+
+A CASE expression. `when(condition, result)` appends a WHEN/THEN pair and returns the `CaseExpression`, so pairs chain. `whens` returns a copy of the pairs.
+
+```python
+Subquery(query, alias)
+```
+{: .sig #subquery}
+
+Embeds a `QueryBuilder` in a SELECT list or a join:
 
 ```python
 from sustained.expressions import Subquery
@@ -123,12 +155,33 @@ Write either `NOW()` or `GETDATE()` and the dialect renders its own spelling. Ne
 
 ### Registry API
 
-| Signature | Returns | Description |
-| --- | --- | --- |
-| `FunctionRegistry.register(name, metadata)` | `None` | Registers or overwrites an entry. The key is the uppercased name. |
-| `FunctionRegistry.get_metadata(name)` | `FunctionMetadata` | Case-insensitive lookup. Raises `KeyError` when the name is unregistered. |
-| `FunctionRegistry.resolve_name(name, dialect)` | `str` | The dialect's spelling, or the name uppercased. |
-| `FunctionRegistry.is_supported(name, dialect)` | `bool` | `True` for any unregistered name. |
+```python
+FunctionRegistry.register(name, metadata)
+```
+{: .sig #register}
+
+Registers or overwrites an entry. The key is the uppercased name.
+
+```python
+FunctionRegistry.get_metadata(name) -> FunctionMetadata
+```
+{: .sig #get_metadata}
+
+Case-insensitive lookup. Raises `KeyError` when the name is unregistered.
+
+```python
+FunctionRegistry.resolve_name(name, dialect) -> str
+```
+{: .sig #resolve_name}
+
+The dialect's spelling, or the name uppercased.
+
+```python
+FunctionRegistry.is_supported(name, dialect) -> bool
+```
+{: .sig #is_supported}
+
+`True` for any unregistered name.
 
 `FunctionMetadata(supported_dialects, dialect_names={})` is a `NamedTuple`. Register your own metadata to get build-time checking for a function the registry does not list:
 

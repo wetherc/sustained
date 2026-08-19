@@ -48,11 +48,9 @@ MySQL spells `BOOLEAN` as `TINYINT(1)` because its catalog reports the underlyin
 ## `ColumnDef`
 
 ```python
-ColumnDef(type_name, *, length=None, precision=None, scale=None,
-          primary_key=False, nullable=True, unique=False, default=None,
-          references=None, autoincrement=False, backfill=None,
-          enum_name=None, enum_values=None)
+ColumnDef(type_name, *, length=None, precision=None, scale=None, primary_key=False, nullable=True, unique=False, default=None, references=None, autoincrement=False, backfill=None, enum_name=None, enum_values=None)
 ```
+{: .sig}
 
 Use the factories above rather than constructing a `ColumnDef` yourself. Every keyword below works on every factory.
 
@@ -76,6 +74,7 @@ Use the factories above rather than constructing a `ColumnDef` yourself. Every k
 ```python
 Enum(*values, name, **options)
 ```
+{: .sig #enum-factory}
 
 `Enum` returns an ENUM `ColumnDef`: a named, ordered list of permitted string values. Pass the values as strings, or pass one Python `enum.Enum` class whose member values are strings. Hydrated values stay plain strings.
 
@@ -90,6 +89,7 @@ Guide: [Enum columns](/schema#enum-columns).
 ```python
 Check(name, expression)
 ```
+{: .sig}
 
 A named CHECK constraint. List instances in the model's `tableConstraints` attribute. The expression is SQL and renders as written. `Check` raises `ValueError` for an empty name or an empty expression.
 
@@ -98,6 +98,7 @@ A named CHECK constraint. List instances in the model's `tableConstraints` attri
 ```python
 ForeignKey(name, columns, references, on_delete=None, on_update=None)
 ```
+{: .sig}
 
 A named FOREIGN KEY constraint, listed in `tableConstraints`. `columns` is a string or a sequence of the constrained columns, in order. `references` is a `'table.column'` string, or a sequence of them, one per constrained column; every target column must belong to the same table. `on_delete` and `on_update` accept `CASCADE`, `SET NULL`, `RESTRICT`, `NO ACTION`, and `SET DEFAULT`, case-insensitively; `FOREIGN_KEY_ACTIONS` holds that tuple.
 
@@ -124,6 +125,7 @@ The DuckDB message names the alternative: a sequence with a DEFAULT expression.
 ```python
 Index(name, *columns, unique=False)
 ```
+{: .sig #index-factory}
 
 An `Index` holds `name`, `columns`, and `unique`. It raises `ValueError` for an empty name or for no columns.
 
@@ -143,6 +145,7 @@ class Show(Model):
 ```python
 TableOptions(location=None, partitioned_by=None, properties=None)
 ```
+{: .sig}
 
 `TableOptions` holds storage clauses for engines that need them. Athena renders `PARTITIONED BY`, `LOCATION`, and `TBLPROPERTIES` after the column list. Every other dialect raises `DialectError` when the model sets `tableOptions`.
 
@@ -173,10 +176,19 @@ MySQL needs a prefix length for a key on a `TEXT` or `JSON` column, so `validate
 
 Both renderers take a compiler, which you get from `Dialects.get_compiler(dialect)`. `Model.create_table_sql()` calls them for you.
 
-| Signature | Returns |
-| --- | --- |
-| `render_column_sql(compiler, name, col, inline_pk)` | One column clause, for CREATE TABLE or ADD COLUMN. |
-| `build_create_table_sql(compiler, table_sql, columns, if_not_exists=False, options=None, extras=None, constraints=None)` | The whole CREATE TABLE statement. `constraints` is a sequence of declared `Check` and `ForeignKey` objects, rendered after the constraints the columns themselves imply. |
+```python
+render_column_sql(compiler, name, col, inline_pk) -> str
+```
+{: .sig #render_column_sql}
+
+One column clause, for CREATE TABLE or ADD COLUMN.
+
+```python
+build_create_table_sql(compiler, table_sql, columns, if_not_exists=False, options=None, extras=None, constraints=None) -> str
+```
+{: .sig #build_create_table_sql}
+
+The whole CREATE TABLE statement. `constraints` is a sequence of declared `Check` and `ForeignKey` objects, rendered after the constraints the columns themselves imply.
 
 A single primary key column renders inline. Several primary key columns become a table-level `PRIMARY KEY (...)` constraint.
 
@@ -187,6 +199,7 @@ A single primary key column renders inline. Several primary key columns become a
 ```python
 Expression(value)
 ```
+{: .sig}
 
 Raw SQL that renders as written, in both `str(query)` and `to_sql()`. Use an `Expression` for a default or a backfill the database computes:
 

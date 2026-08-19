@@ -437,7 +437,9 @@ samp { font-family: var(--font-mono); }
   background: var(--code-tint);
   font-size: 0.85em;
   color: var(--ink);
-  word-break: break-word;
+  /* Break-anywhere would split identifiers mid-word. Let a long identifier
+     widen its box instead; a table that gets too wide scrolls sideways. */
+  overflow-wrap: break-word;
 }
 
 .prose a > code { color: inherit; }
@@ -464,6 +466,45 @@ figure.highlight {
   border: 0;
   background: none;
   font-size: inherit;
+}
+
+/* A reference entry opens with its signature: a fenced code block marked
+   `{: .sig}` in the markdown. The signature reads as a line of the text
+   rather than as a sample, so it loses the box, takes the full measure,
+   and hangs its own tick on the rail. A long signature wraps only between
+   parameters, and the continuation lines indent past the method name. */
+.prose .sig {
+  position: relative;
+  margin: 2rem 0 0.5rem;
+  scroll-margin-top: 1rem;
+}
+
+.prose .sig::before {
+  content: "";
+  position: absolute;
+  left: calc(var(--rail-gap) * -1 - var(--rail));
+  top: 0.8em;
+  width: calc(var(--rail-gap) * 0.55);
+  height: var(--rail);
+  background: var(--pine);
+}
+
+.prose .sig pre {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  overflow-x: visible;
+  font-size: 0.86rem;
+}
+
+.prose .sig pre code {
+  display: block;
+  white-space: pre-wrap;
+  overflow-wrap: normal;
+  word-break: normal;
+  padding-left: 2.2em;
+  text-indent: -2.2em;
 }
 
 /* Console transcripts read as output, not as source, so they invert. */
@@ -705,7 +746,7 @@ figure.highlight {
     padding-left: 1.1rem;
   }
 
-  .prose h2::before, .prose h3::before { display: none; }
+  .prose h2::before, .prose h3::before, .prose .sig::before { display: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -12,6 +12,7 @@ Guide: [Schema and Migrations](/schema).
 ```python
 Migration(id, up, down=..., checksum=None, repeatable=False)
 ```
+{: .sig}
 
 A `Migration` is one schema change. A step is a SQL string, a list of statements, a [ddl step](#typed-ddl-steps), or a callable that receives the connection. A list may mix strings and ddl steps.
 
@@ -61,11 +62,9 @@ Guide: [Typed migration steps](/schema#typed-migration-steps).
 ## `Migrator`
 
 ```python
-Migrator(connection, migrations, table='sustained_migrations',
-         dialect=Dialects.DEFAULT, tracking_table_options=None,
-         rehearsal_table='sustained_rehearsals', guards=None,
-         callbacks=None)
+Migrator(connection, migrations, table='sustained_migrations', dialect=Dialects.DEFAULT, tracking_table_options=None, rehearsal_table='sustained_rehearsals', guards=None, callbacks=None)
 ```
+{: .sig}
 
 `Migrator` applies and reverts migrations, records them in a tracking table, and runs each migration inside a transaction. Duplicate ids raise `ValueError`.
 
@@ -75,22 +74,70 @@ Migrator(connection, migrations, table='sustained_migrations',
 
 ### Inspecting
 
-| Signature | Returns | Description |
-| --- | --- | --- |
-| `applied_records()` | `list[AppliedRecord]` | Every tracking row, ordered by sequence. Creates or upgrades the tracking table first. |
-| `applied()` | `list[str]` | The ids that ran successfully, in order. |
-| `pending()` | `list[Migration]` | Versioned migrations with no successful row, then repeatables that are new or changed. |
-| `status()` | `list[tuple[str, bool]]` | `(id, applied)` per registered migration. |
-| `statuses()` | `list[tuple[str, str]]` | `(id, state)`, where state is `applied`, `pending`, or `changed`. `changed` marks a repeatable whose contents differ from its last run. |
+```python
+applied_records() -> list[AppliedRecord]
+```
+{: .sig #applied_records}
+
+Every tracking row, ordered by sequence. Creates or upgrades the tracking table first.
+
+```python
+applied() -> list[str]
+```
+{: .sig #applied}
+
+The ids that ran successfully, in order.
+
+```python
+pending() -> list[Migration]
+```
+{: .sig #pending}
+
+Versioned migrations with no successful row, then repeatables that are new or changed.
+
+```python
+status() -> list[tuple[str, bool]]
+```
+{: .sig #status}
+
+`(id, applied)` per registered migration.
+
+```python
+statuses() -> list[tuple[str, str]]
+```
+{: .sig #statuses}
+
+`(id, state)`, where state is `applied`, `pending`, or `changed`. `changed` marks a repeatable whose contents differ from its last run.
 
 ### Running
 
-| Signature | Returns | Description |
-| --- | --- | --- |
-| `up(target=None, validate=True, allow_out_of_order=False, models=None, unrehearsed=False, ...)` | `list[str]` | Validates, then applies pending migrations in order. `target` stops after that id and skips the repeatables. With `models`, the diff against them runs after the versioned migrations and before the repeatables; it cannot be combined with `target`. `unrehearsed=True` waives the rehearsal gate below. The remaining options are the diff options below. |
-| `down(steps=1)` | `list[str]` | Reverts newest-first. Never touches repeatables. |
-| `down_to(target)` | `list[str]` | Reverts until `target` is the newest applied. |
-| `baseline(target)` | `list[str]` | Records migrations up to and including `target` as applied, without running them. Also records every repeatable at its current checksum. |
+```python
+up(target=None, validate=True, allow_out_of_order=False, models=None, unrehearsed=False, ...) -> list[str]
+```
+{: .sig #up}
+
+Validates, then applies pending migrations in order. `target` stops after that id and skips the repeatables. With `models`, the diff against them runs after the versioned migrations and before the repeatables; it cannot be combined with `target`. `unrehearsed=True` waives the rehearsal gate below. The remaining options are the [diff options](#generating-from-models) below.
+
+```python
+down(steps=1) -> list[str]
+```
+{: .sig #down}
+
+Reverts newest-first. Never touches repeatables.
+
+```python
+down_to(target) -> list[str]
+```
+{: .sig #down_to}
+
+Reverts until `target` is the newest applied.
+
+```python
+baseline(target) -> list[str]
+```
+{: .sig #baseline}
+
+Records migrations up to and including `target` as applied, without running them. Also records every repeatable at its current checksum.
 
 `up` raises `MigrationError` when validation finds problems, `RehearsalRequired` when the run would remove data and no passing rehearsal row covers it, and `ValueError` for an unknown target or a target that names a repeatable. `down` and `down_to` raise `ValueError` when an applied migration is not registered, and when it has no down step.
 
@@ -98,10 +145,19 @@ A migration that fails re-raises the driver's exception with a `migration_id` at
 
 ### Validating and repairing
 
-| Signature | Returns | Description |
-| --- | --- | --- |
-| `validate(raise_on_problems=True)` | `list[str]` | Checks the tracking table against the registry. Raises `MigrationError` unless `raise_on_problems=False`. |
-| `repair()` | `list[str]` | Deletes failed-attempt rows and rewrites drifted or missing checksums. Returns the actions taken. |
+```python
+validate(raise_on_problems=True) -> list[str]
+```
+{: .sig #validate}
+
+Checks the tracking table against the registry. Raises `MigrationError` unless `raise_on_problems=False`.
+
+```python
+repair() -> list[str]
+```
+{: .sig #repair}
+
+Deletes failed-attempt rows and rewrites drifted or missing checksums. Returns the actions taken.
 
 The problems validation reports:
 
@@ -114,12 +170,33 @@ The problems validation reports:
 
 ### Generating from models
 
-| Signature | Returns | Description |
-| --- | --- | --- |
-| `plan(models, ...)` | `Migration` or `None` | The migration `up(models=[...])` would generate. Records nothing, applies nothing. `None` when the schema is current. |
-| `up(models=[...], ...)` | `list[str]` | Generates, registers, and applies it, with everything else pending. |
-| `drift(models, renames=None, table_renames=None)` | `list[str]` | What the models still ask for, one readable line each. Empty when the database holds everything they declare. |
-| `sync(models, ...)` | `list[str]` | Deprecated since 2.13.0, removed in 3.0. Warns, then calls `up(models=...)`. |
+```python
+plan(models, ...) -> Migration | None
+```
+{: .sig #plan}
+
+The migration `up(models=[...])` would generate. Records nothing, applies nothing. `None` when the schema is current.
+
+```python
+up(models=[...], ...) -> list[str]
+```
+{: .sig #up-models}
+
+Generates, registers, and applies it, with everything else pending.
+
+```python
+drift(models, renames=None, table_renames=None) -> list[str]
+```
+{: .sig #drift}
+
+What the models still ask for, one readable line each. Empty when the database holds everything they declare.
+
+```python
+sync(models, ...) -> list[str]
+```
+{: .sig #sync}
+
+Deprecated since 2.13.0, removed in 3.0. Warns, then calls `up(models=...)`.
 
 These methods take the same options:
 
@@ -140,6 +217,7 @@ Pass every model you manage. These methods compare the whole database against th
 ```python
 rehearse(scratch=False, models=None, ...) -> Rehearsal
 ```
+{: .sig #rehearse}
 
 `rehearse()` applies every pending migration, runs the down steps back down, and rolls the whole run back. It returns an empty `Rehearsal` when nothing is pending. With `models`, the migration generated from those models joins the run without being registered, and the remaining arguments are the diff options above.
 
@@ -155,11 +233,26 @@ The check reads the declared dialect rather than the engine. A config that leave
 
 ### Rehearsal rows
 
-| Signature | Returns | Description |
-| --- | --- | --- |
-| `record_rehearsal(key, outcome='passed')` | `None` | Writes the rehearsal row for one key, replacing any earlier row. `outcome` is `'passed'`, `'failed'`, or `'override'` for statements applied with `unrehearsed=True`; anything else raises `ValueError`. |
-| `rehearsal_outcome(key)` | `str` or `None` | What the recorded rehearsal proved, or `None` when none covers the key. |
-| `rehearsed(key)` | `bool` | Whether a passing rehearsal covers the key. |
+```python
+record_rehearsal(key, outcome='passed')
+```
+{: .sig #record_rehearsal}
+
+Writes the rehearsal row for one key, replacing any earlier row. `outcome` is `'passed'`, `'failed'`, or `'override'` for statements applied with `unrehearsed=True`; anything else raises `ValueError`.
+
+```python
+rehearsal_outcome(key) -> str | None
+```
+{: .sig #rehearsal_outcome}
+
+What the recorded rehearsal proved, or `None` when none covers the key.
+
+```python
+rehearsed(key) -> bool
+```
+{: .sig #rehearsed}
+
+Whether a passing rehearsal covers the key.
 
 A passing `rehearse()` records its own row and returns the key on the result. It also records a row for each shorter run a `target` would produce that removes data, because the rehearsal applied and reverted those statements on its way through. `rehearse(scratch=True)` records nothing, because the row belongs on the database the next run reads. Record that row there yourself.
 
@@ -168,6 +261,7 @@ A passing `rehearse()` records its own row and returns the key on the result. It
 ```python
 rehearsal_key(applied, run) -> str
 ```
+{: .sig #rehearsal_key}
 
 `rehearsal_key()` computes the key both sides use: a SHA-256 over the checksums of the successful rows in `applied`, then over the checksums of the migrations in `run`. It hashes an id only for a callable step with no checksum, as the token `id:<id>`.
 
@@ -178,6 +272,7 @@ This function was called `receipt_key()` before version 2.20.0, and the outcome 
 ```python
 script(direction='up') -> str
 ```
+{: .sig #script}
 
 `script()` returns every statement a run would execute as text, including the tracking bookkeeping. Any direction other than `up` or `down` raises `ValueError`.
 
@@ -230,21 +325,54 @@ Every diff against the models excludes both tables, so neither table reads as dr
 
 ## Module functions
 
-| Signature | Returns | Description |
-| --- | --- | --- |
-| `migration_checksum(migration)` | `str` or `None` | The checksum validation compares. A ddl step hashes as its canonical signature, so the checksum is the same on every dialect. `None` for a callable step with no explicit checksum. |
-| `create_table_migration(model)` | `Migration` | A create/drop pair derived from a model. |
-| `migration_sql(migration, direction='up', compiler=None)` | `list[str]` | One migration's statements, for offline review. Ddl steps render for the given compiler's dialect, or ANSI when none is given. A callable step renders as a comment. Raises `ValueError` when that step is `None`. |
-| `rehearsal_key(applied, run)` | `str` | The key a rehearsal row is stored under. |
-| `rehearsal_failed(result)` | `bool` | Whether one result stops a rehearsal from passing. |
-| `run_statements(run, compiler=None)` | `list[str]` | Every up statement a run would apply, callable steps skipped. Ddl steps render for the given compiler's dialect, which is how the guards read them. |
-| `check_guards(guards, run, dialect, reported=None)` | `None` | Runs the guards over a run. Raises `GuardBlocked` on a blocking verdict, prints warnings on stderr. |
+```python
+migration_checksum(migration) -> str | None
+```
+{: .sig #migration_checksum}
+
+The checksum validation compares. A ddl step hashes as its canonical signature, so the checksum is the same on every dialect. `None` for a callable step with no explicit checksum.
+
+```python
+create_table_migration(model) -> Migration
+```
+{: .sig #create_table_migration}
+
+A create/drop pair derived from a model.
+
+```python
+migration_sql(migration, direction='up', compiler=None) -> list[str]
+```
+{: .sig #migration_sql}
+
+One migration's statements, for offline review. Ddl steps render for the given compiler's dialect, or ANSI when none is given. A callable step renders as a comment. Raises `ValueError` when that step is `None`.
+
+```python
+rehearsal_failed(result) -> bool
+```
+{: .sig #rehearsal_failed}
+
+Whether one result stops a rehearsal from passing.
+
+```python
+run_statements(run, compiler=None) -> list[str]
+```
+{: .sig #run_statements}
+
+Every up statement a run would apply, callable steps skipped. Ddl steps render for the given compiler's dialect, which is how the guards read them.
+
+```python
+check_guards(guards, run, dialect, reported=None)
+```
+{: .sig #check_guards}
+
+Runs the guards over a run. Raises `GuardBlocked` on a blocking verdict, prints warnings on stderr.
 
 ### `Callbacks`
 
 ```python
 Callbacks(before_migrate=None, after_migrate=None, on_error=None)
 ```
+{: .sig}
 
 `Callbacks` is a NamedTuple of optional functions that you pass to either migrator. `before_migrate(connection)` runs before validation and before the advisory lock. `after_migrate(connection, applied)` runs only when at least one migration applied. `on_error(connection, migration_id, error)` runs after a failure, and its `migration_id` argument is `None` when the run failed before it reached a migration. When `on_error` itself raises, its error prints on stderr, and the run's error still propagates. A `before_migrate` or `after_migrate` that raises stops the caller.
 
@@ -254,16 +382,61 @@ Guards live in `sustained.guards`. A guard is a `Callable[[Sequence[str], Dialec
 
 `up()` raises `GuardBlocked` on a blocking verdict, before any statement runs, and prints warnings on stderr. A callable step renders no SQL, so guards cannot read it. `down()` runs no guards, because a down step undoes work the rules already passed, and `no_drops()` would block every rollback of a create.
 
-| Signature | Returns | Description |
-| --- | --- | --- |
-| `no_drops()` | `Guard` | Blocks a table, column, view, schema, database, enum type, or constraint drop. Index and key drops pass. |
-| `index_must_be_concurrent()` | `Guard` | Blocks `CREATE INDEX` without `CONCURRENTLY`. Postgres only; silent elsewhere. |
-| `no_table_rewrite()` | `Guard` | Warns on a column type change, or a NOT NULL with no default for existing rows. |
-| `no_lock_without_timeout()` | `Guard` | Blocks a run that alters or drops a table with no `SET lock_timeout` anywhere in it. Postgres only; silent elsewhere. |
-| `max_statements(limit)` | `Guard` | Blocks every statement past `limit`. A limit below 1 raises `ValueError`. |
-| `run_guards(guards, statements, dialect)` | `list[Verdict]` | Every guard's verdicts, in guard order. |
-| `blocking(verdicts)` | `list[Verdict]` | The verdicts that stop a run. |
-| `warnings_only(verdicts)` | `list[Verdict]` | The verdicts that only report. |
+```python
+no_drops() -> Guard
+```
+{: .sig #no_drops}
+
+Blocks a table, column, view, schema, database, enum type, or constraint drop. Index and key drops pass.
+
+```python
+index_must_be_concurrent() -> Guard
+```
+{: .sig #index_must_be_concurrent}
+
+Blocks `CREATE INDEX` without `CONCURRENTLY`. Postgres only; silent elsewhere.
+
+```python
+no_table_rewrite() -> Guard
+```
+{: .sig #no_table_rewrite}
+
+Warns on a column type change, or a NOT NULL with no default for existing rows.
+
+```python
+no_lock_without_timeout() -> Guard
+```
+{: .sig #no_lock_without_timeout}
+
+Blocks a run that alters or drops a table with no `SET lock_timeout` anywhere in it. Postgres only; silent elsewhere.
+
+```python
+max_statements(limit) -> Guard
+```
+{: .sig #max_statements}
+
+Blocks every statement past `limit`. A limit below 1 raises `ValueError`.
+
+```python
+run_guards(guards, statements, dialect) -> list[Verdict]
+```
+{: .sig #run_guards}
+
+Every guard's verdicts, in guard order.
+
+```python
+blocking(verdicts) -> list[Verdict]
+```
+{: .sig #blocking}
+
+The verdicts that stop a run.
+
+```python
+warnings_only(verdicts) -> list[Verdict]
+```
+{: .sig #warnings_only}
+
+The verdicts that only report.
 
 The scan is textual, the same way the destructive labels are. Sustained strips comments and collapses whitespace, and parses no SQL.
 
@@ -272,11 +445,9 @@ The scan is textual, the same way the destructive labels are. Sustained strips c
 `AsyncMigrator` lives in `sustained.aio_migrations`.
 
 ```python
-AsyncMigrator(adapter, migrations, table='sustained_migrations',
-              dialect=Dialects.DEFAULT, tracking_table_options=None,
-              rehearsal_table='sustained_rehearsals', guards=None,
-              callbacks=None)
+AsyncMigrator(adapter, migrations, table='sustained_migrations', dialect=Dialects.DEFAULT, tracking_table_options=None, rehearsal_table='sustained_rehearsals', guards=None, callbacks=None)
 ```
+{: .sig}
 
 `AsyncMigrator` is the same runner on an `AsyncAdapter`: the same tracking table, the same `Migration` objects, and the same validation rules and refusal messages. Guards and callbacks work the same way, except that a callback receives the adapter, and is awaited when it returns an awaitable. `AsyncMigrator` exposes `adapter`, `dialect`, and `compiler` as properties.
 
@@ -311,6 +482,7 @@ These names live in `sustained.migration_files`.
 ```python
 load_migrations(directory, placeholders=None) -> list[Migration]
 ```
+{: .sig #load_migrations}
 
 `load_migrations` reads the `<id>.up.sql` files first, each one optionally paired with `<id>.down.sql`, sorted by id. Then it reads the `<id>.repeat.sql` repeatables, also sorted by id. Statements split at line-ending semicolons, so a semicolon inside a string literal survives the split. A body that holds its own statements, such as a trigger or a procedure, does not survive it.
 
@@ -319,6 +491,7 @@ load_migrations(directory, placeholders=None) -> list[Migration]
 ```python
 substitute_placeholders(text, placeholders, source) -> str
 ```
+{: .sig #substitute_placeholders}
 
 `substitute_placeholders` fills the `${key}` markers. Write `$${` for a literal `${`. The function returns the text unchanged when `placeholders` is `None`. It raises `ValueError`, naming the file, for an unknown key or a malformed marker.
 
@@ -327,6 +500,7 @@ Passing a mapping turns substitution on, including an empty mapping. Substitutio
 ```python
 split_sql_statements(text) -> list[str]
 ```
+{: .sig #split_sql_statements}
 
 `split_sql_statements` splits on line-ending semicolons, and drops the pieces that hold only whitespace or only comments.
 
@@ -334,17 +508,47 @@ split_sql_statements(text) -> list[str]
 
 These names live in `sustained.autogenerate`. `plan()` and `up(models=[...])` are built on top of them.
 
-| Signature | Returns |
-| --- | --- |
-| `diff_schema(connection, models, dialect=Dialects.DEFAULT, exclude_tables=('sustained_migrations',), renames=None, table_renames=None)` | `SchemaDiff` |
-| `autogenerate(connection, models, id, dialect=..., allow_drops=False, ignore_changed_columns=False, exclude_tables=..., renames=None, table_renames=None, type_casts=None, ignore_undeclared=False)` | `Migration` or `None` |
-| `introspect_schema(connection, dialect=Dialects.DEFAULT)` | `dict[str, IntrospectedTable]` |
-| `await async_introspect_schema(adapter, dialect=Dialects.DEFAULT)` | `dict[str, IntrospectedTable]` |
-| `diff_snapshots(before, after)` | `list[str]`, one line per difference between two introspected schemas. Tables and columns only. |
-| `normalize_type(raw)` | `str` |
-| `normalize_default(raw)` | `str` or `None` |
+```python
+diff_schema(connection, models, dialect=Dialects.DEFAULT, exclude_tables=('sustained_migrations',), renames=None, table_renames=None) -> SchemaDiff
+```
+{: .sig #diff_schema}
 
-`diff_schema()` changes nothing and reports every difference, drops included. `autogenerate()` refuses to generate the lossy differences, and refuses to run at all while the database holds objects the models do not declare, unless you pass `allow_drops=True` or `ignore_undeclared=True`. The migrator passes `ignore_undeclared=True`.
+Changes nothing and reports every difference, drops included.
+
+```python
+autogenerate(connection, models, id, dialect=..., allow_drops=False, ignore_changed_columns=False, exclude_tables=..., renames=None, table_renames=None, type_casts=None, ignore_undeclared=False) -> Migration | None
+```
+{: .sig #autogenerate}
+
+Builds the migration a diff asks for. Refuses to generate the lossy differences, and refuses to run at all while the database holds objects the models do not declare, unless you pass `allow_drops=True` or `ignore_undeclared=True`. The migrator passes `ignore_undeclared=True`.
+
+```python
+introspect_schema(connection, dialect=Dialects.DEFAULT) -> dict[str, IntrospectedTable]
+```
+{: .sig #introspect_schema}
+
+Reads the live schema. `await async_introspect_schema(adapter, dialect=Dialects.DEFAULT)` is the same read on an adapter.
+
+```python
+diff_snapshots(before, after) -> list[str]
+```
+{: .sig #diff_snapshots}
+
+One line per difference between two introspected schemas. Tables and columns only.
+
+```python
+normalize_type(raw) -> str
+```
+{: .sig #normalize_type}
+
+The canonical spelling of a reported column type, for comparison.
+
+```python
+normalize_default(raw) -> str | None
+```
+{: .sig #normalize_default}
+
+The canonical spelling of a reported column default, for comparison.
 
 ### `SchemaDiff`
 
@@ -381,10 +585,19 @@ A migration that holds a drop has no down step, and neither does a migration tha
 
 These names live in `sustained.analysis`, and `sustained plan` uses them.
 
-| Signature | Returns | Description |
-| --- | --- | --- |
-| `destructive_statements(statements)` | `list[str]` | The statements that drop a table, a column, an enum type, or a constraint, or truncate. Comments removed, whitespace collapsed. Skips index and key drops. |
-| `summarize(migration, state, compiler=None)` | `PendingSummary` | One migration reduced to its id, state, repeatable flag, statement count, and destructive statements. Ddl steps render for the given compiler's dialect, or ANSI when none is given. |
+```python
+destructive_statements(statements) -> list[str]
+```
+{: .sig #destructive_statements}
+
+The statements that drop a table, a column, an enum type, or a constraint, or truncate. Comments removed, whitespace collapsed. Skips index and key drops.
+
+```python
+summarize(migration, state, compiler=None) -> PendingSummary
+```
+{: .sig #summarize}
+
+One migration reduced to its id, state, repeatable flag, statement count, and destructive statements. Ddl steps render for the given compiler's dialect, or ANSI when none is given.
 
 `PendingSummary(id, state, repeatable, statements, destructive)` holds that summary. `statements` is `None` for a callable step, which has no SQL to count.
 

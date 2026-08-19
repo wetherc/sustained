@@ -35,11 +35,26 @@ The two protocols list only the methods Sustained calls, so a driver connection 
 
 These live in `sustained.execution`. Reach them through `Model.transaction()` rather than calling them yourself.
 
-| Signature | Description |
-| --- | --- |
-| `transaction(connection)` | A context manager. Commits when the block finishes, and rolls back on any exception. |
-| `in_transaction(connection)` | Whether a transaction is open on this connection. |
-| `connection_scope(explicit, binding)` | The resolution above, as a context manager. |
+```python
+transaction(connection)
+```
+{: .sig #transaction}
+
+A context manager. Commits when the block finishes, and rolls back on any exception.
+
+```python
+in_transaction(connection) -> bool
+```
+{: .sig #in_transaction}
+
+Whether a transaction is open on this connection.
+
+```python
+connection_scope(explicit, binding)
+```
+{: .sig #connection_scope}
+
+The resolution above, as a context manager.
 
 Nested blocks on one connection use savepoints named `sustained_sp_<depth>`, so a failure in an inner block rolls back only that block. Inside a transaction, `run()` stops committing per statement.
 
@@ -48,8 +63,9 @@ With a pool, the first block checks a connection out and pins it to the thread. 
 ## Statement logging
 
 ```python
-set_statement_listener(listener) -> None
+set_statement_listener(listener)
 ```
+{: .sig #set_statement_listener}
 
 Registers a callable that runs after every executed statement, with the SQL text, the parameter tuple, and the duration in seconds. Pass `None` to remove the listener.
 
@@ -63,12 +79,19 @@ set_statement_listener(lambda sql, params, seconds: log.info('%s %r %.3fs', sql,
 
 ## Hydration and eager loading
 
-| Signature | Returns | Description |
-| --- | --- | --- |
-| `fetch_models(model_class, cursor)` | `list[Model]` | Builds instances from a cursor. Returns `[]` when the cursor has no description. |
-| `eager_load_relation(model_class, connection, parents, relation_name)` | `None` | Runs one query and attaches the results to the parent instances. |
+```python
+fetch_models(model_class, cursor) -> list[Model]
+```
+{: .sig #fetch_models}
 
-`eager_load_relation` raises `ValueError` for an unknown relation name, for a join reference that is not `table.column`, and for rows that are missing the join column. A `HasManyRelation` attaches a list, and the to-one relation types attach a single instance or `None`.
+Builds instances from a cursor. Returns `[]` when the cursor has no description.
+
+```python
+eager_load_relation(model_class, connection, parents, relation_name)
+```
+{: .sig #eager_load_relation}
+
+Runs one query and attaches the results to the parent instances. Raises `ValueError` for an unknown relation name, for a join reference that is not `table.column`, and for rows that are missing the join column. A `HasManyRelation` attaches a list, and the to-one relation types attach a single instance or `None`.
 
 ## `ConnectionPool`
 
@@ -77,18 +100,44 @@ set_statement_listener(lambda sql, params, seconds: log.info('%s %r %.3fs', sql,
 ```python
 ConnectionPool(factory, max_size=5, timeout=30.0)
 ```
+{: .sig}
 
 The pool creates connections from `factory` as it needs them, up to `max_size`, and reuses released connections. Bind a pool the way you would bind a connection. A `max_size` below 1 raises `ValueError`.
 
-| Member | Returns | Description |
-| --- | --- | --- |
-| `size` | `int` | The number of connections created so far. |
-| `connection()` | context manager | Checks a connection out and releases it at the end of the block. |
-| `acquire_raw()` | connection | Checks a connection out. You have to release it yourself. |
-| `release(connection)` | `None` | Returns the connection to the pool, or closes it when the pool is closed. |
-| `close()` | `None` | Closes the idle connections. A checked-out connection closes on release. |
+```python
+size -> int
+```
+{: .sig #size}
 
-`acquire_raw()` raises `PoolTimeout` when the pool stays exhausted past `timeout`, and `RuntimeError` when the pool is closed. A factory that raises does not consume a slot.
+Property. The number of connections created so far.
+
+```python
+connection()
+```
+{: .sig #connection}
+
+A context manager that checks a connection out and releases it at the end of the block.
+
+```python
+acquire_raw()
+```
+{: .sig #acquire_raw}
+
+Checks a connection out. You have to release it yourself. Raises `PoolTimeout` when the pool stays exhausted past `timeout`, and `RuntimeError` when the pool is closed. A factory that raises does not consume a slot.
+
+```python
+release(connection)
+```
+{: .sig #release}
+
+Returns the connection to the pool, or closes it when the pool is closed.
+
+```python
+close()
+```
+{: .sig #close}
+
+Closes the idle connections. A checked-out connection closes on release.
 
 ```python
 from sustained.pool import ConnectionPool
@@ -109,23 +158,65 @@ These live in `sustained.aio`. Every adapter has the same methods, so a query do
 | `await commit()` | `None` |
 | `await rollback()` | `None` |
 
-| Adapter | Wraps | Notes |
-| --- | --- | --- |
-| `DbApiAsyncAdapter(connection)` | Any synchronous DB-API connection | Runs each call in a worker thread under a lock. The connection has to permit cross-thread use, as in `sqlite3.connect(..., check_same_thread=False)`. |
-| `AiosqliteAdapter(connection)` | aiosqlite | Awaits the driver directly. |
-| `AsyncpgAdapter(connection)` | asyncpg | Converts `%s` placeholders to `$1..$n`. asyncpg is autocommit, so `commit()` and `rollback()` do nothing, and `executemany()` returns `-1`. |
+```python
+DbApiAsyncAdapter(connection)
+```
+{: .sig #dbapiasyncadapter}
+
+Wraps any synchronous DB-API connection. Runs each call in a worker thread under a lock. The connection has to permit cross-thread use, as in `sqlite3.connect(..., check_same_thread=False)`.
+
+```python
+AiosqliteAdapter(connection)
+```
+{: .sig #aiosqliteadapter}
+
+Wraps aiosqlite and awaits the driver directly.
+
+```python
+AsyncpgAdapter(connection)
+```
+{: .sig #asyncpgadapter}
+
+Wraps asyncpg. Converts `%s` placeholders to `$1..$n`. asyncpg is autocommit, so `commit()` and `rollback()` do nothing, and `executemany()` returns `-1`.
 
 `AsyncAdapter` is the abstract base class. Subclass it for a driver that has no adapter here.
 
 ### Async helpers
 
-| Signature | Description |
-| --- | --- |
-| `async_transaction(adapter)` | An async context manager that issues `BEGIN`, `COMMIT`, and `ROLLBACK`. Nested blocks on one adapter use `SAVEPOINT sustained_sp_<depth>`. Sustained tracks the nesting per adapter, so give each concurrent task its own adapter. |
-| `in_async_transaction(adapter)` | Whether a transaction is open on this adapter. |
-| `resolve_adapter(explicit, model_class)` | Resolves the argument, then the open transaction, then `Model.bind_async()`. Raises `RuntimeError` when none of the three resolves. |
-| `await run_async(query, adapter=None)` | The function `arun()` calls. |
-| `convert_format_to_numbered(sql)` | Rewrites `%s` markers to `$1..$n`. |
+```python
+async_transaction(adapter)
+```
+{: .sig #async_transaction}
+
+An async context manager that issues `BEGIN`, `COMMIT`, and `ROLLBACK`. Nested blocks on one adapter use `SAVEPOINT sustained_sp_<depth>`. Sustained tracks the nesting per adapter, so give each concurrent task its own adapter.
+
+```python
+in_async_transaction(adapter) -> bool
+```
+{: .sig #in_async_transaction}
+
+Whether a transaction is open on this adapter.
+
+```python
+resolve_adapter(explicit, model_class)
+```
+{: .sig #resolve_adapter}
+
+Resolves the argument, then the open transaction, then `Model.bind_async()`. Raises `RuntimeError` when none of the three resolves.
+
+```python
+await run_async(query, adapter=None)
+```
+{: .sig #run_async}
+
+The function `arun()` calls.
+
+```python
+convert_format_to_numbered(sql) -> str
+```
+{: .sig #convert_format_to_numbered}
+
+Rewrites `%s` markers to `$1..$n`.
 
 The transaction pin lives in a `ContextVar`, so it follows the task tree rather than the thread.
 

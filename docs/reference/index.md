@@ -74,4 +74,6 @@ Sustained checks dialect support while you build the statement, so a feature the
 
 ## Reading the signatures
 
-The signatures are copied from the source, including the defaults. Parameters after `*` are keyword-only. `Self` is written as the class name, because these methods return the same builder for chaining rather than a copy. `clone()` is the exception: it returns a copy.
+Each entry on these pages opens with its signature on a line of its own, and the text below the signature describes what the call does and what it raises. A `->` on the signature names the return type; a `QueryBuilder` method without one returns the same builder for chaining. `clone()` is the exception: it returns a copy. Tables carry the facts that pair up, such as an operator and what it renders, or a dialect and what it refuses.
+
+The signatures are copied from the source, including the defaults. Parameters after `*` are keyword-only.
