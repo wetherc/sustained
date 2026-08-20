@@ -4,7 +4,8 @@ The AWS Athena dialect.
 Athena runs a Trino-based engine over files in S3, so it inherits the
 Presto compiler's query behavior and replaces everything that touches
 storage. Tables have no constraints, no indexes, and no identity columns.
-DDL takes Athena's spellings: STRING instead of TEXT, ADD COLUMNS instead
+DDL takes Athena's spellings: STRING for every string column, since
+Iceberg tables reject VARCHAR, ADD COLUMNS instead
 of ADD COLUMN, CHANGE COLUMN for type changes, and a PARTITIONED BY,
 LOCATION, and TBLPROPERTIES clause after the column list. DDL identifiers
 quote with backticks for Athena's Hive DDL parser, while query
@@ -32,7 +33,7 @@ class AthenaCompiler(PrestoCompiler):
     _TYPE_MAP = {
         "INTEGER": "INT",
         "BIGINT": "BIGINT",
-        "VARCHAR": "VARCHAR",
+        "VARCHAR": "STRING",
         "TEXT": "STRING",
         "BOOLEAN": "BOOLEAN",
         "FLOAT": "DOUBLE",
@@ -52,10 +53,22 @@ class AthenaCompiler(PrestoCompiler):
         return f"`{identifier}`"
 
     def compile_column_type(self, column: "ColumnDef") -> str:
-        # Athena DDL has no unbounded VARCHAR; STRING is the unbounded form.
-        if column.type_name == "VARCHAR" and column.length is None:
+        # Every VARCHAR renders as STRING. Iceberg tables reject VARCHAR
+        # outright ("Unsupported Hive type: VARCHAR, use string instead"),
+        # and Athena enforces no length on the columns that would take it,
+        # so the declared length only documents intent. The engine reports
+        # a STRING column back as varchar; normalize_diff_type() folds the
+        # two together so the column never drifts against its own DDL.
+        if column.type_name == "VARCHAR":
             return "STRING"
         return super().compile_column_type(column)
+
+    def normalize_diff_type(self, type_name: str) -> str:
+        # Athena stores every string column as STRING and reports it back
+        # as varchar, so the two logical types are one type to a diff.
+        if type_name == "VARCHAR":
+            return "TEXT"
+        return type_name
 
     def validate_column_def(self, column: "ColumnDef") -> None:
         if column.type_name == "ENUM":

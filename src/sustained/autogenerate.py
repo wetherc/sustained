@@ -523,9 +523,9 @@ def _diff_columns(
             # changed_enum_types, not here.
             type_changed = not _actual_column_is_enum(actual_col, coldef)
         else:
-            type_changed = normalize_type(expected_rendered) != normalize_type(
-                actual_col.raw_type
-            )
+            type_changed = compiler.normalize_diff_type(
+                normalize_type(expected_rendered)
+            ) != compiler.normalize_diff_type(normalize_type(actual_col.raw_type))
             if not type_changed:
                 expected_params = type_params(expected_rendered)
                 actual_params = type_params(actual_col.raw_type)
@@ -1057,9 +1057,13 @@ def autogenerate(
             if coldef.type_name == "ENUM" and compiler.enum_strategy() == "native":
                 type_changed = not _actual_column_is_enum(actual_col, coldef)
             else:
-                type_changed = normalize_type(expected_type) != normalize_type(
-                    actual_col.raw_type
-                ) or (type_params(expected_type) or "") != (
+                type_changed = compiler.normalize_diff_type(
+                    normalize_type(expected_type)
+                ) != compiler.normalize_diff_type(
+                    normalize_type(actual_col.raw_type)
+                ) or (
+                    type_params(expected_type) or ""
+                ) != (
                     type_params(actual_col.raw_type) or type_params(expected_type) or ""
                 )
             if type_changed:

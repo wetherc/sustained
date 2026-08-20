@@ -115,7 +115,7 @@ class TestAthenaTypes(unittest.TestCase):
         )
         sql = model.create_table_sql()
         self.assertIn("`a` INT", sql)
-        self.assertIn("`b` VARCHAR(50)", sql)
+        self.assertIn("`b` STRING", sql)
         self.assertIn("`c` STRING", sql)
         self.assertIn("`d` BOOLEAN", sql)
         self.assertIn("`e` DOUBLE", sql)
@@ -129,6 +129,51 @@ class TestAthenaTypes(unittest.TestCase):
 
         compiler = Dialects.get_compiler(Dialects.ATHENA)
         self.assertEqual(compiler.compile_column_type(ColumnDef("VARCHAR")), "STRING")
+
+    def test_bounded_varchar_renders_string(self):
+        # Iceberg tables reject VARCHAR; the declared length only
+        # documents intent.
+        from sustained.schema import ColumnDef
+
+        compiler = Dialects.get_compiler(Dialects.ATHENA)
+        self.assertEqual(
+            compiler.compile_column_type(ColumnDef("VARCHAR", length=64)), "STRING"
+        )
+
+    def test_diff_folds_string_types_together(self):
+        # The engine reports a STRING column back as varchar, so a diff
+        # must not read that as a type change.
+        compiler = Dialects.get_compiler(Dialects.ATHENA)
+        self.assertEqual(compiler.normalize_diff_type("VARCHAR"), "TEXT")
+        self.assertEqual(compiler.normalize_diff_type("TEXT"), "TEXT")
+        self.assertEqual(compiler.normalize_diff_type("INTEGER"), "INTEGER")
+
+
+class TestAthenaDiff(unittest.TestCase):
+    def test_string_columns_match_reported_varchar(self):
+        # Athena reports every string column back as varchar, with or
+        # without a length. Neither spelling is a change against a model's
+        # String or Text column.
+        from sustained.autogenerate import SchemaDiff, _diff_columns
+        from sustained.introspect import (
+            IntrospectedColumn,
+            IntrospectedTable,
+            Snapshot,
+        )
+
+        model = athena_model(
+            "AthDiff", "ath_diff", {"code": String(64), "note": Text()}
+        )
+        actual = IntrospectedTable(
+            columns={
+                "code": IntrospectedColumn("varchar", True, False),
+                "note": IntrospectedColumn("varchar(120)", True, False),
+            }
+        )
+        compiler = Dialects.get_compiler(Dialects.ATHENA)
+        diff = SchemaDiff()
+        _diff_columns(compiler, diff, model, actual, Snapshot({"ath_diff": actual}))
+        self.assertEqual(diff.changed_columns, [])
 
 
 class TestAthenaConstraints(unittest.TestCase):

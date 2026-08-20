@@ -249,6 +249,15 @@ class Compiler:
         """
         return "check"
 
+    def normalize_diff_type(self, type_name: str) -> str:
+        """
+        Maps a logical type name to the name a schema diff compares on.
+        A dialect that stores several logical types as one physical type
+        folds them together here, so a model column does not read as
+        changed against the type the engine reports back.
+        """
+        return type_name
+
     def compile_column_type(self, column: "ColumnDef") -> str:
         """
         Renders a ColumnDef's logical type as this dialect's SQL type.
