@@ -6,7 +6,9 @@ Presto compiler's query behavior and replaces everything that touches
 storage. Tables have no constraints, no indexes, and no identity columns.
 DDL takes Athena's spellings: STRING instead of TEXT, ADD COLUMNS instead
 of ADD COLUMN, CHANGE COLUMN for type changes, and a PARTITIONED BY,
-LOCATION, and TBLPROPERTIES clause after the column list. Placeholders
+LOCATION, and TBLPROPERTIES clause after the column list. DDL identifiers
+quote with backticks for Athena's Hive DDL parser, while query
+identifiers keep Presto's double quotes for the Trino engine. Placeholders
 render as ?, which pyathena sends as native execution parameters when
 pyathena.paramstyle is set to "qmark". Sustained passes parameters as a
 tuple, which pyathena's default pyformat style refuses: it takes a dict
@@ -40,6 +42,14 @@ class AthenaCompiler(PrestoCompiler):
         "BINARY": "BINARY",
         "JSON": "STRING",
     }
+
+    def quote_ddl_identifier(self, identifier: str) -> str:
+        # Athena routes DDL through a Hive parser that takes backticks or
+        # bare names only. A double-quoted identifier makes Athena try its
+        # Trino parser, which has no LOCATION or TBLPROPERTIES clause, so
+        # every CREATE and ALTER with one fails to parse. Queries and MERGE
+        # run on the Trino engine and keep Presto's double quotes.
+        return f"`{identifier}`"
 
     def compile_column_type(self, column: "ColumnDef") -> str:
         # Athena DDL has no unbounded VARCHAR; STRING is the unbounded form.
@@ -205,7 +215,7 @@ class AthenaCompiler(PrestoCompiler):
                 "Athena cannot cast values while changing a column type. "
                 "Remove the type_casts hint."
             )
-        quoted = self.quote_identifier(column_name)
+        quoted = self.quote_ddl_identifier(column_name)
         return [f"ALTER TABLE {table_sql} CHANGE COLUMN {quoted} {quoted} {type_sql}"]
 
     def compile_alter_column_nullability(

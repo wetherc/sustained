@@ -273,17 +273,19 @@ class Model(metaclass=ModelMeta):
 
     @classmethod
     def _qualified_table_sql(cls) -> str:
+        # Only DDL statements use this name, so it quotes with the
+        # dialect's DDL rule. Queries quote their own table references.
         from sustained.dialects import Dialects
 
         compiler = Dialects.get_compiler(cls._dialect)
         parts = []
         if cls.database:
-            parts.append(compiler.quote_identifier(cls.database))
+            parts.append(compiler.quote_ddl_identifier(cls.database))
         if cls.tableSchema:
-            parts.append(compiler.quote_identifier(cls.tableSchema))
+            parts.append(compiler.quote_ddl_identifier(cls.tableSchema))
         if not cls.tableName:
             raise ValueError(f"Model '{cls.__name__}' must define a tableName.")
-        parts.append(compiler.quote_identifier(cls.tableName))
+        parts.append(compiler.quote_ddl_identifier(cls.tableName))
         return ".".join(parts)
 
     @classmethod

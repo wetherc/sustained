@@ -853,7 +853,7 @@ def _carried_constraint_sql(
         if name in declared_names or name in implied_checks:
             continue
         fragments.append(
-            f"CONSTRAINT {compiler.quote_identifier(name)} CHECK ({expression})"
+            f"CONSTRAINT {compiler.quote_ddl_identifier(name)} CHECK ({expression})"
         )
     for name, fk in actual_table.foreign_keys.items():
         if (
@@ -862,15 +862,15 @@ def _carried_constraint_sql(
             or fk.target_table == "?"
         ):
             continue
-        columns_sql = ", ".join(compiler.quote_identifier(c) for c in fk.columns)
-        target_sql = compiler.quote_fully_qualified_identifier(fk.target_table)
+        columns_sql = ", ".join(compiler.quote_ddl_identifier(c) for c in fk.columns)
+        target_sql = compiler.quote_fully_qualified_ddl_identifier(fk.target_table)
         sql = (
-            f"CONSTRAINT {compiler.quote_identifier(name)} "
+            f"CONSTRAINT {compiler.quote_ddl_identifier(name)} "
             f"FOREIGN KEY ({columns_sql}) REFERENCES {target_sql}"
         )
         if fk.target_columns:
             targets_sql = ", ".join(
-                compiler.quote_identifier(c) for c in fk.target_columns
+                compiler.quote_ddl_identifier(c) for c in fk.target_columns
             )
             sql += f" ({targets_sql})"
         if fk.on_delete is not None and fk.on_delete.upper() != "NO ACTION":
@@ -919,7 +919,7 @@ def _undeclared_index_sql(
             continue
         if not all(column in surviving for column in index.columns):
             continue
-        table_sql = compiler.quote_fully_qualified_identifier(table)
+        table_sql = compiler.quote_fully_qualified_ddl_identifier(table)
         statements.append(
             compiler.compile_create_index(
                 name, table_sql, list(index.columns), index.unique
@@ -1000,13 +1000,13 @@ def autogenerate(
 
     # Renames first, so later steps address the new names.
     for old, new in table_renames.items():
-        old_sql = compiler.quote_fully_qualified_identifier(old)
-        new_sql = compiler.quote_fully_qualified_identifier(new)
+        old_sql = compiler.quote_fully_qualified_ddl_identifier(old)
+        new_sql = compiler.quote_fully_qualified_ddl_identifier(new)
         up_steps.append(compiler.compile_rename_table(old_sql, new_sql))
         down_steps.insert(0, compiler.compile_rename_table(new_sql, old_sql))
     for path, new_name in renames.items():
         table, old_name = path.rsplit(".", 1)
-        table_sql = compiler.quote_fully_qualified_identifier(table)
+        table_sql = compiler.quote_fully_qualified_ddl_identifier(table)
         up_steps.append(compiler.compile_rename_column(table_sql, old_name, new_name))
         down_steps.insert(
             0, compiler.compile_rename_column(table_sql, new_name, old_name)
@@ -1278,7 +1278,7 @@ def autogenerate(
         for table, name, actual_fk in diff.extra_foreign_keys:
             if table.lower() in rebuild_tables:
                 continue
-            table_sql = compiler.quote_fully_qualified_identifier(table)
+            table_sql = compiler.quote_fully_qualified_ddl_identifier(table)
             up_steps.append(compiler.compile_drop_foreign_key(table_sql, name))
             restore = _introspected_fk_sql(compiler, table_sql, name, actual_fk)
             if restore is None:
@@ -1288,7 +1288,7 @@ def autogenerate(
         for table, name, expression in diff.extra_checks:
             if table.lower() in rebuild_tables:
                 continue
-            table_sql = compiler.quote_fully_qualified_identifier(table)
+            table_sql = compiler.quote_fully_qualified_ddl_identifier(table)
             up_steps.append(compiler.compile_drop_constraint(table_sql, name))
             down_steps.insert(
                 0, compiler.compile_add_check(table_sql, name, expression)
@@ -1296,7 +1296,7 @@ def autogenerate(
 
     if allow_drops:
         for table, name, actual_index in diff.extra_indexes:
-            table_sql = compiler.quote_fully_qualified_identifier(table)
+            table_sql = compiler.quote_fully_qualified_ddl_identifier(table)
             up_steps.append(compiler.compile_drop_index(name, table_sql))
             down_steps.insert(
                 0,
@@ -1305,13 +1305,13 @@ def autogenerate(
                 ),
             )
         for table, name in diff.extra_columns:
-            table_sql = compiler.quote_fully_qualified_identifier(table)
+            table_sql = compiler.quote_fully_qualified_ddl_identifier(table)
             if table.lower() in rebuild_tables:
                 continue
             up_steps.append(compiler.compile_drop_column(table_sql, name))
             reversible = False
         for table in diff.extra_tables:
-            table_sql = compiler.quote_fully_qualified_identifier(table)
+            table_sql = compiler.quote_fully_qualified_ddl_identifier(table)
             up_steps.append(f"DROP TABLE {table_sql}")
             reversible = False
 
@@ -1333,7 +1333,7 @@ def _declared_fk_sql(compiler: "Compiler", table_sql: str, fk: ForeignKey) -> st
         table_sql,
         fk.name,
         fk.columns,
-        compiler.quote_fully_qualified_identifier(fk.target_table),
+        compiler.quote_fully_qualified_ddl_identifier(fk.target_table),
         fk.target_columns,
         fk.on_delete,
         fk.on_update,
@@ -1361,7 +1361,7 @@ def _introspected_fk_sql(
         table_sql,
         name,
         fk.columns,
-        compiler.quote_fully_qualified_identifier(fk.target_table),
+        compiler.quote_fully_qualified_ddl_identifier(fk.target_table),
         fk.target_columns,
         None if on_delete == "NO ACTION" else on_delete,
         None if on_update == "NO ACTION" else on_update,
@@ -1391,7 +1391,7 @@ def _add_foreign_key(
             table_sql,
             constraint,
             name,
-            compiler.quote_fully_qualified_identifier(ref_table),
+            compiler.quote_fully_qualified_ddl_identifier(ref_table),
             ref_column,
         )
     )

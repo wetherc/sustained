@@ -114,15 +114,15 @@ class TestAthenaTypes(unittest.TestCase):
             },
         )
         sql = model.create_table_sql()
-        self.assertIn('"a" INT', sql)
-        self.assertIn('"b" VARCHAR(50)', sql)
-        self.assertIn('"c" STRING', sql)
-        self.assertIn('"d" BOOLEAN', sql)
-        self.assertIn('"e" DOUBLE', sql)
-        self.assertIn('"f" DECIMAL(10, 2)', sql)
-        self.assertIn('"g" DATE', sql)
-        self.assertIn('"h" TIMESTAMP', sql)
-        self.assertIn('"i" STRING', sql)
+        self.assertIn("`a` INT", sql)
+        self.assertIn("`b` VARCHAR(50)", sql)
+        self.assertIn("`c` STRING", sql)
+        self.assertIn("`d` BOOLEAN", sql)
+        self.assertIn("`e` DOUBLE", sql)
+        self.assertIn("`f` DECIMAL(10, 2)", sql)
+        self.assertIn("`g` DATE", sql)
+        self.assertIn("`h` TIMESTAMP", sql)
+        self.assertIn("`i` STRING", sql)
 
     def test_unbounded_varchar_renders_string(self):
         from sustained.schema import ColumnDef
@@ -183,6 +183,22 @@ class TestAthenaTableOptions(unittest.TestCase):
         self.assertIn("LOCATION 's3://bucket/events/'", sql)
         self.assertIn("TBLPROPERTIES ('table_type'='ICEBERG')", sql)
 
+    def test_create_table_quotes_with_backticks(self):
+        # Athena parses CREATE and ALTER with its Hive DDL parser, which
+        # rejects double-quoted identifiers. Queries keep double quotes.
+        model = athena_model(
+            "AthDdlQuote",
+            "events",
+            {"id": Integer()},
+            tableOptions=TableOptions(location="s3://bucket/events/"),
+        )
+        create = model.create_table_sql()
+        self.assertIn("CREATE TABLE `events`", create)
+        self.assertNotIn('"', create.split(" LOCATION ")[0])
+        select = str(model.query().select("id"))
+        self.assertIn('"events"', select)
+        self.assertIn('"id"', select)
+
     def test_options_raise_on_other_dialects(self):
         model = athena_model(
             "AthOptsPg",
@@ -209,8 +225,8 @@ class TestAthenaDdl(unittest.TestCase):
         self.assertEqual(sql, 'ALTER TABLE "t" ADD COLUMNS ("x" STRING)')
 
     def test_alter_column_type_uses_change_column(self):
-        steps = self.compiler.compile_alter_column_type('"t"', "c", "BIGINT")
-        self.assertEqual(steps, ['ALTER TABLE "t" CHANGE COLUMN "c" "c" BIGINT'])
+        steps = self.compiler.compile_alter_column_type("`t`", "c", "BIGINT")
+        self.assertEqual(steps, ["ALTER TABLE `t` CHANGE COLUMN `c` `c` BIGINT"])
 
     def test_alter_column_type_rejects_using(self):
         with self.assertRaises(DialectError):
@@ -318,7 +334,7 @@ class TestAthenaMigrator(unittest.TestCase):
         conn = FakeAthenaConnection()
         self._migrator(conn, []).record_rehearsal("0" * 64)
         create = next(
-            s for s in conn.log if s.startswith('CREATE TABLE IF NOT EXISTS "sus')
+            s for s in conn.log if s.startswith("CREATE TABLE IF NOT EXISTS `sus")
         )
         self.assertIn("sustained_rehearsals", create)
         self.assertNotIn("PRIMARY KEY", create)
@@ -383,7 +399,7 @@ class TestAthenaMigrator(unittest.TestCase):
         applied = migrator.up(models=[model], migration_id="add_note")
         self.assertEqual(applied, ["add_note"])
         adds = [s for s in conn.log if "ADD COLUMNS" in s]
-        self.assertEqual(adds, ['ALTER TABLE "ath_events" ADD COLUMNS ("note" STRING)'])
+        self.assertEqual(adds, ["ALTER TABLE `ath_events` ADD COLUMNS (`note` STRING)"])
 
 
 if __name__ == "__main__":

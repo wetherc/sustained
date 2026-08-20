@@ -125,6 +125,9 @@ class AsyncMigrator:
     def _table_sql(self) -> str:
         return self._compiler.quote_identifier(self._table)
 
+    def _table_ddl_sql(self) -> str:
+        return self._compiler.quote_ddl_identifier(self._table)
+
     async def _run_step(self, step: MigrationStep) -> None:
         elements = _step_elements(step)
         if elements is None:
@@ -190,7 +193,7 @@ class AsyncMigrator:
             return
         sql = build_create_table_sql(
             self._compiler,
-            self._table_sql(),
+            self._table_ddl_sql(),
             _tracking_column_defs(self._compiler.supports_constraints()),
             if_not_exists=True,
             options=self._tracking_table_options,
@@ -202,6 +205,9 @@ class AsyncMigrator:
 
     def _rehearsal_table_sql(self) -> str:
         return self._compiler.quote_identifier(self._rehearsal_table)
+
+    def _rehearsal_table_ddl_sql(self) -> str:
+        return self._compiler.quote_ddl_identifier(self._rehearsal_table)
 
     def _own_tables(self) -> Tuple[str, ...]:
         """
@@ -217,7 +223,7 @@ class AsyncMigrator:
             return
         sql = build_create_table_sql(
             self._compiler,
-            self._rehearsal_table_sql(),
+            self._rehearsal_table_ddl_sql(),
             _rehearsal_column_defs(self._compiler.supports_constraints()),
             if_not_exists=True,
             options=self._tracking_table_options,
@@ -325,7 +331,9 @@ class AsyncMigrator:
             column_sql = render_column_sql(
                 self._compiler, name, _upgrade_column_def(name), inline_pk=False
             )
-            statement = self._compiler.compile_add_column(self._table_sql(), column_sql)
+            statement = self._compiler.compile_add_column(
+                self._table_ddl_sql(), column_sql
+            )
             await self._adapter.execute(statement, ())
             added.append(name)
         await self._adapter.commit()

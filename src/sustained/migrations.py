@@ -1050,6 +1050,9 @@ class Migrator:
     def _table_sql(self) -> str:
         return self._compiler.quote_identifier(self._table)
 
+    def _table_ddl_sql(self) -> str:
+        return self._compiler.quote_ddl_identifier(self._table)
+
     def _own_tables(self) -> Tuple[str, ...]:
         """
         The tables Sustained keeps for itself. A diff against the models
@@ -1119,7 +1122,7 @@ class Migrator:
             return
         sql = build_create_table_sql(
             self._compiler,
-            self._table_sql(),
+            self._table_ddl_sql(),
             _tracking_column_defs(self._compiler.supports_constraints()),
             if_not_exists=True,
             options=self._tracking_table_options,
@@ -1132,6 +1135,9 @@ class Migrator:
     def _rehearsal_table_sql(self) -> str:
         return self._compiler.quote_identifier(self._rehearsal_table)
 
+    def _rehearsal_table_ddl_sql(self) -> str:
+        return self._compiler.quote_ddl_identifier(self._rehearsal_table)
+
     def _ensure_rehearsal_table(self) -> None:
         from sustained.schema import build_create_table_sql
 
@@ -1139,7 +1145,7 @@ class Migrator:
             return
         sql = build_create_table_sql(
             self._compiler,
-            self._rehearsal_table_sql(),
+            self._rehearsal_table_ddl_sql(),
             _rehearsal_column_defs(self._compiler.supports_constraints()),
             if_not_exists=True,
             options=self._tracking_table_options,
@@ -1233,7 +1239,9 @@ class Migrator:
             column_sql = render_column_sql(
                 self._compiler, name, _upgrade_column_def(name), inline_pk=False
             )
-            statement = self._compiler.compile_add_column(self._table_sql(), column_sql)
+            statement = self._compiler.compile_add_column(
+                self._table_ddl_sql(), column_sql
+            )
             self._connection.cursor().execute(statement)
             added.append(name)
         self._commit_quietly()

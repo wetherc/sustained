@@ -58,6 +58,21 @@ class Compiler:
     def quote_fully_qualified_identifier(self, identifier: str) -> str:
         return ".".join(self.quote_identifier(part) for part in identifier.split("."))
 
+    def quote_ddl_identifier(self, identifier: str) -> str:
+        """
+        Quotes an identifier for a DDL statement. Most engines quote DDL
+        and query identifiers the same way, so the default follows
+        quote_identifier(). Athena does not: its DDL goes through a Hive
+        parser that takes backticks or bare names only, while its queries
+        run on a Trino engine that takes double quotes.
+        """
+        return self.quote_identifier(identifier)
+
+    def quote_fully_qualified_ddl_identifier(self, identifier: str) -> str:
+        return ".".join(
+            self.quote_ddl_identifier(part) for part in identifier.split(".")
+        )
+
     def quote_column_reference(self, column: Union[str, Expression]) -> str:
         """
         Quotes a column reference for use inside a clause.
@@ -256,7 +271,7 @@ class Compiler:
         assert column.enum_name is not None and column.enum_values is not None
         strategy = self.enum_strategy()
         if strategy == "native":
-            return self.quote_identifier(column.enum_name)
+            return self.quote_ddl_identifier(column.enum_name)
         if strategy == "inline":
             values_sql = ", ".join(self.format_value(v) for v in column.enum_values)
             return f"ENUM({values_sql})"
@@ -347,15 +362,15 @@ class Compiler:
 
     def compile_drop_column(self, table_sql: str, column_name: str) -> str:
         """Renders an ALTER TABLE statement that drops one column."""
-        quoted = self.quote_identifier(column_name)
+        quoted = self.quote_ddl_identifier(column_name)
         return f"ALTER TABLE {table_sql} DROP COLUMN {quoted}"
 
     def compile_rename_column(
         self, table_sql: str, old_name: str, new_name: str
     ) -> str:
         """Renders a column rename."""
-        old_sql = self.quote_identifier(old_name)
-        new_sql = self.quote_identifier(new_name)
+        old_sql = self.quote_ddl_identifier(old_name)
+        new_sql = self.quote_ddl_identifier(new_name)
         return f"ALTER TABLE {table_sql} RENAME COLUMN {old_sql} TO {new_sql}"
 
     def inline_references(self) -> bool:
@@ -385,16 +400,16 @@ class Compiler:
         """
         columns = (column,) if isinstance(column, str) else tuple(column)
         targets = (ref_column,) if isinstance(ref_column, str) else tuple(ref_column)
-        columns_sql = ", ".join(self.quote_identifier(c) for c in columns)
+        columns_sql = ", ".join(self.quote_ddl_identifier(c) for c in columns)
         sql = (
             f"ALTER TABLE {table_sql} ADD CONSTRAINT "
-            f"{self.quote_identifier(constraint)} FOREIGN KEY "
+            f"{self.quote_ddl_identifier(constraint)} FOREIGN KEY "
             f"({columns_sql}) REFERENCES {ref_table_sql}"
         )
         if targets:
             # An empty target list means the key references the target
             # table's primary key, so the column list is left off.
-            targets_sql = ", ".join(self.quote_identifier(c) for c in targets)
+            targets_sql = ", ".join(self.quote_ddl_identifier(c) for c in targets)
             sql += f" ({targets_sql})"
         if on_delete is not None:
             sql += f" ON DELETE {on_delete}"
@@ -411,21 +426,21 @@ class Compiler:
         """
         return (
             f"ALTER TABLE {table_sql} ADD CONSTRAINT "
-            f"{self.quote_identifier(constraint)} CHECK ({expression})"
+            f"{self.quote_ddl_identifier(constraint)} CHECK ({expression})"
         )
 
     def compile_drop_foreign_key(self, table_sql: str, constraint: str) -> str:
         """Renders the statement that takes back an added foreign key."""
         return (
             f"ALTER TABLE {table_sql} DROP CONSTRAINT "
-            f"{self.quote_identifier(constraint)}"
+            f"{self.quote_ddl_identifier(constraint)}"
         )
 
     def compile_drop_constraint(self, table_sql: str, constraint: str) -> str:
         """Renders the statement that drops a named table constraint."""
         return (
             f"ALTER TABLE {table_sql} DROP CONSTRAINT "
-            f"{self.quote_identifier(constraint)}"
+            f"{self.quote_ddl_identifier(constraint)}"
         )
 
     def compile_rename_table(self, old_sql: str, new_sql: str) -> str:
@@ -441,13 +456,13 @@ class Compiler:
     ) -> str:
         """Renders a CREATE INDEX statement."""
         unique_sql = "UNIQUE " if unique else ""
-        name_sql = self.quote_identifier(index_name)
-        columns_sql = ", ".join(self.quote_identifier(c) for c in columns)
+        name_sql = self.quote_ddl_identifier(index_name)
+        columns_sql = ", ".join(self.quote_ddl_identifier(c) for c in columns)
         return f"CREATE {unique_sql}INDEX {name_sql} ON {table_sql} ({columns_sql})"
 
     def compile_drop_index(self, index_name: str, table_sql: str) -> str:
         """Renders a DROP INDEX statement."""
-        return f"DROP INDEX {self.quote_identifier(index_name)}"
+        return f"DROP INDEX {self.quote_ddl_identifier(index_name)}"
 
     def compile_create_table(
         self, table_sql: str, body: str, suffix_sql: str, if_missing: bool

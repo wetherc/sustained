@@ -460,24 +460,24 @@ def enum_check_constraint_sql(
     values, on dialects without an enum type.
     """
     assert col.enum_values is not None
-    constraint = compiler.quote_identifier(f"ck_{table_name}_{column_name}_enum")
-    column_sql = compiler.quote_identifier(column_name)
+    constraint = compiler.quote_ddl_identifier(f"ck_{table_name}_{column_name}_enum")
+    column_sql = compiler.quote_ddl_identifier(column_name)
     values_sql = ", ".join(compiler.format_value(v) for v in col.enum_values)
     return f"CONSTRAINT {constraint} CHECK ({column_sql} IN ({values_sql}))"
 
 
 def check_constraint_sql(compiler: "Compiler", check: Check) -> str:
     """Renders a named CHECK constraint for a table body or ADD."""
-    constraint = compiler.quote_identifier(check.name)
+    constraint = compiler.quote_ddl_identifier(check.name)
     return f"CONSTRAINT {constraint} CHECK ({check.expression})"
 
 
 def foreign_key_constraint_sql(compiler: "Compiler", fk: ForeignKey) -> str:
     """Renders a named FOREIGN KEY constraint for a table body or ADD."""
-    constraint = compiler.quote_identifier(fk.name)
-    columns_sql = ", ".join(compiler.quote_identifier(c) for c in fk.columns)
-    target_table = compiler.quote_fully_qualified_identifier(fk.target_table)
-    target_sql = ", ".join(compiler.quote_identifier(c) for c in fk.target_columns)
+    constraint = compiler.quote_ddl_identifier(fk.name)
+    columns_sql = ", ".join(compiler.quote_ddl_identifier(c) for c in fk.columns)
+    target_table = compiler.quote_fully_qualified_ddl_identifier(fk.target_table)
+    target_sql = ", ".join(compiler.quote_ddl_identifier(c) for c in fk.target_columns)
     sql = (
         f"CONSTRAINT {constraint} FOREIGN KEY ({columns_sql}) "
         f"REFERENCES {target_table} ({target_sql})"
@@ -514,7 +514,7 @@ def render_column_sql(
 ) -> str:
     """Renders one column definition for CREATE TABLE or ADD COLUMN."""
     compiler.validate_column_def(col)
-    parts = [compiler.quote_identifier(name), compiler.compile_column_type(col)]
+    parts = [compiler.quote_ddl_identifier(name), compiler.compile_column_type(col)]
     if col.autoincrement:
         identity = compiler.compile_identity()
         if identity:
@@ -559,8 +559,8 @@ def column_comment_statements(
 def reference_target_sql(compiler: "Compiler", references: str) -> str:
     """Renders the table and column half of a REFERENCES clause."""
     ref_table, ref_column = references.rsplit(".", 1)
-    quoted_table = compiler.quote_fully_qualified_identifier(ref_table)
-    quoted_column = compiler.quote_identifier(ref_column)
+    quoted_table = compiler.quote_fully_qualified_ddl_identifier(ref_table)
+    quoted_column = compiler.quote_ddl_identifier(ref_column)
     return f"{quoted_table} ({quoted_column})"
 
 
@@ -599,7 +599,7 @@ def build_create_table_sql(
         column_parts.append(render_column_sql(compiler, name, col, inline_pk))
 
     if len(primary_keys) > 1:
-        pk_sql = ", ".join(compiler.quote_identifier(c) for c in primary_keys)
+        pk_sql = ", ".join(compiler.quote_ddl_identifier(c) for c in primary_keys)
         table_constraints.append(f"PRIMARY KEY ({pk_sql})")
 
     if not compiler.inline_references():
@@ -607,7 +607,7 @@ def build_create_table_sql(
             if col.references is None:
                 continue
             table_constraints.append(
-                f"FOREIGN KEY ({compiler.quote_identifier(name)}) REFERENCES "
+                f"FOREIGN KEY ({compiler.quote_ddl_identifier(name)}) REFERENCES "
                 f"{reference_target_sql(compiler, col.references)}"
             )
 

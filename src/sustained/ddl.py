@@ -203,7 +203,7 @@ def _table_name(table: TableRef) -> str:
 def _table_sql(args: _Args, compiler: "Compiler", key: str = "table") -> str:
     table = args[key]
     assert isinstance(table, str)
-    return compiler.quote_fully_qualified_identifier(table)
+    return compiler.quote_fully_qualified_ddl_identifier(table)
 
 
 def _op(op: str) -> Callable[[_Renderer], _Renderer]:
@@ -381,7 +381,7 @@ def _render_add_column(args: _Args, compiler: "Compiler") -> List[str]:
     if column.type_name == "ENUM" and compiler.enum_strategy() == "check":
         assert column.enum_values is not None
         constraint = _enum_check_name(table_sql, name)
-        column_ref = compiler.quote_identifier(name)
+        column_ref = compiler.quote_ddl_identifier(name)
         values_sql = ", ".join(compiler.format_value(v) for v in column.enum_values)
         statements.append(
             compiler.compile_add_check(
@@ -555,7 +555,7 @@ def _render_add_foreign_key(args: _Args, compiler: "Compiler") -> List[str]:
             _table_sql(args, compiler),
             fk.name,
             fk.columns,
-            compiler.quote_fully_qualified_identifier(fk.target_table),
+            compiler.quote_fully_qualified_ddl_identifier(fk.target_table),
             fk.target_columns,
             fk.on_delete,
             fk.on_update,
