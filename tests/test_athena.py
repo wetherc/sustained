@@ -39,10 +39,10 @@ class TestAthenaQueries(unittest.TestCase):
             {"id": Integer(), "name": String(120)},
         )
 
-    def test_placeholder_is_pyformat(self):
+    def test_placeholder_is_qmark(self):
         sql, params = self.Event.query().where("name", "=", "x").to_sql()
-        self.assertIn("%s", sql)
-        self.assertNotIn("?", sql)
+        self.assertIn("?", sql)
+        self.assertNotIn("%s", sql)
         self.assertEqual(params, ("x",))
 
     def test_offset_renders_before_limit(self):

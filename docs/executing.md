@@ -30,8 +30,8 @@ The connection's parameter style has to match the dialect's placeholder. `to_sql
 
 | Dialect | Placeholder | Driver |
 | --- | --- | --- |
-| `DEFAULT`, `MSSQL`, `PRESTO`, `DUCKDB` | `?` | `sqlite3`, `pyodbc`, `trino`, `duckdb` |
-| `POSTGRES`, `ATHENA`, `MYSQL` | `%s` | `psycopg`, `pyathena`, `PyMySQL` |
+| `DEFAULT`, `MSSQL`, `PRESTO`, `DUCKDB`, `ATHENA` | `?` | `sqlite3`, `pyodbc`, `trino`, `duckdb`, `pyathena` with `pyathena.paramstyle = "qmark"` |
+| `POSTGRES`, `MYSQL` | `%s` | `psycopg`, `PyMySQL` |
 
 [SQL Dialects](./dialects) provides more information about each supported driver, and gives sample connection patterns.
 

@@ -7,7 +7,10 @@ storage. Tables have no constraints, no indexes, and no identity columns.
 DDL takes Athena's spellings: STRING instead of TEXT, ADD COLUMNS instead
 of ADD COLUMN, CHANGE COLUMN for type changes, and a PARTITIONED BY,
 LOCATION, and TBLPROPERTIES clause after the column list. Placeholders
-render as %s to match pyathena, the DB-API driver for Athena.
+render as ?, which pyathena sends as native execution parameters when
+pyathena.paramstyle is set to "qmark". Sustained passes parameters as a
+tuple, which pyathena's default pyformat style refuses: it takes a dict
+only.
 
 Upserts, UPDATE, DELETE, and in-place column changes only work on Iceberg
 tables (created with the table_type=ICEBERG property).
@@ -37,10 +40,6 @@ class AthenaCompiler(PrestoCompiler):
         "BINARY": "BINARY",
         "JSON": "STRING",
     }
-
-    def placeholder(self) -> str:
-        # pyathena uses the pyformat parameter style.
-        return "%s"
 
     def compile_column_type(self, column: "ColumnDef") -> str:
         # Athena DDL has no unbounded VARCHAR; STRING is the unbounded form.

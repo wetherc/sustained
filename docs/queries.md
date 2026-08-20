@@ -379,7 +379,7 @@ Show.query().select('title').where('id', '=', 1).to_sql()
 # ('SELECT title FROM shows WHERE id = ?', (1,))
 ```
 
-The placeholder follows the dialect, `?` by default and on MSSQL, `%s` on Postgres and Athena:
+The placeholder follows the dialect, `?` by default and on MSSQL, `%s` on Postgres:
 
 ```python
 Show.set_dialect(Dialects.POSTGRES)

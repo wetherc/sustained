@@ -143,6 +143,10 @@ def _connect_presto(name):
 
 
 def _connect_athena(name):
+    # Sustained passes parameters as a tuple with ? placeholders. pyathena's
+    # default pyformat style takes a dict only, so the module switches to
+    # qmark, which sends the tuple as native execution parameters.
+    driver(name).paramstyle = "qmark"
     region = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION")
     kwargs = {
         "s3_staging_dir": dsn(name),

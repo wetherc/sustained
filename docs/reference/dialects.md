@@ -34,7 +34,7 @@ The connection's parameter style has to match the dialect's placeholder, or exec
 | `MSSQL` | `pyodbc` | `?` | `[name]` |
 | `MYSQL` | `PyMySQL`, `mysqlclient` | `%s` | `` `name` `` |
 | `PRESTO` | `trino` | `?` | `"name"` |
-| `ATHENA` | `pyathena` | `%s` | `"name"` |
+| `ATHENA` | `pyathena` | `?` | `"name"` |
 | `DUCKDB` | `duckdb` | `?` | `"name"` |
 
 ## Query features

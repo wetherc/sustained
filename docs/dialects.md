@@ -24,7 +24,7 @@ To execute queries, bind a DB-API 2.0 connection whose parameter style matches t
 | `Dialects.MSSQL` | Microsoft SQL Server | `pyodbc` | `?` | `[name]` |
 | `Dialects.MYSQL` | MySQL, MariaDB | `PyMySQL` | `%s` | `` `name` `` |
 | `Dialects.PRESTO` | Presto, Trino | `trino` or `presto-python-client` | `?` | `"name"` |
-| `Dialects.ATHENA` | AWS Athena | `pyathena` | `%s` | `"name"` |
+| `Dialects.ATHENA` | AWS Athena | `pyathena` | `?` | `"name"` |
 | `Dialects.DUCKDB` | DuckDB | `duckdb` | `?` | `"name"` |
 
 Async execution wraps a driver in an adapter instead: `AsyncpgAdapter` for asyncpg, `AiosqliteAdapter` for aiosqlite, and `DbApiAsyncAdapter` for any synchronous driver in the table. See [Executing Queries](./executing#async-execution).
@@ -170,11 +170,16 @@ counts = (Event.query()
 
 ## AWS Athena
 
-Athena runs a Trino-based engine over files in S3, so the dialect inherits Presto's query behavior and adds Athena's storage model: `%s` placeholders matching pyathena, `MERGE` upserts on Iceberg tables, Athena type spellings (`INT`, `STRING`, `DOUBLE`, `DECIMAL`), and `TableOptions` for `PARTITIONED BY`, `LOCATION`, and `TBLPROPERTIES` clauses. Sustained never calls boto3 itself: pyathena wraps the boto3 query lifecycle behind the DB-API cursor.
+Athena runs a Trino-based engine over files in S3, so the dialect inherits Presto's query behavior and adds Athena's storage model: `?` placeholders, `MERGE` upserts on Iceberg tables, Athena type spellings (`INT`, `STRING`, `DOUBLE`, `DECIMAL`), and `TableOptions` for `PARTITIONED BY`, `LOCATION`, and `TBLPROPERTIES` clauses. Sustained never calls boto3 itself: pyathena wraps the boto3 query lifecycle behind the DB-API cursor.
+
+Set `pyathena.paramstyle = "qmark"` before you run a parameterized query. Sustained passes parameters as a tuple, and pyathena's default pyformat style takes a dict only. With qmark, pyathena sends the tuple as native Athena execution parameters. This needs pyathena 3 or later.
 
 ```python
+import pyathena
 from pyathena import connect
 from sustained.dialects import Dialects
+
+pyathena.paramstyle = 'qmark'
 
 Event.set_dialect(Dialects.ATHENA)
 Event.bind(connect(
