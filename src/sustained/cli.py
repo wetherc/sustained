@@ -294,7 +294,9 @@ def _plan_verdicts(
 ) -> Dict[str, List[Verdict]]:
     """
     The guards' verdicts on the statements migrate would apply, keyed by
-    the statement they flag.
+    the normalized form of the statement they flag. A guard may report the
+    statement in any form, so the key is normalized here and the readers
+    normalize the statement they look up.
 
     The guards read the whole run at once, pending migrations and
     generated statements together, so a rule over the run as a whole sees
@@ -307,7 +309,9 @@ def _plan_verdicts(
     statements.extend(drift or [])
     by_statement: Dict[str, List[Verdict]] = {}
     for verdict in run_guards(guards, statements, dialect):
-        by_statement.setdefault(verdict.statement, []).append(verdict)
+        by_statement.setdefault(normalize_statement(verdict.statement), []).append(
+            verdict
+        )
     return by_statement
 
 

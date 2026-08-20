@@ -1164,6 +1164,31 @@ class GuardCliTestCase(CliBase):
         )
         self.assertEqual(payload["pending"][0]["statements"][0]["guards"], [])
 
+    def test_plan_json_reports_a_verdict_on_a_padded_statement(self):
+        # A custom guard may report the statement in any form. The JSON
+        # must still attach the verdict to the statement it flags.
+        self._add_drop()
+        name = f"guards_padded_{id(self)}"
+        with open(os.path.join(self.dir.name, f"{name}.py"), "w") as f:
+            f.write(
+                CONFIG_TEMPLATE + "\nfrom sustained.guards import BLOCK, Verdict\n"
+                "def loud(statements, dialect):\n"
+                "    return [\n"
+                "        Verdict('loud', BLOCK, '\\n  ' + s + '  \\n')\n"
+                "        for s in statements\n"
+                "        if 'DROP' in s\n"
+                "    ]\n"
+                "guards = [loud]\n"
+            )
+        self.addCleanup(sys.modules.pop, name, None)
+        code, out, _ = self._run(name, "plan", "--json")
+        self.assertEqual(code, 3)
+        payload = json.loads(out)
+        statements = payload["pending"][2]["statements"]
+        self.assertEqual(
+            statements[0]["guards"], [{"rule": "loud", "verdict": "block"}]
+        )
+
     def test_a_problem_outranks_a_blocked_statement(self):
         self.run_cli("migrate")
         self._write(
