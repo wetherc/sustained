@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.23.1
+
+### Fixed
+
+- Athena parameterized queries now execute. The dialect rendered `%s` placeholders, and pyathena's default pyformat style takes a dict only, so every query with parameters failed before reaching the server. The placeholder is now `?`. Set `pyathena.paramstyle = "qmark"` before running a parameterized query, so pyathena sends the tuple as native Athena execution parameters; this needs pyathena 3 or later.
+- Athena DDL quotes identifiers with backticks. DDL goes through Athena's Hive parser, which takes backticks or bare names only, so every double-quoted `CREATE TABLE` with a `LOCATION` or `TBLPROPERTIES` clause failed to parse, starting with the migrator's own tracking table. Queries and `MERGE` keep double quotes for the Trino engine. A new `quote_ddl_identifier` compiler hook carries the split; every other dialect quotes DDL and queries the same way.
+- Every Athena string column renders `STRING`. Iceberg tables reject `VARCHAR`, so a `String(n)` column could not create there; the declared length only documents intent, since Athena enforces no length on any string column. The engine reports the column back as `varchar`, and a new `normalize_diff_type` compiler hook folds the two together, so the column never drifts against its own DDL.
+- Athena execution parameters travel as strings, which is all its API takes; any other type failed client-side validation before the query started, including the migrator's own tracking writes. A new `prepare_execution` compiler hook converts each value on the way out: numbers through `str()`, booleans to `true` or `false`. Athena infers a value's type from the spot its placeholder sits in, so a converted number still compares against a numeric column. `None` becomes a literal `NULL` in the statement, because the API cannot pass one; binary values raise `DialectError`. The hook runs inside `run()` and both migrators; pass `to_sql()` output through `compiler.prepare_execution(sql, params)` if you execute it yourself on Athena.
+- Athena introspection reads only the connection's schema, filtering on `table_schema = current_schema`. It read every Glue database in the account, which was slow and failed outright when any database held a table with broken metadata, blocking `plan` and `diff` entirely.
+
 ## 2.23.0
 
 ### Added
