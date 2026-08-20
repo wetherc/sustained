@@ -406,7 +406,7 @@ async def run_async(
     )
     started = time.perf_counter()
     if query._stmt_type == "select":
-        sql, params = query.to_sql()
+        sql, params = query._compiler.prepare_execution(*query.to_sql())
         columns, rows = await resolved.fetch(sql, params)
         notify_statement(sql, params, time.perf_counter() - started)
         models = [query._model_class(**dict(zip(columns, row))) for row in rows]
@@ -420,16 +420,30 @@ async def run_async(
         template._insert_rows = [query._insert_rows[0]]
         sql, _ = template.to_sql()
         column_names = list(query._insert_rows[0].keys())
-        seq = [tuple(row[c] for c in column_names) for row in query._insert_rows]
-        result: WriteResult = await resolved.executemany(sql, seq)
+        prepared = [
+            query._compiler.prepare_execution(sql, tuple(row[c] for c in column_names))
+            for row in query._insert_rows
+        ]
+        # A row whose preparation rewrote the statement, such as a None
+        # parameter on Athena, cannot share the batch; those inserts run
+        # one execute per row instead.
+        if all(row_sql == sql for row_sql, _ in prepared):
+            result: WriteResult = await resolved.executemany(
+                sql, [values for _, values in prepared]
+            )
+        else:
+            total = 0
+            for row_sql, row_values in prepared:
+                total += await resolved.execute(row_sql, row_values)
+            result = total
         notify_statement(sql, (), time.perf_counter() - started)
     elif query._returning_columns:
-        sql, params = query.to_sql()
+        sql, params = query._compiler.prepare_execution(*query.to_sql())
         columns, rows = await resolved.fetch(sql, params)
         notify_statement(sql, params, time.perf_counter() - started)
         result = [dict(zip(columns, row)) for row in rows]
     else:
-        sql, params = query.to_sql()
+        sql, params = query._compiler.prepare_execution(*query.to_sql())
         result = await resolved.execute(sql, params)
         notify_statement(sql, params, time.perf_counter() - started)
 

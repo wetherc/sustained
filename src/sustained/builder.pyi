@@ -24,6 +24,7 @@ from .builders import (
     WhereClauseBuilder,
 )
 from .builders.join_builder import OnLambda
+from .compilers.base import Compiler
 from .dialects import Dialects
 from .expressions import (
     AggregateExpression,
@@ -61,6 +62,7 @@ class _Clauses(Generic[TQuery]):
     _insert_rows: List[Dict[str, SqlValue]]
     _returning_columns: List[str]
     _eager_relations: List[str]
+    _compiler: Compiler
     def __str__(self) -> str: ...
     def _render_sql(self, ctx: RenderContext, include_ctes: bool = True) -> str: ...
     def to_sql(self) -> Tuple[str, Tuple[SqlValue, ...]]: ...

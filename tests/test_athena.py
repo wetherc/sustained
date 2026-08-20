@@ -149,6 +149,52 @@ class TestAthenaTypes(unittest.TestCase):
         self.assertEqual(compiler.normalize_diff_type("INTEGER"), "INTEGER")
 
 
+class TestAthenaExecutionParameters(unittest.TestCase):
+    def setUp(self):
+        self.compiler = Dialects.get_compiler(Dialects.ATHENA)
+
+    def test_values_travel_as_strings(self):
+        sql, params = self.compiler.prepare_execution(
+            "SELECT 1 WHERE a = ? AND b = ? AND c = ? AND d = ? AND e = ?",
+            (1, 2.5, True, False, "x"),
+        )
+        self.assertEqual(
+            sql, "SELECT 1 WHERE a = ? AND b = ? AND c = ? AND d = ? AND e = ?"
+        )
+        self.assertEqual(params, ("1", "2.5", "true", "false", "x"))
+
+    def test_none_becomes_literal_null(self):
+        sql, params = self.compiler.prepare_execution(
+            "INSERT INTO t (a, b, c) VALUES (?, ?, ?)", ("x", None, 3)
+        )
+        self.assertEqual(sql, "INSERT INTO t (a, b, c) VALUES (?, NULL, ?)")
+        self.assertEqual(params, ("x", "3"))
+
+    def test_question_mark_inside_quotes_stays(self):
+        sql, params = self.compiler.prepare_execution(
+            "SELECT 1 FROM \"t?\" WHERE a = 'why?' AND b = ?", (None,)
+        )
+        self.assertEqual(sql, "SELECT 1 FROM \"t?\" WHERE a = 'why?' AND b = NULL")
+        self.assertEqual(params, ())
+
+    def test_escaped_quote_inside_literal(self):
+        sql, params = self.compiler.prepare_execution(
+            "SELECT 1 WHERE a = 'it''s?' AND b = ?", (None,)
+        )
+        self.assertEqual(sql, "SELECT 1 WHERE a = 'it''s?' AND b = NULL")
+        self.assertEqual(params, ())
+
+    def test_binary_rejected(self):
+        with self.assertRaises(DialectError):
+            self.compiler.prepare_execution("SELECT ?", (b"x",))
+
+    def test_base_compiler_passes_parameters_through(self):
+        compiler = Dialects.get_compiler(Dialects.DEFAULT)
+        sql, params = compiler.prepare_execution("a = ?", (1, None))
+        self.assertEqual(sql, "a = ?")
+        self.assertEqual(params, (1, None))
+
+
 class TestAthenaDiff(unittest.TestCase):
     def test_string_columns_match_reported_varchar(self):
         # Athena reports every string column back as varchar, with or

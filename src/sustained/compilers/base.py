@@ -169,6 +169,17 @@ class Compiler:
     def placeholder(self) -> str:
         return "?"
 
+    def prepare_execution(
+        self, sql: str, params: "tuple[SqlValue, ...]"
+    ) -> "tuple[str, tuple[SqlValue, ...]]":
+        """
+        Adapts one parameterized statement to what this dialect's driver
+        can execute. Most engines bind Python values as they are. Athena
+        overrides this: its execution parameters must be strings, and a
+        None parameter's placeholder becomes a literal NULL.
+        """
+        return sql, params
+
     def format_value(self, value: SqlValue) -> str:
         if isinstance(value, Expression):
             return str(value)

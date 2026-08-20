@@ -52,7 +52,7 @@ from typing import (
 from sustained.ddl import DdlStep
 from sustained.dialects import Dialects
 from sustained.execution import open_cursor, transaction
-from sustained.types import Connection
+from sustained.types import Connection, Cursor, SqlValue
 
 if TYPE_CHECKING:
     from sustained.aio import AsyncAdapter
@@ -1081,6 +1081,12 @@ class Migrator:
         yield
         self._commit_quietly()
 
+    def _execute(
+        self, cursor: "Cursor", sql: str, params: Tuple[SqlValue, ...]
+    ) -> None:
+        """Runs one parameterized statement, adapted for the dialect."""
+        cursor.execute(*self._compiler.prepare_execution(sql, params))
+
     def _commit_quietly(self) -> None:
         if hasattr(self._connection, "commit"):
             self._connection.commit()
@@ -1174,11 +1180,12 @@ class Migrator:
         placeholder = self._compiler.placeholder()
         table = self._rehearsal_table_sql()
         cursor = self._connection.cursor()
-        cursor.execute(
-            f"DELETE FROM {table} WHERE rehearsal_key = {placeholder}", (key,)
+        self._execute(
+            cursor, f"DELETE FROM {table} WHERE rehearsal_key = {placeholder}", (key,)
         )
         values = ", ".join([placeholder] * 3)
-        cursor.execute(
+        self._execute(
+            cursor,
             f"INSERT INTO {table} (rehearsal_key, outcome, rehearsed_at) "
             f"VALUES ({values})",
             (key, outcome, datetime.now(timezone.utc).isoformat()),
@@ -1193,7 +1200,8 @@ class Migrator:
         self._ensure_rehearsal_table()
         placeholder = self._compiler.placeholder()
         cursor = self._connection.cursor()
-        cursor.execute(
+        self._execute(
+            cursor,
             f"SELECT outcome FROM {self._rehearsal_table_sql()} "
             f"WHERE rehearsal_key = {placeholder}",
             (key,),
@@ -1251,7 +1259,8 @@ class Migrator:
         # still null, so values a partial earlier upgrade wrote survive.
         column = self._compiler.quote_identifier
         if "success" in added:
-            cursor.execute(
+            self._execute(
+                cursor,
                 f"UPDATE {self._table_sql()} SET {column('success')} = "
                 f"{placeholder} WHERE {column('success')} IS NULL",
                 (True,),
@@ -1263,7 +1272,8 @@ class Migrator:
             )
             ids = [row[0] for row in cursor.fetchall()]
             for position, migration_id in enumerate(ids, start=1):
-                cursor.execute(
+                self._execute(
+                    cursor,
                     f"UPDATE {self._table_sql()} SET {column('seq')} = "
                     f"{placeholder} WHERE {column('id')} = {placeholder} "
                     f"AND {column('seq')} IS NULL",
@@ -1369,7 +1379,8 @@ class Migrator:
         actions: List[str] = []
         for record in records:
             if not record.success:
-                cursor.execute(
+                self._execute(
+                    cursor,
                     f"DELETE FROM {self._table_sql()} WHERE "
                     f"{self._compiler.quote_identifier('id')} = {placeholder} "
                     f"AND {self._compiler.quote_identifier('success')} = "
@@ -1383,7 +1394,8 @@ class Migrator:
                 continue
             current = migration_checksum(migration)
             if current is not None and current != record.checksum:
-                cursor.execute(
+                self._execute(
+                    cursor,
                     f"UPDATE {self._table_sql()} SET "
                     f"{self._compiler.quote_identifier('checksum')} = "
                     f"{placeholder} WHERE "
@@ -1415,7 +1427,8 @@ class Migrator:
             checksum = migration_checksum(migration)
             cursor = self._connection.cursor()
             if update:
-                cursor.execute(
+                self._execute(
+                    cursor,
                     self._update_sql(),
                     (
                         checksum,
@@ -1428,7 +1441,8 @@ class Migrator:
                     ),
                 )
             else:
-                cursor.execute(
+                self._execute(
+                    cursor,
                     self._insert_sql(),
                     (
                         migration.id,
@@ -1686,7 +1700,8 @@ class Migrator:
                 checksum = migration_checksum(migration)
                 cursor = open_cursor(self._connection)
                 if update:
-                    cursor.execute(
+                    self._execute(
+                        cursor,
                         self._update_sql(),
                         (
                             checksum,
@@ -1699,7 +1714,8 @@ class Migrator:
                         ),
                     )
                 else:
-                    cursor.execute(
+                    self._execute(
+                        cursor,
                         self._insert_sql(),
                         (
                             migration.id,
@@ -2000,7 +2016,8 @@ class Migrator:
                             cast(MigrationStep, migration.down),
                             self._compiler,
                         )
-                        self._connection.cursor().execute(
+                        self._execute(
+                            self._connection.cursor(),
                             f"DELETE FROM {self._table_sql()} WHERE "
                             f"{self._compiler.quote_identifier('id')} = "
                             f"{placeholder}",
@@ -2044,7 +2061,8 @@ class Migrator:
                 if migration.id in already_applied:
                     continue
                 timestamp = datetime.now(timezone.utc).isoformat()
-                cursor.execute(
+                self._execute(
+                    cursor,
                     self._insert_sql(),
                     (
                         migration.id,
@@ -2254,7 +2272,8 @@ class Migrator:
         """
         placeholder = self._compiler.placeholder()
         cursor = self._connection.cursor()
-        cursor.execute(
+        self._execute(
+            cursor,
             f"SELECT {self._compiler.quote_identifier('steps')} "
             f"FROM {self._table_sql()} WHERE "
             f"{self._compiler.quote_identifier('id')} = {placeholder}",
@@ -2295,7 +2314,8 @@ class Migrator:
                     raise ValueError(f"Migration '{migration_id}' has no down step.")
                 with self._migration_scope():
                     _run_step(self._connection, migration.down, self._compiler)
-                    open_cursor(self._connection).execute(
+                    self._execute(
+                        open_cursor(self._connection),
                         f"DELETE FROM {self._table_sql()} WHERE "
                         f"{self._compiler.quote_identifier('id')} = "
                         f"{placeholder}",

@@ -35,6 +35,8 @@ The connection's parameter style has to match the dialect's placeholder. `to_sql
 
 [SQL Dialects](./dialects) provides more information about each supported driver, and gives sample connection patterns.
 
+On Athena, `run()` also converts each parameter to the string form the Athena API wants before handing it to pyathena, and rewrites a `None` parameter's placeholder to a literal `NULL`. If you execute `to_sql()` output yourself there, pass it through `compiler.prepare_execution(sql, params)` first.
+
 ## Binding a connection
 
 `Model.bind()` sets the connection as a class attribute, which subclasses inherit:

@@ -68,6 +68,7 @@ from sustained.migrations import (
     rehearsal_key,
     update_sql,
 )
+from sustained.types import RowValue, SqlValue
 
 if TYPE_CHECKING:
     from sustained.autogenerate import IntrospectedTable
@@ -164,6 +165,16 @@ class AsyncMigrator:
         except Exception:
             pass
 
+    async def _execute(self, sql: str, params: Tuple[SqlValue, ...]) -> None:
+        """Runs one parameterized statement, adapted for the dialect."""
+        await self._adapter.execute(*self._compiler.prepare_execution(sql, params))
+
+    async def _fetch(
+        self, sql: str, params: Tuple[SqlValue, ...]
+    ) -> Tuple[List[str], List[Sequence[RowValue]]]:
+        """Runs one parameterized query, adapted for the dialect."""
+        return await self._adapter.fetch(*self._compiler.prepare_execution(sql, params))
+
     @asynccontextmanager
     async def _lock_scope(self) -> AsyncIterator[None]:
         """
@@ -246,11 +257,11 @@ class AsyncMigrator:
         await self._ensure_rehearsal_table()
         placeholder = self._compiler.placeholder()
         table = self._rehearsal_table_sql()
-        await self._adapter.execute(
+        await self._execute(
             f"DELETE FROM {table} WHERE rehearsal_key = {placeholder}", (key,)
         )
         values = ", ".join([placeholder] * 3)
-        await self._adapter.execute(
+        await self._execute(
             f"INSERT INTO {table} (rehearsal_key, outcome, rehearsed_at) "
             f"VALUES ({values})",
             (key, outcome, datetime.now(timezone.utc).isoformat()),
@@ -264,7 +275,7 @@ class AsyncMigrator:
         """
         await self._ensure_rehearsal_table()
         placeholder = self._compiler.placeholder()
-        _, rows = await self._adapter.fetch(
+        _, rows = await self._fetch(
             f"SELECT outcome FROM {self._rehearsal_table_sql()} "
             f"WHERE rehearsal_key = {placeholder}",
             (key,),
@@ -342,7 +353,7 @@ class AsyncMigrator:
         # still null, so values a partial earlier upgrade wrote survive.
         column = self._compiler.quote_identifier
         if "success" in added:
-            await self._adapter.execute(
+            await self._execute(
                 f"UPDATE {self._table_sql()} SET {column('success')} = "
                 f"{placeholder} WHERE {column('success')} IS NULL",
                 (True,),
@@ -354,7 +365,7 @@ class AsyncMigrator:
                 (),
             )
             for position, row in enumerate(rows, start=1):
-                await self._adapter.execute(
+                await self._execute(
                     f"UPDATE {self._table_sql()} SET {column('seq')} = "
                     f"{placeholder} WHERE {column('id')} = {placeholder} "
                     f"AND {column('seq')} IS NULL",
@@ -461,7 +472,7 @@ class AsyncMigrator:
         actions: List[str] = []
         for record in records:
             if not record.success:
-                await self._adapter.execute(
+                await self._execute(
                     f"DELETE FROM {self._table_sql()} WHERE "
                     f"{self._compiler.quote_identifier('id')} = {placeholder} "
                     f"AND {self._compiler.quote_identifier('success')} = "
@@ -475,7 +486,7 @@ class AsyncMigrator:
                 continue
             current = migration_checksum(migration)
             if current is not None and current != record.checksum:
-                await self._adapter.execute(
+                await self._execute(
                     f"UPDATE {self._table_sql()} SET "
                     f"{self._compiler.quote_identifier('checksum')} = "
                     f"{placeholder} WHERE "
@@ -516,7 +527,7 @@ class AsyncMigrator:
                 if migration.id in already_applied:
                     continue
                 timestamp = datetime.now(timezone.utc).isoformat()
-                await self._adapter.execute(
+                await self._execute(
                     self._insert_sql(),
                     (
                         migration.id,
@@ -550,12 +561,12 @@ class AsyncMigrator:
             timestamp = datetime.now(timezone.utc).isoformat()
             checksum = migration_checksum(migration)
             if update:
-                await self._adapter.execute(
+                await self._execute(
                     self._update_sql(),
                     (checksum, timestamp, None, False, False, None, migration.id),
                 )
             else:
-                await self._adapter.execute(
+                await self._execute(
                     self._insert_sql(),
                     (
                         migration.id,
@@ -725,7 +736,7 @@ class AsyncMigrator:
                 timestamp = datetime.now(timezone.utc).isoformat()
                 checksum = migration_checksum(migration)
                 if update:
-                    await self._adapter.execute(
+                    await self._execute(
                         self._update_sql(),
                         (
                             checksum,
@@ -738,7 +749,7 @@ class AsyncMigrator:
                         ),
                     )
                 else:
-                    await self._adapter.execute(
+                    await self._execute(
                         self._insert_sql(),
                         (
                             migration.id,
@@ -908,7 +919,7 @@ class AsyncMigrator:
                 try:
                     async with self._migration_scope():
                         await self._run_step(cast(MigrationStep, migration.down))
-                        await self._adapter.execute(
+                        await self._execute(
                             f"DELETE FROM {self._table_sql()} WHERE "
                             f"{self._compiler.quote_identifier('id')} = "
                             f"{placeholder}",
@@ -933,7 +944,7 @@ class AsyncMigrator:
         migrator writes these rows when it applies a diff against the
         models, and either migrator can take one back.
         """
-        rows = await self._adapter.fetch(
+        rows = await self._fetch(
             f"SELECT {self._compiler.quote_identifier('steps')} "
             f"FROM {self._table_sql()} WHERE "
             f"{self._compiler.quote_identifier('id')} = "
@@ -973,7 +984,7 @@ class AsyncMigrator:
                     raise ValueError(f"Migration '{migration_id}' has no down step.")
                 async with self._migration_scope():
                     await self._run_step(migration.down)
-                    await self._adapter.execute(
+                    await self._execute(
                         f"DELETE FROM {self._table_sql()} WHERE "
                         f"{self._compiler.quote_identifier('id')} = "
                         f"{placeholder}",

@@ -174,6 +174,8 @@ Athena runs a Trino-based engine over files in S3, so the dialect inherits Prest
 
 Set `pyathena.paramstyle = "qmark"` before you run a parameterized query. Sustained passes parameters as a tuple, and pyathena's default pyformat style takes a dict only. With qmark, pyathena sends the tuple as native Athena execution parameters. This needs pyathena 3 or later.
 
+Athena's API only takes execution parameters as strings, so `run()` converts each value on the way out: numbers through `str()`, booleans to `true`/`false`. Athena infers the value's type from the spot its placeholder sits in, so a converted number still compares against a numeric column. `None` becomes a literal `NULL` in the statement, because the API has no way to pass one. Binary values raise `DialectError`. The conversion runs inside `run()` and the migrator; if you execute `to_sql()` output yourself, pass it through `compiler.prepare_execution(sql, params)` first.
+
 ```python
 import pyathena
 from pyathena import connect

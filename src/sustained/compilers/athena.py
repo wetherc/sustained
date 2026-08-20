@@ -13,7 +13,10 @@ identifiers keep Presto's double quotes for the Trino engine. Placeholders
 render as ?, which pyathena sends as native execution parameters when
 pyathena.paramstyle is set to "qmark". Sustained passes parameters as a
 tuple, which pyathena's default pyformat style refuses: it takes a dict
-only.
+only. Every parameter travels to the service as a string, since the
+Athena API takes nothing else; Athena infers each value's type from the
+spot its placeholder sits in. A None parameter becomes a literal NULL in
+the statement, because NULL has no parameter spelling.
 
 Upserts, UPDATE, DELETE, and in-place column changes only work on Iceberg
 tables (created with the table_type=ICEBERG property).
@@ -27,6 +30,67 @@ from .presto import PrestoCompiler
 
 if TYPE_CHECKING:
     from sustained.schema import ColumnDef, TableOptions
+    from sustained.types import SqlValue
+
+
+def _execution_parameter(value: "SqlValue") -> str:
+    """
+    One parameter as the string Athena's API wants. Athena infers each
+    value's type from the spot its placeholder sits in, so a stringified
+    number or boolean still compares against its column.
+    """
+    if isinstance(value, str):
+        return value
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return str(value)
+    if isinstance(value, (bytes, bytearray)):
+        raise DialectError(
+            "Athena execution parameters cannot carry binary values. "
+            "Write the value as literal SQL instead."
+        )
+    return str(value)
+
+
+def _inline_null_parameters(
+    sql: str, params: "tuple[SqlValue, ...]"
+) -> "tuple[str, tuple[SqlValue, ...]]":
+    """
+    Rewrites each placeholder bound to None as a literal NULL, keeping
+    the rest. Athena's API has no way to pass NULL as a parameter. The
+    scan tracks quoted regions, so a question mark inside a string
+    literal or a quoted identifier stays put.
+    """
+    remaining = list(params)
+    kept = []
+    out = []
+    quote = None
+    position = 0
+    while position < len(sql):
+        char = sql[position]
+        if quote is not None:
+            out.append(char)
+            if char == quote:
+                if position + 1 < len(sql) and sql[position + 1] == quote:
+                    out.append(quote)
+                    position += 1
+                else:
+                    quote = None
+        elif char in ("'", '"', "`"):
+            quote = char
+            out.append(char)
+        elif char == "?":
+            value = remaining.pop(0)
+            if value is None:
+                out.append("NULL")
+            else:
+                out.append("?")
+                kept.append(value)
+        else:
+            out.append(char)
+        position += 1
+    return "".join(out), tuple(kept)
 
 
 class AthenaCompiler(PrestoCompiler):
@@ -62,6 +126,17 @@ class AthenaCompiler(PrestoCompiler):
         if column.type_name == "VARCHAR":
             return "STRING"
         return super().compile_column_type(column)
+
+    def prepare_execution(
+        self, sql: str, params: "tuple[SqlValue, ...]"
+    ) -> "tuple[str, tuple[SqlValue, ...]]":
+        # Athena execution parameters travel to the service as strings;
+        # boto3 rejects any other type before the query starts. NULL has
+        # no parameter spelling at all, so a None parameter's placeholder
+        # is rewritten to a literal NULL in the statement.
+        if any(value is None for value in params):
+            sql, params = _inline_null_parameters(sql, params)
+        return sql, tuple(_execution_parameter(value) for value in params)
 
     def normalize_diff_type(self, type_name: str) -> str:
         # Athena stores every string column as STRING and reports it back

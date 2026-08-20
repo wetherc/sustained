@@ -790,7 +790,7 @@ class QueryBuilder:
 
         from sustained.execution import connection_scope, notify_statement, open_cursor
 
-        sql, params = self.to_sql()
+        sql, params = self._compiler.prepare_execution(*self.to_sql())
         prefix = self._compiler.compile_explain(analyze)
         with connection_scope(connection, self._model_class._connection) as conn:
             cursor = open_cursor(conn)
@@ -1136,7 +1136,7 @@ class QueryBuilder:
 
         with connection_scope(connection, self._model_class._connection) as conn:
             cursor = open_cursor(conn)
-            sql, params = self.to_sql()
+            sql, params = self._compiler.prepare_execution(*self.to_sql())
             started = time.perf_counter()
             cursor.execute(sql, params)
             notify_statement(sql, params, time.perf_counter() - started)
@@ -1233,13 +1233,23 @@ class QueryBuilder:
                 template._insert_rows = [self._insert_rows[0]]
                 sql, _ = template.to_sql()
                 columns = list(self._insert_rows[0].keys())
-                row_params = [
-                    tuple(row[c] for c in columns) for row in self._insert_rows
+                prepared = [
+                    self._compiler.prepare_execution(
+                        sql, tuple(row[c] for c in columns)
+                    )
+                    for row in self._insert_rows
                 ]
-                cursor.executemany(sql, row_params)
+                # A row whose preparation rewrote the statement, such as a
+                # None parameter on Athena, cannot share the batch; those
+                # inserts run one execute per row instead.
+                if all(row_sql == sql for row_sql, _ in prepared):
+                    cursor.executemany(sql, [values for _, values in prepared])
+                else:
+                    for row_sql, row_values in prepared:
+                        cursor.execute(row_sql, row_values)
                 notify_statement(sql, (), time.perf_counter() - started)
             else:
-                sql, params = self.to_sql()
+                sql, params = self._compiler.prepare_execution(*self.to_sql())
                 cursor.execute(sql, params)
                 notify_statement(sql, params, time.perf_counter() - started)
 
@@ -1303,7 +1313,7 @@ class QueryBuilder:
         if self._stmt_type != "select":
             raise ValueError("Only SELECT queries return result sets.")
         resolved = resolve_adapter(adapter, self._model_class)
-        sql, params = self.to_sql()
+        sql, params = self._compiler.prepare_execution(*self.to_sql())
         started = time.perf_counter()
         columns, rows = await resolved.fetch(sql, params)
         notify_statement(sql, params, time.perf_counter() - started)
