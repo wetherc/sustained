@@ -340,6 +340,8 @@ def _schema_plan(dialect: Dialects) -> SchemaPlan:
         return _mssql_plan()
     if dialect == Dialects.DUCKDB:
         return _duckdb_plan()
+    if dialect == Dialects.ATHENA:
+        return _information_schema_plan(ATHENA_CATALOG)
     return _information_schema_plan(PRESTO_CATALOG)
 
 
@@ -534,6 +536,11 @@ MYSQL_CATALOG = Catalog(
 
 # Presto and Trino put the comment straight on information_schema.columns.
 PRESTO_CATALOG = ANSI_CATALOG._replace(comment_column="comment")
+
+# Athena reads only the connection's schema. Its catalog spans every Glue
+# database in the account, so an unscoped read is slow and fails outright
+# when any other database holds a table with broken metadata.
+ATHENA_CATALOG = PRESTO_CATALOG._replace(schema_filter="table_schema = current_schema")
 
 
 def _information_schema_plan(catalog: Catalog = ANSI_CATALOG) -> SchemaPlan:

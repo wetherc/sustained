@@ -479,6 +479,26 @@ class TestAthenaMigrator(unittest.TestCase):
         diff = diff_schema(conn, [model], dialect=Dialects.ATHENA)
         self.assertTrue(diff.is_empty())
 
+    def test_introspection_scopes_to_current_schema(self):
+        # Athena's catalog spans every Glue database in the account, so an
+        # unscoped read is slow and fails when any other database holds a
+        # broken table. Presto keeps the unscoped read.
+        from sustained.introspect import introspect_schema
+
+        conn = FakeAthenaConnection()
+        introspect_schema(conn, Dialects.ATHENA)
+        reads = [s for s in conn.log if "information_schema" in s]
+        self.assertTrue(reads)
+        for sql in reads:
+            self.assertIn("table_schema = current_schema", sql)
+
+        presto_conn = FakeAthenaConnection()
+        introspect_schema(presto_conn, Dialects.PRESTO)
+        presto_reads = [s for s in presto_conn.log if "information_schema" in s]
+        self.assertTrue(presto_reads)
+        for sql in presto_reads:
+            self.assertIn("table_schema NOT IN", sql)
+
     def test_sync_generates_add_columns(self):
         model = athena_model(
             "AthSyncAdd",

@@ -111,4 +111,6 @@ SQLite reports constraints only inside the stored `CREATE TABLE` text, so intros
 
 MySQL introspection differs from the rest. It reads `column_type` rather than `data_type`, so a column arrives as `varchar(120)` and compares against the compiler's own spelling. It scopes every query to `DATABASE()`, because a MySQL schema is a database. It matches schema names as well as constraint names when it joins the constraint views, because a MySQL constraint name is unique only within its schema.
 
+Athena scopes every introspection query to `table_schema = current_schema`, the schema the connection was opened on. Its catalog spans every Glue database in the account, so an unscoped read would be slow and would fail outright when any other database holds a table with broken metadata. Models on an Athena connection must live in that schema for a diff to see them.
+
 MariaDB stores a `Json()` column as `longtext` with a `json_valid` CHECK constraint, and reports the storage type. Introspection looks those constraints up and restores the JSON type, so the column does not report as drift that no migration can close. MariaDB before 10.2.22 has no `check_constraints` view, so on those versions the column does report as drift.

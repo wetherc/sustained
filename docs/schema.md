@@ -280,6 +280,7 @@ class Event(Model):
 
 This renders `PARTITIONED BY (day(created_at)) LOCATION '...' TBLPROPERTIES ('table_type'='ICEBERG')` after the column list. Partition entries pass through as written, so Iceberg transforms work. Every other dialect raises when `tableOptions` is set.
 
+- **Diffs read the connection's schema only.** Introspection scopes to `current_schema`, so a plan sees the tables in the schema the connection was opened on and nothing from other Glue databases.
 - **Every string column renders `STRING`.** `String(n)` and `Text()` are the same column type on Athena. Iceberg tables reject `VARCHAR`, and Athena enforces no length either way, so the declared length only documents intent. The engine reports the column back as `varchar`, which the diff reads as the same type.
 - **Migrations run without transactions.** Athena has none, so the migrator runs each step bare and never calls rollback. A failing multi-step migration can leave partial changes that need manual cleanup. The tracking table needs its own storage location:
 
