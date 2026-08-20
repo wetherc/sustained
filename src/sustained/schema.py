@@ -52,6 +52,12 @@ class ColumnDef:
         enum_name: The name of the enum type, for ENUM columns. Postgres
             creates a type object with this name.
         enum_values: The permitted values of an ENUM column, in order.
+        comment: A description stored in the database's catalog beside
+            the column, on engines that keep one. Postgres and DuckDB
+            store it with COMMENT ON COLUMN, MySQL, Presto, and Athena
+            inside the column definition. SQLite and SQL Server keep no
+            column comments; there the comment stays on the model and
+            renders nothing.
     """
 
     def __init__(
@@ -70,7 +76,15 @@ class ColumnDef:
         backfill: SqlValue = None,
         enum_name: Optional[str] = None,
         enum_values: Optional[Sequence[str]] = None,
+        comment: Optional[str] = None,
     ) -> None:
+        if comment is not None and (
+            not isinstance(comment, str) or not comment.strip()
+        ):
+            raise ValueError(
+                "A column comment must be a non-empty string; leave it off "
+                "for a column without one."
+            )
         if autoincrement and type_name not in ("INTEGER", "BIGINT"):
             raise ValueError("autoincrement requires an Integer or BigInteger column.")
         if autoincrement and not primary_key:
@@ -107,6 +121,7 @@ class ColumnDef:
         self.enum_values: Optional[Tuple[str, ...]] = (
             tuple(enum_values) if enum_values is not None else None
         )
+        self.comment = comment
 
 
 def _checked_enum_values(
@@ -512,9 +527,33 @@ def render_column_sql(
         parts.append("UNIQUE")
     if col.default is not None:
         parts.append(f"DEFAULT {compiler.format_value(col.default)}")
+    if col.comment is not None and compiler.inline_column_comments():
+        parts.append(f"COMMENT {compiler.format_value(col.comment)}")
     if col.references is not None and compiler.inline_references():
         parts.append(f"REFERENCES {reference_target_sql(compiler, col.references)}")
     return " ".join(parts)
+
+
+def column_comment_statements(
+    compiler: "Compiler",
+    table_sql: str,
+    columns: Dict[str, ColumnDef],
+) -> List[str]:
+    """
+    The COMMENT ON COLUMN statements that follow CREATE TABLE, on
+    dialects that store comments as separate statements. Dialects that
+    write the comment inside the column definition, and dialects that
+    store no column comments at all, return no statements.
+    """
+    if not compiler.stores_column_comments() or compiler.inline_column_comments():
+        return []
+    statements: List[str] = []
+    for name, col in columns.items():
+        if col.comment is not None:
+            statements.extend(
+                compiler.compile_set_column_comment(table_sql, name, col.comment)
+            )
+    return statements
 
 
 def reference_target_sql(compiler: "Compiler", references: str) -> str:
@@ -610,6 +649,7 @@ __all__ = [
     "Enum",
     "build_create_table_sql",
     "checked_constraint_names",
+    "column_comment_statements",
     "check_constraint_sql",
     "collect_enum_types",
     "enum_check_constraint_sql",

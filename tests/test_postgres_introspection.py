@@ -19,13 +19,20 @@ class FakeCursor:
     """Serves canned Postgres catalog rows, and records the SQL asked for."""
 
     def __init__(
-        self, columns=(), indexes=None, foreign_keys=None, checks=None, enums=None
+        self,
+        columns=(),
+        indexes=None,
+        foreign_keys=None,
+        checks=None,
+        enums=None,
+        comments=None,
     ):
         self.columns = list(columns)
         self.indexes = indexes
         self.foreign_keys = foreign_keys
         self.checks = checks
         self.enums = enums
+        self.comments = comments
         self.statements = []
         self._current = []
 
@@ -49,6 +56,10 @@ class FakeCursor:
             if self.enums is None:
                 raise RuntimeError("no pg_enum here")
             self._current = self.enums
+        elif "pg_description" in sql:
+            if self.comments is None:
+                raise RuntimeError("no pg_description here")
+            self._current = self.comments
         else:
             self._current = []
 
@@ -306,6 +317,31 @@ class TestPostgresCatalogQueries(unittest.TestCase):
         )
         schema = self.read(cursor)
         self.assertEqual(schema.enum_types["mood"], ("sad", "ok", "happy"))
+
+    def test_column_comments_are_read(self):
+        cursor = FakeCursor(
+            columns=[column_row("users", "email", "text")],
+            comments=[("users", "email", "Login address")],
+        )
+        schema = self.read(cursor)
+        self.assertEqual(schema["users"].columns["email"].comment, "Login address")
+        self.assertTrue(schema.comments_read)
+        comment_sql = next(s for s in cursor.statements if "pg_description" in s)
+        self.assertIn("d.objsubid > 0", comment_sql)
+
+    def test_a_comment_on_an_unknown_column_is_skipped(self):
+        cursor = FakeCursor(
+            columns=[column_row("users", "email", "text")],
+            comments=[("users", "gone", "orphan"), ("gone", "email", "orphan")],
+        )
+        schema = self.read(cursor)
+        self.assertIsNone(schema["users"].columns["email"].comment)
+
+    def test_a_missing_pg_description_degrades(self):
+        cursor = FakeCursor(columns=[column_row("users", "email", "text")])
+        schema = self.read(cursor)
+        self.assertIsNone(schema["users"].columns["email"].comment)
+        self.assertFalse(schema.comments_read)
 
     def test_missing_catalog_views_degrade_to_columns(self):
         cursor = FakeCursor(columns=[column_row("users", "id", "integer")])

@@ -3,7 +3,8 @@ Reading a live schema, and comparing two reads.
 
 introspect_schema() and async_introspect_schema() report the tables,
 columns, primary keys, unique constraints, foreign keys, defaults,
-indexes, check constraints, and enum types a database currently holds.
+indexes, check constraints, column comments, and enum types a database
+currently holds.
 Both drive the same generator-based plan, so one dialect's reading code
 serves a blocking connection and an async adapter alike.
 
@@ -44,6 +45,7 @@ class IntrospectedColumn(NamedTuple):
     default: Optional[str] = None
     enum_name: Optional[str] = None
     enum_values: Tuple[str, ...] = ()
+    comment: Optional[str] = None
 
 
 class IntrospectedIndex(NamedTuple):
@@ -118,6 +120,7 @@ class Snapshot(Dict[str, IntrospectedTable]):
         enum_types_read: bool = False,
         constraints_read: bool = False,
         checks_read: bool = False,
+        comments_read: bool = False,
     ) -> None:
         super().__init__(tables or {})
         self.enum_types: Dict[str, Tuple[str, ...]] = dict(enum_types or {})
@@ -132,6 +135,10 @@ class Snapshot(Dict[str, IntrospectedTable]):
         # that a constraint is absent.
         self.constraints_read = constraints_read
         self.checks_read = checks_read
+        # Whether column comments were read. SQLite and MSSQL store none,
+        # and a degraded read leaves the flag False, so a diff must not
+        # take an absent comment as proof the database holds none.
+        self.comments_read = comments_read
 
 
 # Engine type spellings mapped to Sustained's logical types. Both sides of
@@ -257,7 +264,11 @@ def introspect_schema(
 ) -> Snapshot:
     """
     Reads tables, columns, primary keys, unique constraints, foreign keys,
-    defaults, indexes, and check constraints from the database. The
+    defaults, indexes, check constraints, and column comments from the
+    database. Comments come from pg_description on Postgres,
+    information_schema.columns on MySQL, Presto, and Athena, and
+    duckdb_columns() on DuckDB; SQLite and MSSQL store none, so their
+    snapshots leave comments_read False. The
     default dialect reads SQLite's PRAGMA tables and the table SQL in
     sqlite_master. Postgres reads information_schema together with
     pg_index, pg_enum, and the constraint views, so every index is
@@ -329,7 +340,7 @@ def _schema_plan(dialect: Dialects) -> SchemaPlan:
         return _mssql_plan()
     if dialect == Dialects.DUCKDB:
         return _duckdb_plan()
-    return _information_schema_plan()
+    return _information_schema_plan(PRESTO_CATALOG)
 
 
 def _strip_identifier(name: str) -> str:
@@ -493,11 +504,14 @@ class Catalog(NamedTuple):
         join_on_schema: Whether the constraint join must match schemas as
             well as names, on engines where a constraint name is only
             unique within its schema.
+        comment_column: The information_schema.columns column holding the
+            column comment, or None on engines that store none there.
     """
 
     schema_filter: str
     type_column: str
     join_on_schema: bool
+    comment_column: Optional[str] = None
 
 
 ANSI_CATALOG = Catalog(
@@ -515,7 +529,11 @@ MYSQL_CATALOG = Catalog(
     # emits, so a column never drifts against its own DDL.
     type_column="column_type",
     join_on_schema=True,
+    comment_column="column_comment",
 )
+
+# Presto and Trino put the comment straight on information_schema.columns.
+PRESTO_CATALOG = ANSI_CATALOG._replace(comment_column="comment")
 
 
 def _information_schema_plan(catalog: Catalog = ANSI_CATALOG) -> SchemaPlan:
@@ -537,6 +555,29 @@ def _information_schema_plan(catalog: Catalog = ANSI_CATALOG) -> SchemaPlan:
                 default=default,
             )
         )
+
+    comments_read = False
+    if catalog.comment_column is not None:
+        try:
+            comment_rows = yield (
+                f"SELECT table_name, column_name, {catalog.comment_column} "
+                f"FROM information_schema.columns WHERE {schema_filter}"
+            )
+            for table, name, comment in comment_rows:
+                # MySQL reports an uncommented column as '', not NULL.
+                if comment is None or str(comment) == "":
+                    continue
+                columns = columns_by_table.get(str(table).lower(), {})
+                column_key = str(name).lower()
+                if column_key in columns:
+                    columns[column_key] = columns[column_key]._replace(
+                        comment=str(comment)
+                    )
+            comments_read = True
+        except Exception:
+            # The engine's columns view holds no comment column after all;
+            # degrade to columns without comments.
+            pass
 
     primary_keys: Dict[str, List[str]] = {}
     unique_indexes: Dict[str, Dict[str, IntrospectedIndex]] = {}
@@ -579,7 +620,7 @@ def _information_schema_plan(catalog: Catalog = ANSI_CATALOG) -> SchemaPlan:
         # The engine does not expose constraint views; degrade to columns.
         pass
 
-    schema = Snapshot(constraints_read=constraints_read)
+    schema = Snapshot(constraints_read=constraints_read, comments_read=comments_read)
     for table, columns in columns_by_table.items():
         pk = tuple(primary_keys.get(table, ()))
         for pk_col in pk:
@@ -686,6 +727,23 @@ def _duckdb_plan() -> SchemaPlan:
         _merge_plain_indexes(schema, plain)
     except Exception:
         # No duckdb_indexes() to read; keep the constraint-derived indexes.
+        pass
+    try:
+        comment_rows = yield (
+            "SELECT table_name, column_name, comment FROM duckdb_columns() "
+            "WHERE comment IS NOT NULL"
+        )
+        for table, name, comment in comment_rows:
+            existing = schema.get(str(table).lower())
+            if existing is None:
+                continue
+            key = str(name).lower()
+            column = existing.columns.get(key)
+            if column is not None:
+                existing.columns[key] = column._replace(comment=str(comment))
+        schema.comments_read = True
+    except Exception:
+        # A DuckDB from before COMMENT ON; degrade to no comments.
         pass
     return schema
 
@@ -840,6 +898,28 @@ def _postgres_plan() -> SchemaPlan:
         # No check views to read; degrade to no checks.
         pass
 
+    comments: Dict[str, Dict[str, str]] = {}
+    comments_read = False
+    try:
+        comment_rows = yield (
+            "SELECT c.relname, a.attname, d.description "
+            "FROM pg_catalog.pg_description d "
+            "JOIN pg_catalog.pg_class c ON c.oid = d.objoid "
+            "JOIN pg_catalog.pg_attribute a "
+            "ON a.attrelid = d.objoid AND a.attnum = d.objsubid "
+            "JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "
+            "WHERE d.objsubid > 0 "
+            "AND n.nspname NOT IN ('information_schema', 'pg_catalog')"
+        )
+        for table, name, description in comment_rows:
+            comments.setdefault(str(table).lower(), {})[str(name).lower()] = str(
+                description
+            )
+        comments_read = True
+    except Exception:
+        # No pg_description to read; degrade to no comments.
+        pass
+
     enum_types: Dict[str, Tuple[str, ...]] = {}
     enum_types_read = False
     try:
@@ -865,6 +945,7 @@ def _postgres_plan() -> SchemaPlan:
         enum_types_read=enum_types_read,
         constraints_read=constraints_read,
         checks_read=checks_read,
+        comments_read=comments_read,
     )
     for table, columns in columns_by_table.items():
         pk = primary_keys.get(table, ())
@@ -877,6 +958,9 @@ def _postgres_plan() -> SchemaPlan:
                 columns[name] = column._replace(
                     enum_name=column.raw_type.lower(), enum_values=values
                 )
+        for name, comment in comments.get(table, {}).items():
+            if name in columns:
+                columns[name] = columns[name]._replace(comment=comment)
         schema[table] = IntrospectedTable(
             columns=columns,
             primary_key=pk,
@@ -1029,9 +1113,9 @@ def diff_snapshots(
     steps put the schema back where it started: `before` is the snapshot
     taken first, `after` is the schema once the down steps have run.
 
-    Tables and columns are compared. Indexes, constraints, and defaults
-    are not: their reported spellings differ enough between engines that
-    a difference here would report noise as a failure.
+    Tables and columns are compared. Indexes, constraints, defaults, and
+    comments are not: their reported spellings differ enough between
+    engines that a difference here would report noise as a failure.
     """
     lines: List[str] = []
     for table in sorted(set(after) - set(before)):

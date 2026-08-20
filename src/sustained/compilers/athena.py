@@ -76,6 +76,19 @@ class AthenaCompiler(PrestoCompiler):
     def compile_identity(self) -> str:
         raise DialectError("Athena has no identity columns.")
 
+    def compile_set_column_comment(
+        self,
+        table_sql: str,
+        column_name: str,
+        comment: Optional[str],
+        column: Optional["ColumnDef"] = None,
+    ) -> "list[str]":
+        raise DialectError(
+            "Athena cannot change a column comment in place. Declare the "
+            "comment on the model so CREATE TABLE carries it, or write "
+            "the CHANGE COLUMN statement by hand in a Migration."
+        )
+
     def compile_table_options(self, options: Optional["TableOptions"]) -> str:
         if options is None:
             return ""

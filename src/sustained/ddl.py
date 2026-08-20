@@ -126,9 +126,14 @@ def _canonical(value: object) -> object:
     if isinstance(value, Decimal):
         return {"$decimal": str(value)}
     if isinstance(value, ColumnDef):
+        # The comment key appears only when a comment is set. A column
+        # without one serializes exactly as it did before comments
+        # existed, so the checksums of applied migrations hold.
+        comment = {} if value.comment is None else {"comment": value.comment}
         return {
             "$column": _canonical(
                 {
+                    **comment,
                     "type_name": value.type_name,
                     "length": value.length,
                     "precision": value.precision,
@@ -286,6 +291,9 @@ def _render_create_table(args: _Args, compiler: "Compiler") -> List[str]:
             constraints=constraints or None,
         )
     )
+    from sustained.schema import column_comment_statements
+
+    statements.extend(column_comment_statements(compiler, table_sql, columns))
     indexes = args["indexes"]
     assert isinstance(indexes, list)
     for index in indexes:
@@ -362,6 +370,14 @@ def _render_add_column(args: _Args, compiler: "Compiler") -> List[str]:
     table_sql = _table_sql(args, compiler)
     column_sql = render_column_sql(compiler, name, column, inline_pk=False)
     statements = [compiler.compile_add_column(table_sql, column_sql)]
+    if (
+        column.comment is not None
+        and compiler.stores_column_comments()
+        and not compiler.inline_column_comments()
+    ):
+        statements.extend(
+            compiler.compile_set_column_comment(table_sql, name, column.comment)
+        )
     if column.type_name == "ENUM" and compiler.enum_strategy() == "check":
         assert column.enum_values is not None
         constraint = _enum_check_name(table_sql, name)
@@ -440,6 +456,61 @@ def _invert_rename_column(args: _Args) -> DdlStep:
     return DdlStep(
         "rename_column",
         {"table": args["table"], "old": args["new"], "new": args["old"]},
+    )
+
+
+def set_column_comment(
+    table: TableRef,
+    name: str,
+    comment: Optional[str],
+    previous: Optional[str] = None,
+    column: Optional[ColumnDef] = None,
+) -> DdlStep:
+    """
+    Sets or clears one column's comment. None clears. Reverses by
+    setting `previous`, which is the comment the column carries now:
+    None when it has none. MySQL restates the column definition to
+    change its comment, so there the step also needs the ColumnDef as
+    `column`. Dialects that store no column comments raise at render.
+    """
+    if not name:
+        raise ValueError("set_column_comment needs a column name.")
+    return DdlStep(
+        "set_column_comment",
+        {
+            "table": _table_name(table),
+            "name": name,
+            "comment": comment,
+            "previous": previous,
+            "column": column,
+        },
+    )
+
+
+@_op("set_column_comment")
+def _render_set_column_comment(args: _Args, compiler: "Compiler") -> List[str]:
+    name = args["name"]
+    comment = args["comment"]
+    column = args["column"]
+    assert isinstance(name, str)
+    assert comment is None or isinstance(comment, str)
+    assert column is None or isinstance(column, ColumnDef)
+    return compiler.compile_set_column_comment(
+        _table_sql(args, compiler), name, comment, column
+    )
+
+
+@_inverse_of("set_column_comment")
+def _invert_set_column_comment(args: _Args) -> DdlStep:
+    return DdlStep(
+        "set_column_comment",
+        {
+            "table": args["table"],
+            "name": args["name"],
+            "comment": args["previous"],
+            "previous": args["comment"],
+            "column": args["column"],
+        },
     )
 
 
@@ -681,6 +752,7 @@ __all__ = [
     "drop_column",
     "rename_column",
     "rename_table",
+    "set_column_comment",
     "add_foreign_key",
     "drop_foreign_key",
     "add_check",

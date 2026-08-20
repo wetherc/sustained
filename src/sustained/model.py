@@ -347,9 +347,12 @@ class Model(metaclass=ModelMeta):
         statements come first; pass include_enum_types=False when the
         types are created elsewhere, as the migration generator does
         for types shared across models. CREATE TYPE takes no IF NOT
-        EXISTS clause, so if_not_exists does not cover the types.
+        EXISTS clause, so if_not_exists does not cover the types. On a
+        dialect that stores column comments as separate statements,
+        COMMENT ON COLUMN statements follow the CREATE TABLE.
         """
         from sustained.dialects import Dialects
+        from sustained.schema import column_comment_statements
 
         statements: list[str] = []
         compiler = Dialects.get_compiler(cls._dialect)
@@ -357,6 +360,11 @@ class Model(metaclass=ModelMeta):
             for name, values in cls.enum_types().items():
                 statements.append(compiler.compile_create_enum_type(name, list(values)))
         statements.append(cls.create_table_sql(if_not_exists=if_not_exists))
+        statements.extend(
+            column_comment_statements(
+                compiler, cls._qualified_table_sql(), cls.tableColumns or {}
+            )
+        )
         return statements + cls.create_indexes_sql()
 
     @classmethod

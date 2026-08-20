@@ -296,6 +296,42 @@ class Compiler:
             "enum type in place."
         )
 
+    def stores_column_comments(self) -> bool:
+        """
+        Reports whether the engine keeps a column comment in its catalog.
+        On an engine that does not, a declared comment stays on the model
+        and renders nothing.
+        """
+        return False
+
+    def inline_column_comments(self) -> bool:
+        """
+        Reports whether a column comment is written inside the column
+        definition, as MySQL, Presto, and Athena spell it. Postgres and
+        DuckDB store it with a COMMENT ON COLUMN statement instead.
+        """
+        return False
+
+    def compile_set_column_comment(
+        self,
+        table_sql: str,
+        column_name: str,
+        comment: Optional[str],
+        column: Optional["ColumnDef"] = None,
+    ) -> "list[str]":
+        """
+        Renders the statements that set or clear one column's comment on
+        an existing table. None clears. MySQL restates the column
+        definition and needs it passed as `column`. Dialects that store
+        no column comments raise.
+        """
+        from sustained.exceptions import DialectError
+
+        raise DialectError(
+            f"The '{self._dialect.name}' dialect stores no column comments. "
+            "Keep the description on the model or in the migration file."
+        )
+
     def compile_identity(self) -> str:
         """
         Renders the identity modifier for an autoincrement column. An empty

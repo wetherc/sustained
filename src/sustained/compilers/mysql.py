@@ -74,6 +74,42 @@ class MysqlCompiler(Compiler):
     def compile_identity(self) -> str:
         return "AUTO_INCREMENT"
 
+    def stores_column_comments(self) -> bool:
+        return True
+
+    def inline_column_comments(self) -> bool:
+        # The comment is part of the column definition; there is no
+        # standalone COMMENT statement.
+        return True
+
+    def compile_set_column_comment(
+        self,
+        table_sql: str,
+        column_name: str,
+        comment: Optional[str],
+        column: Optional["ColumnDef"] = None,
+    ) -> "list[str]":
+        # MODIFY COLUMN restates the whole definition, and anything left
+        # off is dropped with it, so the column's own declaration must
+        # come along. UNIQUE is restated nowhere here on purpose: MODIFY
+        # with a UNIQUE clause adds a second index each time it runs.
+        if column is None:
+            raise DialectError(
+                "MySQL sets a column comment by restating the column with "
+                "MODIFY COLUMN. Pass the ColumnDef as column=... so the "
+                "type, nullability, and default survive the restatement."
+            )
+        parts = [self.quote_identifier(column_name), self.compile_column_type(column)]
+        if not column.nullable:
+            parts.append("NOT NULL")
+        if column.default is not None:
+            parts.append(f"DEFAULT {self.format_value(column.default)}")
+        if column.autoincrement:
+            parts.append("AUTO_INCREMENT")
+        if comment is not None:
+            parts.append(f"COMMENT {self.format_value(comment)}")
+        return [f"ALTER TABLE {table_sql} MODIFY COLUMN {' '.join(parts)}"]
+
     def enum_strategy(self) -> str:
         # The value list is part of the column type; there is no separate
         # type object to create or drop.

@@ -36,6 +36,24 @@ class PrestoCompiler(Compiler):
         # FOREIGN KEY constraints to declare or enforce.
         return False
 
+    def stores_column_comments(self) -> bool:
+        return True
+
+    def inline_column_comments(self) -> bool:
+        # CREATE TABLE takes the comment inside the column definition.
+        return True
+
+    def compile_set_column_comment(
+        self,
+        table_sql: str,
+        column_name: str,
+        comment: Optional[str],
+        column: Optional["ColumnDef"] = None,
+    ) -> "list[str]":
+        column_sql = self.quote_identifier(column_name)
+        value = "NULL" if comment is None else self.format_value(comment)
+        return [f"COMMENT ON COLUMN {table_sql}.{column_sql} IS {value}"]
+
     def compile_add_check(
         self, table_sql: str, constraint: str, expression: str
     ) -> str:

@@ -31,6 +31,10 @@ autogenerate() turns the diff into a Migration:
 - Primary key, column-shorthand foreign key, column-level unique, and
   default differences are reported in the diff's constraint notes but
   never auto-migrated.
+- Column comments diff on engines whose catalog reported them, and a
+  drifted comment generates the engine's comment statement with the old
+  comment written back on the way down. A degraded comment read diffs
+  no comments: an absent value there is not proof of absence.
 """
 
 from __future__ import annotations
@@ -100,6 +104,7 @@ class SchemaDiff:
         self.extra_tables: List[str] = []
         self.extra_columns: List[Tuple[str, str]] = []
         self.changed_columns: List[Tuple[str, str, str, str]] = []
+        self.changed_comments: List[Tuple[str, str, Optional[str], Optional[str]]] = []
         self.new_indexes: List[Tuple[Type["Model"], "Index"]] = []
         self.extra_indexes: List[Tuple[str, str, IntrospectedIndex]] = []
         self.changed_indexes: List[Tuple[Type["Model"], "Index", IntrospectedIndex]] = (
@@ -124,6 +129,7 @@ class SchemaDiff:
             or self.extra_tables
             or self.extra_columns
             or self.changed_columns
+            or self.changed_comments
             or self.new_indexes
             or self.extra_indexes
             or self.changed_indexes
@@ -164,6 +170,15 @@ class SchemaDiff:
                     f"column '{table}.{name}' is {actual}, "
                     f"the models declare {expected}"
                 )
+        for table, name, actual_comment, expected_comment in self.changed_comments:
+            actual_text = "none" if actual_comment is None else repr(actual_comment)
+            expected_text = (
+                "none" if expected_comment is None else repr(expected_comment)
+            )
+            lines.append(
+                f"column '{table}.{name}' comment is {actual_text}, "
+                f"the models declare {expected_text}"
+            )
         for model, index in self.new_indexes:
             lines.append(f"index '{index.name}' on '{model.tableName}' was not created")
         for model, index, _ in self.changed_indexes:
@@ -236,6 +251,11 @@ class SchemaDiff:
                 f"change column {table}.{name}: database has {actual}, "
                 f"model declares {expected}"
             )
+        for table, name, actual_comment, expected_comment in self.changed_comments:
+            if expected_comment is None:
+                lines.append(f"clear the comment on {table}.{name}")
+            else:
+                lines.append(f"set the comment on {table}.{name}")
         for note in self.constraint_notes:
             lines.append(f"note: {note} (not auto-migrated)")
         return "\n".join(lines) if lines else "schema up to date"
@@ -457,7 +477,7 @@ def diff_schema(
         if actual_table is None:
             diff.missing_tables.append(model)
             continue
-        _diff_columns(compiler, diff, model, actual_table)
+        _diff_columns(compiler, diff, model, actual_table, actual)
         _diff_indexes(diff, model, actual_table)
         _diff_constraints(compiler, diff, model, actual_table, actual)
 
@@ -468,11 +488,17 @@ def diff_schema(
     return diff
 
 
+def _comment_or_none(comment: Optional[str]) -> Optional[str]:
+    """An empty comment read as None: MySQL spells no comment as ''."""
+    return None if comment is None or comment == "" else comment
+
+
 def _diff_columns(
     compiler: "Compiler",
     diff: SchemaDiff,
     model: Type["Model"],
     actual_table: IntrospectedTable,
+    snapshot: Snapshot,
 ) -> None:
     assert model.tableColumns is not None
     table_name = model.tableName or ""
@@ -481,6 +507,15 @@ def _diff_columns(
         if actual_col is None:
             diff.new_columns.append((model, name, coldef))
             continue
+        # Comments diff only when the catalog read reported them; an
+        # absent comment on a degraded read is not proof of absence.
+        if snapshot.comments_read:
+            actual_comment = _comment_or_none(actual_col.comment)
+            expected_comment = _comment_or_none(coldef.comment)
+            if actual_comment != expected_comment:
+                diff.changed_comments.append(
+                    (table_name, name, actual_comment, expected_comment)
+                )
         expected_rendered = compiler.compile_column_type(coldef)
         if coldef.type_name == "ENUM" and compiler.enum_strategy() == "native":
             # A native enum column matches on its type's name; value
@@ -1137,6 +1172,24 @@ def autogenerate(
         down_steps.insert(0, compiler.compile_drop_column(table_sql, name))
         _add_enum_check(compiler, up_steps, down_steps, table_sql, model, name, coldef)
         _add_foreign_key(compiler, up_steps, down_steps, table_sql, model, name, coldef)
+
+    # Comment changes. The down step writes the database's old comment
+    # back. MySQL restates the whole column, so the model's ColumnDef
+    # rides along on both directions.
+    for table, name, actual_comment, expected_comment in diff.changed_comments:
+        model = models_by_table[table.lower()]
+        assert model.tableColumns is not None
+        coldef = model.tableColumns[name]
+        table_sql = model._qualified_table_sql()
+        up_steps.extend(
+            compiler.compile_set_column_comment(
+                table_sql, name, expected_comment, coldef
+            )
+        )
+        for statement in reversed(
+            compiler.compile_set_column_comment(table_sql, name, actual_comment, coldef)
+        ):
+            down_steps.insert(0, statement)
 
     # A dialect that cannot alter a table in place takes its constraint
     # changes through the rebuild: the rebuilt CREATE TABLE renders the

@@ -15,16 +15,21 @@ from sustained.schema import Boolean, Integer, Json, String, Text, Timestamp
 class FakeCursor:
     """Serves canned MySQL catalog rows, and records the SQL asked for."""
 
-    def __init__(self, columns=(), constraints=None, checks=None):
+    def __init__(self, columns=(), constraints=None, checks=None, comments=None):
         self.columns = list(columns)
         self.constraints = constraints
         self.checks = checks
+        self.comments = comments
         self.statements = []
         self._current = []
 
     def execute(self, sql, params=()):
         self.statements.append(" ".join(sql.split()))
-        if "information_schema.columns" in sql:
+        if "column_comment" in sql:
+            if self.comments is None:
+                raise RuntimeError("no column_comment here")
+            self._current = self.comments
+        elif "information_schema.columns" in sql:
             self._current = self.columns
         elif "information_schema.table_constraints" in sql:
             if self.constraints is None:
@@ -79,7 +84,7 @@ class TestMysqlCatalogQueries(unittest.TestCase):
             constraints=[("users", "PRIMARY KEY", "PRIMARY", "id")],
         )
         schema = self.read(cursor)
-        self.assertIn("tc.table_schema = kcu.table_schema", cursor.statements[1])
+        self.assertIn("tc.table_schema = kcu.table_schema", cursor.statements[2])
         self.assertEqual(schema["users"].primary_key, ("id",))
         self.assertTrue(schema["users"].columns["id"].primary_key)
 
@@ -131,6 +136,52 @@ class TestMysqlCatalogQueries(unittest.TestCase):
         cursor = FakeCursor(columns=[("posts", "title", "varchar(80)", "NO", None)])
         schema = self.read(cursor)
         self.assertEqual(schema["posts"].columns["title"].enum_values, ())
+
+
+class TestMysqlCommentRead(unittest.TestCase):
+    def read(self, cursor):
+        return introspect_schema(FakeConnection(cursor), Dialects.MYSQL)
+
+    def test_a_column_comment_is_read(self):
+        cursor = FakeCursor(
+            columns=[("users", "email", "varchar(120)", "NO", None)],
+            comments=[("users", "email", "Login address")],
+        )
+        schema = self.read(cursor)
+        self.assertEqual(schema["users"].columns["email"].comment, "Login address")
+        self.assertTrue(schema.comments_read)
+
+    def test_an_empty_comment_reads_as_none(self):
+        cursor = FakeCursor(
+            columns=[("users", "email", "varchar(120)", "NO", None)],
+            comments=[("users", "email", "")],
+        )
+        schema = self.read(cursor)
+        self.assertIsNone(schema["users"].columns["email"].comment)
+        self.assertTrue(schema.comments_read)
+
+    def test_a_comment_on_an_unknown_column_is_skipped(self):
+        cursor = FakeCursor(
+            columns=[("users", "email", "varchar(120)", "NO", None)],
+            comments=[("users", "gone", "orphan"), ("gone", "email", "orphan")],
+        )
+        schema = self.read(cursor)
+        self.assertIsNone(schema["users"].columns["email"].comment)
+
+    def test_a_failed_comment_read_degrades(self):
+        cursor = FakeCursor(columns=[("users", "email", "varchar(120)", "NO", None)])
+        schema = self.read(cursor)
+        self.assertIsNone(schema["users"].columns["email"].comment)
+        self.assertFalse(schema.comments_read)
+
+    def test_only_the_connected_database_is_read(self):
+        cursor = FakeCursor(
+            columns=[("users", "email", "varchar(120)", "NO", None)],
+            comments=[],
+        )
+        self.read(cursor)
+        comment_sql = next(s for s in cursor.statements if "column_comment" in s)
+        self.assertIn("table_schema = DATABASE()", comment_sql)
 
 
 class TestMariadbJson(unittest.TestCase):

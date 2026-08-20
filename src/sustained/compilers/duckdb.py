@@ -1,6 +1,9 @@
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from .base import Compiler
+
+if TYPE_CHECKING:
+    from sustained.schema import ColumnDef
 
 
 class DuckDbCompiler(Compiler):
@@ -29,6 +32,20 @@ class DuckDbCompiler(Compiler):
 
     def supports_alter_column(self) -> bool:
         return True
+
+    def stores_column_comments(self) -> bool:
+        return True
+
+    def compile_set_column_comment(
+        self,
+        table_sql: str,
+        column_name: str,
+        comment: Optional[str],
+        column: Optional["ColumnDef"] = None,
+    ) -> "list[str]":
+        column_sql = self.quote_identifier(column_name)
+        value = "NULL" if comment is None else self.format_value(comment)
+        return [f"COMMENT ON COLUMN {table_sql}.{column_sql} IS {value}"]
 
     def compile_alter_column_type(
         self,
