@@ -193,6 +193,27 @@ Appending a value to the model generates the change: `ALTER TYPE ... ADD VALUE` 
 
 Removing or reordering values refuses with a recipe instead of generating: create a new type, move the column over with a `USING` cast, then drop the old type. Converting an existing VARCHAR column to an enum works through the same `type_casts` hints as any other Postgres type change.
 
+## Column comments
+
+Every column definition takes a `comment`, a short description stored in the database's own catalog where the engine has a place for one:
+
+```python
+class User(Model):
+    tableName = 'users'
+    tableColumns = {
+        'id': Integer(primary_key=True, autoincrement=True),
+        'email': String(120, nullable=False, comment='Login address, unique per tenant'),
+    }
+```
+
+Where the comment lands follows the dialect. MySQL, MariaDB, Presto, Trino, and Athena write it inside the column definition, so `CREATE TABLE` and `ADD COLUMN` carry it in the same statement. Postgres and DuckDB store it with a `COMMENT ON COLUMN` statement rendered after the table or the added column. ANSI, SQLite, and SQL Server have no column comments in the catalog; the comment stays on the model as documentation and renders nothing.
+
+Introspection reads the comments back on every dialect that stores them, and generation keeps them in sync. A comment changed or removed out of band shows up in `plan` and `diff`, and the generated migration writes the declared text back, with a down step that restores what the database had. A dialect that stores no comments never reports comment drift, and neither does a catalog read that could not see them, so absence is never mistaken for removal.
+
+Two edges are deliberate. The comment is not part of a step's identity when it is absent, so adding `comment` support changed no existing migration checksums. And Athena stores a comment at `CREATE TABLE` but cannot change one in place, so a drifted comment there refuses with `DialectError` instead of generating; recreate the table or write the `CHANGE COLUMN` statement by hand.
+
+Hand-written migrations set or clear a comment with the [`set_column_comment` step](./reference/migrations#typed-ddl-steps).
+
 ## Table constraints
 
 Models declare named CHECK and FOREIGN KEY constraints in `tableConstraints`, parallel to `indexes` and `tableOptions`:

@@ -220,6 +220,20 @@ An `Enum` column declares its values once, and each engine holds the column to t
 
 On Postgres, `ALTER TYPE ... ADD VALUE` rolls back inside a transaction on PostgreSQL 12 and later, which is what lets `rehearse` prove a migration that carries one. See [Schema and Migrations](./schema#enum-columns) for how enum changes generate.
 
+## Column comments
+
+A column's `comment` lands where the engine keeps one:
+
+| Dialect | Stores | Renders |
+| --- | --- | --- |
+| `POSTGRES`, `DUCKDB` | yes | `COMMENT ON COLUMN ... IS '...'` after the table or the added column. Introspection reads it back, from `pg_description` and `duckdb_columns()`. |
+| `MYSQL` | yes | `COMMENT '...'` inside the column definition. Changes restate the column with `MODIFY COLUMN`. Read back from `information_schema`. |
+| `PRESTO` | yes | `COMMENT '...'` inside the column definition, changed with `COMMENT ON COLUMN`. Read back from `information_schema`. |
+| `ATHENA` | at creation | `COMMENT '...'` inside `CREATE TABLE`. Athena cannot change a comment in place, so a drifted comment raises `DialectError`. |
+| `DEFAULT`, `MSSQL` | no | Nothing. The comment stays on the model as documentation and never drifts. |
+
+See [Column comments](./schema#column-comments) for how drift generates.
+
 ## Writing dialect-portable code
 
 If you build queries through the builder's methods rather than raw SQL, one model definition serves every dialect: quoting, placeholders, booleans, `LIMIT` spelling, upsert syntax, and function names (`NOW()`, `LENGTH()`) all follow `set_dialect()`. The differences that cannot be papered over raise `DialectError` with a message naming the alternative, so porting is mostly a matter of running your test suite and reading the errors it raises.

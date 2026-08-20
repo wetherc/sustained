@@ -414,6 +414,58 @@ class ServerCase(ColumnTypeTests, FileMigrationTests, unittest.TestCase):
         migrator.up(models=[self.Widget])
         self.assertIsNone(migrator.plan([self.Widget]))
 
+    def test_a_column_comment_round_trips(self):
+        """
+        A declared comment lands where the engine stores one and reads
+        back, and it never drifts: a dialect that stores no comments
+        renders nothing and plans nothing.
+        """
+        compiler = Dialects.get_compiler(self.DIALECT)
+        self.Widget.tableColumns["name"] = String(
+            80, nullable=False, comment="Display name"
+        )
+        migrator = self.migrator()
+        migrator.up(models=[self.Widget])
+
+        snapshot = self.tables()
+        if compiler.stores_column_comments():
+            self.assertTrue(snapshot.comments_read)
+            self.assertEqual(
+                "Display name", snapshot["it_widgets"].columns["name"].comment
+            )
+        else:
+            self.assertFalse(snapshot.comments_read)
+        self.assertIsNone(migrator.plan([self.Widget]))
+
+    def test_a_drifted_comment_is_migrated_back(self):
+        """
+        A comment changed out of band shows up in the plan and one run
+        writes the declared text back.
+        """
+        compiler = Dialects.get_compiler(self.DIALECT)
+        if not compiler.stores_column_comments():
+            self.skipTest(f"{self.NAME} stores no column comments")
+        coldef = String(80, nullable=False, comment="Display name")
+        self.Widget.tableColumns["name"] = coldef
+        migrator = self.migrator()
+        migrator.up(models=[self.Widget])
+
+        quote = compiler.quote_identifier
+        for statement in compiler.compile_set_column_comment(
+            quote("it_widgets"), "name", "Stale text", coldef
+        ):
+            self.execute(statement)
+        snapshot = self.tables()
+        self.assertEqual("Stale text", snapshot["it_widgets"].columns["name"].comment)
+
+        generated = migrator.plan([self.Widget])
+        self.assertIsNotNone(generated)
+        migrator.up(models=[self.Widget])
+
+        after = self.tables()
+        self.assertEqual("Display name", after["it_widgets"].columns["name"].comment)
+        self.assertIsNone(migrator.plan([self.Widget]))
+
     def test_an_enum_column_round_trips(self):
         """
         The enum rendering the dialect chooses (a named type, an inline

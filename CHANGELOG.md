@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.23.0
+
+### Added
+
+- Column comments. Every column definition takes a `comment`, stored in the database catalog where the engine has a place for one: inside the column definition on MySQL, MariaDB, Presto, Trino, and Athena, and through `COMMENT ON COLUMN` on Postgres and DuckDB. The default dialect, SQLite, and SQL Server store none and render nothing. Introspection reads the comments back on every dialect that stores them, `plan` and `diff` report a comment changed out of band, and the generated migration writes the declared text back with a down step that restores the old one. A new `set_column_comment` step covers hand-written migrations; on MySQL it restates the column with `MODIFY COLUMN`, so it takes the `ColumnDef` along and never restates UNIQUE, which would stack a second index per run. Athena stores a comment only at `CREATE TABLE` and refuses a change with `DialectError`. Existing migration checksums are unchanged: a step's canonical form only carries the comment when one is set.
+
 ## 2.22.0
 
 ### Added

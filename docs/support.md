@@ -32,7 +32,7 @@ The **Covered** column names the feature sets the integration suite runs against
 - `queries` is the read surface: joins, eager loading, aggregates, window functions, CTEs, set operations, subqueries, LIMIT and OFFSET, and hydration to models, dicts, DataFrames, and Arrow tables.
 - `writes` is INSERT, UPDATE, DELETE, upserts through `onConflict()`, RETURNING, `INSERT ... SELECT`, and CREATE TABLE AS.
 - `transactions` is commit and rollback as observed from a second connection, savepoint nesting, and `ConnectionPool`.
-- `migrations` is the migration lifecycle: `migrate`, `rehearse`, `down`, `validate`, and `repair`, plus schema introspection, column type round trips, and SQL file migrations.
+- `migrations` is the migration lifecycle: `migrate`, `rehearse`, `down`, `validate`, and `repair`, plus schema introspection, column type and column comment round trips, and SQL file migrations.
 - `async` is `arun()`, `async_transaction()`, and `AsyncMigrator` on an async driver.
 
 Where a dialect does not implement a feature (for example `RETURNING` on MySQL) we test that `to_sql()` raises `DialectError` and that nothing reaches the server.

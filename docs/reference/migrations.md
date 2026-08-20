@@ -49,6 +49,7 @@ These names live in `sustained.ddl`. A `DdlStep` names one schema change and ren
 | `create_enum(name, *values)` | `drop_enum` |
 | `drop_enum(name)` | irreversible |
 | `add_enum_value(name, value)` | irreversible: Postgres has no `DROP VALUE` |
+| `set_column_comment(table, name, comment, previous=None, column=None)` | the same step with `previous`, when given |
 | `sql(text)` | irreversible: one raw statement, rendered as written on every dialect |
 
 A `table` argument takes a Model class or a table name string. `create_table(model)` reads the model's columns, constraints, options, and indexes when the step is built, so a later model edit changes the migration's checksum; pass explicit `columns` when the migration must outlive the model. The `column`, `check`, `foreign_key`, and `index` arguments take the same `ColumnDef`, `Check`, `ForeignKey`, and `Index` objects a model declares.
@@ -56,6 +57,8 @@ A `table` argument takes a Model class or a table name string. `create_table(mod
 On a `DdlStep`, `render(compiler)` returns the SQL statements for that compiler's dialect, `reversible` says whether the step knows its inverse, `inverse()` returns that step or `None`, and `signature()` returns the canonical form the checksum hashes: the operation name and its arguments, serialized the same way on every dialect.
 
 `create_enum`, `drop_enum`, and `add_enum_value` raise `DialectError` at render time on a dialect without named enum types. Each factory raises `ValueError` for a missing name or an empty argument.
+
+`set_column_comment` sets one column's comment, and `comment=None` clears it. Pass `previous` as the comment the column carries now, `None` when it has none, and the step reverses by setting it back. MySQL changes a comment by restating the whole column with `MODIFY COLUMN`, so there the step also needs the column's `ColumnDef` as `column`; the restatement carries the type, nullability, default, and identity, and deliberately never restates UNIQUE, which would add a second index on each run. Dialects that store no column comments raise `DialectError` at render time, and Athena raises because it cannot change a comment in place.
 
 Guide: [Typed migration steps](/schema#typed-migration-steps).
 

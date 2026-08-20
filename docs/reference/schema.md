@@ -50,7 +50,7 @@ MySQL spells `BOOLEAN` as `TINYINT(1)` because its catalog reports the underlyin
 ## `ColumnDef`
 
 ```python
-ColumnDef(type_name, *, length=None, precision=None, scale=None, primary_key=False, nullable=True, unique=False, default=None, references=None, autoincrement=False, backfill=None, enum_name=None, enum_values=None)
+ColumnDef(type_name, *, length=None, precision=None, scale=None, primary_key=False, nullable=True, unique=False, default=None, references=None, autoincrement=False, backfill=None, enum_name=None, enum_values=None, comment=None)
 ```
 {: .sig}
 
@@ -68,6 +68,7 @@ Use the factories above rather than constructing a `ColumnDef` yourself. Every k
 | `length` | `int` | VARCHAR length. |
 | `precision`, `scale` | `int` | NUMERIC precision and scale. |
 | `enum_name`, `enum_values` | `str`, values | The type name and permitted values of an ENUM column. Valid only there; use the `Enum` factory, which fills both. |
+| `comment` | `str` | A description stored in the database catalog on dialects that keep column comments. Must be a non-empty string, or the factory raises `ValueError`. Dialects without column comments render nothing. See [Column comments](/schema#column-comments). |
 
 `default` fills new rows in the database. `backfill` fills the rows that are already in the table, at migration time. A NOT NULL change needs one or the other.
 
