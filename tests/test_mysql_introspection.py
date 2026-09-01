@@ -23,22 +23,27 @@ from sustained.schema import (
 class FakeCursor:
     """Serves canned MySQL catalog rows, and records the SQL asked for."""
 
-    def __init__(self, columns=(), constraints=None, checks=None, comments=None):
+    def __init__(
+        self, columns=(), constraints=None, checks=None, commented_columns=None
+    ):
         self.columns = list(columns)
         self.constraints = constraints
         self.checks = checks
-        self.comments = comments
+        # The same column rows the read asks for first, with the comment
+        # selected. None means the engine has no column_comment column.
+        self.commented_columns = commented_columns
         self.statements = []
         self._current = []
 
     def execute(self, sql, params=()):
         self.statements.append(" ".join(sql.split()))
-        if "column_comment" in sql:
-            if self.comments is None:
-                raise RuntimeError("no column_comment here")
-            self._current = self.comments
-        elif "information_schema.columns" in sql:
-            self._current = self.columns
+        if "information_schema.columns" in sql:
+            if "column_comment" in sql:
+                if self.commented_columns is None:
+                    raise RuntimeError("no column_comment here")
+                self._current = self.commented_columns
+            else:
+                self._current = self.columns
         elif "information_schema.table_constraints" in sql:
             if self.constraints is None:
                 raise RuntimeError("no constraint views here")
@@ -152,8 +157,9 @@ class TestMysqlCommentRead(unittest.TestCase):
 
     def test_a_column_comment_is_read(self):
         cursor = FakeCursor(
-            columns=[("users", "email", "varchar(120)", "NO", None)],
-            comments=[("users", "email", "Login address")],
+            commented_columns=[
+                ("users", "email", "varchar(120)", "NO", None, "Login address")
+            ],
         )
         schema = self.read(cursor)
         self.assertEqual(schema["users"].columns["email"].comment, "Login address")
@@ -161,20 +167,21 @@ class TestMysqlCommentRead(unittest.TestCase):
 
     def test_an_empty_comment_reads_as_none(self):
         cursor = FakeCursor(
-            columns=[("users", "email", "varchar(120)", "NO", None)],
-            comments=[("users", "email", "")],
+            commented_columns=[("users", "email", "varchar(120)", "NO", None, "")],
         )
         schema = self.read(cursor)
         self.assertIsNone(schema["users"].columns["email"].comment)
         self.assertTrue(schema.comments_read)
 
-    def test_a_comment_on_an_unknown_column_is_skipped(self):
+    def test_the_columns_are_read_once(self):
         cursor = FakeCursor(
-            columns=[("users", "email", "varchar(120)", "NO", None)],
-            comments=[("users", "gone", "orphan"), ("gone", "email", "orphan")],
+            commented_columns=[
+                ("users", "email", "varchar(120)", "NO", None, "Login address")
+            ],
         )
-        schema = self.read(cursor)
-        self.assertIsNone(schema["users"].columns["email"].comment)
+        self.read(cursor)
+        reads = [s for s in cursor.statements if "information_schema.columns" in s]
+        self.assertEqual(len(reads), 1)
 
     def test_a_failed_comment_read_degrades(self):
         cursor = FakeCursor(columns=[("users", "email", "varchar(120)", "NO", None)])
@@ -184,8 +191,7 @@ class TestMysqlCommentRead(unittest.TestCase):
 
     def test_only_the_connected_database_is_read(self):
         cursor = FakeCursor(
-            columns=[("users", "email", "varchar(120)", "NO", None)],
-            comments=[],
+            commented_columns=[],
         )
         self.read(cursor)
         comment_sql = next(s for s in cursor.statements if "column_comment" in s)

@@ -512,11 +512,11 @@ split_sql_statements(text) -> list[str]
 These names live in `sustained.autogenerate`. `plan()` and `up(models=[...])` are built on top of them.
 
 ```python
-diff_schema(connection, models, dialect=Dialects.DEFAULT, exclude_tables=('sustained_migrations',), renames=None, table_renames=None) -> SchemaDiff
+diff_schema(connection, models, dialect=Dialects.DEFAULT, exclude_tables=('sustained_migrations',), renames=None, table_renames=None, snapshot=None) -> SchemaDiff
 ```
 {: .sig #diff_schema}
 
-Changes nothing and reports every difference, drops included.
+Changes nothing and reports every difference, drops included. Pass `snapshot` to compare against a schema you already read with `introspect_schema()`; the connection is then not touched. The rename hints are applied to that snapshot in place, so you see the same renamed schema the diff compares against.
 
 ```python
 autogenerate(connection, models, id, dialect=..., allow_drops=False, ignore_changed_columns=False, exclude_tables=..., renames=None, table_renames=None, type_casts=None, ignore_undeclared=False) -> Migration | None

@@ -442,11 +442,19 @@ def diff_schema(
     exclude_tables: Tuple[str, ...] = ("sustained_migrations",),
     renames: Optional[Dict[str, str]] = None,
     table_renames: Optional[Dict[str, str]] = None,
+    snapshot: Optional[Snapshot] = None,
 ) -> SchemaDiff:
     """
     Compares the models' declarations against the live database and
     returns the differences. Rename hints are applied first, so renamed
     objects compare under their new names.
+
+    Args:
+        snapshot: A schema already read with introspect_schema(), used
+            instead of reading the database again. The rename hints are
+            applied to it in place, so the caller sees the same renamed
+            schema this function compares against. The connection is not
+            touched when a snapshot is passed.
     """
     compiler = Dialects.get_compiler(dialect)
     diff = SchemaDiff()
@@ -465,7 +473,7 @@ def diff_schema(
         declared[key] = model
 
     excluded = {t.lower() for t in exclude_tables}
-    actual = introspect_schema(connection, dialect)
+    actual = introspect_schema(connection, dialect) if snapshot is None else snapshot
     _apply_renames(actual, renames or {}, table_renames or {})
 
     declared_types = _declared_enum_types(models)
@@ -963,11 +971,18 @@ def autogenerate(
     renames = renames or {}
     table_renames = table_renames or {}
     type_casts = type_casts or {}
-    diff = diff_schema(
-        connection, models, dialect, exclude_tables, renames, table_renames
-    )
+    # One read of the live schema for both the diff and the steps below.
+    # diff_schema() applies the rename hints to it in place.
     actual = introspect_schema(connection, dialect)
-    _apply_renames(actual, renames, table_renames)
+    diff = diff_schema(
+        connection,
+        models,
+        dialect,
+        exclude_tables,
+        renames,
+        table_renames,
+        snapshot=actual,
+    )
     models_by_table = {m.tableName.lower(): m for m in models if m.tableName}
 
     if (

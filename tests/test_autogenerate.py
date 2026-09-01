@@ -6,7 +6,9 @@ generated migrations, against in-memory SQLite.
 import sqlite3
 import unittest
 
-from sustained import Model, create_model
+from sustained import Model
+from sustained import autogenerate as autogenerate_module
+from sustained import create_model
 from sustained.autogenerate import (
     autogenerate,
     diff_schema,
@@ -782,3 +784,55 @@ class IntrospectionPlanTestCase(unittest.TestCase):
         self.assertEqual(list(schema), ["shows"])
         self.assertEqual(schema["shows"].primary_key, ())
         self.assertFalse(schema["shows"].columns["id"].nullable)
+
+
+class TestSchemaReadOnce(AutogenTestCase):
+    """
+    autogenerate() needs the live schema twice: once to diff and once to
+    build the steps. It reads it once and hands the same snapshot to
+    diff_schema(), so a run costs one pragma walk per table, not two.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.Note = make_model(
+            f"AgN_{self.id().rsplit('.', 1)[-1]}",
+            "ag_notes",
+            {"id": Integer(primary_key=True), "body": Text()},
+        )
+        self.reads = []
+        self.real = autogenerate_module.introspect_schema
+
+        def counted(connection, dialect):
+            snapshot = self.real(connection, dialect)
+            self.reads.append(dialect)
+            return snapshot
+
+        autogenerate_module.introspect_schema = counted
+        self.addCleanup(setattr, autogenerate_module, "introspect_schema", self.real)
+
+    def test_autogenerate_reads_the_schema_once(self):
+        self.conn.execute("CREATE TABLE ag_notes (id INTEGER PRIMARY KEY)")
+        migration = autogenerate(self.conn, [self.Note], id="m")
+        self.assertIsNotNone(migration)
+        self.assertEqual(len(self.reads), 1)
+
+    def test_a_passed_snapshot_is_not_read_again(self):
+        self.conn.execute("CREATE TABLE ag_notes (id INTEGER PRIMARY KEY)")
+        snapshot = self.real(self.conn, Dialects.DEFAULT)
+        self.reads.clear()
+        diff = diff_schema(None, [self.Note], snapshot=snapshot)
+        self.assertEqual(self.reads, [])
+        self.assertEqual([name for _, name, _ in diff.new_columns], ["body"])
+
+    def test_renames_are_applied_to_the_passed_snapshot(self):
+        self.conn.execute("CREATE TABLE ag_notes (id INTEGER PRIMARY KEY, text TEXT)")
+        snapshot = self.real(self.conn, Dialects.DEFAULT)
+        diff = diff_schema(
+            None,
+            [self.Note],
+            renames={"ag_notes.text": "body"},
+            snapshot=snapshot,
+        )
+        self.assertTrue(diff.is_empty())
+        self.assertIn("body", snapshot["ag_notes"].columns)

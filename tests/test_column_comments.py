@@ -322,35 +322,44 @@ class FakeConnection:
 class TestPrestoCommentRead(unittest.TestCase):
     """
     Presto and Trino put the comment straight on information_schema.columns,
-    so the shared read asks for it in a query of its own and degrades when
-    the engine holds no such column.
+    so the shared read selects it beside the other column data and retries
+    without it when the engine holds no such column.
     """
 
+    WITH_COMMENT = "c.column_default, c.comment"
+    WITHOUT_COMMENT = "information_schema.columns"
+
     def read(self, responses, dialect=Dialects.PRESTO):
-        return introspect_schema(FakeConnection(FakeCursor(responses)), dialect)
+        self.cursor = FakeCursor(responses)
+        return introspect_schema(FakeConnection(self.cursor), dialect)
 
     def test_a_column_comment_is_read(self):
         schema = self.read(
             {
-                "SELECT table_name, column_name, comment": [
-                    ("users", "email", "Login address")
-                ],
-                "information_schema.columns": [
-                    ("users", "email", "varchar(120)", "NO", None)
+                self.WITH_COMMENT: [
+                    ("users", "email", "varchar(120)", "NO", None, "Login address")
                 ],
             }
         )
         self.assertEqual(schema["users"].columns["email"].comment, "Login address")
         self.assertTrue(schema.comments_read)
 
+    def test_the_columns_are_read_once(self):
+        self.read(
+            {
+                self.WITH_COMMENT: [
+                    ("users", "email", "varchar(120)", "NO", None, "Login address")
+                ],
+            }
+        )
+        reads = [s for s in self.cursor.statements if "information_schema.columns" in s]
+        self.assertEqual(len(reads), 1)
+
     def test_athena_reads_the_same_way(self):
         schema = self.read(
             {
-                "SELECT table_name, column_name, comment": [
-                    ("users", "email", "Login address")
-                ],
-                "information_schema.columns": [
-                    ("users", "email", "varchar(120)", "NO", None)
+                self.WITH_COMMENT: [
+                    ("users", "email", "varchar(120)", "NO", None, "Login address")
                 ],
             },
             dialect=Dialects.ATHENA,
@@ -360,10 +369,8 @@ class TestPrestoCommentRead(unittest.TestCase):
     def test_a_failed_comment_read_degrades(self):
         schema = self.read(
             {
-                "SELECT table_name, column_name, comment": None,
-                "information_schema.columns": [
-                    ("users", "email", "varchar(120)", "NO", None)
-                ],
+                self.WITH_COMMENT: None,
+                self.WITHOUT_COMMENT: [("users", "email", "varchar(120)", "NO", None)],
             }
         )
         self.assertIsNone(schema["users"].columns["email"].comment)
@@ -375,12 +382,7 @@ class TestPrestoCommentRead(unittest.TestCase):
         )
         schema = introspect_schema(FakeConnection(cursor), Dialects.MSSQL)
         self.assertFalse(schema.comments_read)
-        self.assertFalse(
-            any(
-                "SELECT table_name, column_name, comment" in s
-                for s in cursor.statements
-            )
-        )
+        self.assertFalse(any("comment" in s.lower() for s in cursor.statements))
 
 
 class TestDuckdbCommentRead(unittest.TestCase):

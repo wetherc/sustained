@@ -563,51 +563,51 @@ def _information_schema_plan(catalog: Catalog = ANSI_CATALOG) -> SchemaPlan:
     schema_filter = catalog.schema_filter
 
     columns_by_table: Dict[str, Dict[str, IntrospectedColumn]] = {}
-    # The join to information_schema.tables keeps views out. A view's
-    # columns would read as a table the models do not declare, so one view
-    # in the database is enough to make every plan report drift, and
-    # allow_drops would emit a DROP TABLE the engine refuses.
-    column_rows = yield (
-        f"SELECT c.table_name, c.column_name, c.{catalog.type_column}, "
-        "c.is_nullable, c.column_default "
-        "FROM information_schema.columns c "
-        "JOIN information_schema.tables t "
-        "ON t.table_schema = c.table_schema AND t.table_name = c.table_name "
-        f"WHERE c.{schema_filter} AND t.table_type = 'BASE TABLE' "
-        "ORDER BY c.table_name, c.ordinal_position"
-    )
-    for table, name, data_type, is_nullable, default in column_rows:
-        columns_by_table.setdefault(table.lower(), {})[name.lower()] = (
+
+    def columns_query(with_comment: bool) -> str:
+        # The join to information_schema.tables keeps views out. A view's
+        # columns would read as a table the models do not declare, so one
+        # view in the database is enough to make every plan report drift,
+        # and allow_drops would emit a DROP TABLE the engine refuses.
+        comment = f", c.{catalog.comment_column}" if with_comment else ""
+        return (
+            f"SELECT c.table_name, c.column_name, c.{catalog.type_column}, "
+            f"c.is_nullable, c.column_default{comment} "
+            "FROM information_schema.columns c "
+            "JOIN information_schema.tables t "
+            "ON t.table_schema = c.table_schema AND t.table_name = c.table_name "
+            f"WHERE c.{schema_filter} AND t.table_type = 'BASE TABLE' "
+            "ORDER BY c.table_name, c.ordinal_position"
+        )
+
+    # The comment travels with the column instead of in a second full read
+    # of information_schema.columns. Engines that advertise a comment
+    # column but do not have one fall back to the plain read, which is
+    # what the second query's own fallback used to do.
+    comments_read = catalog.comment_column is not None
+    if comments_read:
+        try:
+            column_rows = yield columns_query(True)
+        except Exception:
+            comments_read = False
+            column_rows = yield columns_query(False)
+    else:
+        column_rows = yield columns_query(False)
+
+    for row in column_rows:
+        table, name, data_type, is_nullable, default = row[:5]
+        # MySQL reports an uncommented column as '', not NULL.
+        raw_comment = row[5] if len(row) > 5 else None
+        comment = str(raw_comment) if raw_comment not in (None, "") else None
+        columns_by_table.setdefault(str(table).lower(), {})[str(name).lower()] = (
             IntrospectedColumn(
-                raw_type=data_type or "",
+                raw_type=str(data_type) if data_type else "",
                 nullable=str(is_nullable).upper() == "YES",
                 primary_key=False,
                 default=default,
+                comment=comment,
             )
         )
-
-    comments_read = False
-    if catalog.comment_column is not None:
-        try:
-            comment_rows = yield (
-                f"SELECT table_name, column_name, {catalog.comment_column} "
-                f"FROM information_schema.columns WHERE {schema_filter}"
-            )
-            for table, name, comment in comment_rows:
-                # MySQL reports an uncommented column as '', not NULL.
-                if comment is None or str(comment) == "":
-                    continue
-                columns = columns_by_table.get(str(table).lower(), {})
-                column_key = str(name).lower()
-                if column_key in columns:
-                    columns[column_key] = columns[column_key]._replace(
-                        comment=str(comment)
-                    )
-            comments_read = True
-        except Exception:
-            # The engine's columns view holds no comment column after all;
-            # degrade to columns without comments.
-            pass
 
     primary_keys: Dict[str, List[str]] = {}
     unique_indexes: Dict[str, Dict[str, IntrospectedIndex]] = {}
