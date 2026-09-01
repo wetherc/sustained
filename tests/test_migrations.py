@@ -13,14 +13,18 @@ try:
 except ImportError:
     HAS_DUCKDB = False
 
+import sustained.migrations as migrations_module
 from sustained import Model
 from sustained.dialects import Dialects
 from sustained.exceptions import MigrationError, RehearsalRequired
 from sustained.migrations import (
     REHEARSAL_FAILED,
     REHEARSAL_PASSED,
+    AppliedRecord,
     Migration,
     Migrator,
+    _destructive_prefix_keys,
+    checked_unique_ids,
     create_table_migration,
     migration_checksum,
     rehearsal_key,
@@ -1150,6 +1154,73 @@ class TestRehearsalKey(unittest.TestCase):
         other = [Migration("two", up=lambda conn: None)]
         self.assertEqual(rehearsal_key([], run), rehearsal_key([], same))
         self.assertNotEqual(rehearsal_key([], run), rehearsal_key([], other))
+
+
+class TestDestructivePrefixKeys(unittest.TestCase):
+    """
+    The keys a targeted run looks for. They are built one migration at a
+    time, so the incremental build has to agree with a key computed for
+    each prefix on its own.
+    """
+
+    def setUp(self):
+        self.history = [AppliedRecord("older", 1, "abc", True)]
+        self.pending = [
+            Migration("one", up="CREATE TABLE k (id INTEGER)"),
+            Migration("two", up="CREATE TABLE j (id INTEGER)"),
+            Migration("three", up="DROP TABLE k"),
+            Migration("four", up="CREATE TABLE m (id INTEGER)"),
+            Migration("five", up="DROP TABLE j"),
+        ]
+
+    def test_only_prefixes_that_remove_data_get_a_key(self):
+        keys = _destructive_prefix_keys(self.history, self.pending)
+        expected = [
+            rehearsal_key(self.history, self.pending[:size]) for size in (3, 4, 5)
+        ]
+        self.assertEqual(keys, expected)
+
+    def test_a_run_that_removes_nothing_keys_nothing(self):
+        keeping = [m for m in self.pending if "DROP" not in str(m.up)]
+        self.assertEqual(_destructive_prefix_keys(self.history, keeping), [])
+
+    def test_repeatables_are_left_out(self):
+        pending = list(self.pending)
+        pending.insert(0, Migration("seed", up="SELECT 1", repeatable=True))
+        self.assertEqual(
+            _destructive_prefix_keys(self.history, pending),
+            _destructive_prefix_keys(self.history, self.pending),
+        )
+
+    def test_each_migration_renders_once(self):
+        renders = []
+        real = migrations_module.migration_sql
+
+        def counted(migration, direction, compiler=None):
+            renders.append(migration.id)
+            return real(migration, direction, compiler)
+
+        migrations_module.migration_sql = counted
+        self.addCleanup(setattr, migrations_module, "migration_sql", real)
+        _destructive_prefix_keys(self.history, self.pending)
+        # The scan stops rendering once a prefix removes data, so nothing
+        # after the first destructive migration is read at all.
+        self.assertEqual(renders, ["one", "two", "three"])
+
+
+class TestDuplicateMigrationIds(unittest.TestCase):
+    def test_both_ids_are_named(self):
+        runs = [
+            Migration("one", up="SELECT 1"),
+            Migration("two", up="SELECT 1"),
+            Migration("one", up="SELECT 2"),
+            Migration("two", up="SELECT 2"),
+        ]
+        with self.assertRaisesRegex(ValueError, r"\['one', 'two'\]"):
+            checked_unique_ids(runs)
+
+    def test_unique_ids_pass(self):
+        self.assertIsNone(checked_unique_ids([Migration("one", up="SELECT 1")]))
 
 
 class TestRenamedNames(unittest.TestCase):

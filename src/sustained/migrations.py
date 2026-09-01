@@ -28,6 +28,7 @@ import json
 import sys
 import time
 import warnings
+from collections import Counter
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import (
@@ -41,6 +42,7 @@ from typing import (
     List,
     NamedTuple,
     Optional,
+    Protocol,
     Sequence,
     Set,
     Tuple,
@@ -350,6 +352,51 @@ def _rehearsal_token(checksum: Optional[str], migration_id: str) -> str:
     return checksum if checksum is not None else f"id:{migration_id}"
 
 
+def checked_unique_ids(migrations: Sequence[Migration]) -> None:
+    """
+    Raises when two migrations carry the same id. Both migrators call it
+    before they keep the list, since an ambiguous id makes every status,
+    target, and tracking row ambiguous too.
+    """
+    counts = Counter(m.id for m in migrations)
+    duplicates = sorted(i for i, count in counts.items() if count > 1)
+    if duplicates:
+        raise ValueError(f"Duplicate migration ids: {duplicates}.")
+
+
+class Digest(Protocol):
+    """The part of a hashlib hash the rehearsal keys use."""
+
+    def update(self, data: bytes) -> None: ...
+
+    def hexdigest(self) -> str: ...
+
+    def copy(self) -> "Digest": ...
+
+
+def _applied_digest(applied: Sequence[AppliedRecord]) -> Digest:
+    """
+    A digest holding the applied history and ready for a run's migrations.
+    Prefix keys copy it instead of hashing the history again per prefix.
+    """
+    digest = hashlib.sha256()
+    digest.update(b"applied\n")
+    for record in applied:
+        if not record.success:
+            continue
+        digest.update(_rehearsal_token(record.checksum, record.id).encode("utf-8"))
+        digest.update(b"\n")
+    digest.update(b"run\n")
+    return digest
+
+
+def _digest_migration(digest: Digest, migration: Migration) -> None:
+    """Adds one migration's token to a digest built by _applied_digest()."""
+    token = _rehearsal_token(migration_checksum(migration), migration.id)
+    digest.update(token.encode("utf-8"))
+    digest.update(b"\n")
+
+
 def rehearsal_key(applied: Sequence[AppliedRecord], run: Sequence[Migration]) -> str:
     """
     The SHA-256 hex digest that names one rehearsal: the checksums of the
@@ -364,18 +411,9 @@ def rehearsal_key(applied: Sequence[AppliedRecord], run: Sequence[Migration]) ->
     takes a new timestamped id between the rehearsal and the run keeps the
     same key.
     """
-    digest = hashlib.sha256()
-    digest.update(b"applied\n")
-    for record in applied:
-        if not record.success:
-            continue
-        digest.update(_rehearsal_token(record.checksum, record.id).encode("utf-8"))
-        digest.update(b"\n")
-    digest.update(b"run\n")
+    digest = _applied_digest(applied)
     for migration in run:
-        token = _rehearsal_token(migration_checksum(migration), migration.id)
-        digest.update(token.encode("utf-8"))
-        digest.update(b"\n")
+        _digest_migration(digest, migration)
     return digest.hexdigest()
 
 
@@ -415,13 +453,23 @@ def _destructive_prefix_keys(
 
     Only prefixes that remove data get a key: nothing else ever reads the
     rehearsal table, and a row per prefix on every rehearsal would be waste.
+
+    The keys are built one migration at a time. Rendering each prefix's
+    SQL and hashing the whole history again per prefix cost the square of
+    the pending count; copying a running digest and carrying a running
+    destructive flag costs one render and one hash per migration.
     """
     versioned = [m for m in pending if not m.repeatable]
+    digest = _applied_digest(applied)
     keys = []
-    for size in range(1, len(versioned) + 1):
-        prefix = versioned[:size]
-        if _destructive_in(prefix, compiler):
-            keys.append(rehearsal_key(applied, prefix))
+    destructive = False
+    for migration in versioned:
+        _digest_migration(digest, migration)
+        # A prefix removes data as soon as one of its migrations does, so
+        # the flag never goes back and the rest need no rendering.
+        destructive = destructive or bool(_destructive_in([migration], compiler))
+        if destructive:
+            keys.append(digest.copy().hexdigest())
     return keys
 
 
@@ -1015,10 +1063,7 @@ class Migrator:
         guards: Optional[Sequence["Guard"]] = None,
         callbacks: Optional[Callbacks] = None,
     ) -> None:
-        ids = [m.id for m in migrations]
-        duplicates = {i for i in ids if ids.count(i) > 1}
-        if duplicates:
-            raise ValueError(f"Duplicate migration ids: {sorted(duplicates)}.")
+        checked_unique_ids(migrations)
         self._guards = list(guards or [])
         self._callbacks = callbacks or Callbacks()
         self._connection = connection

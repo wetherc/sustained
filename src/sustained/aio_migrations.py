@@ -60,6 +60,7 @@ from sustained.migrations import (
     _upgrade_column_def,
     _validation_problems,
     check_guards,
+    checked_unique_ids,
     insert_sql,
     migration_checksum,
     quoted_columns,
@@ -91,10 +92,7 @@ class AsyncMigrator:
         guards: Optional[Sequence["Guard"]] = None,
         callbacks: Optional[Callbacks] = None,
     ) -> None:
-        ids = [m.id for m in migrations]
-        duplicates = {i for i in ids if ids.count(i) > 1}
-        if duplicates:
-            raise ValueError(f"Duplicate migration ids: {sorted(duplicates)}.")
+        checked_unique_ids(migrations)
         self._guards = list(guards or [])
         self._callbacks = callbacks or Callbacks()
         self._adapter = adapter
