@@ -160,6 +160,18 @@ class TestJoinBuilder(unittest.TestCase):
             "SELECT * FROM animals LEFT JOIN persons ON animals.ownerId = persons.id",
         )
 
+    def test_raw_join_rejects_an_unknown_operator(self):
+        with self.assertRaises(ValueError):
+            self.Animal.query().join(
+                "persons", "animals.ownerId", "= persons.id OR 1=1 --", "persons.id"
+            )
+
+    def test_raw_join_normalizes_the_operator(self):
+        query = self.Animal.query().join(
+            "persons", "animals.ownerId", "not like", "persons.id"
+        )
+        self.assertIn("ON animals.ownerId NOT LIKE persons.id", str(query))
+
     def test_raw_join_with_using(self):
         query = self.Animal.query().join("persons", using=["ownerId", "personId"])
         self.assertEqual(

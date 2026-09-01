@@ -74,6 +74,9 @@ class OnClauseBuilder:
         # Late import to avoid circular dependency
         from ..builder import QueryBuilder
 
+        # The operator arrives as free text and lands between two quoted
+        # identifiers, so it goes through the same check where() applies.
+        op = self._compiler.validate_operator(op)
         formatted_col1 = self._compiler.quote_fully_qualified_identifier(col1)
         if isinstance(col2, QueryBuilder):
             formatted_col2 = f"({col2})"
