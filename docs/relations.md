@@ -94,6 +94,8 @@ class Artist(Model):
 
 The string form exists to prevent cyclical imports: with it, `Show` and `Venue` can point at each other from separate modules, as long as both classes exist by the time the query builds. A name that never resolves raises `ValueError`.
 
+A name two model classes share resolves to neither of them. It raises `ValueError` naming both classes, unless the module that declares the relation defines the name itself. Pass the class when you have two models with one name.
+
 ## Joining a relation
 
 All major join types are supported and have dedicated methods:

@@ -6,6 +6,7 @@ from typing import (
     AsyncContextManager,
     ContextManager,
     Dict,
+    List,
     Optional,
     Tuple,
     Type,
@@ -24,12 +25,71 @@ if TYPE_CHECKING:
 
 
 _MODEL_REGISTRY: Dict[str, Type["Model"]] = {}
+_AMBIGUOUS_MODEL_NAMES: Dict[str, List[Type["Model"]]] = {}
 
 TModel = TypeVar("TModel", bound="Model")
 
 
+def _describe_model_class(model_class: Type["Model"]) -> str:
+    """Names a model class by module and qualified name, for error text."""
+    module = getattr(model_class, "__module__", "?")
+    qualname = getattr(model_class, "__qualname__", model_class.__name__)
+    return f"{module}.{qualname}"
+
+
+def _ambiguous_name_error(name: str) -> ValueError:
+    """Builds the error for a class name that two model classes share."""
+    candidates = ", ".join(
+        _describe_model_class(candidate) for candidate in _AMBIGUOUS_MODEL_NAMES[name]
+    )
+    return ValueError(
+        f"The model name '{name}' is ambiguous. These classes share it: "
+        f"{candidates}. A string model reference cannot tell them apart, so "
+        "rename one class, or pass the class itself instead of its name."
+    )
+
+
+def _register_model(name: str, model_class: Type["Model"]) -> None:
+    """
+    Puts a model class in the registry under its class name.
+
+    A string 'modelClass' in a relation mapping resolves through this
+    registry, so one name must mean one class. A second class with the
+    same name does not replace the first, because every string reference
+    to that name would then point at the new class. The name is marked
+    ambiguous instead, and a string reference to it raises unless the
+    module that holds the reference defines the name itself.
+
+    Re-running the same class statement, which an import loop does,
+    registers the same class object again and changes nothing.
+    """
+    shared = _AMBIGUOUS_MODEL_NAMES.get(name)
+    if shared is not None:
+        # One entry per place a class with this name is defined. A factory
+        # that builds the same class again adds nothing to the error text.
+        described = _describe_model_class(model_class)
+        if all(_describe_model_class(other) != described for other in shared):
+            shared.append(model_class)
+        return
+    existing = _MODEL_REGISTRY.get(name)
+    if existing is None:
+        _MODEL_REGISTRY[name] = model_class
+        return
+    if existing is model_class:
+        return
+    del _MODEL_REGISTRY[name]
+    _AMBIGUOUS_MODEL_NAMES[name] = [existing, model_class]
+
+
 def get_registered_model(name: str) -> Optional[Type["Model"]]:
-    """Returns a previously defined Model subclass by class name, if any."""
+    """
+    Returns a previously defined Model subclass by class name, if any.
+
+    Raises:
+        ValueError: If two or more model classes share the name.
+    """
+    if name in _AMBIGUOUS_MODEL_NAMES:
+        raise _ambiguous_name_error(name)
     return _MODEL_REGISTRY.get(name)
 
 
@@ -40,22 +100,29 @@ def resolve_model_reference(
     Resolves a model reference that may be a class or a class name.
 
     Names resolve through the model registry first. As a fallback for
-    classes that never registered, the context module is searched.
+    classes that never registered, and for a name two classes share,
+    the context module is searched.
 
     Raises:
-        ValueError: If a string reference cannot be resolved.
+        ValueError: If a string reference cannot be resolved, or if two
+            model classes share the name and the context module does not
+            say which one to use.
     """
     if not isinstance(reference, str):
         return reference
-    registered = get_registered_model(reference)
-    if registered is not None:
-        return registered
+    ambiguous = reference in _AMBIGUOUS_MODEL_NAMES
+    if not ambiguous:
+        registered = _MODEL_REGISTRY.get(reference)
+        if registered is not None:
+            return registered
     if context_module:
         try:
             module = __import__(context_module, fromlist=[reference])
             return getattr(module, reference)  # type: ignore[no-any-return]
         except AttributeError:
             pass
+    if ambiguous:
+        raise _ambiguous_name_error(reference)
     raise ValueError(
         f"Cannot resolve model reference '{reference}'. Define the model "
         "class before building the query, or pass the class itself instead "
@@ -133,7 +200,7 @@ class ModelMeta(type):
     def __init__(cls, name: str, bases: Tuple[type, ...], namespace: Dict[str, Any]):
         super().__init__(name, bases, namespace)
         if getattr(cls, "tableName", None):
-            _MODEL_REGISTRY[name] = cls  # type: ignore[assignment]
+            _register_model(name, cls)  # type: ignore[arg-type]
         # A typed schema also declares the column names, so strict column
         # access comes along unless the class opts out explicitly.
         if namespace.get("tableColumns") and "columns" not in namespace:

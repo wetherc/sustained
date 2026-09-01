@@ -205,14 +205,14 @@ get_registered_model(name) -> type[Model] | None
 ```
 {: .sig #get_registered_model}
 
-Looks up a model by class name.
+Looks up a model by class name. Raises `ValueError` when two model classes share the name, because the registry keeps neither of them under it. The registry never drops an entry, so a name stays taken for the life of the process.
 
 ```python
 resolve_model_reference(reference, context_module=None) -> type[Model]
 ```
 {: .sig #resolve_model_reference}
 
-Returns a class unchanged, or resolves a string through the registry, then through `context_module`. Raises `ValueError` when neither one finds the class.
+Returns a class unchanged, or resolves a string through the registry, then through `context_module`. Raises `ValueError` when neither one finds the class. A name two model classes share resolves through `context_module` only, and raises when that module does not define it.
 
 ## Building a model at runtime
 

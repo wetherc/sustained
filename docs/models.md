@@ -123,7 +123,9 @@ The string form prevents cyclical imports: `Venue` and `Show` can point at each 
 
 `get_registered_model('Show')` returns the class or `None`. `resolve_model_reference` takes a class or a name and returns the class, raising for an unresolvable name.
 
-Two model classes with the same name in different modules overwrite each other in the registry. You should pass the class itself rather than a name when that is a risk.
+Two model classes can share a class name, in the same module or across modules. Neither one then owns the name in the registry, and a string reference to it raises `ValueError` naming both classes. The reference resolves anyway when the module that declares the relation defines the name itself, because that module says which class is meant. Pass the class instead of its name when two of your models share a name.
+
+The registry never drops an entry. A model class registered once stays reachable by name for the life of the process, even after the module that defined it is gone.
 
 ## Dialects and database connections
 
