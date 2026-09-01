@@ -102,11 +102,23 @@ def _resolve_dialect(value: object) -> Dialects:
 
 
 def _load_config(module_name: str) -> ModuleType:
-    sys.path.insert(0, os.getcwd())
+    """
+    Imports the config module with the working directory on sys.path.
+
+    The entry is removed again by value, not by position. A config module
+    may add its own entries to the front of sys.path while it imports, and
+    removing the first entry would drop one of those and leave the working
+    directory in place for the rest of the process.
+    """
+    cwd = os.getcwd()
+    sys.path.insert(0, cwd)
     try:
         return importlib.import_module(module_name)
     finally:
-        sys.path.pop(0)
+        try:
+            sys.path.remove(cwd)
+        except ValueError:
+            pass
 
 
 def _close_quietly(connection: object) -> None:

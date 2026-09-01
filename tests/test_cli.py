@@ -183,6 +183,42 @@ class CliTestCase(CliBase):
         self.assertEqual(code, 1)
         self.assertIn("connection", stderr.getvalue())
 
+    def test_a_config_keeps_the_path_entry_it_adds(self):
+        # The CLI must remove its own working directory entry, not the
+        # first entry, which the config module may have added itself.
+        helpers = os.path.realpath(os.path.join(self.dir.name, "helpers"))
+        os.mkdir(helpers)
+        helper = f"cli_helper_{id(self)}"
+        self._write(helpers, f"{helper}.py", "value = 1\n")
+        name = f"path_config_{id(self)}"
+        with open(os.path.join(self.dir.name, f"{name}.py"), "w") as f:
+            f.write(
+                CONFIG_TEMPLATE + "\nimport sys\n"
+                "sys.path.insert(0, os.path.join(os.path.dirname(__file__),"
+                " 'helpers'))\n"
+                f"import {helper}\n"
+            )
+        self.addCleanup(sys.modules.pop, name, None)
+        self.addCleanup(sys.modules.pop, helper, None)
+        self.addCleanup(lambda: helpers in sys.path and sys.path.remove(helpers))
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            code = main(["status", "--config", name])
+        self.assertEqual(code, 0)
+        self.assertIn(helpers, sys.path)
+        self.assertNotIn(os.path.realpath(self.dir.name), sys.path)
+
+    def test_a_config_may_remove_the_path_entry_itself(self):
+        name = f"path_drop_config_{id(self)}"
+        with open(os.path.join(self.dir.name, f"{name}.py"), "w") as f:
+            f.write(CONFIG_TEMPLATE + "\nimport sys\nsys.path.remove(os.getcwd())\n")
+        self.addCleanup(sys.modules.pop, name, None)
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            code = main(["status", "--config", name])
+        self.assertEqual(code, 0)
+        self.assertNotIn(os.path.realpath(self.dir.name), sys.path)
+
     def test_setup_failure_closes_connection(self):
         name = f"leak_config_{id(self)}"
         with open(os.path.join(self.dir.name, f"{name}.py"), "w") as f:
