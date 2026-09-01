@@ -200,7 +200,8 @@ class AthenaCompiler(PrestoCompiler):
             parts.append(f"LOCATION '{escaped}'")
         if options.properties:
             props = ", ".join(
-                f"'{k}'='{str(v)}'" for k, v in options.properties.items()
+                f"{self.format_value(k)}={self.format_value(str(v))}"
+                for k, v in options.properties.items()
             )
             parts.append(f"TBLPROPERTIES ({props})")
         return " ".join(parts)

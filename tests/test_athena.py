@@ -307,6 +307,13 @@ class TestAthenaTableOptions(unittest.TestCase):
         suffix = compiler.compile_table_options(TableOptions(location="s3://a'b/"))
         self.assertIn("LOCATION 's3://a''b/'", suffix)
 
+    def test_table_property_quotes_escape(self):
+        compiler = Dialects.get_compiler(Dialects.ATHENA)
+        suffix = compiler.compile_table_options(
+            TableOptions(properties={"o'wner": "d'arcy"})
+        )
+        self.assertIn("TBLPROPERTIES ('o''wner'='d''arcy')", suffix)
+
 
 class TestAthenaDdl(unittest.TestCase):
     def setUp(self):
