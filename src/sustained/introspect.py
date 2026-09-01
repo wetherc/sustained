@@ -547,11 +547,18 @@ def _information_schema_plan(catalog: Catalog = ANSI_CATALOG) -> SchemaPlan:
     schema_filter = catalog.schema_filter
 
     columns_by_table: Dict[str, Dict[str, IntrospectedColumn]] = {}
+    # The join to information_schema.tables keeps views out. A view's
+    # columns would read as a table the models do not declare, so one view
+    # in the database is enough to make every plan report drift, and
+    # allow_drops would emit a DROP TABLE the engine refuses.
     column_rows = yield (
-        f"SELECT table_name, column_name, {catalog.type_column}, "
-        "is_nullable, column_default "
-        f"FROM information_schema.columns WHERE {schema_filter} "
-        "ORDER BY table_name, ordinal_position"
+        f"SELECT c.table_name, c.column_name, c.{catalog.type_column}, "
+        "c.is_nullable, c.column_default "
+        "FROM information_schema.columns c "
+        "JOIN information_schema.tables t "
+        "ON t.table_schema = c.table_schema AND t.table_name = c.table_name "
+        f"WHERE c.{schema_filter} AND t.table_type = 'BASE TABLE' "
+        "ORDER BY c.table_name, c.ordinal_position"
     )
     for table, name, data_type, is_nullable, default in column_rows:
         columns_by_table.setdefault(table.lower(), {})[name.lower()] = (

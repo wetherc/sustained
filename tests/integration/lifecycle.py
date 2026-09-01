@@ -35,6 +35,7 @@ TABLES = (
     "it_lock_b",
 )
 TRACKING = ("sustained_migrations", "sustained_rehearsals")
+VIEWS = ("it_widget_names",)
 
 
 def widget_columns():
@@ -64,6 +65,9 @@ def drop_everything(connection, dialect):
     """Leaves the database as the test found it."""
     compiler = Dialects.get_compiler(dialect)
     cursor = connection.cursor()
+    # Views come first: a view over a dropped table is left broken.
+    for view in VIEWS:
+        cursor.execute(f"DROP VIEW IF EXISTS {compiler.quote_identifier(view)}")
     for table in TABLES + TRACKING:
         cursor.execute(f"DROP TABLE IF EXISTS {compiler.quote_identifier(table)}")
     if compiler.enum_strategy() == "native":
@@ -148,6 +152,18 @@ class ServerCase(ColumnTypeTests, FileMigrationTests, unittest.TestCase):
 
         migrator.up(models=[self.Widget])
         self.assertIn("note", set(self.tables()["it_widgets"].columns))
+
+    def test_a_view_is_not_a_table_the_models_are_missing(self):
+        quote = Dialects.get_compiler(self.DIALECT).quote_identifier
+        migrator = self.migrator()
+        migrator.up(models=[self.Widget])
+        self.execute(
+            f"CREATE VIEW {quote('it_widget_names')} AS "
+            f"SELECT id, name FROM {quote('it_widgets')}"
+        )
+
+        self.assertNotIn("it_widget_names", self.tables())
+        self.assertIsNone(migrator.plan([self.Widget]))
 
     def test_validate_and_repair_find_nothing_after_a_clean_run(self):
         migrator = self.migrator()
