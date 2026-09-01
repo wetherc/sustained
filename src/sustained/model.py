@@ -85,6 +85,18 @@ def _check_declared_columns(cls: Type["Model"], name: str) -> None:
         )
 
 
+def _commit_unless_in_transaction(conn: Connection) -> None:
+    """
+    Commits the DDL just executed on the connection. Inside a
+    transaction() context the context manager owns the commit, so
+    committing here would break atomicity and this does nothing.
+    """
+    from sustained.execution import in_transaction
+
+    if not in_transaction(conn) and hasattr(conn, "commit"):
+        conn.commit()
+
+
 class ColumnNamespace:
     """
     Provides typed column access on a model class: Model.c.age returns a
@@ -383,6 +395,7 @@ class Model(metaclass=ModelMeta):
             cursor = open_cursor(conn)
             for statement in cls.create_table_statements(if_not_exists=if_not_exists):
                 cursor.execute(statement)
+            _commit_unless_in_transaction(conn)
 
     @classmethod
     def drop_table_sql(cls, if_exists: bool = True) -> str:
@@ -423,6 +436,7 @@ class Model(metaclass=ModelMeta):
             cursor = open_cursor(conn)
             for statement in cls.drop_table_statements(if_exists=if_exists):
                 cursor.execute(statement)
+            _commit_unless_in_transaction(conn)
 
     @classmethod
     def transaction(

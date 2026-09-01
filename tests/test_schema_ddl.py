@@ -198,5 +198,81 @@ class TestLiveDdl(unittest.TestCase):
             DdlUser.create_table()
 
 
+class RecordingCursor:
+    """A cursor that keeps every statement it runs."""
+
+    description = None
+    rowcount = -1
+
+    def __init__(self, statements):
+        self._statements = statements
+
+    def execute(self, sql, params=None):
+        self._statements.append(sql)
+
+    def fetchall(self):
+        return []
+
+
+class RecordingConnection:
+    """A connection that counts commits and rollbacks."""
+
+    def __init__(self):
+        self.statements = []
+        self.commits = 0
+        self.rollbacks = 0
+
+    def cursor(self):
+        return RecordingCursor(self.statements)
+
+    def commit(self):
+        self.commits += 1
+
+    def rollback(self):
+        self.rollbacks += 1
+
+
+class CommitlessConnection:
+    """A connection with no commit method, such as an autocommit driver."""
+
+    def __init__(self):
+        self.statements = []
+
+    def cursor(self):
+        return RecordingCursor(self.statements)
+
+
+class TestDdlCommits(unittest.TestCase):
+    def test_create_table_commits(self):
+        conn = RecordingConnection()
+        DdlUser.create_table(conn)
+        self.assertEqual(conn.commits, 1)
+
+    def test_drop_table_commits(self):
+        conn = RecordingConnection()
+        DdlUser.drop_table(conn)
+        self.assertEqual(conn.commits, 1)
+
+    def test_create_table_inside_transaction_does_not_commit(self):
+        conn = RecordingConnection()
+        with DdlUser.transaction(conn):
+            DdlUser.create_table(conn)
+            self.assertEqual(conn.commits, 0)
+        # The transaction block owns the single commit.
+        self.assertEqual(conn.commits, 1)
+
+    def test_drop_table_inside_transaction_does_not_commit(self):
+        conn = RecordingConnection()
+        with DdlUser.transaction(conn):
+            DdlUser.drop_table(conn)
+            self.assertEqual(conn.commits, 0)
+        self.assertEqual(conn.commits, 1)
+
+    def test_create_table_without_commit_method(self):
+        conn = CommitlessConnection()
+        DdlUser.create_table(conn)
+        self.assertTrue(conn.statements)
+
+
 if __name__ == "__main__":
     unittest.main()

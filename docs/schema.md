@@ -252,6 +252,8 @@ User.create_table(conn)   # execute it
 User.drop_table(conn)     # DROP TABLE IF EXISTS
 ```
 
+`create_table()` and `drop_table()` commit when they finish, the same way `run()` does, so the DDL survives the connection closing. Inside a `transaction()` block they leave the commit to the block.
+
 Types map per dialect: `BIT`, `NVARCHAR`, and `DATETIME2` on MSSQL; `JSONB` and identity columns on Postgres; plain `INTEGER PRIMARY KEY` rowid behavior on the default dialect. Schema introspection reads SQLite's PRAGMA tables on the default dialect, and `information_schema.columns` elsewhere.
 
 ## Athena
