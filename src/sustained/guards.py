@@ -198,21 +198,36 @@ def no_lock_without_timeout() -> Guard:
     transaction queues every other query on that table behind it. Silent
     on every other dialect, which has no such setting.
 
-    The rule reads the whole run: one `SET lock_timeout` statement, in
-    any migration of the run, satisfies it.
+    The rule reads the statements in run order. A `SET lock_timeout`
+    covers the statements after it, and none before it, so a timeout at
+    the end of a run no longer excuses an ALTER at the start.
+
+    A guard reads a flat statement list and cannot see where one
+    migration ends and the next begins. `SET LOCAL` dies at the commit
+    that ends its migration, so a `SET LOCAL` in an early migration still
+    counts for a later one, which the server would not honour. Write
+    `SET lock_timeout` without LOCAL to set it for the session, or repeat
+    the `SET LOCAL` in each migration that needs it.
     """
 
     def guard(statements: Sequence[str], dialect: Dialects) -> List[Verdict]:
         if dialect is not Dialects.POSTGRES:
             return []
-        scanned = [scannable_statement(s) for s in statements]
-        if any(_LOCK_TIMEOUT_RE.search(text) for text in scanned):
-            return []
-        return [
-            Verdict("no_lock_without_timeout", BLOCK, normalize_statement(statement))
-            for statement, text in zip(statements, scanned)
-            if _LOCK_TAKING_RE.search(text)
-        ]
+        found = []
+        covered = False
+        for statement in statements:
+            scanned = scannable_statement(statement)
+            if _LOCK_TIMEOUT_RE.search(scanned):
+                covered = True
+            elif not covered and _LOCK_TAKING_RE.search(scanned):
+                found.append(
+                    Verdict(
+                        "no_lock_without_timeout",
+                        BLOCK,
+                        normalize_statement(statement),
+                    )
+                )
+        return found
 
     return guard
 

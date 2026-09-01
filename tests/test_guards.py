@@ -202,6 +202,29 @@ class NoLockWithoutTimeoutTest(unittest.TestCase):
         statements = ["SET LOCAL lock_timeout = '5s'", "DROP TABLE users"]
         self.assertEqual(self.run_on(statements), [])
 
+    def test_a_timeout_after_the_statement_does_not_count(self):
+        statements = ["DROP TABLE users", "SET lock_timeout = '5s'"]
+        verdicts = self.run_on(statements)
+        self.assertEqual([v.statement for v in verdicts], ["DROP TABLE users"])
+
+    def test_a_timeout_covers_only_what_follows_it(self):
+        statements = [
+            "ALTER TABLE users ADD COLUMN bio TEXT",
+            "SET lock_timeout = '5s'",
+            "ALTER TABLE shows ADD COLUMN slug TEXT",
+        ]
+        verdicts = self.run_on(statements)
+        self.assertEqual(
+            [v.statement for v in verdicts], ["ALTER TABLE users ADD COLUMN bio TEXT"]
+        )
+
+    def test_a_timeout_inside_a_literal_does_not_count(self):
+        statements = [
+            "INSERT INTO audit (note) VALUES ('SET lock_timeout = ''5s''')",
+            "DROP TABLE users",
+        ]
+        self.assertEqual(len(self.run_on(statements)), 1)
+
     def test_passes_a_run_that_takes_no_table_lock(self):
         self.assertEqual(self.run_on(["CREATE TABLE users (id INTEGER)"]), [])
 

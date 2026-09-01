@@ -411,7 +411,9 @@ no_lock_without_timeout() -> Guard
 ```
 {: .sig #no_lock_without_timeout}
 
-Blocks a run that alters or drops a table with no `SET lock_timeout` anywhere in it. Postgres only; silent elsewhere.
+Blocks a statement that alters or drops a table with no `SET lock_timeout` before it in the run. A timeout later in the run does not cover it. Postgres only; silent elsewhere.
+
+A guard reads a flat statement list, so it cannot see where one migration ends and the next begins. `SET LOCAL lock_timeout` dies at the commit that ends its migration, but the rule still counts it for the migrations after it. Set the timeout without LOCAL, or repeat the `SET LOCAL` in each migration that needs it.
 
 ```python
 max_statements(limit) -> Guard
