@@ -1,8 +1,13 @@
+import re
 from typing import TYPE_CHECKING, Optional
 
 from sustained.exceptions import DialectError
 
 from .base import Compiler
+
+# One [bracketed] segment of a quoted path, with ']]' standing for a ']'
+# inside the name.
+_BRACKETED_SEGMENT_RE = re.compile(r"\[((?:[^\]]|\]\])*)\]")
 
 if TYPE_CHECKING:
     from sustained.schema import ColumnState
@@ -87,17 +92,34 @@ class MssqlCompiler(Compiler):
         # T-SQL spells it ADD without the COLUMN keyword.
         return f"ALTER TABLE {table_sql} ADD {column_sql}"
 
+    def _unbracketed_segments(self, sql: str) -> "list[str]":
+        """
+        Splits a bracket-quoted path back into its raw name segments.
+
+        sp_rename takes the object path as a string literal, not as
+        bracketed SQL, so the brackets come off and a doubled ']' inside a
+        name goes back to one. A path that carries no brackets splits on
+        the dot.
+        """
+        segments = _BRACKETED_SEGMENT_RE.findall(sql)
+        if not segments:
+            return sql.split(".")
+        return [segment.replace("]]", "]") for segment in segments]
+
     def compile_rename_column(
         self, table_sql: str, old_name: str, new_name: str
     ) -> str:
         # T-SQL renames through sp_rename with an unquoted object path.
-        table_path = table_sql.replace("[", "").replace("]", "")
-        return f"EXEC sp_rename '{table_path}.{old_name}', '{new_name}', 'COLUMN'"
+        table_path = ".".join(self._unbracketed_segments(table_sql))
+        old_path = self.format_value(f"{table_path}.{old_name}")
+        return f"EXEC sp_rename {old_path}, {self.format_value(new_name)}, 'COLUMN'"
 
     def compile_rename_table(self, old_sql: str, new_sql: str) -> str:
-        old_path = old_sql.replace("[", "").replace("]", "")
-        new_path = new_sql.replace("[", "").replace("]", "")
-        return f"EXEC sp_rename '{old_path}', '{new_path}'"
+        old_path = ".".join(self._unbracketed_segments(old_sql))
+        # sp_rename refuses a qualified new name: the table keeps the schema
+        # it already has, so only the final segment is passed.
+        new_name = self._unbracketed_segments(new_sql)[-1]
+        return f"EXEC sp_rename {self.format_value(old_path)}, {self.format_value(new_name)}"
 
     def compile_drop_index(self, index_name: str, table_sql: str) -> str:
         # T-SQL requires the table in DROP INDEX.
