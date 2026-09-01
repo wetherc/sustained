@@ -166,6 +166,13 @@ Venue.query().leftJoin('shows', 'venues.id', '=', 'shows.venue_id')
 # SELECT * FROM venues LEFT JOIN shows ON venues.id = shows.venue_id
 ```
 
+`crossJoin` also takes the table on its own, since a cross join has no condition:
+
+```python
+Show.query().crossJoin('dates')
+# SELECT * FROM shows CROSS JOIN dates
+```
+
 When the join columns share a name in both tables, `using` is shorter and produces one merged column instead of two:
 
 ```python

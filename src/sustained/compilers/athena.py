@@ -62,34 +62,18 @@ def _inline_null_parameters(
     scan tracks quoted regions, so a question mark inside a string
     literal or a quoted identifier stays put.
     """
-    remaining = list(params)
+    from sustained.rendering import split_value_markers
+
+    pieces = split_value_markers(sql)
     kept = []
-    out = []
-    quote = None
-    position = 0
-    while position < len(sql):
-        char = sql[position]
-        if quote is not None:
-            out.append(char)
-            if char == quote:
-                if position + 1 < len(sql) and sql[position + 1] == quote:
-                    out.append(quote)
-                    position += 1
-                else:
-                    quote = None
-        elif char in ("'", '"', "`"):
-            quote = char
-            out.append(char)
-        elif char == "?":
-            value = remaining.pop(0)
-            if value is None:
-                out.append("NULL")
-            else:
-                out.append("?")
-                kept.append(value)
+    out = [pieces[0]]
+    for value, piece in zip(params, pieces[1:]):
+        if value is None:
+            out.append("NULL")
         else:
-            out.append(char)
-        position += 1
+            out.append("?")
+            kept.append(value)
+        out.append(piece)
     return "".join(out), tuple(kept)
 
 

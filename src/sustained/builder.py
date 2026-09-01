@@ -123,7 +123,13 @@ class QueryBuilder:
     def distinct(self) -> "QueryBuilder":
         """
         Adds a DISTINCT keyword to the SELECT statement.
+
+        Raises:
+            ValueError: If the query already has a distinctOn() clause. The
+                two spellings cannot both render.
         """
+        if self._distinct_on_columns:
+            raise ValueError("Cannot combine distinct() with distinctOn().")
         self._distinct = True
         return self
 
@@ -861,6 +867,14 @@ class QueryBuilder:
         self._insert_rows = [dict(row) for row in rows]
         return self
 
+    def _has_expression_values(self) -> bool:
+        """Reports whether any insert row holds a raw SQL Expression."""
+        return any(
+            isinstance(value, Expression)
+            for row in self._insert_rows
+            for value in row.values()
+        )
+
     def insert_from(
         self, columns: Optional[List[str]], query: "QueryBuilder"
     ) -> "QueryBuilder":
@@ -1241,6 +1255,10 @@ class QueryBuilder:
                 self._stmt_type == "insert"
                 and len(self._insert_rows) > 1
                 and not self._returning_columns
+                # An Expression renders as SQL text with no placeholder, so
+                # the row would bind one value too many. Those inserts go
+                # through the one-statement path, which renders every row.
+                and not self._has_expression_values()
             )
             started = time.perf_counter()
             if use_executemany:
@@ -1264,7 +1282,14 @@ class QueryBuilder:
                 else:
                     for row_sql, row_values in prepared:
                         cursor.execute(row_sql, row_values)
-                notify_statement(sql, (), time.perf_counter() - started)
+                # The listener sees every row's values, flattened in the
+                # order they were sent, so an audit of a batch insert holds
+                # the same information as an audit of single-row inserts.
+                notify_statement(
+                    sql,
+                    tuple(v for _, values in prepared for v in values),
+                    time.perf_counter() - started,
+                )
             else:
                 sql, params = self._compiler.prepare_execution(*self.to_sql())
                 cursor.execute(sql, params)

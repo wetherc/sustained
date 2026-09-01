@@ -157,7 +157,7 @@ whereRaw(sql, params=None)
 ```
 {: .sig #whereraw}
 
-A raw fragment with `?` value markers. The values still parameterize. The fragment renders wrapped in parentheses.
+A raw fragment with `?` value markers. The values still parameterize. The fragment renders wrapped in parentheses. A question mark inside a string literal or a quoted identifier is text, not a marker.
 
 Prefix a base with `and` or `or` for the conjunction, as in `andWhereIn` or `orWhereNotBetween`. The first condition in a chain must be a plain `where`; an `and` or `or` form in that position raises `RuntimeError`.
 
@@ -169,6 +169,7 @@ Errors from the `where` family:
 | `op` is `None` on a clause that is not a callable | `ValueError` |
 | `val` is `None` with an operator other than `=`, `!=`, `<>`, `IS`, `IS NOT` | `ValueError` |
 | An operator outside the allowlist | `ValueError` |
+| `IS` or `IS NOT` with a value other than `None`, `True`, or `False` | `ValueError` |
 | A `whereRaw` marker count that does not match the parameter count | `ValueError` |
 
 The operator allowlist is `=`, `!=`, `<>`, `<`, `<=`, `>`, `>=`, `LIKE`, `NOT LIKE`, `ILIKE`, `NOT ILIKE`, `IS`, and `IS NOT`. Comparing to `None` with `=` or `!=` renders `IS NULL` or `IS NOT NULL`. `ILIKE` is native on Postgres and DuckDB and compiles to `LOWER(col) LIKE LOWER(pattern)` everywhere else, so `ILIKE` never raises.
@@ -283,6 +284,8 @@ query.join('venues', 'shows.venue_id', '=', 'venues.id')   # ON condition
 query.join('profiles', using=['profile_id'])               # USING list
 query.join('venues', lambda j: j.on(...).orOn(...))        # lambda
 ```
+
+`crossJoin(table)` also takes the table on its own, since a cross join has no condition. Every other join type raises `ValueError` without one.
 
 The table argument must be a table name. To join a derived result set, put it in a CTE with `with_()` and join the CTE by its alias. Mixing `using` with positional arguments raises `ValueError`, and a `using` value that is not a list raises `TypeError`.
 
@@ -462,7 +465,7 @@ Eager loads relations, with one query per relation per level. A name may be a do
 
 `to_dicts`, `to_df`, `to_arrow`, and `total` raise `ValueError` on any statement that is not a SELECT.
 
-A multi-row `insert()` with no RETURNING runs through the driver's `executemany()`.
+A multi-row `insert()` with no RETURNING runs through the driver's `executemany()`. Rows that carry a `QueryBuilder.raw()` value run as one statement instead, because raw SQL renders in the statement itself and has no value to bind.
 
 ### Async
 

@@ -310,7 +310,11 @@ with Show.transaction():
     Ticket.query().insert({'show_id': 1, 'price': 45}).run()
 ```
 
+A query given the pool by hand inside the block runs on the pinned connection too, so `query.run(pool)` stays in the transaction instead of checking a second connection out.
+
 An exhausted pool raises `PoolTimeout` after the configured timeout rather than blocking forever. `pool.close()` closes the idle connections.
+
+A transaction belongs to the thread that opened it. A second thread that calls `transaction()` on the same connection gets a `RuntimeError`, because a connection carries one transaction and the block would otherwise nest inside the first thread's. Give each thread its own connection, from a pool or from a second bind target.
 
 ## Async execution
 

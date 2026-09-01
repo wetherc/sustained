@@ -216,13 +216,15 @@ class ConditionalClauseBuilder(ABC):
         marked with ? in the fragment and supplied separately, so they
         parameterize like every other clause.
         """
-        from ..rendering import bind_raw
+        from ..rendering import bind_raw, count_value_markers
 
         bound_params = list(params) if params else []
         # Validate the marker count at build time so mistakes surface early.
-        if sql.count("?") != len(bound_params):
+        # A question mark inside a string literal is text, not a marker.
+        marker_count = count_value_markers(sql)
+        if marker_count != len(bound_params):
             raise ValueError(
-                f"Raw SQL fragment has {sql.count('?')} value markers "
+                f"Raw SQL fragment has {marker_count} value markers "
                 f"but {len(bound_params)} parameters were given."
             )
 
@@ -293,6 +295,13 @@ class ConditionalClauseBuilder(ABC):
                     return
                 raise ValueError(
                     f"Value must be provided for non-callable {self._clause_keyword.lower()} clause."
+                )
+            if operator in ("IS", "IS NOT") and not isinstance(val, (bool, Expression)):
+                # IS compares against NULL and the truth values, never
+                # against a bound value: `x IS 5` is not SQL.
+                raise ValueError(
+                    f"{operator} takes None, True, or False. Compare a value "
+                    f"with = or !=, or write the comparison with raw SQL."
                 )
             quoted_col = self._quote_column(column_or_callable)
 

@@ -459,6 +459,10 @@ async def _run_query_on(
         query._stmt_type == "insert"
         and len(query._insert_rows) > 1
         and not query._returning_columns
+        # An Expression renders as SQL text with no placeholder, so the row
+        # would bind one value too many. Those inserts go through the
+        # one-statement path, which renders every row.
+        and not query._has_expression_values()
     )
     started = time.perf_counter()
     if query._stmt_type == "select":
@@ -493,7 +497,14 @@ async def _run_query_on(
             for row_sql, row_values in prepared:
                 total += await resolved.execute(row_sql, row_values)
             result = total
-        notify_statement(sql, (), time.perf_counter() - started)
+        # The listener sees every row's values, flattened in the order they
+        # were sent, so an audit of a batch insert holds the same
+        # information as an audit of single-row inserts.
+        notify_statement(
+            sql,
+            tuple(v for _, values in prepared for v in values),
+            time.perf_counter() - started,
+        )
     elif query._returning_columns:
         sql, params = query._compiler.prepare_execution(*query.to_sql())
         columns, rows = await resolved.fetch(sql, params)

@@ -39,18 +39,55 @@ from sustained.types import (
 )
 
 if TYPE_CHECKING:
+    from sustained.compilers.base import Compiler
     from sustained.dialects import Dialects
     from sustained.model import Model
+    from sustained.pool import ConnectionPool
     from sustained.types import AnyQuery
 
 
 # Connections with an open transaction, keyed by id(). The value holds a
 # strong reference to the connection, so the id cannot be reused while the
-# entry exists, the current savepoint nesting depth, and the cursor the
-# transaction runs on. Statements inside the block share that cursor:
-# DuckDB gives every cursor its own session, so a statement on a fresh
-# cursor would run outside the transaction there.
-_ACTIVE_TRANSACTIONS: Dict[int, Tuple[Connection, int, Cursor]] = {}
+# entry exists, the current savepoint nesting depth, the cursor the
+# transaction runs on, and the id of the thread that opened the block.
+# Statements inside the block share that cursor: DuckDB gives every cursor
+# its own session, so a statement on a fresh cursor would run outside the
+# transaction there.
+#
+# The dict is read and written from every thread that runs a statement, so
+# _TRANSACTION_LOCK guards it. The owner thread id makes a block belong to
+# one thread: a second thread that opens transaction() on the same
+# connection is refused instead of silently becoming a savepoint inside the
+# first thread's transaction, on the first thread's cursor.
+_ACTIVE_TRANSACTIONS: Dict[int, Tuple[Connection, int, Cursor, int]] = {}
+
+_TRANSACTION_LOCK = threading.RLock()
+
+
+def _transaction_entry(
+    connection: Connection,
+) -> Optional[Tuple[Connection, int, Cursor, int]]:
+    """The open transaction on this connection, or None."""
+    with _TRANSACTION_LOCK:
+        entry = _ACTIVE_TRANSACTIONS.get(id(connection))
+    if entry is not None and entry[0] is connection:
+        return entry
+    return None
+
+
+def _own_transaction_entry(
+    connection: Connection,
+) -> Optional[Tuple[Connection, int, Cursor, int]]:
+    """
+    The open transaction on this connection when the calling thread owns
+    it. Another thread's block reads as no transaction here, so its cursor
+    is never borrowed.
+    """
+    entry = _transaction_entry(connection)
+    if entry is not None and entry[3] == threading.get_ident():
+        return entry
+    return None
+
 
 # Optional observer called after every executed statement.
 _statement_listener: Optional[Callable[[str, Tuple[SqlValue, ...], float], None]] = None
@@ -80,17 +117,22 @@ def notify_statement(sql: str, params: Tuple[SqlValue, ...], duration: float) ->
 _thread_state = threading.local()
 
 
-def _pinned_connection() -> Optional[Connection]:
+def _pinned_entry() -> Optional[Tuple["ConnectionPool", Connection]]:
     stack = getattr(_thread_state, "pinned", None)
     return stack[-1] if stack else None
 
 
-def _pin(connection: Connection) -> None:
+def _pinned_connection() -> Optional[Connection]:
+    entry = _pinned_entry()
+    return entry[1] if entry is not None else None
+
+
+def _pin(pool: "ConnectionPool", connection: Connection) -> None:
     stack = getattr(_thread_state, "pinned", None)
     if stack is None:
         stack = []
         _thread_state.pinned = stack
-    stack.append(connection)
+    stack.append((pool, connection))
 
 
 def _unpin() -> None:
@@ -105,11 +147,21 @@ def connection_scope(
     Resolves the connection for one statement. An explicit argument wins;
     then a connection pinned by an open transaction() block on this thread;
     then the model binding. Pools check a connection out for the scope.
+
+    An explicit pool that already pinned a connection to this thread is the
+    one exception: the statement runs on the pinned connection, so a query
+    given the pool inside transaction(pool) stays in that transaction. A
+    second checkout would commit on its own, and would deadlock against its
+    own block on a pool of one connection.
     """
     from sustained.pool import ConnectionPool
 
     if explicit is not None:
         if isinstance(explicit, ConnectionPool):
+            entry = _pinned_entry()
+            if entry is not None and entry[0] is explicit:
+                yield entry[1]
+                return
             with explicit.connection() as conn:
                 yield conn
         else:
@@ -153,9 +205,12 @@ def _begin_where_ddl_autocommits(connection: Connection, cursor: Cursor) -> None
 
 
 def in_transaction(connection: Connection) -> bool:
-    """Reports whether the connection has an open transaction() context."""
-    entry = _ACTIVE_TRANSACTIONS.get(id(connection))
-    return entry is not None and entry[0] is connection
+    """
+    Reports whether the connection has an open transaction() context, on
+    this thread or another one. A block another thread opened still holds
+    the connection's transaction, so a statement here must not commit.
+    """
+    return _transaction_entry(connection) is not None
 
 
 def open_cursor(connection: Connection) -> Cursor:
@@ -165,8 +220,8 @@ def open_cursor(connection: Connection) -> Cursor:
     not. On DuckDB every cursor is its own session, so a statement on a
     fresh cursor would run outside the open transaction.
     """
-    entry = _ACTIVE_TRANSACTIONS.get(id(connection))
-    if entry is not None and entry[0] is connection:
+    entry = _own_transaction_entry(connection)
+    if entry is not None:
         return entry[2]
     return connection.cursor()
 
@@ -184,8 +239,8 @@ def cursor_scope(connection: Connection) -> Iterator[Cursor]:
     closed here: it belongs to the transaction() block, and closing it
     would leave the rest of that block without a session on DuckDB.
     """
-    entry = _ACTIVE_TRANSACTIONS.get(id(connection))
-    if entry is not None and entry[0] is connection:
+    entry = _own_transaction_entry(connection)
+    if entry is not None:
         yield entry[2]
         return
     cursor = connection.cursor()
@@ -220,19 +275,48 @@ def pinned_transaction(connection: Connection, dialect: "Dialects") -> Iterator[
     from sustained.dialects import Dialects
 
     key = id(connection)
-    if key in _ACTIVE_TRANSACTIONS:
-        raise ValueError("a transaction is already open on this connection")
+    with _TRANSACTION_LOCK:
+        if key in _ACTIVE_TRANSACTIONS:
+            raise ValueError("a transaction is already open on this connection")
     compiler = Dialects.get_compiler(dialect)
     cursor = connection.cursor()
     begin_sql = compiler.begin_transaction_sql()
     if begin_sql is not None:
         cursor.execute(begin_sql)
-    _ACTIVE_TRANSACTIONS[key] = (connection, 0, cursor)
+    with _TRANSACTION_LOCK:
+        _ACTIVE_TRANSACTIONS[key] = (connection, 0, cursor, threading.get_ident())
     try:
         yield cursor
     finally:
-        del _ACTIVE_TRANSACTIONS[key]
+        with _TRANSACTION_LOCK:
+            del _ACTIVE_TRANSACTIONS[key]
         cursor.close()
+
+
+def _undo_savepoint(
+    compiler: "Compiler",
+    cursor: Cursor,
+    savepoint: str,
+    error: BaseException,
+) -> None:
+    """
+    Rolls a nested block back to its savepoint and drops the savepoint.
+
+    The block failed for a reason the caller cares about, so a failure
+    here does not replace it: the original error keeps propagating with
+    the rollback failure as its cause.
+    """
+    statements = [
+        compiler.rollback_savepoint_sql(savepoint),
+        compiler.release_savepoint_sql(savepoint),
+    ]
+    for statement in statements:
+        if statement is None:
+            continue
+        try:
+            cursor.execute(statement)
+        except Exception as rollback_error:
+            raise error from rollback_error
 
 
 @contextmanager
@@ -251,6 +335,13 @@ def transaction(
 
     When given a ConnectionPool, one connection is checked out, pinned to
     the calling thread for the duration of the block, and released after.
+
+    A block belongs to the thread that opened it. A second thread that
+    calls transaction() on the same connection gets a RuntimeError, because
+    a connection carries one transaction and the nested spelling would put
+    that thread's statements in the first thread's transaction, on the
+    first thread's cursor. Give each thread its own connection, from a
+    ConnectionPool or from a second Model.bind() target.
     """
     from sustained.dialects import Dialects
     from sustained.pool import ConnectionPool
@@ -259,15 +350,17 @@ def transaction(
         dialect = Dialects.DEFAULT
 
     if isinstance(connection, ConnectionPool):
-        pinned = _pinned_connection()
-        if pinned is not None:
-            # A transaction is already open on this thread; nest on its
-            # connection with a savepoint instead of checking out another.
+        pinned_entry = _pinned_entry()
+        if pinned_entry is not None and pinned_entry[0] is connection:
+            # This pool already has a transaction open on this thread; nest
+            # on its connection with a savepoint instead of checking out
+            # another. A different pool's pinned connection is left alone.
+            pinned = pinned_entry[1]
             with transaction(pinned, dialect):
                 yield pinned
             return
         conn = connection.acquire_raw()
-        _pin(conn)
+        _pin(connection, conn)
         try:
             with transaction(conn, dialect):
                 yield conn
@@ -277,9 +370,16 @@ def transaction(
         return
 
     key = id(connection)
-    entry = _ACTIVE_TRANSACTIONS.get(key)
+    entry = _transaction_entry(connection)
+    if entry is not None and entry[3] != threading.get_ident():
+        raise RuntimeError(
+            "Another thread has an open transaction() block on this "
+            "connection. A connection carries one transaction, so a second "
+            "thread cannot start or nest one on it. Give each thread its "
+            "own connection, such as with a ConnectionPool."
+        )
 
-    if entry is not None and entry[0] is connection:
+    if entry is not None:
         from sustained.exceptions import DialectError
 
         compiler = Dialects.get_compiler(dialect)
@@ -293,21 +393,25 @@ def transaction(
                 "statements inside the outer block instead."
             )
         cursor = entry[2]
-        _ACTIVE_TRANSACTIONS[key] = (connection, depth, cursor)
+        owner = entry[3]
+        with _TRANSACTION_LOCK:
+            _ACTIVE_TRANSACTIONS[key] = (connection, depth, cursor, owner)
         try:
             cursor.execute(set_sql)
             try:
                 yield connection
-            except BaseException:
-                rollback_sql = compiler.rollback_savepoint_sql(savepoint)
-                if rollback_sql is not None:
-                    cursor.execute(rollback_sql)
+            except BaseException as error:
+                # The savepoint is taken back and then dropped: a savepoint
+                # rolled back is still set, and every later one of the same
+                # name would stack on the connection.
+                _undo_savepoint(compiler, cursor, savepoint, error)
                 raise
             release_sql = compiler.release_savepoint_sql(savepoint)
             if release_sql is not None:
                 cursor.execute(release_sql)
         finally:
-            _ACTIVE_TRANSACTIONS[key] = (connection, depth - 1, cursor)
+            with _TRANSACTION_LOCK:
+                _ACTIVE_TRANSACTIONS[key] = (connection, depth - 1, cursor, owner)
         return
 
     compiler = Dialects.get_compiler(dialect)
@@ -321,7 +425,8 @@ def transaction(
             cursor.execute(begin_sql)
     else:
         _begin_where_ddl_autocommits(connection, cursor)
-    _ACTIVE_TRANSACTIONS[key] = (connection, 0, cursor)
+    with _TRANSACTION_LOCK:
+        _ACTIVE_TRANSACTIONS[key] = (connection, 0, cursor, threading.get_ident())
     try:
         yield connection
         if driver_control:
@@ -339,7 +444,8 @@ def transaction(
                 cursor.execute(rollback_sql)
         raise
     finally:
-        del _ACTIVE_TRANSACTIONS[key]
+        with _TRANSACTION_LOCK:
+            del _ACTIVE_TRANSACTIONS[key]
         cursor.close()
 
 
@@ -600,7 +706,9 @@ def attach_eager_load(
         grouped.setdefault(key, []).append(child)
 
     for parent, key in zip(parents, plan.parent_keys):
-        matches = grouped.get(key, [])
+        # A new list per parent: two parents with the same join key must not
+        # share one list, or an append on one parent shows up on the other.
+        matches = list(grouped.get(key, ()))
         if plan.is_many:
             setattr(parent, plan.relation_name, matches)
         else:

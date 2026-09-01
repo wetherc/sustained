@@ -57,7 +57,7 @@ class GuardBlocked(SustainedError):
 
     def __init__(self, verdicts: Sequence["Verdict"]) -> None:
         self.verdicts = list(verdicts)
-        width = max(len(v.rule) for v in self.verdicts)
+        width = max((len(v.rule) for v in self.verdicts), default=0)
         lines = [f"  {v.rule:<{width}}  {v.statement}" for v in self.verdicts]
         super().__init__(
             "\n".join(

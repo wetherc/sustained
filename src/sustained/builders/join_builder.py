@@ -143,7 +143,17 @@ class JoinClauseBuilder:
 
         if join_match:
             join_prefix, _, related_suffix = join_match.groups()
-            sql_join_type = self._JOIN_METHOD_MAP[join_prefix or ""]
+            # The regex matches without regard to case, so `LeftJoin` and
+            # `leftjoin` reach here with a prefix the map does not hold.
+            # Look the prefix up by its lowered spelling, and report a
+            # spelling with no entry the way any missing attribute is
+            # reported, so hasattr() keeps working.
+            lowered = {k.lower(): v for k, v in self._JOIN_METHOD_MAP.items()}
+            sql_join_type = lowered.get((join_prefix or "").lower())
+            if sql_join_type is None:
+                raise AttributeError(
+                    f"'{type(self).__name__}' object has no attribute '{name}'"
+                )
 
             if related_suffix:
                 # This is a ...joinRelated() call
@@ -192,12 +202,17 @@ class JoinClauseBuilder:
                         on_clause_builder = OnClauseBuilder(self._compiler)
                         join_builder_fn(on_clause_builder)
                         join_condition = f"ON {on_clause_builder}"
+                    elif not args and sql_join_type == "CROSS JOIN":
+                        # A cross join pairs every row with every row, so it
+                        # takes no condition.
+                        join_condition = ""
                     else:
                         raise ValueError(
                             "Invalid arguments for join method. Use `join(table, col1, op, col2)`, `join(table, lambda j: ...)`, or `join(table, using=['col1', 'col2'])`."
                         )
 
                     join_clause = f"{sql_join_type} {quoted_table} {join_condition}"
+                    join_clause = join_clause.rstrip()
                     self._joins.append(join_clause)
                     return self
 
