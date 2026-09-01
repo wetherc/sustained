@@ -213,6 +213,9 @@ class RecordingCursor:
     def fetchall(self):
         return []
 
+    def close(self):
+        pass
+
 
 class RecordingConnection:
     """A connection that counts commits and rollbacks."""

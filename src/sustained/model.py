@@ -455,10 +455,12 @@ class Model(metaclass=ModelMeta):
         Executes CREATE TABLE for this model on the connection, followed by
         the model's CREATE INDEX statements.
         """
-        from sustained.execution import connection_scope, open_cursor
+        from sustained.execution import connection_scope, cursor_scope
 
-        with connection_scope(connection, cls._connection) as conn:
-            cursor = open_cursor(conn)
+        with (
+            connection_scope(connection, cls._connection) as conn,
+            cursor_scope(conn) as cursor,
+        ):
             for statement in cls.create_table_statements(if_not_exists=if_not_exists):
                 cursor.execute(statement)
             _commit_unless_in_transaction(conn)
@@ -496,10 +498,12 @@ class Model(metaclass=ModelMeta):
         Executes DROP TABLE for this model on the connection, followed by
         DROP TYPE for its enum types on dialects that have them.
         """
-        from sustained.execution import connection_scope, open_cursor
+        from sustained.execution import connection_scope, cursor_scope
 
-        with connection_scope(connection, cls._connection) as conn:
-            cursor = open_cursor(conn)
+        with (
+            connection_scope(connection, cls._connection) as conn,
+            cursor_scope(conn) as cursor,
+        ):
             for statement in cls.drop_table_statements(if_exists=if_exists):
                 cursor.execute(statement)
             _commit_unless_in_transaction(conn)
