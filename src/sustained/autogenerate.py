@@ -61,6 +61,7 @@ from sustained.introspect import (
 from sustained.migrations import Migration
 from sustained.schema import (
     Check,
+    ColumnState,
     ForeignKey,
     bare_table_name,
     build_create_table_sql,
@@ -1068,14 +1069,33 @@ def autogenerate(
                 )
             if type_changed:
                 using = type_casts.get(f"{table}.{name}")
+                # A type change keeps the nullability the table has now.
+                # Tightening to NOT NULL is a separate step that runs
+                # after the backfill, and on MySQL and SQL Server the
+                # restated definition would otherwise apply it early.
                 up_steps.extend(
                     compiler.compile_alter_column_type(
-                        table_sql, name, expected_type, using
+                        table_sql,
+                        name,
+                        ColumnState.from_column(
+                            compiler,
+                            coldef,
+                            type_sql=expected_type,
+                            nullable=actual_col.nullable,
+                        ),
+                        using,
                     )
                 )
                 for statement in reversed(
                     compiler.compile_alter_column_type(
-                        table_sql, name, actual_col.raw_type
+                        table_sql,
+                        name,
+                        ColumnState.from_column(
+                            compiler,
+                            coldef,
+                            type_sql=actual_col.raw_type,
+                            nullable=actual_col.nullable,
+                        ),
                     )
                 ):
                     down_steps.insert(0, statement)
@@ -1101,12 +1121,23 @@ def autogenerate(
                     )
                 up_steps.extend(
                     compiler.compile_alter_column_nullability(
-                        table_sql, name, expected_type, coldef.nullable
+                        table_sql,
+                        name,
+                        ColumnState.from_column(
+                            compiler, coldef, type_sql=expected_type
+                        ),
                     )
                 )
                 for statement in reversed(
                     compiler.compile_alter_column_nullability(
-                        table_sql, name, expected_type, actual_col.nullable
+                        table_sql,
+                        name,
+                        ColumnState.from_column(
+                            compiler,
+                            coldef,
+                            type_sql=expected_type,
+                            nullable=actual_col.nullable,
+                        ),
                     )
                 ):
                     down_steps.insert(0, statement)
@@ -1160,7 +1191,9 @@ def autogenerate(
             )
             up_steps.extend(
                 compiler.compile_alter_column_nullability(
-                    table_sql, name, compiler.compile_column_type(coldef), False
+                    table_sql,
+                    name,
+                    ColumnState.from_column(compiler, coldef, nullable=False),
                 )
             )
             down_steps.insert(0, compiler.compile_drop_column(table_sql, name))

@@ -9,7 +9,15 @@ from sustained.autogenerate import autogenerate, diff_schema
 from sustained.dialects import Dialects
 from sustained.introspect import introspect_schema, normalize_default, normalize_type
 from sustained.model import Model
-from sustained.schema import Boolean, Integer, Json, String, Text, Timestamp
+from sustained.schema import (
+    BigInteger,
+    Boolean,
+    Integer,
+    Json,
+    String,
+    Text,
+    Timestamp,
+)
 
 
 class FakeCursor:
@@ -442,9 +450,44 @@ class TestMysqlDrift(unittest.TestCase):
         migration = autogenerate(
             FakeConnection(cursor), [model], id="shrink", dialect=Dialects.MYSQL
         )
-        self.assertEqual(migration.up, ["ALTER TABLE `users` MODIFY COLUMN `id` INT"])
         self.assertEqual(
-            migration.down, ["ALTER TABLE `users` MODIFY COLUMN `id` bigint"]
+            migration.up, ["ALTER TABLE `users` MODIFY COLUMN `id` INT NOT NULL"]
+        )
+        self.assertEqual(
+            migration.down, ["ALTER TABLE `users` MODIFY COLUMN `id` bigint NOT NULL"]
+        )
+
+    def test_a_type_change_keeps_the_default_and_the_comment(self):
+        cursor = self.catalog()
+        cursor.columns = [
+            ("users", "id", "int", "NO", None),
+            ("users", "rank", "int", "NO", None),
+        ]
+        cursor.comments = [("users", "rank", "seat order")]
+        model = make_model(
+            "MysqlRanked",
+            "users",
+            {
+                "id": Integer(primary_key=True),
+                "rank": BigInteger(nullable=False, default=1, comment="seat order"),
+            },
+        )
+        migration = autogenerate(
+            FakeConnection(cursor), [model], id="widen", dialect=Dialects.MYSQL
+        )
+        self.assertEqual(
+            migration.up,
+            [
+                "ALTER TABLE `users` MODIFY COLUMN `rank` BIGINT NOT NULL "
+                "DEFAULT 1 COMMENT 'seat order'"
+            ],
+        )
+        self.assertEqual(
+            migration.down,
+            [
+                "ALTER TABLE `users` MODIFY COLUMN `rank` int NOT NULL "
+                "DEFAULT 1 COMMENT 'seat order'"
+            ],
         )
 
 

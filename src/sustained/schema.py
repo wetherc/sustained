@@ -15,6 +15,7 @@ from typing import (
     Any,
     Dict,
     List,
+    NamedTuple,
     Optional,
     Sequence,
     Set,
@@ -26,6 +27,62 @@ from sustained.types import Expression, SqlValue
 
 if TYPE_CHECKING:
     from sustained.compilers.base import Compiler
+
+
+class ColumnState(NamedTuple):
+    """
+    The full state one column must hold after an ALTER statement runs.
+
+    MySQL and SQL Server restate a whole column definition to change one
+    part of it, and drop everything the statement leaves off. A type
+    change that carries only the type name therefore removes NOT NULL,
+    the default, the comment, and the identity property. The alter
+    methods take this record so those dialects can write them all back.
+
+    Attributes:
+        type_sql: The column type, already rendered for the dialect.
+        nullable: Whether the column accepts NULL after the statement.
+        default_sql: The DEFAULT value as SQL text, or None for no
+            default.
+        comment: The catalog comment, on dialects that store one.
+        autoincrement: Whether the column generates identity values.
+    """
+
+    type_sql: str
+    nullable: bool
+    default_sql: Optional[str] = None
+    comment: Optional[str] = None
+    autoincrement: bool = False
+
+    @classmethod
+    def from_column(
+        cls,
+        compiler: "Compiler",
+        column: "ColumnDef",
+        type_sql: Optional[str] = None,
+        nullable: Optional[bool] = None,
+    ) -> "ColumnState":
+        """
+        The state a declared column holds, rendered for one dialect.
+
+        `type_sql` and `nullable` override the declaration where a
+        statement changes one part at a time. A type change keeps the
+        nullability the table has today, because the change to NOT NULL
+        follows as its own step after the backfill.
+        """
+        return cls(
+            type_sql=(
+                compiler.compile_column_type(column) if type_sql is None else type_sql
+            ),
+            nullable=column.nullable if nullable is None else nullable,
+            default_sql=(
+                None
+                if column.default is None
+                else compiler.format_value(column.default)
+            ),
+            comment=column.comment if compiler.stores_column_comments() else None,
+            autoincrement=column.autoincrement,
+        )
 
 
 class ColumnDef:

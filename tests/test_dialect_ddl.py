@@ -12,7 +12,7 @@ from sustained.compilers.mysql import MysqlCompiler
 from sustained.compilers.postgres import PostgresCompiler
 from sustained.dialects import Dialects
 from sustained.exceptions import DialectError
-from sustained.schema import Enum
+from sustained.schema import ColumnState, Enum
 
 
 class TestPostgresAlter(unittest.TestCase):
@@ -21,17 +21,23 @@ class TestPostgresAlter(unittest.TestCase):
 
     def test_alter_type_with_using(self):
         self.assertEqual(
-            self.c.compile_alter_column_type('"t"', "n", "INTEGER", "n::integer"),
+            self.c.compile_alter_column_type(
+                '"t"', "n", ColumnState("INTEGER", True), "n::integer"
+            ),
             ['ALTER TABLE "t" ALTER COLUMN "n" TYPE INTEGER USING n::integer'],
         )
 
     def test_alter_nullability(self):
         self.assertEqual(
-            self.c.compile_alter_column_nullability('"t"', "n", "INTEGER", False),
+            self.c.compile_alter_column_nullability(
+                '"t"', "n", ColumnState("INTEGER", False)
+            ),
             ['ALTER TABLE "t" ALTER COLUMN "n" SET NOT NULL'],
         )
         self.assertEqual(
-            self.c.compile_alter_column_nullability('"t"', "n", "INTEGER", True),
+            self.c.compile_alter_column_nullability(
+                '"t"', "n", ColumnState("INTEGER", True)
+            ),
             ['ALTER TABLE "t" ALTER COLUMN "n" DROP NOT NULL'],
         )
 
@@ -53,13 +59,17 @@ class TestMssqlAlter(unittest.TestCase):
 
     def test_alter_type_restates_definition(self):
         self.assertEqual(
-            self.c.compile_alter_column_type("[t]", "n", "NVARCHAR(50)"),
-            ["ALTER TABLE [t] ALTER COLUMN [n] NVARCHAR(50)"],
+            self.c.compile_alter_column_type(
+                "[t]", "n", ColumnState("NVARCHAR(50)", True)
+            ),
+            ["ALTER TABLE [t] ALTER COLUMN [n] NVARCHAR(50) NULL"],
         )
 
     def test_alter_nullability_includes_type(self):
         self.assertEqual(
-            self.c.compile_alter_column_nullability("[t]", "n", "INT", False),
+            self.c.compile_alter_column_nullability(
+                "[t]", "n", ColumnState("INT", False)
+            ),
             ["ALTER TABLE [t] ALTER COLUMN [n] INT NOT NULL"],
         )
 
@@ -85,13 +95,15 @@ class TestDuckDbAlter(unittest.TestCase):
 
     def test_alter_type(self):
         self.assertEqual(
-            self.c.compile_alter_column_type('"t"', "n", "INTEGER"),
+            self.c.compile_alter_column_type('"t"', "n", ColumnState("INTEGER", True)),
             ['ALTER TABLE "t" ALTER COLUMN "n" SET DATA TYPE INTEGER'],
         )
 
     def test_alter_nullability(self):
         self.assertEqual(
-            self.c.compile_alter_column_nullability('"t"', "n", "INTEGER", False),
+            self.c.compile_alter_column_nullability(
+                '"t"', "n", ColumnState("INTEGER", False)
+            ),
             ['ALTER TABLE "t" ALTER COLUMN "n" SET NOT NULL'],
         )
 
@@ -206,9 +218,9 @@ class TestDefaultDialectAlter(unittest.TestCase):
         c = Compiler(Dialects.DEFAULT)
         self.assertFalse(c.supports_alter_column())
         with self.assertRaises(DialectError):
-            c.compile_alter_column_type("t", "n", "INTEGER")
+            c.compile_alter_column_type("t", "n", ColumnState("INTEGER", True))
         with self.assertRaises(DialectError):
-            c.compile_alter_column_nullability("t", "n", "INTEGER", False)
+            c.compile_alter_column_nullability("t", "n", ColumnState("INTEGER", False))
 
 
 if __name__ == "__main__":

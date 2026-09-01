@@ -10,6 +10,7 @@ from sustained.schema import (
     BigInteger,
     Binary,
     Boolean,
+    ColumnState,
     Float,
     Integer,
     Json,
@@ -218,18 +219,50 @@ class TestUnsupported(unittest.TestCase):
 class TestSchemaStatements(unittest.TestCase):
     def test_alter_column_type_uses_modify(self):
         self.assertEqual(
-            compiler().compile_alter_column_type("`t`", "c", "BIGINT"),
+            compiler().compile_alter_column_type(
+                "`t`", "c", ColumnState("BIGINT", True)
+            ),
             ["ALTER TABLE `t` MODIFY COLUMN `c` BIGINT"],
+        )
+
+    def test_alter_column_type_restates_every_column_property(self):
+        state = ColumnState(
+            "BIGINT",
+            nullable=False,
+            default_sql="7",
+            comment="how many",
+            autoincrement=True,
+        )
+        self.assertEqual(
+            compiler().compile_alter_column_type("`t`", "c", state),
+            [
+                "ALTER TABLE `t` MODIFY COLUMN `c` BIGINT NOT NULL DEFAULT 7 "
+                "AUTO_INCREMENT COMMENT 'how many'"
+            ],
         )
 
     def test_alter_nullability_restates_the_type(self):
         self.assertEqual(
-            compiler().compile_alter_column_nullability("`t`", "c", "INT", False),
+            compiler().compile_alter_column_nullability(
+                "`t`", "c", ColumnState("INT", False)
+            ),
             ["ALTER TABLE `t` MODIFY COLUMN `c` INT NOT NULL"],
         )
         self.assertEqual(
-            compiler().compile_alter_column_nullability("`t`", "c", "INT", True),
-            ["ALTER TABLE `t` MODIFY COLUMN `c` INT NULL"],
+            compiler().compile_alter_column_nullability(
+                "`t`", "c", ColumnState("INT", True)
+            ),
+            ["ALTER TABLE `t` MODIFY COLUMN `c` INT"],
+        )
+
+    def test_alter_nullability_keeps_the_default_and_comment(self):
+        state = ColumnState("INT", nullable=False, default_sql="'x'", comment="a note")
+        self.assertEqual(
+            compiler().compile_alter_column_nullability("`t`", "c", state),
+            [
+                "ALTER TABLE `t` MODIFY COLUMN `c` INT NOT NULL DEFAULT 'x' "
+                "COMMENT 'a note'"
+            ],
         )
 
     def test_drop_index_names_its_table(self):

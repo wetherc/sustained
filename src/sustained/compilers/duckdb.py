@@ -3,7 +3,7 @@ from typing import TYPE_CHECKING, Optional
 from .base import Compiler
 
 if TYPE_CHECKING:
-    from sustained.schema import ColumnDef
+    from sustained.schema import ColumnDef, ColumnState
 
 
 class DuckDbCompiler(Compiler):
@@ -53,24 +53,23 @@ class DuckDbCompiler(Compiler):
         self,
         table_sql: str,
         column_name: str,
-        type_sql: str,
+        column: "ColumnState",
         using: "str | None" = None,
     ) -> "list[str]":
         column_sql = self.quote_identifier(column_name)
         return [
             f"ALTER TABLE {table_sql} ALTER COLUMN {column_sql} "
-            f"SET DATA TYPE {type_sql}"
+            f"SET DATA TYPE {column.type_sql}"
         ]
 
     def compile_alter_column_nullability(
         self,
         table_sql: str,
         column_name: str,
-        type_sql: str,
-        nullable: bool,
+        column: "ColumnState",
     ) -> "list[str]":
         column_sql = self.quote_identifier(column_name)
-        action = "DROP NOT NULL" if nullable else "SET NOT NULL"
+        action = "DROP NOT NULL" if column.nullable else "SET NOT NULL"
         return [f"ALTER TABLE {table_sql} ALTER COLUMN {column_sql} {action}"]
 
     def compile_backfill(

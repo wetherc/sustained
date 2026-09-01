@@ -29,7 +29,7 @@ from sustained.exceptions import DialectError
 from .presto import PrestoCompiler
 
 if TYPE_CHECKING:
-    from sustained.schema import ColumnDef, TableOptions
+    from sustained.schema import ColumnDef, ColumnState, TableOptions
     from sustained.types import SqlValue
 
 
@@ -293,7 +293,7 @@ class AthenaCompiler(PrestoCompiler):
         self,
         table_sql: str,
         column_name: str,
-        type_sql: str,
+        column: "ColumnState",
         using: Optional[str] = None,
     ) -> "list[str]":
         # Iceberg tables allow widening type changes: int to bigint, float
@@ -304,14 +304,16 @@ class AthenaCompiler(PrestoCompiler):
                 "Remove the type_casts hint."
             )
         quoted = self.quote_ddl_identifier(column_name)
-        return [f"ALTER TABLE {table_sql} CHANGE COLUMN {quoted} {quoted} {type_sql}"]
+        return [
+            f"ALTER TABLE {table_sql} CHANGE COLUMN {quoted} {quoted} "
+            f"{column.type_sql}"
+        ]
 
     def compile_alter_column_nullability(
         self,
         table_sql: str,
         column_name: str,
-        type_sql: str,
-        nullable: bool,
+        column: "ColumnState",
     ) -> "list[str]":
         raise DialectError(
             "Athena columns are always nullable; nullability cannot change."

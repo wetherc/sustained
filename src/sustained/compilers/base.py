@@ -14,7 +14,7 @@ from sustained.types import Expression, SqlValue
 
 if TYPE_CHECKING:
     from sustained.dialects import Dialects
-    from sustained.schema import ColumnDef, TableOptions
+    from sustained.schema import ColumnDef, ColumnState, TableOptions
     from sustained.types import CaseResult
 
 
@@ -649,10 +649,14 @@ class Compiler:
         self,
         table_sql: str,
         column_name: str,
-        type_sql: str,
+        column: "ColumnState",
         using: Optional[str] = None,
     ) -> "list[str]":
-        """Renders statements that change a column's type."""
+        """
+        Renders statements that change a column's type. `column` carries
+        the whole state the column holds afterwards, because MySQL and
+        SQL Server restate the definition and drop what it leaves off.
+        """
         from sustained.exceptions import DialectError
 
         raise DialectError(
@@ -664,10 +668,13 @@ class Compiler:
         self,
         table_sql: str,
         column_name: str,
-        type_sql: str,
-        nullable: bool,
+        column: "ColumnState",
     ) -> "list[str]":
-        """Renders statements that change a column's nullability."""
+        """
+        Renders statements that change a column's nullability. `column`
+        carries the whole state the column holds afterwards, including
+        the nullability the statement sets.
+        """
         from sustained.exceptions import DialectError
 
         raise DialectError(

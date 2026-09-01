@@ -1,8 +1,11 @@
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from sustained.exceptions import DialectError
 
 from .base import Compiler
+
+if TYPE_CHECKING:
+    from sustained.schema import ColumnState
 
 
 class MssqlCompiler(Compiler):
@@ -114,30 +117,41 @@ class MssqlCompiler(Compiler):
     def supports_alter_column(self) -> bool:
         return True
 
+    def _alter_column_sql(
+        self, table_sql: str, column_name: str, state: "ColumnState"
+    ) -> str:
+        """
+        The ALTER COLUMN statement that restates one column.
+
+        ALTER COLUMN takes the type and the nullability together. Left
+        off, the nullability follows the ANSI_NULL_DFLT setting of the
+        session, which turns a NOT NULL column nullable without saying
+        so. A default lives in its own constraint here and survives the
+        statement, and SQL Server keeps no column comments.
+        """
+        column_sql = self.quote_identifier(column_name)
+        null_sql = "NULL" if state.nullable else "NOT NULL"
+        return (
+            f"ALTER TABLE {table_sql} ALTER COLUMN {column_sql} "
+            f"{state.type_sql} {null_sql}"
+        )
+
     def compile_alter_column_type(
         self,
         table_sql: str,
         column_name: str,
-        type_sql: str,
+        column: "ColumnState",
         using: "str | None" = None,
     ) -> "list[str]":
-        column_sql = self.quote_identifier(column_name)
-        return [f"ALTER TABLE {table_sql} ALTER COLUMN {column_sql} {type_sql}"]
+        return [self._alter_column_sql(table_sql, column_name, column)]
 
     def compile_alter_column_nullability(
         self,
         table_sql: str,
         column_name: str,
-        type_sql: str,
-        nullable: bool,
+        column: "ColumnState",
     ) -> "list[str]":
-        # T-SQL restates the full column definition.
-        column_sql = self.quote_identifier(column_name)
-        null_sql = "NULL" if nullable else "NOT NULL"
-        return [
-            f"ALTER TABLE {table_sql} ALTER COLUMN {column_sql} "
-            f"{type_sql} {null_sql}"
-        ]
+        return [self._alter_column_sql(table_sql, column_name, column)]
 
     def compile_with_keyword(self, recursive: bool) -> str:
         # T-SQL uses plain WITH for recursive CTEs.

@@ -6,7 +6,7 @@ from sustained.types import SqlValue
 from .base import Compiler
 
 if TYPE_CHECKING:
-    from sustained.schema import ColumnDef
+    from sustained.schema import ColumnDef, ColumnState
 
 # MySQL has no way to say "every row from here on". The manual's own
 # recipe for an offset without a limit is to ask for the largest row
@@ -84,6 +84,26 @@ class MysqlCompiler(Compiler):
         # standalone COMMENT statement.
         return True
 
+    def _modify_column_sql(self, column_name: str, state: "ColumnState") -> str:
+        """
+        The MODIFY COLUMN clause that restates one whole column.
+
+        MySQL drops every part the statement leaves off, so nullability,
+        default, identity, and comment come back each time. UNIQUE is
+        restated nowhere on purpose: MODIFY with a UNIQUE clause adds a
+        second index every time it runs.
+        """
+        parts = [self.quote_identifier(column_name), state.type_sql]
+        if not state.nullable:
+            parts.append("NOT NULL")
+        if state.default_sql is not None:
+            parts.append(f"DEFAULT {state.default_sql}")
+        if state.autoincrement:
+            parts.append("AUTO_INCREMENT")
+        if state.comment is not None:
+            parts.append(f"COMMENT {self.format_value(state.comment)}")
+        return " ".join(parts)
+
     def compile_set_column_comment(
         self,
         table_sql: str,
@@ -91,26 +111,21 @@ class MysqlCompiler(Compiler):
         comment: Optional[str],
         column: Optional["ColumnDef"] = None,
     ) -> "list[str]":
-        # MODIFY COLUMN restates the whole definition, and anything left
-        # off is dropped with it, so the column's own declaration must
-        # come along. UNIQUE is restated nowhere here on purpose: MODIFY
-        # with a UNIQUE clause adds a second index each time it runs.
+        # The comment rides inside the column definition, so the column's
+        # own declaration must come along to survive the restatement.
+        from sustained.schema import ColumnState
+
         if column is None:
             raise DialectError(
                 "MySQL sets a column comment by restating the column with "
                 "MODIFY COLUMN. Pass the ColumnDef as column=... so the "
                 "type, nullability, and default survive the restatement."
             )
-        parts = [self.quote_identifier(column_name), self.compile_column_type(column)]
-        if not column.nullable:
-            parts.append("NOT NULL")
-        if column.default is not None:
-            parts.append(f"DEFAULT {self.format_value(column.default)}")
-        if column.autoincrement:
-            parts.append("AUTO_INCREMENT")
-        if comment is not None:
-            parts.append(f"COMMENT {self.format_value(comment)}")
-        return [f"ALTER TABLE {table_sql} MODIFY COLUMN {' '.join(parts)}"]
+        state = ColumnState.from_column(self, column)._replace(comment=comment)
+        return [
+            f"ALTER TABLE {table_sql} MODIFY COLUMN "
+            f"{self._modify_column_sql(column_name, state)}"
+        ]
 
     def enum_strategy(self) -> str:
         # The value list is part of the column type; there is no separate
@@ -220,26 +235,23 @@ class MysqlCompiler(Compiler):
         self,
         table_sql: str,
         column_name: str,
-        type_sql: str,
+        column: "ColumnState",
         using: Optional[str] = None,
     ) -> "list[str]":
-        column_sql = self.quote_identifier(column_name)
-        return [f"ALTER TABLE {table_sql} MODIFY COLUMN {column_sql} {type_sql}"]
+        return [
+            f"ALTER TABLE {table_sql} MODIFY COLUMN "
+            f"{self._modify_column_sql(column_name, column)}"
+        ]
 
     def compile_alter_column_nullability(
         self,
         table_sql: str,
         column_name: str,
-        type_sql: str,
-        nullable: bool,
+        column: "ColumnState",
     ) -> "list[str]":
-        # MODIFY restates the whole definition, so the type comes back with
-        # the nullability or the column silently becomes nullable.
-        column_sql = self.quote_identifier(column_name)
-        null_sql = "NULL" if nullable else "NOT NULL"
         return [
-            f"ALTER TABLE {table_sql} MODIFY COLUMN {column_sql} "
-            f"{type_sql} {null_sql}"
+            f"ALTER TABLE {table_sql} MODIFY COLUMN "
+            f"{self._modify_column_sql(column_name, column)}"
         ]
 
     def supports_transactional_ddl(self) -> bool:

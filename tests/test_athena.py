@@ -8,6 +8,7 @@ from sustained.exceptions import DialectError
 from sustained.migrations import Migration, Migrator
 from sustained.schema import (
     Boolean,
+    ColumnState,
     Date,
     Float,
     Index,
@@ -316,16 +317,22 @@ class TestAthenaDdl(unittest.TestCase):
         self.assertEqual(sql, 'ALTER TABLE "t" ADD COLUMNS ("x" STRING)')
 
     def test_alter_column_type_uses_change_column(self):
-        steps = self.compiler.compile_alter_column_type("`t`", "c", "BIGINT")
+        steps = self.compiler.compile_alter_column_type(
+            "`t`", "c", ColumnState("BIGINT", True)
+        )
         self.assertEqual(steps, ["ALTER TABLE `t` CHANGE COLUMN `c` `c` BIGINT"])
 
     def test_alter_column_type_rejects_using(self):
         with self.assertRaises(DialectError):
-            self.compiler.compile_alter_column_type('"t"', "c", "BIGINT", using="x")
+            self.compiler.compile_alter_column_type(
+                '"t"', "c", ColumnState("BIGINT", True), using="x"
+            )
 
     def test_alter_nullability_raises(self):
         with self.assertRaises(DialectError):
-            self.compiler.compile_alter_column_nullability('"t"', "c", "BIGINT", True)
+            self.compiler.compile_alter_column_nullability(
+                '"t"', "c", ColumnState("BIGINT", True)
+            )
 
     def test_rename_column_raises(self):
         with self.assertRaises(DialectError):

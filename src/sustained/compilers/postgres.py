@@ -3,7 +3,7 @@ from typing import TYPE_CHECKING, Optional
 from .base import Compiler
 
 if TYPE_CHECKING:
-    from sustained.schema import ColumnDef
+    from sustained.schema import ColumnDef, ColumnState
 
 
 class PostgresCompiler(Compiler):
@@ -71,11 +71,14 @@ class PostgresCompiler(Compiler):
         self,
         table_sql: str,
         column_name: str,
-        type_sql: str,
+        column: "ColumnState",
         using: "str | None" = None,
     ) -> "list[str]":
         column_sql = self.quote_identifier(column_name)
-        statement = f"ALTER TABLE {table_sql} ALTER COLUMN {column_sql} TYPE {type_sql}"
+        statement = (
+            f"ALTER TABLE {table_sql} ALTER COLUMN {column_sql} "
+            f"TYPE {column.type_sql}"
+        )
         if using:
             statement += f" USING {using}"
         return [statement]
@@ -84,11 +87,10 @@ class PostgresCompiler(Compiler):
         self,
         table_sql: str,
         column_name: str,
-        type_sql: str,
-        nullable: bool,
+        column: "ColumnState",
     ) -> "list[str]":
         column_sql = self.quote_identifier(column_name)
-        action = "DROP NOT NULL" if nullable else "SET NOT NULL"
+        action = "DROP NOT NULL" if column.nullable else "SET NOT NULL"
         return [f"ALTER TABLE {table_sql} ALTER COLUMN {column_sql} {action}"]
 
     def compile_locking(self, skip_locked: bool, nowait: bool) -> str:
