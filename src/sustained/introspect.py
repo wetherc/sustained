@@ -419,6 +419,18 @@ def _sqlite_fk_names(create_sql: str) -> Dict[Tuple[str, ...], str]:
     return names
 
 
+def _sqlite_quote(name: str) -> str:
+    """
+    Quotes a name for a SQLite PRAGMA.
+
+    A table or index name can legally hold a space or a double quote, and a
+    PRAGMA takes the name as SQL, not as a parameter. The name is wrapped in
+    double quotes with any inner quote doubled.
+    """
+    escaped = name.replace('"', '""')
+    return f'"{escaped}"'
+
+
 def _sqlite_plan() -> SchemaPlan:
     rows = yield (
         "SELECT name, sql FROM sqlite_master WHERE type = 'table' "
@@ -430,7 +442,7 @@ def _sqlite_plan() -> SchemaPlan:
         columns: Dict[str, IntrospectedColumn] = {}
         primary_key: List[str] = []
         for _, name, raw_type, notnull, default, pk in (
-            yield f"PRAGMA table_info({table})"
+            yield f"PRAGMA table_info({_sqlite_quote(table)})"
         ):
             columns[name.lower()] = IntrospectedColumn(
                 raw_type=raw_type or "",
@@ -442,7 +454,7 @@ def _sqlite_plan() -> SchemaPlan:
                 primary_key.append(name.lower())
 
         fk_rows = sorted(
-            (yield f"PRAGMA foreign_key_list({table})"),
+            (yield f"PRAGMA foreign_key_list({_sqlite_quote(table)})"),
             key=lambda row: (row[0], row[1]),
         )
         rows_by_key: Dict[int, List[Sequence[RowValue]]] = {}
@@ -466,12 +478,12 @@ def _sqlite_plan() -> SchemaPlan:
             )
 
         indexes: Dict[str, IntrospectedIndex] = {}
-        index_rows = yield f"PRAGMA index_list({table})"
+        index_rows = yield f"PRAGMA index_list({_sqlite_quote(table)})"
         for row in index_rows:
             index_name, unique, origin = row[1], bool(row[2]), row[3]
             if origin == "pk":
                 continue
-            info = yield f"PRAGMA index_info({index_name})"
+            info = yield f"PRAGMA index_info({_sqlite_quote(index_name)})"
             names = [r[2] for r in info]
             if any(name is None for name in names):
                 # An expression index reports NULL column names. It cannot

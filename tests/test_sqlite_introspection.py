@@ -137,5 +137,30 @@ class TestSqliteChecks(unittest.TestCase):
         self.assertEqual(schema.enum_types, {})
 
 
+class TestSqlitePragmaQuoting(unittest.TestCase):
+    """
+    A SQLite name can hold a space or a double quote, and a PRAGMA takes
+    the name as SQL. The reader quotes it.
+    """
+
+    def setUp(self):
+        self.conn = sqlite3.connect(":memory:")
+
+    def tearDown(self):
+        self.conn.close()
+
+    def test_a_name_with_a_space_is_read(self):
+        self.conn.execute('CREATE TABLE "show dates" (id INTEGER PRIMARY KEY)')
+        self.conn.execute('CREATE INDEX "date index" ON "show dates" (id)')
+        schema = introspect_schema(self.conn)
+        self.assertIn("id", schema["show dates"].columns)
+        self.assertIn("date index", schema["show dates"].indexes)
+
+    def test_a_name_with_a_quote_is_read(self):
+        self.conn.execute('CREATE TABLE "o""clock" (id INTEGER PRIMARY KEY)')
+        schema = introspect_schema(self.conn)
+        self.assertIn("id", schema['o"clock'].columns)
+
+
 if __name__ == "__main__":
     unittest.main()
