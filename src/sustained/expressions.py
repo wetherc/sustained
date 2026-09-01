@@ -378,22 +378,16 @@ class CaseExpression:
         """
         Renders the CASE expression as a SQL string.
 
+        The rendering comes from the default dialect's compiler, which is
+        the same code the query compiler runs. Result values are escaped
+        in one place, so a result that holds a quote renders correctly
+        wherever the expression appears.
+
         Returns:
             The SQL string representation.
         """
-        sql = "CASE"
-        for condition, result in self._whens:
-            sql += f" WHEN {condition} THEN {self._format_result(result)}"
+        # Late import to avoid a circular dependency: the compilers import
+        # this module.
+        from .dialects import Dialects
 
-        sql += f" ELSE {self._format_result(self.else_result)} END AS {self.alias}"
-        return sql
-
-    def _format_result(self, result: "CaseResult") -> str:
-        """
-        Formats a result value for inclusion in the SQL string.
-        """
-        if isinstance(result, Column):
-            return str(result)
-        if isinstance(result, str):
-            return f"'{result}'"
-        return str(result)
+        return Dialects.get_compiler(Dialects.DEFAULT).compile_case(self)

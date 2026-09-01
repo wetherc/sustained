@@ -5,6 +5,7 @@ Tests for the SQL expression classes.
 import unittest
 
 from sustained.builder import QueryBuilder
+from sustained.dialects import Dialects
 from sustained.expressions import (
     AggregateExpression,
     CaseExpression,
@@ -141,6 +142,35 @@ class TestCaseExpression(unittest.TestCase):
             str(case),
             "CASE WHEN promotion_active = TRUE THEN discounted_price ELSE price END AS final_price",
         )
+
+    def test_case_expression_escapes_a_quote_in_a_result(self) -> None:
+        """
+        A result holding a single quote is escaped, so the string form
+        matches what the compiler produces.
+        """
+        case = CaseExpression("owner", "O'Brien").when("id = 1", "D'Arcy")
+        self.assertEqual(
+            str(case),
+            "CASE WHEN id = 1 THEN 'D''Arcy' ELSE 'O''Brien' END AS owner",
+        )
+
+    def test_case_expression_nested_in_a_function_escapes(self) -> None:
+        """
+        A CASE passed as a function argument renders through the same
+        escaping as a CASE in the select list.
+        """
+        case = CaseExpression("owner", "O'Brien").when("id = 1", "D'Arcy")
+        compiler = Dialects.get_compiler(Dialects.DEFAULT)
+        self.assertIn("'O''Brien'", compiler.compile_function(Func("UPPER", case)))
+
+    def test_case_expression_refuses_a_non_identifier_alias(self) -> None:
+        """
+        The alias goes through the compiler's alias check, so it cannot
+        carry SQL of its own.
+        """
+        case = CaseExpression('x") AS evil--', "a")
+        with self.assertRaises(ValueError):
+            str(case)
 
 
 class TestSubqueryExpression(unittest.TestCase):
