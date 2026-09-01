@@ -9,7 +9,13 @@ import unittest
 from sustained import Model
 from sustained.dialects import Dialects
 from sustained.exceptions import DialectError
-from sustained.execution import in_transaction, set_statement_listener, transaction
+from sustained.execution import (
+    in_transaction,
+    open_cursor,
+    pinned_transaction,
+    set_statement_listener,
+    transaction,
+)
 
 
 class TxUser(Model):
@@ -161,6 +167,37 @@ class TestSavepointDepth(TransactionTestCase):
                 "RELEASE SAVEPOINT sustained_sp_1",
             ],
         )
+
+
+class TestPinnedTransaction(unittest.TestCase):
+    """
+    The block a rehearsal opens: registered like any transaction, ended by
+    the caller.
+    """
+
+    def test_statements_inside_the_block_share_its_cursor(self):
+        conn = RefusingConnection()
+        with pinned_transaction(conn, Dialects.DUCKDB) as cursor:
+            self.assertTrue(in_transaction(conn))
+            self.assertIs(cursor, open_cursor(conn))
+        self.assertFalse(in_transaction(conn))
+        self.assertIsNot(cursor, open_cursor(conn))
+        self.assertEqual(conn.statements, ["BEGIN"])
+
+    def test_the_block_ends_nothing_by_itself(self):
+        conn = RefusingConnection()
+        with self.assertRaises(RuntimeError):
+            with pinned_transaction(conn, Dialects.DUCKDB):
+                raise RuntimeError("boom")
+        self.assertEqual(conn.statements, ["BEGIN"])
+        self.assertFalse(in_transaction(conn))
+
+    def test_a_second_block_on_the_same_connection_is_refused(self):
+        conn = RefusingConnection()
+        with pinned_transaction(conn, Dialects.DUCKDB):
+            with self.assertRaises(ValueError):
+                with pinned_transaction(conn, Dialects.DUCKDB):
+                    pass
 
 
 class TestSavepointSpelling(unittest.TestCase):

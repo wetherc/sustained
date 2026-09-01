@@ -172,6 +172,45 @@ def open_cursor(connection: Connection) -> Cursor:
 
 
 @contextmanager
+def pinned_transaction(connection: Connection, dialect: "Dialects") -> Iterator[Cursor]:
+    """
+    Opens a transaction the caller ends itself, and pins its cursor for the
+    length of the block.
+
+    transaction() decides the end of its block: commit when it finishes,
+    rollback when it raises. A rehearsal decides for itself, because it
+    keeps reading the schema after its down sweep and rolls back only when
+    every proof is collected. It gets the rest of the machinery: the block
+    is registered, so open_cursor() hands out this cursor to every
+    statement inside it, and in_transaction() reports the connection busy.
+    On DuckDB, where each cursor is its own session, that is what keeps the
+    rehearsed statements in the transaction that rolls back.
+
+    The transaction opens in SQL through the compiler, not through the
+    driver's own call, matching the way a rehearsal takes itself back. The
+    cursor is yielded so the caller can end the block on it.
+
+    Raises:
+        ValueError: If a transaction is already open on the connection.
+    """
+    from sustained.dialects import Dialects
+
+    key = id(connection)
+    if key in _ACTIVE_TRANSACTIONS:
+        raise ValueError("a transaction is already open on this connection")
+    compiler = Dialects.get_compiler(dialect)
+    cursor = connection.cursor()
+    begin_sql = compiler.begin_transaction_sql()
+    if begin_sql is not None:
+        cursor.execute(begin_sql)
+    _ACTIVE_TRANSACTIONS[key] = (connection, 0, cursor)
+    try:
+        yield cursor
+    finally:
+        del _ACTIVE_TRANSACTIONS[key]
+
+
+@contextmanager
 def transaction(
     connection: Binding, dialect: "Dialects | None" = None
 ) -> Iterator[Connection]:

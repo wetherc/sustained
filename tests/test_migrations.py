@@ -1421,5 +1421,65 @@ class TestDuckdbMigrationRollback(unittest.TestCase):
         self.assertEqual([("001_bad", "pending")], migrator.statuses())
 
 
+@unittest.skipUnless(HAS_DUCKDB, "duckdb not installed")
+class TestDuckdbRehearsalRollback(unittest.TestCase):
+    """
+    A rehearsal on DuckDB must take its own statements back. Its
+    transaction lives on one cursor, and every rehearsed statement runs on
+    that cursor, so the rollback reaches all of them.
+    """
+
+    def tables(self, conn):
+        rows = (
+            conn.cursor()
+            .execute("SELECT table_name FROM information_schema.tables")
+            .fetchall()
+        )
+        return {row[0] for row in rows}
+
+    def test_a_passing_rehearsal_leaves_no_schema_behind(self):
+        conn = duckdb.connect(":memory:")
+        migration = Migration(
+            "001_ducks",
+            up="CREATE TABLE duck_rehearsal (id INTEGER)",
+            down="DROP TABLE duck_rehearsal",
+        )
+        migrator = Migrator(conn, [migration], dialect=Dialects.DUCKDB)
+        results = migrator.rehearse()
+        self.assertEqual([(r.up_ok, r.down_ok) for r in results], [(True, True)])
+        self.assertNotIn("duck_rehearsal", self.tables(conn))
+        self.assertEqual([], migrator.applied_records())
+
+    def test_a_failed_down_step_still_takes_the_up_ddl_back(self):
+        conn = duckdb.connect(":memory:")
+        migration = Migration(
+            "001_ducks",
+            up="CREATE TABLE duck_rehearsal (id INTEGER)",
+            down="DROP TABLE duck_missing",
+        )
+        migrator = Migrator(conn, [migration], dialect=Dialects.DUCKDB)
+        results = migrator.rehearse()
+        self.assertEqual([(r.up_ok, r.down_ok) for r in results], [(True, False)])
+        self.assertNotIn("duck_rehearsal", self.tables(conn))
+        self.assertEqual(
+            REHEARSAL_FAILED,
+            migrator.rehearsal_outcome(rehearsal_key([], [migration])),
+        )
+
+    def test_the_rehearsal_reads_the_schema_it_just_changed(self):
+        """
+        The snapshot comparison and the models diff both introspect inside
+        the rehearsal, so the read must share the transaction's cursor.
+        """
+        conn = duckdb.connect(":memory:")
+        migration = Migration(
+            "001_ducks",
+            up="CREATE TABLE duck_rehearsal (id INTEGER)",
+            down="DROP TABLE duck_rehearsal",
+        )
+        rehearsal = Migrator(conn, [migration], dialect=Dialects.DUCKDB).rehearse()
+        self.assertEqual([], rehearsal[0].reversed)
+
+
 if __name__ == "__main__":
     unittest.main()

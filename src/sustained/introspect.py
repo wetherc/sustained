@@ -30,6 +30,7 @@ from typing import (
 )
 
 from sustained.dialects import Dialects
+from sustained.execution import open_cursor
 from sustained.types import Connection, RowValue
 
 if TYPE_CHECKING:
@@ -282,7 +283,10 @@ def introspect_schema(
     views are unavailable. Names are keyed lowercase.
     """
     plan = _schema_plan(dialect)
-    cursor = connection.cursor()
+    # An open transaction reads on its own cursor: a rehearsal introspects
+    # a schema its uncommitted statements just changed, and on DuckDB a
+    # fresh cursor is a separate session that cannot see it.
+    cursor = open_cursor(connection)
 
     def run(sql: str) -> List[Sequence[RowValue]]:
         cursor.execute(sql)

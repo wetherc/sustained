@@ -51,7 +51,7 @@ from typing import (
 
 from sustained.ddl import DdlStep
 from sustained.dialects import Dialects
-from sustained.execution import open_cursor, transaction
+from sustained.execution import open_cursor, pinned_transaction, transaction
 from sustained.types import Connection, Cursor, SqlValue
 
 if TYPE_CHECKING:
@@ -1824,79 +1824,84 @@ class Migrator:
             # generated migration once the diff produces one.
             attempted: List[Migration] = list(pending)
             has_drift = False
+            # Close whatever transaction the reads above opened, so the
+            # rehearsal's BEGIN starts a fresh one instead of warning.
+            self._rollback_quietly()
             self._rehearsing = True
-            try:
-                # Close whatever transaction the reads above opened, so the
-                # explicit BEGIN starts a fresh one instead of warning.
-                self._rollback_quietly()
-                begin = self._compiler.begin_transaction_sql()
-                if begin is not None:
-                    self._connection.cursor().execute(begin)
-                ran: List[Migration] = []
-                up_error: Optional[Tuple[str, str]] = None
+            # The rehearsal's statements share this transaction's cursor,
+            # so on an engine that gives every cursor its own session they
+            # land in the transaction the rollback below takes back.
+            with pinned_transaction(self._connection, self._dialect):
+                try:
+                    ran: List[Migration] = []
+                    up_error: Optional[Tuple[str, str]] = None
 
-                def apply_each(group: List[Migration]) -> None:
-                    nonlocal seq, up_error
-                    for migration in group:
-                        try:
-                            self._apply(migration, seq, update=migration.id in records)
-                        except Exception as error:
-                            up_error = (migration.id, str(error))
-                            return
-                        seq += 1
-                        ran.append(migration)
-
-                # The order matches up(): the versioned migrations, then
-                # the generated one, then the repeatables, which may read
-                # objects the generated migration creates.
-                apply_each([m for m in pending if not m.repeatable])
-                landed: Dict[str, List[str]] = {}
-                if models is not None and up_error is None:
-                    # The diff is taken here, inside the rehearsal, so it
-                    # sees the schema the pending migrations just left. The
-                    # generated migration joins the run without being
-                    # registered: nothing outside the rehearsal should see a
-                    # migration the rollback is about to take back.
-                    drift = self.plan(
-                        models,
-                        allow_drops=allow_drops,
-                        ignore_changed_columns=ignore_changed_columns,
-                        migration_id=migration_id,
-                        renames=renames,
-                        table_renames=table_renames,
-                        type_casts=type_casts,
-                    )
-                    if drift is not None:
-                        attempted.append(drift)
-                        has_drift = True
-                        try:
-                            self._apply(drift, seq, update=False, generated=True)
-                        except Exception as error:
-                            up_error = (drift.id, str(error))
-                        else:
+                    def apply_each(group: List[Migration]) -> None:
+                        nonlocal seq, up_error
+                        for migration in group:
+                            try:
+                                self._apply(
+                                    migration, seq, update=migration.id in records
+                                )
+                            except Exception as error:
+                                up_error = (migration.id, str(error))
+                                return
                             seq += 1
-                            ran.append(drift)
-                            # The renames have already run, so the schema
-                            # holds the new names. Passing the hints again
-                            # would ask to rename objects that are gone.
-                            landed[drift.id] = self.drift(
-                                models,
-                                ignore_changed_columns=ignore_changed_columns,
-                            )
-                if up_error is None:
-                    apply_each([m for m in pending if m.repeatable])
-                outcomes = {} if up_error else self._rehearse_down(ran)
-                reverted = None
-                if before is not None and _reversal_provable(ran, outcomes):
-                    from sustained.autogenerate import diff_snapshots
+                            ran.append(migration)
 
-                    after = self._snapshot()
-                    if after is not None:
-                        reverted = diff_snapshots(before, after)
-                results = _rehearsal_results(ran, up_error, outcomes, landed, reverted)
-            finally:
-                self._rehearsing = False
-                self._roll_back_rehearsal()
+                    # The order matches up(): the versioned migrations, then
+                    # the generated one, then the repeatables, which may read
+                    # objects the generated migration creates.
+                    apply_each([m for m in pending if not m.repeatable])
+                    landed: Dict[str, List[str]] = {}
+                    if models is not None and up_error is None:
+                        # The diff is taken here, inside the rehearsal, so it
+                        # sees the schema the pending migrations just left. The
+                        # generated migration joins the run without being
+                        # registered: nothing outside the rehearsal should see a
+                        # migration the rollback is about to take back.
+                        drift = self.plan(
+                            models,
+                            allow_drops=allow_drops,
+                            ignore_changed_columns=ignore_changed_columns,
+                            migration_id=migration_id,
+                            renames=renames,
+                            table_renames=table_renames,
+                            type_casts=type_casts,
+                        )
+                        if drift is not None:
+                            attempted.append(drift)
+                            has_drift = True
+                            try:
+                                self._apply(drift, seq, update=False, generated=True)
+                            except Exception as error:
+                                up_error = (drift.id, str(error))
+                            else:
+                                seq += 1
+                                ran.append(drift)
+                                # The renames have already run, so the schema
+                                # holds the new names. Passing the hints again
+                                # would ask to rename objects that are gone.
+                                landed[drift.id] = self.drift(
+                                    models,
+                                    ignore_changed_columns=ignore_changed_columns,
+                                )
+                    if up_error is None:
+                        apply_each([m for m in pending if m.repeatable])
+                    outcomes = {} if up_error else self._rehearse_down(ran)
+                    reverted = None
+                    if before is not None and _reversal_provable(ran, outcomes):
+                        from sustained.autogenerate import diff_snapshots
+
+                        after = self._snapshot()
+                        if after is not None:
+                            reverted = diff_snapshots(before, after)
+                    results = _rehearsal_results(
+                        ran, up_error, outcomes, landed, reverted
+                    )
+                finally:
+                    self._rehearsing = False
+                    self._roll_back_rehearsal()
             # The rehearsal row is written after the rollback, in its own
             # committed transaction, and still inside the lock: everything
             # the rehearsal itself wrote has just been taken back.
@@ -1977,14 +1982,15 @@ class Migrator:
     def _roll_back_rehearsal(self) -> None:
         """
         Takes back everything the rehearsal did. The statement runs first,
-        because a driver's own rollback() call does nothing on connections
-        that never opened a transaction of their own; the driver call
-        follows to leave its bookkeeping straight.
+        on the rehearsal's own cursor, because a driver's own rollback()
+        call does nothing on connections that never opened a transaction of
+        their own; the driver call follows to leave its bookkeeping
+        straight.
         """
         statement = self._compiler.rollback_transaction_sql()
         if statement is not None:
             try:
-                self._connection.cursor().execute(statement)
+                open_cursor(self._connection).execute(statement)
             except Exception:
                 pass
         self._rollback_quietly()
