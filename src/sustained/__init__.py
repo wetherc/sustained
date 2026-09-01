@@ -12,6 +12,7 @@ in a more programmatic and reusable way. The main components are:
 
 from sustained.builder import QueryBuilder
 from sustained.exceptions import (
+    AmbiguousColumns,
     DialectError,
     GuardBlocked,
     MigrationError,
@@ -46,6 +47,7 @@ from sustained.types import (
 
 __all__ = [
     # from exceptions
+    "AmbiguousColumns",
     "DialectError",
     "GuardBlocked",
     "MigrationError",

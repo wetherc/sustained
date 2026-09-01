@@ -22,6 +22,24 @@ class DialectError(SustainedError):
     pass
 
 
+class AmbiguousColumns(SustainedError):
+    """
+    Raised when a result set repeats a column name. `columns` holds the
+    repeated names, in the order the result set returned them.
+    """
+
+    def __init__(self, columns: Sequence[str]) -> None:
+        self.columns = list(columns)
+        names = ", ".join(repr(c) for c in self.columns)
+        super().__init__(
+            f"This result set returns {names} more than once, usually from a "
+            "join over tables that share a column name. A row keeps one "
+            "value per name, so the others would be lost. Alias them in "
+            "select(), such as select('users.id AS user_id', "
+            "'accounts.id AS account_id')."
+        )
+
+
 class RehearsalRequired(SustainedError):
     """
     Raised when a run would apply SQL that removes data and no passing

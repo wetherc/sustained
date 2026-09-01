@@ -10,6 +10,7 @@ Every exception Sustained raises, and the condition behind it.
 ```
 Exception
 ├── SustainedError              sustained.exceptions
+│   ├── AmbiguousColumns
 │   ├── DialectError
 │   ├── GuardBlocked
 │   ├── MigrationError
@@ -24,6 +25,17 @@ Exception
 `SustainedError` is the base class for the errors Sustained defines itself. `PoolTimeout` sits outside that tree, on `RuntimeError`, so an `except RuntimeError` around connection handling catches a pool timeout.
 
 The rest are the standard builtins, raised where a builtin says the right thing. Sustained does not wrap driver exceptions, so a syntax error or a constraint violation reaches you as your driver's own exception type.
+
+## `AmbiguousColumns`
+
+A result set returns the same column name more than once, which a join over tables that share a column name does. A row is keyed by column name, so one value would replace the other. Sustained raises this before it hydrates the first row, from `run()`, `to_dicts()`, `to_df()`, `to_arrow()`, and their async twins. The `columns` attribute holds the repeated names.
+
+```
+This result set returns 'id' more than once, usually from a join over tables
+that share a column name. A row keeps one value per name, so the others would
+be lost. Alias them in select(), such as select('users.id AS user_id',
+'accounts.id AS account_id').
+```
 
 ## `DialectError`
 

@@ -1125,14 +1125,19 @@ class QueryBuilder:
     def _run_select_raw(
         self, connection: Optional[Binding]
     ) -> Tuple[List[str], Sequence[Sequence[RowValue]]]:
-        """Executes this SELECT and returns (column names, raw rows)."""
+        """
+        Executes this SELECT and returns (column names, raw rows).
+
+        Raises:
+            AmbiguousColumns: If the result set repeats a column name.
+        """
         import time
 
         from sustained.execution import notify_statement
 
         if self._stmt_type != "select":
             raise ValueError("Only SELECT queries return result sets.")
-        from sustained.execution import connection_scope, open_cursor
+        from sustained.execution import checked_columns, connection_scope, open_cursor
 
         with connection_scope(connection, self._model_class._connection) as conn:
             cursor = open_cursor(conn)
@@ -1141,7 +1146,9 @@ class QueryBuilder:
             cursor.execute(sql, params)
             notify_statement(sql, params, time.perf_counter() - started)
             columns = (
-                [desc[0] for desc in cursor.description] if cursor.description else []
+                checked_columns([desc[0] for desc in cursor.description])
+                if cursor.description
+                else []
             )
             return columns, cursor.fetchall()
 
@@ -1205,10 +1212,14 @@ class QueryBuilder:
 
         Returns:
             The statement's result, as described above.
+
+        Raises:
+            AmbiguousColumns: If the result set repeats a column name.
         """
         import time
 
         from sustained.execution import (
+            checked_columns,
             connection_scope,
             eager_load_paths,
             fetch_models,
@@ -1259,7 +1270,7 @@ class QueryBuilder:
                 return models
 
             if self._returning_columns and cursor.description is not None:
-                columns = [desc[0] for desc in cursor.description]
+                columns = checked_columns([desc[0] for desc in cursor.description])
                 result: WriteResult = [
                     dict(zip(columns, row)) for row in cursor.fetchall()
                 ]
@@ -1304,11 +1315,16 @@ class QueryBuilder:
     async def ato_dicts(
         self, adapter: Optional["AsyncAdapter"] = None
     ) -> List[Dict[str, RowValue]]:
-        """Async to_dicts(): rows as plain dicts keyed by column name."""
+        """
+        Async to_dicts(): rows as plain dicts keyed by column name.
+
+        Raises:
+            AmbiguousColumns: If the result set repeats a column name.
+        """
         import time
 
         from sustained.aio import resolve_adapter
-        from sustained.execution import notify_statement
+        from sustained.execution import checked_columns, notify_statement
 
         if self._stmt_type != "select":
             raise ValueError("Only SELECT queries return result sets.")
@@ -1317,7 +1333,8 @@ class QueryBuilder:
         started = time.perf_counter()
         columns, rows = await resolved.fetch(sql, params)
         notify_statement(sql, params, time.perf_counter() - started)
-        return [dict(zip(columns, row)) for row in rows]
+        names = checked_columns(columns)
+        return [dict(zip(names, row)) for row in rows]
 
     def first(self, connection: Optional[Binding] = None) -> Optional["Model"]:
         """

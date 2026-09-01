@@ -19,12 +19,14 @@ from typing import (
     Iterator,
     List,
     Optional,
+    Sequence,
     Tuple,
     Type,
     Union,
     cast,
 )
 
+from sustained.exceptions import AmbiguousColumns
 from sustained.types import (
     Binding,
     Connection,
@@ -276,11 +278,36 @@ def transaction(
         del _ACTIVE_TRANSACTIONS[key]
 
 
+def checked_columns(columns: Sequence[str]) -> List[str]:
+    """
+    Returns the result set's column names and refuses a repeated one.
+
+    A row is keyed by column name, so two columns of the same name keep
+    one value and drop the other. Callers run this once per result set,
+    before the first row is hydrated.
+
+    Raises:
+        AmbiguousColumns: If any name appears more than once.
+    """
+    names = list(columns)
+    if len(set(names)) != len(names):
+        seen: Dict[str, int] = {}
+        for name in names:
+            seen[name] = seen.get(name, 0) + 1
+        raise AmbiguousColumns([n for n, count in seen.items() if count > 1])
+    return names
+
+
 def fetch_models(model_class: Type["Model"], cursor: Cursor) -> List["Model"]:
-    """Hydrates every row on the cursor into instances of model_class."""
+    """
+    Hydrates every row on the cursor into instances of model_class.
+
+    Raises:
+        AmbiguousColumns: If the result set repeats a column name.
+    """
     if cursor.description is None:
         return []
-    columns = [desc[0] for desc in cursor.description]
+    columns = checked_columns([desc[0] for desc in cursor.description])
     return [model_class(**dict(zip(columns, row))) for row in cursor.fetchall()]
 
 

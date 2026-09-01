@@ -63,6 +63,15 @@ Venue.query().select('name AS venue_name')
 # SELECT name AS venue_name FROM venues
 ```
 
+Alias the second one when a join selects the same column name from two tables. A row is keyed by column name, so one value would replace the other. Sustained refuses that result set with `AmbiguousColumns` and names the repeated columns:
+
+```python
+Show.query().select(Show.id, Venue.id).innerJoinRelated('venue').run()
+# AmbiguousColumns: This result set returns 'id' more than once ...
+
+Show.query().select(Show.id, 'venues.id AS venue_id').innerJoinRelated('venue').run()
+```
+
 `distinct()` adds the keyword to the whole select list:
 
 ```python

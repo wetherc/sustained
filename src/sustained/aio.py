@@ -38,7 +38,7 @@ from typing import (
     cast,
 )
 
-from sustained.execution import notify_statement
+from sustained.execution import checked_columns, notify_statement
 from sustained.types import (
     ColumnDescription,
     Connection,
@@ -396,6 +396,9 @@ async def run_async(
     Executes a built query on an async adapter. SELECT statements return
     hydrated model instances with eager relations attached; writes return
     the affected row count or RETURNING rows as dicts.
+
+    Raises:
+        AmbiguousColumns: If the result set repeats a column name.
     """
     resolved = resolve_adapter(adapter, query._model_class)
 
@@ -409,7 +412,8 @@ async def run_async(
         sql, params = query._compiler.prepare_execution(*query.to_sql())
         columns, rows = await resolved.fetch(sql, params)
         notify_statement(sql, params, time.perf_counter() - started)
-        models = [query._model_class(**dict(zip(columns, row))) for row in rows]
+        names = checked_columns(columns)
+        models = [query._model_class(**dict(zip(names, row))) for row in rows]
         await eager_load_paths_async(
             query._model_class, resolved, models, query._eager_relations
         )
@@ -441,7 +445,8 @@ async def run_async(
         sql, params = query._compiler.prepare_execution(*query.to_sql())
         columns, rows = await resolved.fetch(sql, params)
         notify_statement(sql, params, time.perf_counter() - started)
-        result = [dict(zip(columns, row)) for row in rows]
+        returning_names = checked_columns(columns)
+        result = [dict(zip(returning_names, row)) for row in rows]
     else:
         sql, params = query._compiler.prepare_execution(*query.to_sql())
         result = await resolved.execute(sql, params)

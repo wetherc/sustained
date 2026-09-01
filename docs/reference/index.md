@@ -31,6 +31,7 @@ from sustained import AggregateExpression, WindowExpression, CaseExpression
 from sustained import RelationType, RelationMapping, Join
 from sustained import Connection, Cursor, Binding, SqlValue, RowValue
 from sustained import DialectError, GuardBlocked, MigrationError, RehearsalRequired
+from sustained import AmbiguousColumns
 
 # from submodules
 from sustained.dialects import Dialects
