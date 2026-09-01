@@ -10,6 +10,7 @@ from sustained import Model
 from sustained.dialects import Dialects
 from sustained.exceptions import DialectError
 from sustained.execution import (
+    cursor_scope,
     in_transaction,
     open_cursor,
     pinned_transaction,
@@ -120,6 +121,9 @@ class RefusingCursor:
             raise sqlite3.OperationalError(f"refused: {sql}")
         return None
 
+    def close(self):
+        self._connection.closed_cursors += 1
+
 
 class RefusingConnection:
     """
@@ -130,6 +134,7 @@ class RefusingConnection:
     def __init__(self):
         self.statements = []
         self.refuse = None
+        self.closed_cursors = 0
 
     def cursor(self):
         return RefusingCursor(self)
@@ -167,6 +172,41 @@ class TestSavepointDepth(TransactionTestCase):
                 "RELEASE SAVEPOINT sustained_sp_1",
             ],
         )
+
+
+class TestCursorScope(unittest.TestCase):
+    """
+    Every statement gives its cursor back, unless the cursor belongs to an
+    open transaction() block.
+    """
+
+    def test_a_cursor_of_its_own_is_closed(self):
+        conn = RefusingConnection()
+        with cursor_scope(conn) as cursor:
+            cursor.execute("SELECT 1")
+        self.assertEqual(conn.closed_cursors, 1)
+
+    def test_a_raising_block_still_closes_the_cursor(self):
+        conn = RefusingConnection()
+        with self.assertRaises(RuntimeError):
+            with cursor_scope(conn):
+                raise RuntimeError("boom")
+        self.assertEqual(conn.closed_cursors, 1)
+
+    def test_the_transactions_own_cursor_is_left_open(self):
+        conn = RefusingConnection()
+        with transaction(conn, Dialects.DUCKDB):
+            with cursor_scope(conn) as cursor:
+                self.assertIs(cursor, open_cursor(conn))
+            self.assertEqual(conn.closed_cursors, 0)
+        # The block closes its own cursor when it ends.
+        self.assertEqual(conn.closed_cursors, 1)
+
+    def test_a_pinned_block_closes_its_cursor_at_the_end(self):
+        conn = RefusingConnection()
+        with pinned_transaction(conn, Dialects.DUCKDB):
+            self.assertEqual(conn.closed_cursors, 0)
+        self.assertEqual(conn.closed_cursors, 1)
 
 
 class TestPinnedTransaction(unittest.TestCase):

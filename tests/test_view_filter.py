@@ -49,6 +49,9 @@ class FilteringCursor:
     def fetchall(self):
         return list(self._current)
 
+    def close(self):
+        pass
+
 
 class FakeConnection:
     def __init__(self, cursor):

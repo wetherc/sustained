@@ -31,8 +31,14 @@ class FakeCursor:
     def fetchall(self):
         return self._rows
 
+    def close(self):
+        pass
+
     def fetchone(self):
         return self._rows[0] if self._rows else None
+
+    def close(self):
+        pass
 
 
 class FakePostgresConnection:

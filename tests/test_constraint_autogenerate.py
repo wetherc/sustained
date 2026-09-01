@@ -382,6 +382,9 @@ class RoutingCursor:
     def fetchall(self):
         return self._current
 
+    def close(self):
+        pass
+
 
 class RoutingConnection:
     def __init__(self, routes):

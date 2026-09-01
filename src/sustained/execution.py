@@ -172,6 +172,30 @@ def open_cursor(connection: Connection) -> Cursor:
 
 
 @contextmanager
+def cursor_scope(connection: Connection) -> Iterator[Cursor]:
+    """
+    open_cursor() for one piece of work, given back at the end of the
+    block.
+
+    A cursor holds a result set until something reads or closes it. Pyodbc
+    and the MySQL drivers report "commands out of sync" when a connection
+    accumulates cursors with unread rows, so a statement that opens its
+    own cursor closes it again. The transaction's pinned cursor is never
+    closed here: it belongs to the transaction() block, and closing it
+    would leave the rest of that block without a session on DuckDB.
+    """
+    entry = _ACTIVE_TRANSACTIONS.get(id(connection))
+    if entry is not None and entry[0] is connection:
+        yield entry[2]
+        return
+    cursor = connection.cursor()
+    try:
+        yield cursor
+    finally:
+        cursor.close()
+
+
+@contextmanager
 def pinned_transaction(connection: Connection, dialect: "Dialects") -> Iterator[Cursor]:
     """
     Opens a transaction the caller ends itself, and pins its cursor for the
@@ -208,6 +232,7 @@ def pinned_transaction(connection: Connection, dialect: "Dialects") -> Iterator[
         yield cursor
     finally:
         del _ACTIVE_TRANSACTIONS[key]
+        cursor.close()
 
 
 @contextmanager
@@ -315,6 +340,7 @@ def transaction(
         raise
     finally:
         del _ACTIVE_TRANSACTIONS[key]
+        cursor.close()
 
 
 def checked_columns(columns: Sequence[str]) -> List[str]:

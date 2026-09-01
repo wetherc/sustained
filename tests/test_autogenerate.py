@@ -554,6 +554,9 @@ class FakeCursor:
     def fetchall(self):
         return self._current
 
+    def close(self):
+        pass
+
 
 class FakeConnection:
     def __init__(self, columns_rows):
@@ -771,6 +774,9 @@ class IntrospectionPlanTestCase(unittest.TestCase):
 
         def fetchall(self):
             return self.rows
+
+        def close(self):
+            pass
 
     class Connection:
         def __init__(self):

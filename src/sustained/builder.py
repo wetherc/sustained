@@ -788,12 +788,14 @@ class QueryBuilder:
         """
         import time
 
-        from sustained.execution import connection_scope, notify_statement, open_cursor
+        from sustained.execution import connection_scope, cursor_scope, notify_statement
 
         sql, params = self._compiler.prepare_execution(*self.to_sql())
         prefix = self._compiler.compile_explain(analyze)
-        with connection_scope(connection, self._model_class._connection) as conn:
-            cursor = open_cursor(conn)
+        with (
+            connection_scope(connection, self._model_class._connection) as conn,
+            cursor_scope(conn) as cursor,
+        ):
             started = time.perf_counter()
             cursor.execute(f"{prefix} {sql}", params)
             notify_statement(f"{prefix} {sql}", params, time.perf_counter() - started)
@@ -1137,10 +1139,12 @@ class QueryBuilder:
 
         if self._stmt_type != "select":
             raise ValueError("Only SELECT queries return result sets.")
-        from sustained.execution import checked_columns, connection_scope, open_cursor
+        from sustained.execution import checked_columns, connection_scope, cursor_scope
 
-        with connection_scope(connection, self._model_class._connection) as conn:
-            cursor = open_cursor(conn)
+        with (
+            connection_scope(connection, self._model_class._connection) as conn,
+            cursor_scope(conn) as cursor,
+        ):
             sql, params = self._compiler.prepare_execution(*self.to_sql())
             started = time.perf_counter()
             cursor.execute(sql, params)
@@ -1221,15 +1225,17 @@ class QueryBuilder:
         from sustained.execution import (
             checked_columns,
             connection_scope,
+            cursor_scope,
             eager_load_paths,
             fetch_models,
             in_transaction,
             notify_statement,
-            open_cursor,
         )
 
-        with connection_scope(connection, self._model_class._connection) as conn:
-            cursor = open_cursor(conn)
+        with (
+            connection_scope(connection, self._model_class._connection) as conn,
+            cursor_scope(conn) as cursor,
+        ):
 
             use_executemany = (
                 self._stmt_type == "insert"

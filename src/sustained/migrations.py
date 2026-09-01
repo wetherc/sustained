@@ -29,7 +29,7 @@ import sys
 import time
 import warnings
 from collections import Counter
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from datetime import datetime, timezone
 from typing import (
     TYPE_CHECKING,
@@ -53,7 +53,7 @@ from typing import (
 
 from sustained.ddl import DdlStep
 from sustained.dialects import Dialects
-from sustained.execution import open_cursor, pinned_transaction, transaction
+from sustained.execution import cursor_scope, pinned_transaction, transaction
 from sustained.types import Connection, Cursor, SqlValue
 
 if TYPE_CHECKING:
@@ -779,9 +779,9 @@ def _run_step(
         assert callable(step)
         step(connection)
         return
-    cursor = open_cursor(connection)
-    for statement in _render_elements(elements, compiler):
-        cursor.execute(statement)
+    with cursor_scope(connection) as cursor:
+        for statement in _render_elements(elements, compiler):
+            cursor.execute(statement)
 
 
 def _next_seq(records: List[AppliedRecord]) -> int:
@@ -1132,6 +1132,27 @@ class Migrator:
         """Runs one parameterized statement, adapted for the dialect."""
         cursor.execute(*self._compiler.prepare_execution(sql, params))
 
+    def _run_sql(self, sql: str, params: Tuple[SqlValue, ...] = ()) -> None:
+        """
+        One statement on a cursor of its own, given back when it finishes.
+        A cursor left open holds its result set, and pyodbc and the MySQL
+        drivers refuse the next statement on the connection once enough of
+        those pile up.
+        """
+        with closing(self._connection.cursor()) as cursor:
+            self._execute(cursor, sql, params)
+
+    def _write_tracking_row(self, sql: str, params: Tuple[SqlValue, ...] = ()) -> None:
+        """
+        One tracking table write inside the migration's own transaction.
+        It runs on the transaction's cursor where a block is open, so a
+        failed migration takes its row back with it on the engines that
+        roll DDL back, and on DuckDB, where every fresh cursor is a session
+        of its own.
+        """
+        with cursor_scope(self._connection) as cursor:
+            self._execute(cursor, sql, params)
+
     def _commit_quietly(self) -> None:
         if hasattr(self._connection, "commit"):
             self._connection.commit()
@@ -1154,15 +1175,16 @@ class Migrator:
         if not lock_statements:
             yield
             return
-        cursor = self._connection.cursor()
-        for statement in lock_statements:
-            cursor.execute(statement)
+        with closing(self._connection.cursor()) as cursor:
+            for statement in lock_statements:
+                cursor.execute(statement)
         try:
             yield
         finally:
             for statement in self._compiler.migration_unlock_sql(self._table):
                 try:
-                    self._connection.cursor().execute(statement)
+                    with closing(self._connection.cursor()) as cursor:
+                        cursor.execute(statement)
                 except Exception:
                     pass
 
@@ -1178,7 +1200,8 @@ class Migrator:
             if_not_exists=True,
             options=self._tracking_table_options,
         )
-        self._connection.cursor().execute(sql)
+        with closing(self._connection.cursor()) as cursor:
+            cursor.execute(sql)
         self._commit_quietly()
         self._upgrade_tracking_table()
         self._tracking_ready = True
@@ -1201,7 +1224,8 @@ class Migrator:
             if_not_exists=True,
             options=self._tracking_table_options,
         )
-        self._connection.cursor().execute(sql)
+        with closing(self._connection.cursor()) as cursor:
+            cursor.execute(sql)
         self._commit_quietly()
         self._rehearsal_ready = True
 
@@ -1224,13 +1248,11 @@ class Migrator:
         self._ensure_rehearsal_table()
         placeholder = self._compiler.placeholder()
         table = self._rehearsal_table_sql()
-        cursor = self._connection.cursor()
-        self._execute(
-            cursor, f"DELETE FROM {table} WHERE rehearsal_key = {placeholder}", (key,)
+        self._run_sql(
+            f"DELETE FROM {table} WHERE rehearsal_key = {placeholder}", (key,)
         )
         values = ", ".join([placeholder] * 3)
-        self._execute(
-            cursor,
+        self._run_sql(
             f"INSERT INTO {table} (rehearsal_key, outcome, rehearsed_at) "
             f"VALUES ({values})",
             (key, outcome, datetime.now(timezone.utc).isoformat()),
@@ -1244,14 +1266,14 @@ class Migrator:
         """
         self._ensure_rehearsal_table()
         placeholder = self._compiler.placeholder()
-        cursor = self._connection.cursor()
-        self._execute(
-            cursor,
-            f"SELECT outcome FROM {self._rehearsal_table_sql()} "
-            f"WHERE rehearsal_key = {placeholder}",
-            (key,),
-        )
-        row = cursor.fetchone()
+        with closing(self._connection.cursor()) as cursor:
+            self._execute(
+                cursor,
+                f"SELECT outcome FROM {self._rehearsal_table_sql()} "
+                f"WHERE rehearsal_key = {placeholder}",
+                (key,),
+            )
+            row = cursor.fetchone()
         return None if row is None else str(row[0])
 
     def rehearsed(self, key: str) -> bool:
@@ -1261,12 +1283,12 @@ class Migrator:
     def _has_columns(self, columns: Tuple[str, ...]) -> bool:
         """Probes the tracking table for the given columns."""
         try:
-            cursor = self._connection.cursor()
-            cursor.execute(
-                f"SELECT {quoted_columns(self._compiler, *columns)} "
-                f"FROM {self._table_sql()} WHERE 1 = 0"
-            )
-            cursor.fetchall()
+            with closing(self._connection.cursor()) as cursor:
+                cursor.execute(
+                    f"SELECT {quoted_columns(self._compiler, *columns)} "
+                    f"FROM {self._table_sql()} WHERE 1 = 0"
+                )
+                cursor.fetchall()
             return True
         except Exception:
             # A failed probe can poison an open transaction (Postgres
@@ -1295,30 +1317,29 @@ class Migrator:
             statement = self._compiler.compile_add_column(
                 self._table_ddl_sql(), column_sql
             )
-            self._connection.cursor().execute(statement)
+            with closing(self._connection.cursor()) as cursor:
+                cursor.execute(statement)
             added.append(name)
         self._commit_quietly()
         placeholder = self._compiler.placeholder()
-        cursor = self._connection.cursor()
         # Backfill only the columns this run added, and only where they are
         # still null, so values a partial earlier upgrade wrote survive.
         column = self._compiler.quote_identifier
         if "success" in added:
-            self._execute(
-                cursor,
+            self._run_sql(
                 f"UPDATE {self._table_sql()} SET {column('success')} = "
                 f"{placeholder} WHERE {column('success')} IS NULL",
                 (True,),
             )
         if "seq" in added:
-            cursor.execute(
-                f"SELECT {column('id')} FROM {self._table_sql()} "
-                f"ORDER BY {quoted_columns(self._compiler, 'applied_at', 'id')}"
-            )
-            ids = [row[0] for row in cursor.fetchall()]
+            with closing(self._connection.cursor()) as cursor:
+                cursor.execute(
+                    f"SELECT {column('id')} FROM {self._table_sql()} "
+                    f"ORDER BY {quoted_columns(self._compiler, 'applied_at', 'id')}"
+                )
+                ids = [row[0] for row in cursor.fetchall()]
             for position, migration_id in enumerate(ids, start=1):
-                self._execute(
-                    cursor,
+                self._run_sql(
                     f"UPDATE {self._table_sql()} SET {column('seq')} = "
                     f"{placeholder} WHERE {column('id')} = {placeholder} "
                     f"AND {column('seq')} IS NULL",
@@ -1329,12 +1350,12 @@ class Migrator:
     def applied_records(self) -> List[AppliedRecord]:
         """Returns every tracking table row in application order."""
         self._ensure_tracking_table()
-        cursor = self._connection.cursor()
-        cursor.execute(records_select(self._compiler, self._table_sql()))
-        return [
-            AppliedRecord(row[0], row[1], row[2], bool(row[3]), bool(row[4]))
-            for row in cursor.fetchall()
-        ]
+        with closing(self._connection.cursor()) as cursor:
+            cursor.execute(records_select(self._compiler, self._table_sql()))
+            return [
+                AppliedRecord(row[0], row[1], row[2], bool(row[3]), bool(row[4]))
+                for row in cursor.fetchall()
+            ]
 
     def applied(self) -> List[str]:
         """Returns the applied migration ids in application order."""
@@ -1420,12 +1441,10 @@ class Migrator:
         records = self.applied_records()
         by_id = {m.id: m for m in self._migrations}
         placeholder = self._compiler.placeholder()
-        cursor = self._connection.cursor()
         actions: List[str] = []
         for record in records:
             if not record.success:
-                self._execute(
-                    cursor,
+                self._run_sql(
                     f"DELETE FROM {self._table_sql()} WHERE "
                     f"{self._compiler.quote_identifier('id')} = {placeholder} "
                     f"AND {self._compiler.quote_identifier('success')} = "
@@ -1439,8 +1458,7 @@ class Migrator:
                 continue
             current = migration_checksum(migration)
             if current is not None and current != record.checksum:
-                self._execute(
-                    cursor,
+                self._run_sql(
                     f"UPDATE {self._table_sql()} SET "
                     f"{self._compiler.quote_identifier('checksum')} = "
                     f"{placeholder} WHERE "
@@ -1470,10 +1488,8 @@ class Migrator:
         try:
             timestamp = datetime.now(timezone.utc).isoformat()
             checksum = migration_checksum(migration)
-            cursor = self._connection.cursor()
             if update:
-                self._execute(
-                    cursor,
+                self._run_sql(
                     self._update_sql(),
                     (
                         checksum,
@@ -1486,8 +1502,7 @@ class Migrator:
                     ),
                 )
             else:
-                self._execute(
-                    cursor,
+                self._run_sql(
                     self._insert_sql(),
                     (
                         migration.id,
@@ -1743,10 +1758,8 @@ class Migrator:
                 elapsed_ms = int((time.perf_counter() - started) * 1000)
                 timestamp = datetime.now(timezone.utc).isoformat()
                 checksum = migration_checksum(migration)
-                cursor = open_cursor(self._connection)
                 if update:
-                    self._execute(
-                        cursor,
+                    self._write_tracking_row(
                         self._update_sql(),
                         (
                             checksum,
@@ -1759,8 +1772,7 @@ class Migrator:
                         ),
                     )
                 else:
-                    self._execute(
-                        cursor,
+                    self._write_tracking_row(
                         self._insert_sql(),
                         (
                             migration.id,
@@ -2035,7 +2047,8 @@ class Migrator:
         statement = self._compiler.rollback_transaction_sql()
         if statement is not None:
             try:
-                open_cursor(self._connection).execute(statement)
+                with cursor_scope(self._connection) as cursor:
+                    cursor.execute(statement)
             except Exception:
                 pass
         self._rollback_quietly()
@@ -2067,8 +2080,7 @@ class Migrator:
                             cast(MigrationStep, migration.down),
                             self._compiler,
                         )
-                        self._execute(
-                            self._connection.cursor(),
+                        self._run_sql(
                             f"DELETE FROM {self._table_sql()} WHERE "
                             f"{self._compiler.quote_identifier('id')} = "
                             f"{placeholder}",
@@ -2106,14 +2118,12 @@ class Migrator:
             records = self.applied_records()
             already_applied = {r.id for r in records if r.success}
             next_seq = _next_seq(records)
-            cursor = self._connection.cursor()
             recorded: List[str] = []
             for migration in versioned[: ids.index(target) + 1] + self._repeatables():
                 if migration.id in already_applied:
                     continue
                 timestamp = datetime.now(timezone.utc).isoformat()
-                self._execute(
-                    cursor,
+                self._run_sql(
                     self._insert_sql(),
                     (
                         migration.id,
@@ -2322,15 +2332,15 @@ class Migrator:
         carries the statements for exactly that reason.
         """
         placeholder = self._compiler.placeholder()
-        cursor = self._connection.cursor()
-        self._execute(
-            cursor,
-            f"SELECT {self._compiler.quote_identifier('steps')} "
-            f"FROM {self._table_sql()} WHERE "
-            f"{self._compiler.quote_identifier('id')} = {placeholder}",
-            (migration_id,),
-        )
-        row = cursor.fetchone()
+        with closing(self._connection.cursor()) as cursor:
+            self._execute(
+                cursor,
+                f"SELECT {self._compiler.quote_identifier('steps')} "
+                f"FROM {self._table_sql()} WHERE "
+                f"{self._compiler.quote_identifier('id')} = {placeholder}",
+                (migration_id,),
+            )
+            row = cursor.fetchone()
         if row is None or row[0] is None:
             return None
         return _restore_migration(migration_id, str(row[0]))
@@ -2365,8 +2375,7 @@ class Migrator:
                     raise ValueError(f"Migration '{migration_id}' has no down step.")
                 with self._migration_scope():
                     _run_step(self._connection, migration.down, self._compiler)
-                    self._execute(
-                        open_cursor(self._connection),
+                    self._write_tracking_row(
                         f"DELETE FROM {self._table_sql()} WHERE "
                         f"{self._compiler.quote_identifier('id')} = "
                         f"{placeholder}",

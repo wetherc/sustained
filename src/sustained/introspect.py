@@ -30,7 +30,7 @@ from typing import (
 )
 
 from sustained.dialects import Dialects
-from sustained.execution import open_cursor
+from sustained.execution import cursor_scope
 from sustained.types import Connection, RowValue
 
 if TYPE_CHECKING:
@@ -285,27 +285,30 @@ def introspect_schema(
     plan = _schema_plan(dialect)
     # An open transaction reads on its own cursor: a rehearsal introspects
     # a schema its uncommitted statements just changed, and on DuckDB a
-    # fresh cursor is a separate session that cannot see it.
-    cursor = open_cursor(connection)
+    # fresh cursor is a separate session that cannot see it. One cursor
+    # serves the whole plan and is given back when the read finishes; a
+    # plan is a dozen or more queries, and the last one's rows would sit
+    # unread on it otherwise.
+    with cursor_scope(connection) as cursor:
 
-    def run(sql: str) -> List[Sequence[RowValue]]:
-        cursor.execute(sql)
-        return list(cursor.fetchall())
+        def run(sql: str) -> List[Sequence[RowValue]]:
+            cursor.execute(sql)
+            return list(cursor.fetchall())
 
-    sql = next(plan)
-    while True:
-        try:
-            rows = run(sql)
-        except Exception as error:
+        sql = next(plan)
+        while True:
             try:
-                sql = plan.throw(error)
+                rows = run(sql)
+            except Exception as error:
+                try:
+                    sql = plan.throw(error)
+                except StopIteration as stop:
+                    return _finished(stop)
+                continue
+            try:
+                sql = plan.send(rows)
             except StopIteration as stop:
                 return _finished(stop)
-            continue
-        try:
-            sql = plan.send(rows)
-        except StopIteration as stop:
-            return _finished(stop)
 
 
 async def async_introspect_schema(

@@ -100,6 +100,9 @@ class FakeCursor:
     def close(self):
         pass
 
+    def close(self):
+        pass
+
 
 class FakeConnection:
     """A connection that records the hygiene calls the pool makes on it."""

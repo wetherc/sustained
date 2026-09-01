@@ -1156,6 +1156,89 @@ class TestRehearsalKey(unittest.TestCase):
         self.assertNotEqual(rehearsal_key([], run), rehearsal_key([], other))
 
 
+class CountingConnection:
+    """A sqlite3 connection that counts the cursors it hands out and takes back."""
+
+    def __init__(self, connection):
+        self._connection = connection
+        self.opened = 0
+        self.closed = 0
+
+    def cursor(self):
+        self.opened += 1
+        return CountingCursor(self, self._connection.cursor())
+
+    def commit(self):
+        self._connection.commit()
+
+    def rollback(self):
+        self._connection.rollback()
+
+    def close(self):
+        self._connection.close()
+
+
+class CountingCursor:
+    def __init__(self, owner, cursor):
+        self._owner = owner
+        self._cursor = cursor
+
+    def __getattr__(self, name):
+        return getattr(self._cursor, name)
+
+    def close(self):
+        self._owner.closed += 1
+        self._cursor.close()
+
+
+class TestCursorsAreGivenBack(unittest.TestCase):
+    """
+    A cursor holds its result set until it is closed, and pyodbc and the
+    MySQL drivers refuse the next statement once enough of those pile up on
+    one connection. Every cursor a run opens is closed again.
+    """
+
+    def setUp(self):
+        self.raw = sqlite3.connect(":memory:")
+        self.conn = CountingConnection(self.raw)
+        self.addCleanup(self.raw.close)
+
+    def migrator(self):
+        return Migrator(
+            self.conn,
+            [
+                Migration(
+                    "0001",
+                    up="CREATE TABLE cur_t (id INTEGER)",
+                    down="DROP TABLE cur_t",
+                ),
+                Migration(
+                    "0002",
+                    up="CREATE TABLE cur_u (id INTEGER)",
+                    down="DROP TABLE cur_u",
+                ),
+            ],
+        )
+
+    def test_a_full_run_closes_every_cursor(self):
+        migrator = self.migrator()
+        migrator.up()
+        migrator.statuses()
+        migrator.validate()
+        migrator.repair()
+        migrator.down(steps=2)
+        self.assertEqual(self.conn.opened, self.conn.closed)
+        self.assertGreater(self.conn.opened, 0)
+
+    def test_a_baseline_closes_every_cursor(self):
+        self.migrator().baseline("0002")
+        self.assertEqual(self.conn.opened, self.conn.closed)
+
+    def test_a_rehearsal_closes_every_cursor(self):
+        self.migrator().rehearse()
+        self.assertEqual(self.conn.opened, self.conn.closed)
+
+
 class TestDestructivePrefixKeys(unittest.TestCase):
     """
     The keys a targeted run looks for. They are built one migration at a

@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, closing
 from contextvars import ContextVar
 from typing import (
     TYPE_CHECKING,
@@ -147,20 +147,20 @@ class DbApiAsyncAdapter(AsyncAdapter):
     def _fetch_sync(
         self, sql: str, params: Tuple[SqlValue, ...]
     ) -> Tuple[List[str], List[Sequence[RowValue]]]:
-        cursor = self._connection.cursor()
-        cursor.execute(sql, params)
-        columns = [d[0] for d in cursor.description] if cursor.description else []
-        return columns, list(cursor.fetchall())
+        with closing(self._connection.cursor()) as cursor:
+            cursor.execute(sql, params)
+            columns = [d[0] for d in cursor.description] if cursor.description else []
+            return columns, list(cursor.fetchall())
 
     def _execute_sync(self, sql: str, params: Tuple[SqlValue, ...]) -> int:
-        cursor = self._connection.cursor()
-        cursor.execute(sql, params)
-        return int(cursor.rowcount)
+        with closing(self._connection.cursor()) as cursor:
+            cursor.execute(sql, params)
+            return int(cursor.rowcount)
 
     def _executemany_sync(self, sql: str, seq: List[Tuple[SqlValue, ...]]) -> int:
-        cursor = self._connection.cursor()
-        cursor.executemany(sql, seq)
-        return int(cursor.rowcount)
+        with closing(self._connection.cursor()) as cursor:
+            cursor.executemany(sql, seq)
+            return int(cursor.rowcount)
 
     async def fetch(
         self, sql: str, params: Tuple[SqlValue, ...]
