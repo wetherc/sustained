@@ -22,7 +22,10 @@ site:
     guards = [no_drops(), max_statements(50)]
 
 The scan is textual, like the destructive labels: a rule matches on the
-words in the statement and never parses SQL.
+words in the statement and never parses SQL. Comments and the text
+inside quotes are kept out of the scan, so a rule reads neither a
+commented-out drop nor a drop named in a string literal. The verdict
+prints the statement with its literals intact.
 """
 
 from __future__ import annotations
@@ -30,7 +33,7 @@ from __future__ import annotations
 import re
 from typing import Callable, List, NamedTuple, Sequence
 
-from sustained.analysis import normalize_statement
+from sustained.analysis import normalize_statement, scannable_statement
 from sustained.dialects import Dialects
 
 # The two verdicts a rule can return. There is no third severity: a rule
@@ -80,7 +83,7 @@ def warnings_only(verdicts: Sequence[Verdict]) -> List[Verdict]:
 
 
 _DROP_RE = re.compile(
-    r"\bDROP\s+(TABLE|COLUMN|VIEW|SCHEMA|DATABASE|TYPE"
+    r"\bDROP\s+(TABLE|COLUMN|MATERIALIZED\s+VIEW|VIEW|SCHEMA|DATABASE|TYPE"
     r"|CONSTRAINT|CHECK|FOREIGN\s+KEY)\b",
     re.IGNORECASE,
 )
@@ -112,18 +115,19 @@ _LOCK_TIMEOUT_RE = re.compile(
 
 def no_drops() -> Guard:
     """
-    Blocks a statement that drops a table, a column, a view, a schema, a
-    database, an enum type, or a constraint. A dropped constraint removes
-    no rows, but putting it back needs the data to still satisfy it, so
-    the drop is not freely reversible. Drops of indexes and keys pass.
+    Blocks a statement that drops a table, a column, a view, a
+    materialized view, a schema, a database, an enum type, or a
+    constraint. A dropped constraint removes no rows, but putting it back
+    needs the data to still satisfy it, so the drop is not freely
+    reversible. Drops of indexes and keys pass.
     """
 
     def guard(statements: Sequence[str], dialect: Dialects) -> List[Verdict]:
         found = []
         for statement in statements:
-            text = normalize_statement(statement)
-            if _DROP_RE.search(text) or _ALTER_DROP_RE.search(text):
-                found.append(Verdict("no_drops", BLOCK, text))
+            scanned = scannable_statement(statement)
+            if _DROP_RE.search(scanned) or _ALTER_DROP_RE.search(scanned):
+                found.append(Verdict("no_drops", BLOCK, normalize_statement(statement)))
         return found
 
     return guard
@@ -141,9 +145,17 @@ def index_must_be_concurrent() -> Guard:
             return []
         found = []
         for statement in statements:
-            text = normalize_statement(statement)
-            if _CREATE_INDEX_RE.search(text) and not _CONCURRENTLY_RE.search(text):
-                found.append(Verdict("index_must_be_concurrent", BLOCK, text))
+            scanned = scannable_statement(statement)
+            if _CREATE_INDEX_RE.search(scanned) and not _CONCURRENTLY_RE.search(
+                scanned
+            ):
+                found.append(
+                    Verdict(
+                        "index_must_be_concurrent",
+                        BLOCK,
+                        normalize_statement(statement),
+                    )
+                )
         return found
 
     return guard
@@ -164,14 +176,16 @@ def no_table_rewrite() -> Guard:
     def guard(statements: Sequence[str], dialect: Dialects) -> List[Verdict]:
         found = []
         for statement in statements:
-            text = normalize_statement(statement)
+            scanned = scannable_statement(statement)
             rewrites = bool(
-                _TYPE_CHANGE_RE.search(text) or _SET_NOT_NULL_RE.search(text)
+                _TYPE_CHANGE_RE.search(scanned) or _SET_NOT_NULL_RE.search(scanned)
             )
-            if not rewrites and _ADD_NOT_NULL_RE.search(text):
-                rewrites = not _DEFAULT_RE.search(text)
+            if not rewrites and _ADD_NOT_NULL_RE.search(scanned):
+                rewrites = not _DEFAULT_RE.search(scanned)
             if rewrites:
-                found.append(Verdict("no_table_rewrite", WARN, text))
+                found.append(
+                    Verdict("no_table_rewrite", WARN, normalize_statement(statement))
+                )
         return found
 
     return guard
@@ -191,12 +205,12 @@ def no_lock_without_timeout() -> Guard:
     def guard(statements: Sequence[str], dialect: Dialects) -> List[Verdict]:
         if dialect is not Dialects.POSTGRES:
             return []
-        texts = [normalize_statement(s) for s in statements]
-        if any(_LOCK_TIMEOUT_RE.search(text) for text in texts):
+        scanned = [scannable_statement(s) for s in statements]
+        if any(_LOCK_TIMEOUT_RE.search(text) for text in scanned):
             return []
         return [
-            Verdict("no_lock_without_timeout", BLOCK, text)
-            for text in texts
+            Verdict("no_lock_without_timeout", BLOCK, normalize_statement(statement))
+            for statement, text in zip(statements, scanned)
             if _LOCK_TAKING_RE.search(text)
         ]
 

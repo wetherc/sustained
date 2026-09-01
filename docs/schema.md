@@ -476,7 +476,7 @@ drift
 run: sustained rehearse
 ```
 
-A statement that drops a table, a column, an enum type, or a constraint, or truncates a table, is labelled `destructive`. A column drop written without the COLUMN keyword, as MySQL allows, is labelled as well. The scan is textual, so a drop named inside a string literal is labelled too.
+A statement that removes data or an object that holds it is labelled `destructive`: `DROP TABLE`, `DROP COLUMN`, `DROP TYPE`, `DROP VIEW`, `DROP MATERIALIZED VIEW`, `DROP DATABASE`, `DROP SCHEMA ... CASCADE`, a constraint drop, `TRUNCATE`, and `DELETE FROM`. A column drop written without the COLUMN keyword, as MySQL allows, is labelled as well. A plain `DROP SCHEMA` refuses a schema that holds anything, so only the CASCADE form is labelled. The scan is textual, but it keeps comments and quoted text out, so a drop named inside a string literal is not labelled.
 
 The footer points at `rehearse` rather than `migrate` when a pending migration carries one of these labels, because `migrate` will refuse it until a rehearsal has proved it. Once a rehearsal has recorded a row for that run, the footer reads `run: sustained migrate` again. With nothing destructive waiting, it reads `run: sustained migrate` from the start.
 
@@ -575,7 +575,7 @@ Only databases whose schema changes roll back can rehearse: SQLite, Postgres, an
 
 A rehearsal that passes writes one row into a second table, `sustained_rehearsals`, created on first use like the tracking table. The row holds a key, whether the run passed, and when it ran.
 
-`migrate` reads it. A run that would drop a table, drop a column, or truncate one stops unless a passing rehearsal row covers it:
+`migrate` reads it. A run that would remove data stops unless a passing rehearsal row covers it. It reads the same list the `destructive` labels use, `DELETE FROM` included:
 
 ```console
 $ sustained migrate
@@ -615,7 +615,7 @@ A refused run exits 4, which a pipeline can tell apart from a failure. A targete
 There are two limits here, both shared with the `destructive` labels in `plan`:
 
 - A callable step has no SQL to read, so it never triggers the gate. A callable that drops a table applies without a rehearsal row.
-- The scan is textual. `DROP` inside a string literal counts.
+- The scan is textual. It reads the words in a statement, not its structure. A `DELETE FROM` that removes one row gates the run the same way as one that removes every row.
 
 In Python the same rules apply through the API. `rehearse()` returns a `Rehearsal`, which is a list of results carrying `key`, `recorded`, and `ok`:
 
@@ -701,7 +701,7 @@ Both commands exit 3. There is no `--force` flag: fix the statement, or take the
 
 | Rule | Verdict | Flags |
 | --- | --- | --- |
-| `no_drops()` | block | A statement that drops a table, column, view, schema, database, enum type, or constraint |
+| `no_drops()` | block | A statement that drops a table, column, view, materialized view, schema, database, enum type, or constraint |
 | `index_must_be_concurrent()` | block | `CREATE INDEX` without `CONCURRENTLY`, on Postgres only |
 | `no_table_rewrite()` | warn | A column type change, or a NOT NULL with nothing to fill existing rows |
 | `no_lock_without_timeout()` | block | An up run that alters or drops a table with no `SET lock_timeout` in it, on Postgres only |

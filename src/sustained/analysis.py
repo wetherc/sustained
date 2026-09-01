@@ -5,9 +5,11 @@ Static reading of migration SQL, for previews that touch no database.
 drop a constraint, so a preview can label them. `summarize()` reduces one migration to the count
 and the labels the `plan` command prints.
 
-The scan is textual. A drop named inside a string literal is labelled
-too, since nothing here parses SQL. The label informs the operator; it
-never blocks a run.
+The scan is textual: it reads the words in a statement and parses no
+SQL. It knows string literals and comments only well enough to keep
+them out of the scan, so a drop written inside a literal or a comment
+is not labelled. The label informs the operator, and the rehearsal gate
+in `migrate` reads the same list.
 """
 
 from __future__ import annotations
@@ -20,11 +22,26 @@ from sustained.migrations import Migration, migration_sql
 if TYPE_CHECKING:
     from sustained.compilers.base import Compiler
 
-_COMMENT_RE = re.compile(r"--[^\n]*|/\*.*?\*/", re.DOTALL)
+# One pass over a statement finds string literals, quoted identifiers and
+# comments. A comment inside a literal is part of the literal, so the
+# literal alternatives come first and a '--' inside quotes survives.
+_TOKEN_RE = re.compile(
+    r"'(?:[^']|'')*'"  # string literal, '' is an escaped quote
+    r'|"(?:[^"]|"")*"'  # quoted identifier
+    r"|`[^`]*`"  # MySQL quoted identifier
+    r"|--[^\n]*"  # line comment
+    r"|/\*.*?\*/",  # block comment
+    re.DOTALL,
+)
 _WHITESPACE_RE = re.compile(r"\s+")
+# DROP DATABASE always takes the data with it. DROP SCHEMA needs CASCADE
+# to do so, since a plain DROP SCHEMA refuses a schema that holds
+# anything.
 _DESTRUCTIVE_RE = re.compile(
     r"\bDROP\s+TABLE\b|\bDROP\s+COLUMN\b|\bDROP\s+TYPE\b|\bTRUNCATE\b"
-    r"|\bDROP\s+CONSTRAINT\b|\bDROP\s+CHECK\b|\bDROP\s+FOREIGN\s+KEY\b",
+    r"|\bDROP\s+CONSTRAINT\b|\bDROP\s+CHECK\b|\bDROP\s+FOREIGN\s+KEY\b"
+    r"|\bDELETE\s+FROM\b|\bDROP\s+(?:MATERIALIZED\s+)?VIEW\b"
+    r"|\bDROP\s+DATABASE\b|\bDROP\s+SCHEMA\b[^;]*\bCASCADE\b",
     re.IGNORECASE,
 )
 # MySQL lets a column drop omit the COLUMN keyword. This matches
@@ -38,34 +55,69 @@ _ALTER_DROP_RE = re.compile(
 )
 
 
+def _rewrite_tokens(statement: str, blank_literals: bool) -> str:
+    """
+    Removes the comments from a statement. When `blank_literals` is true,
+    it also empties every string literal and quoted identifier, so words
+    inside quotes cannot match a scan. A quote that never closes is not a
+    token, so its text stays and reads as plain SQL.
+    """
+
+    def replace(match: "re.Match[str]") -> str:
+        token = match.group(0)
+        if token.startswith("--") or token.startswith("/*"):
+            return ""
+        if not blank_literals:
+            return token
+        return token[0] + token[-1]
+
+    return _TOKEN_RE.sub(replace, statement)
+
+
 def normalize_statement(statement: str) -> str:
     """
     One statement on one line: comments removed, whitespace collapsed,
-    ends trimmed. Every textual scan reads this form, so a commented-out
-    drop is never matched and a statement always prints on one line.
+    ends trimmed. This is the form a statement prints in, so string
+    literals keep their text. A '--' inside a literal starts no comment.
     """
-    return _WHITESPACE_RE.sub(" ", _COMMENT_RE.sub("", statement)).strip()
+    return _WHITESPACE_RE.sub(" ", _rewrite_tokens(statement, False)).strip()
+
+
+def scannable_statement(statement: str) -> str:
+    """
+    The form a textual scan reads: `normalize_statement()` with every
+    string literal and quoted identifier emptied. A commented-out drop
+    and a drop written inside quotes both match nothing. Print
+    `normalize_statement()` instead; this form loses text.
+    """
+    return _WHITESPACE_RE.sub(" ", _rewrite_tokens(statement, True)).strip()
 
 
 def destructive_statements(statements: Union[str, Sequence[str]]) -> List[str]:
     """
     Returns the statements that remove something the schema cannot give
-    back: DROP TABLE, DROP COLUMN, DROP TYPE, TRUNCATE, a MySQL-style
-    column drop that omits the COLUMN keyword (`ALTER TABLE t DROP col`),
-    and constraint drops (DROP CONSTRAINT, DROP CHECK, DROP FOREIGN KEY).
-    A dropped constraint removes no rows, but re-adding it needs the data
-    to still satisfy it. Drops of indexes and keys are not labelled.
+    back: DROP TABLE, DROP COLUMN, DROP TYPE, DROP VIEW, DROP
+    MATERIALIZED VIEW, DROP DATABASE, DROP SCHEMA ... CASCADE, TRUNCATE,
+    DELETE FROM, a MySQL-style column drop that omits the COLUMN keyword
+    (`ALTER TABLE t DROP col`), and constraint drops (DROP CONSTRAINT,
+    DROP CHECK, DROP FOREIGN KEY). A dropped constraint removes no rows,
+    but re-adding it needs the data to still satisfy it. A plain DROP
+    SCHEMA refuses a schema that holds anything, so only the CASCADE form
+    is labelled. Drops of indexes and keys are not labelled.
+
     Comments are removed and whitespace is collapsed, so each statement
     comes back on one line and a commented-out drop is not labelled. Both
-    `--` and `/* */` comments are handled.
+    `--` and `/* */` comments are handled. The scan reads no text inside
+    quotes, so a statement that names a drop in a string literal is not
+    labelled.
     """
     if isinstance(statements, str):
         statements = [statements]
     found = []
     for statement in statements:
-        stripped = normalize_statement(statement)
-        if _DESTRUCTIVE_RE.search(stripped) or _ALTER_DROP_RE.search(stripped):
-            found.append(stripped)
+        scanned = scannable_statement(statement)
+        if _DESTRUCTIVE_RE.search(scanned) or _ALTER_DROP_RE.search(scanned):
+            found.append(normalize_statement(statement))
     return found
 
 

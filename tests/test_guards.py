@@ -37,8 +37,31 @@ class NoDropsTest(unittest.TestCase):
         self.assertEqual(len(verdicts), 1)
 
     def test_blocks_view_and_schema_drops(self):
-        verdicts = self.run_on(["DROP VIEW v", "DROP SCHEMA s", "DROP DATABASE d"])
-        self.assertEqual([v.rule for v in verdicts], ["no_drops"] * 3)
+        verdicts = self.run_on(
+            [
+                "DROP VIEW v",
+                "DROP MATERIALIZED VIEW mv",
+                "DROP SCHEMA s",
+                "DROP DATABASE d",
+            ]
+        )
+        self.assertEqual([v.rule for v in verdicts], ["no_drops"] * 4)
+
+    def test_passes_a_drop_named_in_a_string_literal(self):
+        statements = [
+            "INSERT INTO audit (note) VALUES ('DROP TABLE users')",
+            "INSERT INTO audit (note) VALUES ('DROP MATERIALIZED VIEW mv')",
+        ]
+        self.assertEqual(self.run_on(statements), [])
+
+    def test_keeps_the_literal_in_the_verdict(self):
+        verdicts = self.run_on(["DROP TABLE users -- see ticket 'ABC'"])
+        self.assertEqual(verdicts[0].statement, "DROP TABLE users")
+        verdicts = self.run_on(["DELETE FROM audit WHERE note = 'x'; DROP TABLE users"])
+        self.assertEqual(
+            verdicts[0].statement,
+            "DELETE FROM audit WHERE note = 'x'; DROP TABLE users",
+        )
 
     def test_blocks_constraint_drops(self):
         statements = [
@@ -98,6 +121,13 @@ class IndexMustBeConcurrentTest(unittest.TestCase):
         verdicts = self.guard(["CREATE INDEX i ON users (email)"], Dialects.DEFAULT)
         self.assertEqual(verdicts, [])
 
+    def test_concurrently_inside_a_literal_does_not_count(self):
+        verdicts = self.guard(
+            ["CREATE INDEX i ON users (note) WHERE note = 'CONCURRENTLY'"],
+            Dialects.POSTGRES,
+        )
+        self.assertEqual(len(verdicts), 1)
+
 
 class NoTableRewriteTest(unittest.TestCase):
     def setUp(self):
@@ -134,6 +164,12 @@ class NoTableRewriteTest(unittest.TestCase):
             ["ALTER TABLE users ADD COLUMN bio TEXT NOT NULL DEFAULT ''"]
         )
         self.assertEqual(verdicts, [])
+
+    def test_default_inside_a_comment_does_not_count(self):
+        verdicts = self.run_on(
+            ["ALTER TABLE users ADD COLUMN bio TEXT NOT NULL /* DEFAULT '' */"]
+        )
+        self.assertEqual(len(verdicts), 1)
 
     def test_passes_a_plain_add(self):
         self.assertEqual(self.run_on(["ALTER TABLE users ADD COLUMN bio TEXT"]), [])

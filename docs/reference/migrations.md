@@ -390,7 +390,7 @@ no_drops() -> Guard
 ```
 {: .sig #no_drops}
 
-Blocks a table, column, view, schema, database, enum type, or constraint drop. Index and key drops pass.
+Blocks a table, column, view, materialized view, schema, database, enum type, or constraint drop. Index and key drops pass.
 
 ```python
 index_must_be_concurrent() -> Guard
@@ -441,7 +441,7 @@ warnings_only(verdicts) -> list[Verdict]
 
 The verdicts that only report.
 
-The scan is textual, the same way the destructive labels are. Sustained strips comments and collapses whitespace, and parses no SQL.
+The scan is textual, the same way the destructive labels are. Sustained strips comments, empties quoted text, collapses whitespace, and parses no SQL. The verdict prints the statement with its quoted text intact.
 
 ## `AsyncMigrator`
 
@@ -593,7 +593,7 @@ destructive_statements(statements) -> list[str]
 ```
 {: .sig #destructive_statements}
 
-The statements that drop a table, a column, an enum type, or a constraint, or truncate. Comments removed, whitespace collapsed. Skips index and key drops.
+The statements that remove data or an object that holds it: `DROP TABLE`, `DROP COLUMN`, `DROP TYPE`, `DROP VIEW`, `DROP MATERIALIZED VIEW`, `DROP DATABASE`, `DROP SCHEMA ... CASCADE`, a constraint drop, `TRUNCATE`, and `DELETE FROM`. Comments removed, whitespace collapsed. Skips index and key drops, and a plain `DROP SCHEMA`, which refuses a schema that holds anything.
 
 ```python
 summarize(migration, state, compiler=None) -> PendingSummary
@@ -604,4 +604,4 @@ One migration reduced to its id, state, repeatable flag, statement count, and de
 
 `PendingSummary(id, state, repeatable, statements, destructive)` holds that summary. `statements` is `None` for a callable step, which has no SQL to count.
 
-The scan is textual. It labels a column drop written without the COLUMN keyword, which MySQL allows, and it labels a drop named inside a string literal. The label is a report for the operator: it blocks nothing, and no flag gates it.
+The scan is textual. It labels a column drop written without the COLUMN keyword, which MySQL allows. It keeps comments and quoted text out of the scan, so a drop named inside a string literal is not labelled. The label is a report for the operator, and `migrate` reads the same list for its rehearsal gate.

@@ -63,17 +63,19 @@ class FileMigrationTests:
             self.write_seed(directory, "'${flavor}'")
             migrations = load_migrations(directory, PLACEHOLDERS)
 
+            # The seed starts with DELETE FROM, which the rehearsal gate
+            # reads as removing data, so every run here goes unrehearsed.
             migrator = self.migrator(migrations)
-            self.assertEqual(["0001_events", "seed"], migrator.up())
+            self.assertEqual(["0001_events", "seed"], migrator.up(unrehearsed=True))
             # The placeholder value reached the server, not the marker.
             self.assertEqual(["tart"], self.labels())
 
             # Unchanged contents: nothing re-runs.
-            self.assertEqual([], migrator.up())
+            self.assertEqual([], migrator.up(unrehearsed=True))
 
             self.write_seed(directory, "'plum'")
             migrator = self.migrator(load_migrations(directory, PLACEHOLDERS))
-            self.assertEqual(["seed"], migrator.up())
+            self.assertEqual(["seed"], migrator.up(unrehearsed=True))
             self.assertEqual(["plum"], self.labels())
 
     def test_baseline_adopts_a_database_that_already_matches(self):
