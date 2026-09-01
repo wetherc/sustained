@@ -766,6 +766,15 @@ class Compiler:
         Renders a window expression with dialect quoting for partition and
         order columns and the alias.
         """
+        alias_sql = self.quote_alias(window.alias)
+        return f"{self.compile_window_call(window)} AS {alias_sql}"
+
+    def compile_window_call(self, window: WindowExpression) -> str:
+        """
+        Renders the window function call and its OVER clause, without the
+        alias. Use this where the window sits inside another expression,
+        because an alias is only valid at the top of a select list.
+        """
         over_clauses = []
         if window.partition_by:
             partition_cols = ", ".join(
@@ -779,8 +788,7 @@ class Compiler:
             over_clauses.append(window.frame)
         over_sql = " ".join(over_clauses)
         args_sql = ", ".join(self._format_arg(arg) for arg in window.args)
-        alias_sql = self.quote_alias(window.alias)
-        return f"{window.function_name}({args_sql}) OVER ({over_sql}) AS {alias_sql}"
+        return f"{window.function_name}({args_sql}) OVER ({over_sql})"
 
     def _quote_order_entry(self, entry: str) -> str:
         """Quotes an ORDER BY entry that may carry an ASC or DESC suffix."""
@@ -820,12 +828,15 @@ class Compiler:
             return self.format_value(arg.value)
         if isinstance(arg, AggregateExpression):
             return self.compile_aggregate(arg)
+        if isinstance(arg, WindowExpression):
+            # A nested window keeps this dialect's quoting and drops the
+            # alias, which belongs to the select list.
+            return self.compile_window_call(arg)
         if isinstance(
             arg,
             (
                 Column,
                 Expression,
-                WindowExpression,
                 CaseExpression,
                 Subquery,
             ),

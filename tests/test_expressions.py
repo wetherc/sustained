@@ -11,6 +11,7 @@ from sustained.expressions import (
     CaseExpression,
     Column,
     Func,
+    Literal,
     Subquery,
     WindowExpression,
 )
@@ -50,19 +51,18 @@ class TestAggregateExpression(unittest.TestCase):
 class TestWindowExpression(unittest.TestCase):
     def test_basic_window_function(self) -> None:
         """
-        Tests a basic window function with only an alias and no partitions/orders.
+        The string form of a window carries no alias, because that form is
+        the one used inside another expression.
         """
         window = WindowExpression("ROW_NUMBER", "row_num")
-        self.assertEqual(str(window), "ROW_NUMBER() OVER () AS row_num")
+        self.assertEqual(str(window), "ROW_NUMBER() OVER ()")
 
     def test_window_with_partition_by(self) -> None:
         """
         Tests a window function with a PARTITION BY clause.
         """
         window = WindowExpression("RANK", "rank_val", partition_by=["category", "year"])
-        self.assertEqual(
-            str(window), "RANK() OVER (PARTITION BY category, year) AS rank_val"
-        )
+        self.assertEqual(str(window), "RANK() OVER (PARTITION BY category, year)")
 
     def test_window_with_order_by(self) -> None:
         """
@@ -71,9 +71,7 @@ class TestWindowExpression(unittest.TestCase):
         window = WindowExpression(
             "NTILE", "ntile_group", order_by=["score DESC", "date"]
         )
-        self.assertEqual(
-            str(window), "NTILE() OVER (ORDER BY score DESC, date) AS ntile_group"
-        )
+        self.assertEqual(str(window), "NTILE() OVER (ORDER BY score DESC, date)")
 
     def test_window_with_partition_and_order_by(self) -> None:
         """
@@ -87,7 +85,67 @@ class TestWindowExpression(unittest.TestCase):
         )
         self.assertEqual(
             str(window),
-            "LEAD() OVER (PARTITION BY product_id ORDER BY transaction_date) AS next_value",
+            "LEAD() OVER (PARTITION BY product_id ORDER BY transaction_date)",
+        )
+
+    def test_window_string_form_keeps_args_and_frame(self) -> None:
+        """
+        The string form keeps the function arguments and the frame clause,
+        which the select-list form also keeps.
+        """
+        window = WindowExpression(
+            "SUM",
+            "running_total",
+            order_by=["id"],
+            args=["amount"],
+            frame="ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW",
+        )
+        self.assertEqual(
+            str(window),
+            "SUM(amount) OVER (ORDER BY id "
+            "ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)",
+        )
+
+    def test_window_nested_in_a_function(self) -> None:
+        """
+        A window passed as a function argument keeps its arguments and its
+        frame, and carries no alias inside the call.
+        """
+        window = WindowExpression(
+            "SUM",
+            "running_total",
+            partition_by=["team_id"],
+            order_by=["id"],
+            args=["amount"],
+            frame="ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW",
+        )
+        compiler = Dialects.get_compiler(Dialects.DEFAULT)
+        self.assertEqual(
+            compiler.compile_function(Func("COALESCE", window, Literal(0))),
+            "COALESCE(SUM(amount) OVER (PARTITION BY team_id ORDER BY id "
+            "ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW), 0)",
+        )
+
+    def test_window_nested_in_a_function_quotes_per_dialect(self) -> None:
+        """
+        A nested window is quoted by the dialect that renders the call.
+        """
+        window = WindowExpression("RANK", "rank_val", partition_by=["team_id"])
+        compiler = Dialects.get_compiler(Dialects.POSTGRES)
+        self.assertEqual(
+            compiler.compile_function(Func("CAST_TEST", window)),
+            'CAST_TEST(RANK() OVER (PARTITION BY "team_id"))',
+        )
+
+    def test_window_in_a_select_list_keeps_its_alias(self) -> None:
+        """
+        The select-list form still ends with the alias.
+        """
+        window = WindowExpression("ROW_NUMBER", "row_num", order_by=["id"])
+        compiler = Dialects.get_compiler(Dialects.DEFAULT)
+        self.assertEqual(
+            compiler.compile_window(window),
+            "ROW_NUMBER() OVER (ORDER BY id) AS row_num",
         )
 
 

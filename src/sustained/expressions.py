@@ -321,21 +321,20 @@ class WindowExpression:
         """
         Renders the window function as a SQL string.
 
+        The rendering comes from the default dialect's compiler, which is
+        the same code the query compiler runs. The string form is the
+        nested form, so it carries the function arguments and the frame
+        clause but no alias. An alias is only valid at the top of a select
+        list, where the compiler adds it.
+
         Returns:
             The SQL string representation.
         """
-        over_clauses = []
-        if self.partition_by:
-            over_clauses.append(f"PARTITION BY {', '.join(self.partition_by)}")
-        if self.order_by:
-            over_clauses.append(f"ORDER BY {', '.join(self.order_by)}")
+        # Late import to avoid a circular dependency: the compilers import
+        # this module.
+        from .dialects import Dialects
 
-        over_sql = " ".join(over_clauses)
-        # Check if over_sql is empty before adding parentheses
-        if over_sql:
-            return f"{self.function_name}() OVER ({over_sql}) AS {self.alias}"
-        else:
-            return f"{self.function_name}() OVER () AS {self.alias}"
+        return Dialects.get_compiler(Dialects.DEFAULT).compile_window_call(self)
 
 
 class CaseExpression:
