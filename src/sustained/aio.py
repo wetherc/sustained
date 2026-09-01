@@ -69,6 +69,8 @@ class AiosqliteConnection(Protocol):
 
     async def rollback(self) -> None: ...
 
+    async def close(self) -> None: ...
+
 
 class AiosqliteCursor(Protocol):
     """What this module reads off an aiosqlite cursor."""
@@ -101,12 +103,31 @@ class AsyncpgConnection(Protocol):
         self, sql: str, args: Sequence[Sequence[SqlValue]]
     ) -> object: ...
 
+    async def close(self) -> None: ...
+
 
 class AsyncAdapter:
     """
     The interface async execution needs from a driver. Subclasses implement
     fetch, execute, executemany, commit, and rollback.
     """
+
+    @asynccontextmanager
+    async def scope(self) -> AsyncIterator["AsyncAdapter"]:
+        """
+        The adapter one call runs on, for the length of that call. A plain
+        adapter is itself; a pool hands out one of the adapters it holds and
+        takes it back at the end. Every statement of the call runs on what
+        this yields, so a write and its commit stay on one connection.
+        """
+        yield self
+
+    async def close(self) -> None:
+        """
+        Closes the connection behind the adapter. The base does nothing,
+        for adapters that borrow a connection they do not own.
+        """
+        return None
 
     async def fetch(
         self, sql: str, params: Tuple[SqlValue, ...]
@@ -186,6 +207,10 @@ class DbApiAsyncAdapter(AsyncAdapter):
         async with self._lock:
             await asyncio.to_thread(self._connection.rollback)
 
+    async def close(self) -> None:
+        async with self._lock:
+            await asyncio.to_thread(self._connection.close)
+
 
 class AiosqliteAdapter(AsyncAdapter):
     """Adapts an aiosqlite connection."""
@@ -216,6 +241,9 @@ class AiosqliteAdapter(AsyncAdapter):
 
     async def rollback(self) -> None:
         await self._connection.rollback()
+
+    async def close(self) -> None:
+        await self._connection.close()
 
 
 def convert_format_to_numbered(sql: str) -> str:
@@ -272,6 +300,9 @@ class AsyncpgAdapter(AsyncAdapter):
     async def rollback(self) -> None:
         pass
 
+    async def close(self) -> None:
+        await self._connection.close()
+
 
 # Adapter pinned by an open async_transaction() block. A ContextVar keeps
 # the pin scoped to the current task tree.
@@ -317,6 +348,9 @@ async def async_transaction(
     on exception. The adapter pins to the current task context, so arun()
     calls inside the block use it without passing it around.
 
+    A pool checks one adapter out for the whole block, so every statement
+    in it shares the transaction, and gives it back at the end.
+
     Nested blocks on the same adapter use savepoints, spelled the way the
     dialect spells them; the default is the ANSI SAVEPOINT statement.
     Nesting raises DialectError on a dialect with no savepoints.
@@ -327,6 +361,16 @@ async def async_transaction(
     second one is read as nested. Give each concurrent task its own adapter,
     as a connection carries one transaction at a time in any case.
     """
+    async with adapter.scope() as pooled:
+        async with _transaction_on(pooled, dialect) as active:
+            yield active
+
+
+@asynccontextmanager
+async def _transaction_on(
+    adapter: AsyncAdapter, dialect: "Dialects | None" = None
+) -> AsyncIterator[AsyncAdapter]:
+    """The transaction itself, on one adapter that is already checked out."""
     from sustained.dialects import Dialects
 
     if dialect is None:
@@ -397,11 +441,20 @@ async def run_async(
     hydrated model instances with eager relations attached; writes return
     the affected row count or RETURNING rows as dicts.
 
+    A pool checks one adapter out for the whole call, so the statement, its
+    eager loads, and its commit all reach the same connection.
+
     Raises:
         AmbiguousColumns: If the result set repeats a column name.
     """
-    resolved = resolve_adapter(adapter, query._model_class)
+    async with resolve_adapter(adapter, query._model_class).scope() as resolved:
+        return await _run_query_on(query, resolved)
 
+
+async def _run_query_on(
+    query: "AnyQuery", resolved: AsyncAdapter
+) -> Union[List["Model"], WriteResult]:
+    """The query itself, on one adapter that is already checked out."""
     use_executemany = (
         query._stmt_type == "insert"
         and len(query._insert_rows) > 1

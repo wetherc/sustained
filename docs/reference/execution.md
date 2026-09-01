@@ -159,6 +159,10 @@ These live in `sustained.aio`. Every adapter has the same methods, so a query do
 | `await executemany(sql, seq_of_params)` | affected row count |
 | `await commit()` | `None` |
 | `await rollback()` | `None` |
+| `await close()` | `None` |
+| `async with scope()` | the adapter one call runs on |
+
+`scope()` is what every call opens before it runs. A plain adapter yields itself; a pool yields one of the adapters it holds and takes it back at the end, so a statement and its commit stay on one connection.
 
 ```python
 DbApiAsyncAdapter(connection)
@@ -181,7 +185,67 @@ AsyncpgAdapter(connection)
 
 Wraps asyncpg. Converts `%s` placeholders to `$1..$n`. asyncpg is autocommit, so `commit()` and `rollback()` do nothing, and `executemany()` returns `-1`.
 
-`AsyncAdapter` is the abstract base class. Subclass it for a driver that has no adapter here.
+`AsyncAdapter` is the abstract base class. Subclass it for a driver that has no adapter here. `close()` does nothing on the base, for an adapter that borrows a connection it does not own.
+
+## `AsyncConnectionPool`
+
+`AsyncConnectionPool` lives in `sustained.aio_pool`.
+
+```python
+AsyncConnectionPool(factory, max_size=5, timeout=30.0)
+```
+{: .sig #asyncconnectionpool}
+
+Pools adapters from an async `factory`, up to `max_size`, and reuses released ones. Bind it the way you bind an adapter. A `max_size` below 1 raises `ValueError`. One adapter runs one statement at a time, so a pool is how concurrent async queries reach the database in parallel.
+
+The pool is an `AsyncAdapter` so it can be bound and passed like one, but it runs no statement itself: `fetch()`, `execute()`, `executemany()`, `commit()`, and `rollback()` all raise `RuntimeError`, because a write and its commit would land on two different connections.
+
+```python
+size -> int
+```
+{: .sig #async_size}
+
+Property. The number of adapters opened so far.
+
+```python
+async with scope()
+```
+{: .sig #async_scope}
+
+Checks an adapter out and releases it at the end of the block.
+
+```python
+await acquire()
+```
+{: .sig #async_acquire}
+
+Checks an adapter out. You have to release it yourself. Raises `PoolTimeout` when the pool stays exhausted past `timeout`, and `RuntimeError` when the pool is closed.
+
+```python
+await release(adapter)
+```
+{: .sig #async_release}
+
+Gives an adapter back, rolling it back first so a failed statement does not reach the next task. An adapter the pool did not hand out raises `ValueError`, which is what catches a double release. An adapter that cannot roll back is closed and dropped, and its slot reopens.
+
+```python
+await close()
+```
+{: .sig #async_close}
+
+Closes the idle adapters and refuses new checkouts. A checked-out adapter closes on release.
+
+```python
+from sustained.aio import AsyncpgAdapter
+from sustained.aio_pool import AsyncConnectionPool
+
+async def open_adapter():
+    return AsyncpgAdapter(await asyncpg.connect(DSN))
+
+Model.bind_async(AsyncConnectionPool(open_adapter, max_size=10))
+```
+
+`AsyncMigrator` takes an adapter, not a pool: a migration run belongs on one session.
 
 ### Async helpers
 

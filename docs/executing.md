@@ -339,6 +339,31 @@ async with Show.async_transaction():
 
 `arun()` mirrors `run()`: hydration, RETURNING rows, batched multi-row inserts, and eager loading. Both paths share the same loader, so dotted paths, per-level batching, and relations through a link table behave the same way. `async_transaction()` mirrors `transaction()` as well: nested blocks open a savepoint, so an inner failure rolls back only the inner block.
 
+### Async pooling
+
+One adapter runs one statement at a time. A connection carries one transaction, `DbApiAsyncAdapter` holds a lock across every call, and asyncpg sends one statement per connection. Ten concurrent `arun()` calls on one adapter queue up behind each other.
+
+`AsyncConnectionPool` is the async twin of `ConnectionPool`. It opens adapters from an async factory, up to `max_size`, and binds like one:
+
+```python
+from sustained.aio import AsyncpgAdapter
+from sustained.aio_pool import AsyncConnectionPool
+
+async def open_adapter():
+    return AsyncpgAdapter(await asyncpg.connect(DSN))
+
+Show.bind_async(AsyncConnectionPool(open_adapter, max_size=10))
+
+shows, tickets = await asyncio.gather(
+    Show.query().arun(),
+    Ticket.query().arun(),
+)
+```
+
+Each call checks one adapter out for its whole length, the statement, its eager loads, and its commit alike, then gives it back. An `async_transaction()` block holds one adapter from BEGIN to COMMIT. A released adapter is rolled back first, so a failed statement never reaches the next task. An exhausted pool raises `PoolTimeout`, the same error the blocking pool raises, and `await pool.close()` closes the idle adapters.
+
+The pool runs no statement itself. `await pool.fetch(...)` raises, because a write and its commit would land on two different connections; take an adapter out with `async with pool.scope() as adapter` when you want to run something by hand. `AsyncMigrator` takes an adapter, not a pool: a migration run belongs on one session.
+
 ## Watching what runs
 
 `set_statement_listener()` registers a function called after every executed statement, with the SQL text, the parameter tuple, and the duration in seconds:

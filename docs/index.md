@@ -20,7 +20,7 @@ With Sustained, you can:
 - **Execute queries safely.** Every statement runs parameterized against any DB-API 2.0 connection or a `ConnectionPool`. Transactions nest through savepoints. `update()` and `delete()` refuse to run without a WHERE clause.
 - **Write data.** `insert()`, `update()`, `delete()`, upserts through `onConflict()`, `INSERT ... SELECT`, CREATE TABLE AS, and RETURNING.
 - **Hydrate results.** Rows become model instances, plain dicts, pandas DataFrames, or pyarrow Tables. Relations eager load with `withGraphFetched()`. A type checker reads `Show.query().run()` as `List[Show]`.
-- **Run queries async.** The same queries run through driver adapters with `await query.arun()`, including asyncpg and aiosqlite.
+- **Run queries async.** The same queries run through driver adapters with `await query.arun()`, including asyncpg and aiosqlite. `AsyncConnectionPool` pools those adapters, so concurrent queries do not queue behind one connection.
 
 ## Schema management with Sustained
 
