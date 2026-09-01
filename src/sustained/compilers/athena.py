@@ -114,7 +114,7 @@ class AthenaCompiler(PrestoCompiler):
         # Trino parser, which has no LOCATION or TBLPROPERTIES clause, so
         # every CREATE and ALTER with one fails to parse. Queries and MERGE
         # run on the Trino engine and keep Presto's double quotes.
-        return f"`{identifier}`"
+        return "`{}`".format(identifier.replace("`", "``"))
 
     def compile_column_type(self, column: "ColumnDef") -> str:
         # Every VARCHAR renders as STRING. Iceberg tables reject VARCHAR

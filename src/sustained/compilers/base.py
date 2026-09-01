@@ -73,6 +73,23 @@ class Compiler:
             self.quote_ddl_identifier(part) for part in identifier.split(".")
         )
 
+    def quote_alias(self, alias: str) -> str:
+        """
+        Quotes a result alias.
+
+        An alias arrives from the caller as free text, and the default
+        dialect writes identifiers bare, so an alias that is not a plain
+        name would run outside the quotes. Aliases take letters, digits,
+        and underscores only.
+        """
+        if not _IDENTIFIER_PATH_RE.match(alias):
+            raise ValueError(
+                f"Alias {alias!r} is not a plain identifier. An alias takes "
+                "letters, digits, and underscores, and starts with a letter "
+                "or an underscore."
+            )
+        return self.quote_identifier(alias)
+
     def quote_column_reference(self, column: Union[str, Expression]) -> str:
         """
         Quotes a column reference for use inside a clause.
@@ -723,7 +740,7 @@ class Compiler:
         formatted_args = ", ".join(self._format_arg(arg) for arg in func.args)
         sql = f"{function_name}({formatted_args})"
         if func.alias:
-            sql += f" AS {self.quote_identifier(func.alias)}"
+            sql += f" AS {self.quote_alias(func.alias)}"
         return sql
 
     def compile_aggregate(self, agg: AggregateExpression) -> str:
@@ -734,7 +751,7 @@ class Compiler:
         column = self.quote_column_reference(agg.column)
         sql = f"{agg.function_name}({column})"
         if agg.alias:
-            sql += f" AS {self.quote_identifier(agg.alias)}"
+            sql += f" AS {self.quote_alias(agg.alias)}"
         return sql
 
     def compile_window(self, window: WindowExpression) -> str:
@@ -755,7 +772,7 @@ class Compiler:
             over_clauses.append(window.frame)
         over_sql = " ".join(over_clauses)
         args_sql = ", ".join(self._format_arg(arg) for arg in window.args)
-        alias_sql = self.quote_identifier(window.alias)
+        alias_sql = self.quote_alias(window.alias)
         return f"{window.function_name}({args_sql}) OVER ({over_sql}) AS {alias_sql}"
 
     def _quote_order_entry(self, entry: str) -> str:
@@ -774,7 +791,7 @@ class Compiler:
         for condition, result in case.whens:
             sql += f" WHEN {condition} THEN {self._format_case_result(result)}"
         sql += f" ELSE {self._format_case_result(case.else_result)}"
-        sql += f" END AS {self.quote_identifier(case.alias)}"
+        sql += f" END AS {self.quote_alias(case.alias)}"
         return sql
 
     def _format_case_result(self, result: "CaseResult") -> str:

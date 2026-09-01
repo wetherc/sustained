@@ -7,10 +7,12 @@ from .base import Compiler
 
 class MssqlCompiler(Compiler):
     def quote_identifier(self, identifier: str) -> str:
-        return f"[{identifier}]"
+        # A closing bracket inside the name doubles, so a name can never
+        # end the quoted span early.
+        return "[{}]".format(identifier.replace("]", "]]"))
 
     def quote_fully_qualified_identifier(self, identifier: str) -> str:
-        return ".".join(f"[{part}]" for part in identifier.split("."))
+        return ".".join(self.quote_identifier(part) for part in identifier.split("."))
 
     def compile_top(self, value: int) -> str:
         return f"TOP {value}"

@@ -8,7 +8,9 @@ if TYPE_CHECKING:
 
 class PostgresCompiler(Compiler):
     def quote_identifier(self, identifier: str) -> str:
-        return f'"{identifier}"'
+        # A double quote inside the name doubles, so a name can never end
+        # the quoted span early.
+        return '"{}"'.format(identifier.replace('"', '""'))
 
     def stores_column_comments(self) -> bool:
         return True
