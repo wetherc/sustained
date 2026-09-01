@@ -136,15 +136,25 @@ def missing_reason(name, have_docker):
     return None
 
 
+def needs_container(name):
+    """
+    True when this server needs a compose container. A server that runs
+    in the process, such as sqlite, needs none. Neither does a server the
+    developer points at with a connection variable.
+    """
+    row = ROWS[name]
+    return row["server"] == "container" and not os.environ.get(row["dsn_env"] or "")
+
+
 def services_for(names):
     """The compose services needed by these servers, in support.json order."""
     wanted = []
     for name in names:
-        row = ROWS[name]
-        if row["server"] != "container" or os.environ.get(row["dsn_env"] or ""):
+        if not needs_container(name):
             continue
-        if row["service"] not in wanted:
-            wanted.append(row["service"])
+        service = ROWS[name]["service"]
+        if service not in wanted:
+            wanted.append(service)
     return wanted
 
 
@@ -407,9 +417,12 @@ def main(argv):
         if services:
             started = start(services)
             if not started:
+                # Only the targets that wanted a container are blocked.
+                # The rest, such as sqlite and duckdb, still run.
                 waited = "the server did not start"
-                results.extend(emit(Result(n, WAITING, waited)) for n in runnable)
-                runnable = []
+                blocked = [n for n in runnable if needs_container(n)]
+                results.extend(emit(Result(n, WAITING, waited)) for n in blocked)
+                runnable = [n for n in runnable if n not in blocked]
         for name in runnable:
             results.append(emit(run_server(name)))
     finally:
