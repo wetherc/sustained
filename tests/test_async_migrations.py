@@ -305,6 +305,47 @@ class TestAsyncIntrospection(unittest.IsolatedAsyncioTestCase):
             await async_introspect_schema(self.adapter, Dialects.POSTGRES)
 
 
+class TestAsyncGeneratedDown(unittest.IsolatedAsyncioTestCase):
+    """
+    A migration generated from the models by the sync migrator, reverted
+    by the async one. The statements come off the tracking row.
+    """
+
+    def setUp(self):
+        self.conn = sqlite3.connect(":memory:", check_same_thread=False)
+        self.adapter = DbApiAsyncAdapter(self.conn)
+
+    def tearDown(self):
+        self.conn.close()
+
+    def models(self):
+        from sustained.model import Model
+        from sustained.schema import Integer
+
+        return [
+            type(
+                "AsyncGenUser",
+                (Model,),
+                {
+                    "tableName": "async_gen_users",
+                    "tableColumns": {"id": Integer(primary_key=True)},
+                },
+            )
+        ]
+
+    async def test_async_down_reverts_a_generated_migration(self):
+        from sustained.migrations import Migrator
+
+        Migrator(self.conn, []).up(models=self.models())
+        self.assertIn("async_gen_users", table_names(self.conn))
+
+        migrator = AsyncMigrator(self.adapter, [])
+        applied_id = (await migrator.applied())[0]
+        self.assertEqual(await migrator.down(), [applied_id])
+        self.assertNotIn("async_gen_users", table_names(self.conn))
+        self.assertEqual(await migrator.applied(), [])
+
+
 class TestAsyncRehearse(unittest.IsolatedAsyncioTestCase):
     """The async mirror of Migrator.rehearse()."""
 

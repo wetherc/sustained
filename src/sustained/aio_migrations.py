@@ -944,7 +944,7 @@ class AsyncMigrator:
         migrator writes these rows when it applies a diff against the
         models, and either migrator can take one back.
         """
-        rows = await self._fetch(
+        _, rows = await self._fetch(
             f"SELECT {self._compiler.quote_identifier('steps')} "
             f"FROM {self._table_sql()} WHERE "
             f"{self._compiler.quote_identifier('id')} = "
