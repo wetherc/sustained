@@ -17,23 +17,33 @@ class TestModel(unittest.TestCase):
         self.assertIn("name='Test'", repr(instance))
         self.assertIn("MyModel", repr(instance))
 
-    def test_getattr_fully_qualified(self):
+    def test_getattr_fully_qualified_on_the_class(self):
         class MyModel(Model):
             database = "mydb"
             tableSchema = "myschema"
             tableName = "my_table"
 
-        model_instance = MyModel()
-        self.assertEqual(model_instance.id, "mydb.myschema.my_table.id")
-        self.assertEqual(model_instance.name, "mydb.myschema.my_table.name")
+        self.assertEqual(MyModel.id, "mydb.myschema.my_table.id")
+        self.assertEqual(MyModel.name, "mydb.myschema.my_table.name")
 
-    def test_getattr_table_only(self):
+    def test_getattr_table_only_on_the_class(self):
         class MyModel(Model):
             tableName = "my_table"
 
-        model_instance = MyModel()
-        self.assertEqual(model_instance.id, "my_table.id")
-        self.assertEqual(model_instance.name, "my_table.name")
+        self.assertEqual(MyModel.id, "my_table.id")
+
+    def test_getattr_on_an_instance_raises(self):
+        class MyModel(Model):
+            tableName = "my_table"
+
+        instance = MyModel(id=1)
+        self.assertEqual(instance.id, 1)
+        # A column the query did not select is missing, not a column name.
+        self.assertFalse(hasattr(instance, "name"))
+        with self.assertRaisesRegex(
+            AttributeError, "'MyModel' object has no attribute 'name'"
+        ):
+            _ = instance.name
 
     def test_getattr_no_table_name_raises_attribute_error(self):
         class MyModel(Model):

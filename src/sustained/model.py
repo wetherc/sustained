@@ -261,32 +261,31 @@ class Model(metaclass=ModelMeta):
         attributes = ", ".join(f"{k}={v!r}" for k, v in self.__dict__.items())
         return f"{self.__class__.__name__}({attributes})"
 
-    def __getattr__(self, name: str) -> str:
+    # An instance carries the columns the query selected, and their types
+    # are only known at query time, so the value cannot be typed here.
+    def __getattr__(self, name: str) -> Any:
         """
-        Provides attribute-style access to table columns, which returns a
-        fully-qualified column name string for use in queries.
+        Raises for any name the instance does not carry.
 
-        Example:
-            If a `User` model has `tableName = 'users'`, then `User().id` would
-            return `'users.id'`.
+        An instance holds one attribute per column the query selected, so
+        a missing name means the column was not selected or does not
+        exist. Both are mistakes, and raising lets `hasattr()` and a
+        truth test report what the row really holds.
+
+        Column references belong on the class: `User.id` and `User.c.id`
+        both name the column without a row.
 
         Raises:
-            AttributeError: If the attribute does not exist or if `tableName`
-                            is not defined on the model.
+            AttributeError: Always.
         """
         cls = self.__class__
-        # Private and dunder names are never table columns. Refusing them here
-        # keeps copy, pickle, and typo'd internals from resolving to bogus
-        # column strings.
         if name.startswith("_"):
             raise AttributeError(f"'{cls.__name__}' object has no attribute '{name}'")
-
-        # We must have a table name to provide a column reference.
-        if cls.tableName:
-            _check_declared_columns(cls, name)
-            return _qualified_column(cls, name)
-
-        raise AttributeError(f"'{cls.__name__}' object has no attribute '{name}'")
+        raise AttributeError(
+            f"'{cls.__name__}' object has no attribute '{name}'. The query "
+            f"did not select it. Use {cls.__name__}.{name} or "
+            f"{cls.__name__}.c.{name} for the column itself."
+        )
 
     @classmethod
     def set_dialect(cls, dialect: Dialects) -> None:

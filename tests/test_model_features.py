@@ -23,8 +23,10 @@ class TestClassLevelColumnAccess(unittest.TestCase):
     def test_class_attribute_returns_qualified_column(self):
         self.assertEqual(ColUser.id, "users.id")
 
-    def test_instance_attribute_still_works(self):
-        self.assertEqual(ColUser().name, "users.name")
+    def test_instance_attribute_needs_the_column_to_be_loaded(self):
+        self.assertEqual(ColUser(name="Ada").name, "Ada")
+        with self.assertRaises(AttributeError):
+            ColUser().name
 
     def test_schema_and_database_included(self):
         Qualified = create_model(

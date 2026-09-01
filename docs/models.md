@@ -46,7 +46,7 @@ Venue.query().select(Venue.name, Venue.city)
 
 Qualified names matter in joins, where two tables can both have columns with the same name. They come from the same three parts as the table name, so a model with a `database` and `tableSchema` produces `analytics.public.venues.city`.
 
-Instances behave the same way. `Venue().city` is also `'venues.city'`, which means a hydrated instance returns the column name for any attribute the query did not populate.
+Instances do not behave this way. An instance holds one attribute per column the query selected, so `venue.city` gives the value of that row. A column the query left out raises `AttributeError`, which keeps `hasattr(venue, 'city')` and `if venue.city:` truthful about what the row holds.
 
 ## Catching column typos
 
@@ -62,7 +62,7 @@ Venue.citty
 # Declared columns: id, name, city, capacity.
 ```
 
-The check runs on the class, on instances, and on the `Model.c` namespace below. It does not run on the string arguments to `select()` or `where()`, which are passed through to the SQL as written.
+The check runs on the class and on the `Model.c` namespace below. It does not run on the string arguments to `select()` or `where()`, which are passed through to the SQL as written.
 
 Declaring `tableColumns` sets `columns` for you from the same keys, so a model with a typed schema gets the check without repeating the names:
 
