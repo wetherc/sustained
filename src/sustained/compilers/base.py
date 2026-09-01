@@ -727,12 +727,24 @@ class Compiler:
         offset: Optional[int],
         has_order_by: bool = False,
     ) -> str:
+        if limit is None and offset is not None:
+            return self.compile_offset_without_limit(offset)
         parts = []
         if limit is not None:
             parts.append(f"LIMIT {limit}")
         if offset is not None:
             parts.append(f"OFFSET {offset}")
         return " ".join(parts)
+
+    def compile_offset_without_limit(self, offset: int) -> str:
+        """
+        Renders an OFFSET that has no LIMIT with it.
+
+        SQLite, which the default dialect targets, needs a row cap before
+        OFFSET, and LIMIT -1 is its spelling of "all rows". Dialects that
+        take a bare OFFSET override this.
+        """
+        return f"LIMIT -1 OFFSET {offset}"
 
     def compile_function(self, func: Func) -> str:
         """

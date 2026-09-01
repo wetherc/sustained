@@ -29,6 +29,10 @@ class DuckDbCompiler(Compiler):
     def parenthesized_set_members(self) -> bool:
         return True
 
+    def compile_offset_without_limit(self, offset: int) -> str:
+        # DuckDB takes a bare OFFSET and rejects a negative LIMIT.
+        return f"OFFSET {offset}"
+
     def compile_distinct_on(self, columns_sql: "list[str]") -> str:
         return f"DISTINCT ON ({', '.join(columns_sql)})"
 

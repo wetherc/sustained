@@ -36,6 +36,14 @@ class TestDuckDbRendering(unittest.TestCase):
         sql = str(Duck.query().insert({"id": 1, "kind": "x"}).onConflict("id").merge())
         self.assertIn("ON CONFLICT", sql)
 
+    def test_offset_without_limit_stays_bare(self):
+        """
+        DuckDB takes an OFFSET with no LIMIT, so it needs no row cap.
+        """
+        sql = str(Duck.query().offset(5))
+        self.assertTrue(sql.endswith("OFFSET 5"))
+        self.assertNotIn("LIMIT", sql)
+
     def test_registered_functions(self):
         self.assertIn("NOW()", str(Duck.query().now(alias="ts")))
 

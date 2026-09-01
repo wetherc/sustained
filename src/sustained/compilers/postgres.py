@@ -37,6 +37,10 @@ class PostgresCompiler(Compiler):
     def parenthesized_set_members(self) -> bool:
         return True
 
+    def compile_offset_without_limit(self, offset: int) -> str:
+        # Postgres takes a bare OFFSET and rejects a negative LIMIT.
+        return f"OFFSET {offset}"
+
     _TYPE_MAP = {**Compiler._TYPE_MAP, "JSON": "JSONB", "BINARY": "BYTEA"}
 
     def compile_identity(self) -> str:

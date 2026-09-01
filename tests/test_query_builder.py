@@ -110,7 +110,8 @@ class TestQueryBuilder(unittest.TestCase):
             tableName = "users"
 
         query = User.query().select("*").offset(10)
-        self.assertEqual(str(query), "SELECT * FROM users OFFSET 10")
+        # SQLite needs a row cap before OFFSET, and LIMIT -1 means all rows.
+        self.assertEqual(str(query), "SELECT * FROM users LIMIT -1 OFFSET 10")
 
     def test_from_with_subquery(self):
         class Movie(Model):
@@ -196,7 +197,7 @@ class TestQueryBuilder(unittest.TestCase):
         query = active_users.union(active_customers).offset(10)
         self.assertEqual(
             str(query),
-            "SELECT id, name FROM users WHERE active = TRUE UNION SELECT id, name FROM customers WHERE active = TRUE OFFSET 10",
+            "SELECT id, name FROM users WHERE active = TRUE UNION SELECT id, name FROM customers WHERE active = TRUE LIMIT -1 OFFSET 10",
         )
 
     def test_union_with_cte_hoisting(self):

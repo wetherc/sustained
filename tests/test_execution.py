@@ -108,6 +108,15 @@ class TestExecution(unittest.TestCase):
         self.assertEqual(pets[0].owner.name, "Ada")
         self.assertEqual(pets[2].owner.name, "Grace")
 
+    def test_offset_without_limit_runs_on_sqlite(self):
+        """
+        SQLite rejects a bare OFFSET, so an offset with no limit renders a
+        row cap of all rows and the statement runs.
+        """
+        self._seed()
+        owners = ExecOwner.query().orderBy("id").offset(1).run()
+        self.assertEqual([o.id for o in owners], [2, 3])
+
     def test_unknown_relation_raises_immediately(self):
         with self.assertRaises(ValueError):
             ExecOwner.query().withGraphFetched("nope")

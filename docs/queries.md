@@ -264,7 +264,7 @@ Show.query().top(10)
 # others:  DialectError: TOP is not supported by the 'DEFAULT' dialect. Use limit() instead.
 ```
 
-`limit()` and `top()` on the same query raise `ValueError`. On MSSQL, `limit()` and `offset()` compile to `OFFSET ... FETCH`, which T-SQL only allows after an `ORDER BY`, so the query raises `DialectError` without one. On Presto, `OFFSET` renders before `LIMIT`. And an offset deep into a large table costs a scan that grows with the offset. To avoid this, use `cursor_page()`:
+`limit()` and `top()` on the same query raise `ValueError`. On MSSQL, `limit()` and `offset()` compile to `OFFSET ... FETCH`, which T-SQL only allows after an `ORDER BY`, so the query raises `DialectError` without one. On Presto, `OFFSET` renders before `LIMIT`. An `offset()` with no `limit()` needs a row cap on the dialects that reject a bare `OFFSET`: the default dialect renders `LIMIT -1 OFFSET n`, which SQLite reads as all rows, and MySQL renders its own all-rows cap. Postgres and DuckDB keep the bare `OFFSET`. And an offset deep into a large table costs a scan that grows with the offset. To avoid this, use `cursor_page()`:
 
 ```python
 first = Ticket.query().cursor_page('id', 100).run()
