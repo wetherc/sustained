@@ -23,7 +23,7 @@ With Sustained, you can:
 
 ## Schema management with Sustained
 
-Sustained also provides strong support for database schema change management, to allow you easily and reliably test schema changes safely, evolve your database schema, and easily roll back migrations. These features are discussed in detail at [Schema and Migrations](./schema).
+Sustained also provides strong support for database schema change management, to allow you easily and reliably test schema changes safely, evolve your database schema, and easily roll back migrations. These features are discussed in detail at [Schema and Migrations](https://sustained.tbmh.org/schema).
 
 With Sustained, schema migrations are:
 
