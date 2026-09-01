@@ -88,6 +88,128 @@ class TestPoolBasics(unittest.TestCase):
             ConnectionPool(lambda: None, max_size=0)
 
 
+class FakeCursor:
+    """Answers the pool's health probe and nothing else."""
+
+    def execute(self, sql, parameters=()):
+        self.sql = sql
+
+    def fetchall(self):
+        return [(1,)]
+
+    def close(self):
+        pass
+
+
+class FakeConnection:
+    """A connection that records the hygiene calls the pool makes on it."""
+
+    def __init__(self, autocommit=False, rollback_error=None, responds=False):
+        self.autocommit = autocommit
+        self.rollbacks = 0
+        self.closed = False
+        self._rollback_error = rollback_error
+        self._responds = responds
+
+    def cursor(self):
+        if not self._responds:
+            raise RuntimeError("this connection is gone")
+        return FakeCursor()
+
+    def commit(self):  # pragma: no cover - the pool never commits
+        raise NotImplementedError
+
+    def rollback(self):
+        self.rollbacks += 1
+        if self._rollback_error is not None:
+            raise self._rollback_error
+
+    def close(self):
+        self.closed = True
+
+
+class TestPoolHygiene(unittest.TestCase):
+    def _pool(self, factory, **kwargs):
+        pool = ConnectionPool(factory, **kwargs)
+        self.addCleanup(pool.close)
+        return pool
+
+    def test_release_rolls_back_before_reuse(self):
+        conn = FakeConnection()
+        pool = self._pool(lambda: conn, max_size=1)
+        pool.release(pool.acquire_raw())
+        self.assertEqual(conn.rollbacks, 1)
+        self.assertIs(pool.acquire_raw(), conn)
+
+    def test_release_skips_rollback_in_autocommit(self):
+        conn = FakeConnection(autocommit=True)
+        pool = self._pool(lambda: conn, max_size=1)
+        pool.release(pool.acquire_raw())
+        self.assertEqual(conn.rollbacks, 0)
+
+    def test_failed_rollback_discards_the_connection(self):
+        made = [FakeConnection(rollback_error=RuntimeError("gone")), FakeConnection()]
+        pool = self._pool(lambda: made.pop(0), max_size=1, timeout=0.05)
+        first = pool.acquire_raw()
+        pool.release(first)
+        self.assertTrue(first.closed)
+        self.assertEqual(pool.size, 0)
+        second = pool.acquire_raw()
+        self.assertIsNot(second, first)
+        pool.release(second)
+
+    def test_a_healthy_connection_that_refuses_rollback_is_kept(self):
+        made = []
+
+        def factory():
+            conn = FakeConnection(
+                rollback_error=RuntimeError("no transaction is active"),
+                responds=True,
+            )
+            made.append(conn)
+            return conn
+
+        pool = self._pool(factory, max_size=1)
+        first = pool.acquire_raw()
+        pool.release(first)
+        self.assertFalse(first.closed)
+        self.assertIs(pool.acquire_raw(), first)
+        pool.release(first)
+        # The pool asked once, learned the driver refuses, and stopped.
+        self.assertEqual(first.rollbacks, 1)
+        self.assertEqual(len(made), 1)
+
+    def test_double_release_is_refused(self):
+        pool = self._pool(lambda: FakeConnection(), max_size=2)
+        conn = pool.acquire_raw()
+        pool.release(conn)
+        with self.assertRaises(ValueError):
+            pool.release(conn)
+        self.assertEqual(pool.size, 1)
+
+    def test_foreign_release_is_refused(self):
+        pool = self._pool(lambda: FakeConnection(), max_size=1)
+        with self.assertRaises(ValueError):
+            pool.release(FakeConnection())
+        self.assertEqual(pool.size, 0)
+
+    def test_release_after_close_closes_the_connection(self):
+        conn = FakeConnection()
+        pool = ConnectionPool(lambda: conn, max_size=1)
+        checked_out = pool.acquire_raw()
+        pool.close()
+        pool.release(checked_out)
+        self.assertTrue(conn.closed)
+        self.assertEqual(pool.size, 0)
+
+    def test_close_frees_the_created_count(self):
+        pool = ConnectionPool(lambda: FakeConnection(), max_size=2)
+        pool.release(pool.acquire_raw())
+        self.assertEqual(pool.size, 1)
+        pool.close()
+        self.assertEqual(pool.size, 0)
+
+
 class TestPoolExecution(PoolTestCase):
     def test_run_checks_out_and_releases(self):
         PoolUser.query().insert([{"id": 1, "name": "a"}, {"id": 2, "name": "b"}]).run()
