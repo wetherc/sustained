@@ -362,7 +362,7 @@ The checksum of a ddl step hashes its operation name and arguments rather than i
 
 ## Migrations as SQL files
 
-Migrations can live as plain SQL files instead of Python objects. `load_migrations()` reads a directory of `<id>.up.sql` files, each optionally paired with a `<id>.down.sql`, and returns `Migration` objects ordered by id, so file naming fixes the apply order. Statements split at line-ending semicolons; semicolons inside string literals stay intact.
+Migrations can live as plain SQL files instead of Python objects. `load_migrations()` reads a directory of `<id>.up.sql` files, each optionally paired with a `<id>.down.sql`, and returns `Migration` objects ordered by id, so file naming fixes the apply order. Statements split at line-ending semicolons, with or without a `--` comment after the semicolon; semicolons inside string literals stay intact.
 
 ```
 migrations/
@@ -378,7 +378,7 @@ migrator = Migrator(conn, load_migrations('migrations'))
 migrator.up()
 ```
 
-Empty up or down files, a down file without its up file, and `.sql` files that fit neither naming pattern raise `ValueError`. Files without a `.sql` extension are ignored, so a README can live alongside the migrations.
+Empty up or down files, a down file without its up file, and files that fit no naming pattern raise `ValueError`. The naming check reads every file in the directory, whatever its extension, so a typo like `0002_add.up.sq` cannot be skipped silently. Keep other files, a README included, outside the migrations directory. Subdirectories are passed over, and so are dotfiles and editor backup files (`*~`, `*.bak`, `*.orig`, `*.swp`, `*.swo`, `*.tmp`).
 
 ## Repeatable migrations
 

@@ -489,9 +489,9 @@ load_migrations(directory, placeholders=None) -> list[Migration]
 ```
 {: .sig #load_migrations}
 
-`load_migrations` reads the `<id>.up.sql` files first, each one optionally paired with `<id>.down.sql`, sorted by id. Then it reads the `<id>.repeat.sql` repeatables, also sorted by id. Statements split at line-ending semicolons, so a semicolon inside a string literal survives the split. A body that holds its own statements, such as a trigger or a procedure, does not survive it.
+`load_migrations` reads the `<id>.up.sql` files first, each one optionally paired with `<id>.down.sql`, sorted by id. Then it reads the `<id>.repeat.sql` repeatables, also sorted by id. Statements split at line-ending semicolons, with or without a `--` comment after the semicolon, so a semicolon inside a string literal survives the split. A body that holds its own statements, such as a trigger or a procedure, does not survive it.
 
-`load_migrations` raises `ValueError` for a missing directory, for a `.sql` file that matches none of the naming patterns, for an id with both an up file and a repeat file, for a down file with no up file, and for an empty up, down, or repeat file. It ignores a file without a `.sql` extension, so a README can sit alongside the migrations.
+`load_migrations` raises `ValueError` for a missing directory, for a file that matches none of the naming patterns, for an id with both an up file and a repeat file, for a down file with no up file, and for an empty up, down, or repeat file. The naming check reads every file in the directory, whatever its extension, so a misnamed migration such as `0002_add.up.sq` raises instead of loading nothing. It passes over subdirectories, dotfiles, and editor backup files (`*~`, `*.bak`, `*.orig`, `*.swp`, `*.swo`, `*.tmp`); every other file must follow a naming pattern, so keep a README outside the migrations directory.
 
 ```python
 substitute_placeholders(text, placeholders, source) -> str
@@ -507,7 +507,7 @@ split_sql_statements(text) -> list[str]
 ```
 {: .sig #split_sql_statements}
 
-`split_sql_statements` splits on line-ending semicolons, and drops the pieces that hold only whitespace or only comments.
+`split_sql_statements` splits on line-ending semicolons, including a semicolon with a `--` comment after it, and drops the pieces that hold only whitespace or only comments.
 
 ## Autogeneration internals
 

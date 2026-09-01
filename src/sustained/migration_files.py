@@ -12,7 +12,8 @@ its contents change, for views, functions, and seed data. Repeatables
 have no down file, sort after every versioned migration, and an id may
 not have both an up file and a repeat file.
 
-Files split into statements at semicolons that end a line. A body with
+Files split into statements at semicolons that end a line, with or
+without a '--' comment after the semicolon. A body with
 embedded semicolons, such as a trigger or procedure, does not survive
 that; write it as a hand-written Migration with a callable step, or keep
 it as the only statement in its file with no trailing semicolon.
@@ -32,11 +33,19 @@ from typing import Dict, List, Optional, Union
 
 from sustained.migrations import Migration
 
-_STATEMENT_END_RE = re.compile(r";[ \t]*\n")
+# A statement ends at a semicolon that ends its line. A trailing '--'
+# comment after the semicolon is part of that line, so it does not glue
+# the next statement onto this one.
+_STATEMENT_END_RE = re.compile(r";[ \t]*(?:--[^\n]*)?\n")
 
 _UP_SUFFIX = ".up.sql"
 _DOWN_SUFFIX = ".down.sql"
 _REPEAT_SUFFIX = ".repeat.sql"
+
+# Names the naming check passes over: the files an editor or a tool
+# leaves next to the migrations. A dotfile is hidden and never a
+# migration, and these suffixes are backup or swap copies.
+_IGNORED_SUFFIXES = ("~", ".bak", ".orig", ".swp", ".swo", ".tmp")
 
 _PLACEHOLDER_RE = re.compile(r"\$\$\{|\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$\{")
 
@@ -78,11 +87,21 @@ def substitute_placeholders(
     return _PLACEHOLDER_RE.sub(_replace, text)
 
 
+def _ignored_name(name: str) -> bool:
+    """
+    Whether the naming check passes over a file. A dotfile is hidden, and
+    an editor backup or swap file is a copy of another file, so neither
+    one is a migration somebody misnamed.
+    """
+    return name.startswith(".") or name.endswith(_IGNORED_SUFFIXES)
+
+
 def split_sql_statements(text: str) -> List[str]:
     """
     Splits a SQL file's contents into statements at semicolons that end a
-    line. Pieces holding only whitespace or '--' comments are dropped; a
-    missing final semicolon is fine.
+    line, with or without a '--' comment after the semicolon. Pieces
+    holding only whitespace or '--' comments are dropped; a missing final
+    semicolon is fine.
     """
     statements = []
     for piece in _STATEMENT_END_RE.split(text):
@@ -106,8 +125,12 @@ def load_migrations(
     by id, followed by the '<id>.repeat.sql' repeatables in id order.
     Raises when the directory is missing, a file is empty, a down file
     has no up file, an id has both an up file and a repeat file, or a
-    '.sql' file follows no naming pattern, so a misnamed migration
-    cannot be skipped silently.
+    file follows no naming pattern, so a misnamed migration cannot be
+    skipped silently. Every file in the directory is checked, whatever
+    its extension, because a typo like '0002_add.up.sq' is the case the
+    check is for. Directories are passed over, and so are dotfiles and
+    editor backup files ('*~', '*.bak', '*.orig', '*.swp', '*.swo',
+    '*.tmp'), which are copies of another file rather than migrations.
 
     When a placeholders mapping is given, even an empty one, '${key}'
     markers in the files are filled from it before statements split and
@@ -122,7 +145,7 @@ def load_migrations(
     downs = {}
     repeats = {}
     for entry in sorted(path.iterdir()):
-        if not entry.is_file() or not entry.name.endswith(".sql"):
+        if entry.is_dir() or _ignored_name(entry.name):
             continue
         if entry.name.endswith(_UP_SUFFIX):
             ups[entry.name[: -len(_UP_SUFFIX)]] = entry
@@ -134,7 +157,8 @@ def load_migrations(
             raise ValueError(
                 f"Migration file {entry.name!r} matches none of "
                 f"'*{_UP_SUFFIX}', '*{_DOWN_SUFFIX}', '*{_REPEAT_SUFFIX}'; "
-                "rename it so it cannot be skipped silently."
+                "rename it so it cannot be skipped silently, or move it "
+                "out of the migrations directory."
             )
 
     both = sorted(set(ups) & set(repeats))

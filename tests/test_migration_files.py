@@ -36,6 +36,25 @@ class TestSplitSqlStatements(unittest.TestCase):
         text = "INSERT INTO t VALUES ('a;b');\n"
         self.assertEqual(split_sql_statements(text), ["INSERT INTO t VALUES ('a;b')"])
 
+    def test_splits_on_a_semicolon_with_a_trailing_comment(self):
+        text = "SELECT 1; -- first\nSELECT 2;-- second\nSELECT 3;\t--third\n"
+        self.assertEqual(
+            split_sql_statements(text), ["SELECT 1", "SELECT 2", "SELECT 3"]
+        )
+
+    def test_a_comment_line_of_its_own_stays_with_its_statement(self):
+        text = "-- makes t\nCREATE TABLE t (id INTEGER); -- done\nSELECT 1;\n"
+        self.assertEqual(
+            split_sql_statements(text),
+            ["-- makes t\nCREATE TABLE t (id INTEGER)", "SELECT 1"],
+        )
+
+    def test_a_semicolon_inside_a_comment_does_not_split(self):
+        text = "SELECT 1 -- and a; semicolon\nFROM t;\n"
+        self.assertEqual(
+            split_sql_statements(text), ["SELECT 1 -- and a; semicolon\nFROM t"]
+        )
+
 
 class LoaderTestCase(unittest.TestCase):
     def setUp(self):
@@ -73,6 +92,20 @@ class TestLoadMigrations(LoaderTestCase):
         self.assertEqual(migrator.validate(), [])
         self.assertEqual(migrator.down(), ["0001_create"])
 
+    def test_commented_statements_run_one_at_a_time(self):
+        # sqlite3 refuses a string that holds two statements, so a file
+        # whose semicolons carry trailing comments must still split.
+        self.write(
+            "0001_create.up.sql",
+            "CREATE TABLE t (id INTEGER); -- the table\n"
+            "INSERT INTO t VALUES (1); -- one row\n",
+        )
+        conn = sqlite3.connect(":memory:")
+        self.addCleanup(conn.close)
+        migrator = Migrator(conn, load_migrations(self.dir))
+        self.assertEqual(migrator.up(), ["0001_create"])
+        self.assertEqual(conn.execute("SELECT id FROM t").fetchall(), [(1,)])
+
     def test_missing_directory_raises(self):
         with self.assertRaises(ValueError):
             load_migrations(self.dir / "nope")
@@ -98,9 +131,34 @@ class TestLoadMigrations(LoaderTestCase):
         with self.assertRaisesRegex(ValueError, "none of"):
             load_migrations(self.dir)
 
-    def test_non_sql_files_are_ignored(self):
+    def test_any_misnamed_file_raises(self):
+        for name in ("0002_add.up.sq", "0002_add.up", "README.md", "0002_add.up.SQL"):
+            with self.subTest(name=name):
+                self.write("0001_x.up.sql", "SELECT 1;\n")
+                self.write(name, "SELECT 1;\n")
+                with self.assertRaisesRegex(ValueError, "none of"):
+                    load_migrations(self.dir)
+                (self.dir / name).unlink()
+
+    def test_dotfiles_and_backup_files_are_ignored(self):
         self.write("0001_x.up.sql", "SELECT 1;\n")
-        self.write("README.md", "notes")
+        for name in (
+            ".DS_Store",
+            ".gitkeep",
+            "0001_x.up.sql~",
+            "0001_x.up.sql.bak",
+            "0001_x.up.sql.orig",
+            "0001_x.up.sql.swp",
+            "0001_x.up.sql.swo",
+            "0001_x.up.sql.tmp",
+        ):
+            self.write(name, "SELECT 2;\n")
+        self.assertEqual([m.id for m in load_migrations(self.dir)], ["0001_x"])
+
+    def test_subdirectories_are_ignored(self):
+        self.write("0001_x.up.sql", "SELECT 1;\n")
+        (self.dir / "archive").mkdir()
+        (self.dir / "archive" / "0000_old.up.sql").write_text("SELECT 1;\n")
         self.assertEqual([m.id for m in load_migrations(self.dir)], ["0001_x"])
 
 
