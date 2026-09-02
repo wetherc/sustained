@@ -25,6 +25,7 @@ from sustained.migrations import (
     Migration,
     Migrator,
     _destructive_prefix_keys,
+    _legacy_sqlite_control,
     checked_unique_ids,
     create_table_migration,
     migration_checksum,
@@ -760,6 +761,33 @@ class TestSqliteRebuildPragmas(MigrationTestCase):
         before = self.conn.isolation_level
         self.run_rebuild()
         self.assertEqual(self.conn.isolation_level, before)
+
+
+class TestLegacySqliteDetection(unittest.TestCase):
+    """
+    The switch is decided by the connection's class, not by the module
+    name it reports, so a connection made with a factory is detected too.
+    """
+
+    def test_a_factory_subclass_is_detected(self):
+        class MyConnection(sqlite3.Connection):
+            pass
+
+        conn = sqlite3.connect(":memory:", factory=MyConnection)
+        self.addCleanup(conn.close)
+        self.assertNotEqual(type(conn).__module__.partition(".")[0], "sqlite3")
+        self.assertTrue(_legacy_sqlite_control(conn))
+
+    def test_a_plain_connection_is_detected(self):
+        conn = sqlite3.connect(":memory:")
+        self.addCleanup(conn.close)
+        self.assertTrue(_legacy_sqlite_control(conn))
+
+    def test_another_driver_is_left_alone(self):
+        class Psycopg2Connection:
+            autocommit = False
+
+        self.assertFalse(_legacy_sqlite_control(Psycopg2Connection()))
 
 
 class RefusingIsolationConnection:

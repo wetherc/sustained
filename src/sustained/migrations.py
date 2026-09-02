@@ -544,7 +544,17 @@ def _legacy_sqlite_control(connection: Connection) -> bool:
     and later report legacy control as `autocommit` == -1. Older versions
     have no `autocommit` attribute, and legacy control is all they have.
     """
-    if type(connection).__module__.partition(".")[0] != "sqlite3":
+    try:
+        import sqlite3
+    except ImportError:  # pragma: no cover - sqlite3 ships with Python
+        sqlite3_connection: Optional[type] = None
+    else:
+        sqlite3_connection = sqlite3.Connection
+    if sqlite3_connection is not None and isinstance(connection, sqlite3_connection):
+        # A subclass passed as connect(factory=...) reports its own
+        # module, so the class itself is the test rather than the name.
+        return getattr(connection, "autocommit", -1) == -1
+    if type(connection).__module__.partition(".")[0] not in ("sqlite3", "pysqlite3"):
         return False
     return getattr(connection, "autocommit", -1) == -1
 

@@ -60,7 +60,7 @@ from sustained.introspect import (
     parse_inline_enum,
     type_params,
 )
-from sustained.migrations import Migration
+from sustained.migrations import Migration, _ReplayConnection
 from sustained.schema import (
     Check,
     ColumnState,
@@ -1684,8 +1684,6 @@ def _can_probe_rows(connection: Connection) -> bool:
     nothing else. The async path hands one of those in place of a
     connection, so the probe has no way to run there.
     """
-    from sustained.migrations import _ReplayConnection
-
     return not isinstance(connection, _ReplayConnection)
 
 

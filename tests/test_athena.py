@@ -581,6 +581,40 @@ class TestAthenaMigrator(unittest.TestCase):
         self.assertTrue(schema.constraints_read)
         self.assertEqual(schema["events"].primary_key, ("id",))
 
+    def test_two_schemas_holding_one_table_name_are_read_on_presto(self):
+        # A Presto catalog reads every schema it can see and nothing can
+        # narrow it, so the refusal the scoped catalogs make would leave
+        # the caller no way out.
+        from sustained.introspect import introspect_schema
+
+        class Cursor:
+            def __init__(self):
+                self.rows = []
+
+            def execute(self, sql, params=()):
+                self.rows = []
+                if "information_schema.columns" in sql:
+                    self.rows = [
+                        ("orders", "id", "integer", "NO", None, None, "raw"),
+                        ("orders", "total", "integer", "YES", None, None, "curated"),
+                    ]
+
+            def fetchall(self):
+                return self.rows
+
+            def close(self):
+                pass
+
+        class Connection:
+            def __init__(self, cursor):
+                self._cursor = cursor
+
+            def cursor(self):
+                return self._cursor
+
+        schema = introspect_schema(Connection(Cursor()), Dialects.PRESTO)
+        self.assertEqual(sorted(schema["orders"].columns), ["id", "total"])
+
     def test_a_declared_schema_widens_the_athena_read(self):
         from sustained.introspect import introspect_schema
 

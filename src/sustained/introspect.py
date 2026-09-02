@@ -836,8 +836,10 @@ def _one_schema_per_table(seen: Dict[str, str], table: str, schema: str) -> None
         raise ValueError(
             f"The schemas '{first}' and '{schema}' both hold a table named "
             f"'{table}'. A schema read keys on the bare table name, so the "
-            "two cannot be told apart. Read one schema at a time, or take "
-            "the declared tableSchema off the models."
+            "two cannot be told apart. Take the declared tableSchema off "
+            "the models, or rename one of the tables. A read covers the "
+            "schema the connection is on as well as the declared ones, so "
+            "it cannot be narrowed past that."
         )
 
 
@@ -849,10 +851,17 @@ def _information_schema_plan(
     # Two schemas in one read can each hold a constraint with one name.
     # The join below matches schema names to keep them apart, and the
     # plain-join fallback cannot, so it only runs on a read that covers
-    # one schema. With nothing declared the read covers one schema on
-    # every catalog: the schema the connection is on, or the one schema
-    # a catalog with no current-schema expression can see.
-    single_schema = not schemas
+    # one schema. That holds when nothing is declared and the catalog
+    # scopes to the schema the connection is on. A catalog with no
+    # current-schema expression reads every schema it can see, and its
+    # constraint names can collide, but nothing can narrow that read: it
+    # keeps the fallback, since the alternative is no constraints at all.
+    single_schema = not schemas or catalog.current_schema_sql is None
+    # A catalog with no current-schema expression reads every schema it
+    # can see, and two schemas holding a table of one name is ordinary
+    # there. Nothing can narrow that read, so the refusal below would
+    # leave the caller with no way out.
+    scoped_read = catalog.current_schema_sql is not None
 
     columns_by_table: Dict[str, Dict[str, IntrospectedColumn]] = {}
 
@@ -895,7 +904,7 @@ def _information_schema_plan(
         # MySQL reports an uncommented column as '', not NULL.
         raw_comment = row[5] if comments_read and len(row) > 5 else None
         comment = str(raw_comment) if raw_comment not in (None, "") else None
-        if len(row) > schema_index and row[schema_index] is not None:
+        if scoped_read and len(row) > schema_index and row[schema_index] is not None:
             _one_schema_per_table(
                 schema_of_table, str(table).lower(), str(row[schema_index])
             )
