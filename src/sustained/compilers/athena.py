@@ -268,6 +268,11 @@ class AthenaCompiler(PrestoCompiler):
     def supports_alter_column(self) -> bool:
         return True
 
+    def rebuild_strategy(self) -> str:
+        # An Iceberg table takes CHANGE COLUMN, so Athena alters in place
+        # rather than taking Presto's refusal.
+        return "alter"
+
     def supports_constraints(self) -> bool:
         return False
 

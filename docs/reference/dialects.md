@@ -85,7 +85,7 @@ The MSSQL messages name the alternative: `OUTPUT` for RETURNING, and `SELECT ...
 | Indexes | | | | | | | raises |
 | Table options | raises | raises | raises | raises | raises | raises | |
 
-The default dialect cannot alter a column, so migration generation rebuilds the table instead: it creates the new table, copies the rows over, and replaces the old table. A rebuild does not reverse, so a migration that contains one has no down step. The rebuild carries across the columns and indexes the models do not declare, unless you pass `allow_drops=True`. Introspection cannot read an index on an expression, so a rebuild loses that index; create it again by hand.
+Presto and Trino can neither alter a column nor rebuild a table, so migration generation raises `DialectError` for a column change there. The default dialect cannot alter a column, so migration generation rebuilds the table instead: it creates the new table, copies the rows over, and replaces the old table. A rebuild does not reverse, so a migration that contains one has no down step. The rebuild carries across the columns and indexes the models do not declare, unless you pass `allow_drops=True`. Introspection cannot read an index on an expression, so a rebuild loses that index; create it again by hand.
 
 ## Migration behaviour
 

@@ -520,6 +520,23 @@ class Compiler:
         """
         return False
 
+    def rebuild_strategy(self) -> str:
+        """
+        How the dialect applies a column change that ALTER TABLE cannot
+        make. One of:
+
+        - 'alter': the dialect changes the column in place, so nothing is
+          ever rebuilt.
+        - 'rebuild': the table is created again from the model, the rows
+          are copied across, and the old table is replaced. SQLite works
+          this way.
+        - 'unsupported': neither. Generation refuses and the change is
+          written by hand. Presto and Trino answer this: they cannot
+          alter a column, and the create-copy-drop-rename plan uses
+          statements they do not have.
+        """
+        return "alter" if self.supports_alter_column() else "rebuild"
+
     def supports_add_constraint(self) -> bool:
         """
         Reports whether the dialect can add a named constraint to a table

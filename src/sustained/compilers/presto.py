@@ -38,6 +38,12 @@ class PrestoCompiler(Compiler):
         # FOREIGN KEY constraints to declare or enforce.
         return False
 
+    def rebuild_strategy(self) -> str:
+        # Presto cannot alter a column, and it cannot run the rebuild
+        # either: it has no DROP TABLE and rename swap that keeps the
+        # data, and no CREATE INDEX at all.
+        return "unsupported"
+
     def stores_column_comments(self) -> bool:
         return True
 

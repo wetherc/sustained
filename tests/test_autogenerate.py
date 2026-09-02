@@ -925,5 +925,85 @@ class TestMissingTableOrder(unittest.TestCase):
         self.assertEqual([m.tableName for m in diff.missing_tables], ["self_nodes"])
 
 
+class PlanCursor:
+    """Serves canned information_schema rows, and nothing else."""
+
+    def __init__(self, columns):
+        self.columns = columns
+        self._current = []
+
+    def execute(self, sql, params=()):
+        self._current = self.columns if "information_schema.columns" in sql else []
+
+    def fetchall(self):
+        return self._current
+
+    def close(self):
+        pass
+
+
+class PlanConnection:
+    def __init__(self, columns):
+        self._cursor = PlanCursor(columns)
+
+    def cursor(self):
+        return self._cursor
+
+
+class TestRebuildStrategy(unittest.TestCase):
+    """
+    A table rebuild is SQLite's answer to a column change it cannot make
+    in place. Presto has neither the ALTER nor the statements the rebuild
+    needs, so it refuses instead of emitting a plan Trino cannot run.
+    """
+
+    def test_each_dialect_reports_its_strategy(self):
+        for dialect, expected in (
+            (Dialects.DEFAULT, "rebuild"),
+            (Dialects.POSTGRES, "alter"),
+            (Dialects.MYSQL, "alter"),
+            (Dialects.PRESTO, "unsupported"),
+            (Dialects.ATHENA, "alter"),
+        ):
+            with self.subTest(dialect=dialect):
+                compiler = Dialects.get_compiler(dialect)
+                self.assertEqual(compiler.rebuild_strategy(), expected)
+
+    def presto_model(self):
+        model = make_model(
+            "PrestoRebuild",
+            "pr_events",
+            {"id": Integer(), "amount": Integer()},
+        )
+        model.set_dialect(Dialects.PRESTO)
+        return model
+
+    def test_a_column_change_refuses_on_presto(self):
+        from sustained.exceptions import DialectError
+
+        conn = PlanConnection(
+            [
+                ("pr_events", "id", "integer", "YES", None, None),
+                ("pr_events", "amount", "varchar", "YES", None, None),
+            ]
+        )
+        with self.assertRaises(DialectError) as caught:
+            autogenerate(conn, [self.presto_model()], id="m1", dialect=Dialects.PRESTO)
+        self.assertIn("write the migration by hand", str(caught.exception).lower())
+
+    def test_a_not_null_column_refuses_on_presto(self):
+        from sustained.exceptions import DialectError
+
+        model = make_model(
+            "PrestoNotNull",
+            "pr_events",
+            {"id": Integer(), "amount": Integer(nullable=False, backfill=0)},
+        )
+        model.set_dialect(Dialects.PRESTO)
+        conn = PlanConnection([("pr_events", "id", "integer", "YES", None, None)])
+        with self.assertRaises(DialectError):
+            autogenerate(conn, [model], id="m2", dialect=Dialects.PRESTO)
+
+
 if __name__ == "__main__":
     unittest.main()

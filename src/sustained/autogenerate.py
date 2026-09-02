@@ -1100,6 +1100,28 @@ def _deferred_foreign_key_steps(
     return pairs
 
 
+def _rebuild_needed(compiler: "Compiler", change: str) -> bool:
+    """
+    Whether a change the dialect cannot make with ALTER TABLE has to go
+    through a table rebuild. A dialect that can neither alter nor
+    rebuild refuses here, rather than emitting a plan of statements it
+    does not have.
+    """
+    strategy = compiler.rebuild_strategy()
+    if strategy == "alter":
+        return False
+    if strategy == "unsupported":
+        from sustained.exceptions import DialectError
+
+        raise DialectError(
+            f"{compiler.dialect_name().title()} cannot {change} in place, "
+            "and it cannot rebuild a table either. Write the migration by "
+            "hand: create the new table, copy the rows across with "
+            "INSERT INTO ... SELECT, and swap the names."
+        )
+    return True
+
+
 def autogenerate(
     connection: Connection,
     models: List[Type["Model"]],
@@ -1241,7 +1263,7 @@ def autogenerate(
             assert model.tableColumns is not None
             coldef = model.tableColumns[name]
             actual_col = actual[table.lower()].columns[name.lower()]
-            if not compiler.supports_alter_column():
+            if _rebuild_needed(compiler, "change a column"):
                 rebuild_tables[table.lower()] = model
                 continue
             table_sql = model._qualified_table_sql()
@@ -1349,7 +1371,7 @@ def autogenerate(
                     "without a default or backfill; existing rows would "
                     "have no value."
                 )
-            if not compiler.supports_alter_column():
+            if _rebuild_needed(compiler, "add a NOT NULL column"):
                 rebuild_tables[table_key] = model
                 continue
             # Add nullable, backfill, then tighten.
@@ -1413,7 +1435,9 @@ def autogenerate(
     # trigger a rebuild under allow_drops, since replacing the table
     # drops what the declaration does not carry.
     if not compiler.supports_alter_column():
-        constrained_tables = [model for model, _ in diff.new_foreign_keys]
+        constrained_tables: List[Type["Model"]] = [
+            model for model, _ in diff.new_foreign_keys
+        ]
         constrained_tables += [model for model, _ in diff.new_checks]
         constrained_tables += [model for model, _, _ in diff.changed_checks]
         if allow_drops:
@@ -1426,7 +1450,8 @@ def autogenerate(
                 models_by_table[table.lower()] for table, _, _ in diff.extra_checks
             ]
         for model in constrained_tables:
-            rebuild_tables[(model.tableName or "").lower()] = model
+            if _rebuild_needed(compiler, "change a constraint"):
+                rebuild_tables[(model.tableName or "").lower()] = model
 
     # Table rebuilds for SQLite consume every remaining change on the table.
     for table_key, model in rebuild_tables.items():
