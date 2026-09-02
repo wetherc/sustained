@@ -44,7 +44,7 @@ migrator.down(steps=2)         # revert the two newest
 migrator.down_to('auto_20260814...')  # revert until this id is newest
 ```
 
-`steps` counts migrations and must be 1 or more. A count below 1 raises `ValueError`, and `sustained down --steps 0` stops at the command line.
+`steps` counts migrations and must be 0 or more. A count of 0 reverts nothing. A negative count raises `ValueError`, and `sustained down --steps -1` stops at the command line.
 
 A revert reads the checksum of every migration it is about to take back, before it reverts the first one. A migration edited after it was applied raises `MigrationError` and nothing is reverted, because the down step in front of you describes the new contents while the database holds the old ones. Restore the migration, run `repair()` to accept the new contents, or pass `allow_changed=True` (`sustained down --allow-changed`) to revert it as it stands now.
 
@@ -478,7 +478,7 @@ $ sustained plan                    # what a run would do; exits 2 when work is 
 $ sustained status
 $ sustained rehearse                # run it all, forwards and back, then roll back
 $ sustained migrate                 # --target ID, --no-validate, --allow-out-of-order, --unrehearsed
-$ sustained down                    # --steps N (1 or more) or --to ID, --allow-changed
+$ sustained down                    # --steps N (0 or more) or --to ID, --allow-changed
 $ sustained validate                # exits 1 when problems exist
 $ sustained repair
 $ sustained script down             # print the SQL without running it

@@ -1361,7 +1361,8 @@ class AsyncMigrator:
         tracking row, which holds the statements it ran. Every other
         migration must be registered with this migrator.
 
-        `steps` counts migrations and must be 1 or more.
+        `steps` counts migrations and must be 0 or more. A count of 0
+        reverts nothing and returns an empty list.
 
         A migration whose statements changed since it was applied raises
         MigrationError, because its down step describes the new contents
@@ -1390,7 +1391,7 @@ class AsyncMigrator:
             # would leave the newer migrations reverted and committed for a
             # condition that was knowable before any of them ran.
             window: List[Tuple[str, Migration, MigrationStep]] = []
-            for migration_id in reversed(applied[-steps:]):
+            for migration_id in reversed(applied[-steps:] if steps else []):
                 migration = by_id.get(migration_id)
                 if migration is not None and not allow_changed:
                     if _changed_since_applied(migration, by_record.get(migration_id)):

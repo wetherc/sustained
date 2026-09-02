@@ -119,14 +119,20 @@ class TestMigrator(MigrationTestCase):
         self.assertEqual(reverted, ["create_mig_users"])
         self.assertNotIn("mig_users", table_names(self.conn))
 
-    def test_down_refuses_a_step_count_below_one(self):
+    def test_down_refuses_a_negative_step_count(self):
         migrator = Migrator(self.conn, self.migrations())
         migrator.up()
-        for steps in (-1, 0):
+        for steps in (-1, -2):
             with self.subTest(steps=steps):
                 with self.assertRaises(ValueError) as caught:
                     migrator.down(steps=steps)
-                self.assertIn("steps must be 1 or more", str(caught.exception))
+                self.assertIn("steps must be 0 or more", str(caught.exception))
+        self.assertEqual(migrator.applied(), ["create_mig_users", "add_flag"])
+
+    def test_down_with_zero_steps_reverts_nothing(self):
+        migrator = Migrator(self.conn, self.migrations())
+        migrator.up()
+        self.assertEqual(migrator.down(steps=0), [])
         self.assertEqual(migrator.applied(), ["create_mig_users", "add_flag"])
 
     def test_down_requires_down_step(self):

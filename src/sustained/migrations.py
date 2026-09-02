@@ -389,13 +389,13 @@ def checked_unique_ids(migrations: Sequence[Migration]) -> None:
 
 def _checked_steps(steps: int) -> int:
     """
-    Raises when a revert count is below 1. A negative count would make
+    Raises when a revert count is below 0. A negative count would make
     `applied[-steps:]` a slice from the front of the list, which reverts
     almost every applied migration instead of the few the caller asked
-    for.
+    for. A count of 0 reverts nothing, which is what it has always done.
     """
-    if steps < 1:
-        raise ValueError(f"steps must be 1 or more, got {steps}.")
+    if steps < 0:
+        raise ValueError(f"steps must be 0 or more, got {steps}.")
     return steps
 
 
@@ -2804,7 +2804,8 @@ class Migrator:
         never saw the diff can still take it back. Every other migration
         must be registered with this migrator.
 
-        `steps` counts migrations and must be 1 or more.
+        `steps` counts migrations and must be 0 or more. A count of 0
+        reverts nothing and returns an empty list.
 
         A migration whose statements changed since it was applied raises
         MigrationError, because its down step describes the new contents
@@ -2830,7 +2831,7 @@ class Migrator:
             # would leave the newer migrations reverted and committed for a
             # condition that was knowable before any of them ran.
             window: List[Tuple[str, Migration, MigrationStep]] = []
-            for migration_id in reversed(applied[-steps:]):
+            for migration_id in reversed(applied[-steps:] if steps else []):
                 migration = by_id.get(migration_id)
                 if migration is not None and not allow_changed:
                     if _changed_since_applied(migration, by_record.get(migration_id)):

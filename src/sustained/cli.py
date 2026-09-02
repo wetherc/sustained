@@ -728,16 +728,17 @@ def _cmd_baseline(
 
 def _step_count(value: str) -> int:
     """
-    Reads a --steps value and refuses anything below 1. A count of 0 or
-    less asks the migrator to revert a number of migrations it cannot
-    revert, so the command stops at the command line instead.
+    Reads a --steps value and refuses anything below 0. A negative count
+    asks the migrator to revert a slice from the front of the applied
+    list, so the command stops at the command line instead. A count of 0
+    reverts nothing.
     """
     try:
         steps = int(value)
     except ValueError:
         raise argparse.ArgumentTypeError(f"{value!r} is not a whole number.")
-    if steps < 1:
-        raise argparse.ArgumentTypeError("--steps must be 1 or more.")
+    if steps < 0:
+        raise argparse.ArgumentTypeError("--steps must be 0 or more.")
     return steps
 
 
@@ -804,7 +805,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--steps",
         type=_step_count,
         default=1,
-        help="How many migrations to revert (1 or more).",
+        help="How many migrations to revert (0 or more).",
     )
     group.add_argument("--to", help="Revert until this id is the newest applied.")
     down.add_argument(

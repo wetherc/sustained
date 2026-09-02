@@ -128,7 +128,7 @@ models = [User]
 $ sustained plan        # pending migrations, validation problems, model drift
 $ sustained rehearse    # run it all, forwards and back, then roll back
 $ sustained migrate     # apply it for real
-$ sustained down        # --steps N (1 or more) or --to ID
+$ sustained down        # --steps N (0 or more) or --to ID
 ```
 
 See [Schema and Migrations](https://sustained.tbmh.org/schema) for SQL file migrations, repeatables, checksum validation, `baseline`, and the Athena rules.
