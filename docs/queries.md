@@ -228,6 +228,8 @@ Show.query().select('title', Subquery(sold, 'tickets_sold'))
 # FROM shows
 ```
 
+The inner query renders like any other part of the statement. Under `to_sql()` its values become placeholders and join the outer parameter tuple, in the order they appear in the SQL.
+
 ## Ordering
 
 `orderBy()` takes a column and an optional `'asc'` or `'desc'`, defaulting to ascending. Call it once per sort key, in order:

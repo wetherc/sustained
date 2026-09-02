@@ -397,7 +397,7 @@ class QueryBuilder:
 
     def _build_base_select_sql(self, ctx: RenderContext) -> str:
         query_parts = []
-        cols = str(self._select_clause_builder)
+        cols = self._select_clause_builder.render(ctx)
 
         full_table_name: str
         if isinstance(self._from_source, tuple):

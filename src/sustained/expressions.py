@@ -243,9 +243,22 @@ class Subquery:
         self.query = query
         self.alias = alias
 
+    def render(self, ctx: "RenderContext") -> str:
+        """
+        Renders the subquery with the outer statement's render context.
+
+        The inner query's values go through the same context as the rest
+        of the statement. In parameterized mode they become placeholders
+        and join the outer parameter list in the order they appear in the
+        SQL text.
+        """
+        return f"({self.query._render_sql(ctx)}) AS {self.alias}"
+
     def __str__(self) -> str:
         """
-        Renders the subquery expression as a SQL string.
+        Renders the subquery expression as a SQL string with the inner
+        values inlined as literals. Used where no render context is
+        available, such as debugging output.
         """
         return f"({self.query}) AS {self.alias}"
 

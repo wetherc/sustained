@@ -6,6 +6,7 @@ import unittest
 
 from sustained import DialectError, create_model
 from sustained.dialects import Dialects
+from sustained.expressions import Subquery
 
 User = create_model("ParamUser", "users")
 
@@ -35,6 +36,67 @@ class TestToSql(unittest.TestCase):
             sql, "SELECT * FROM users WHERE id IN (SELECT id FROM users WHERE z = ?)"
         )
         self.assertEqual(params, (7,))
+
+    def test_select_list_subquery_params_included(self):
+        sub = User.query().select("id").where("a", "=", 1)
+        sql, params = (
+            User.query().select("name", Subquery(sub, "s")).where("b", "=", 2).to_sql()
+        )
+        self.assertEqual(
+            sql,
+            "SELECT name, (SELECT id FROM users WHERE a = ?) AS s "
+            "FROM users WHERE b = ?",
+        )
+        self.assertEqual(params, (1, 2))
+
+    def test_select_list_subquery_params_follow_cte_params(self):
+        cte = User.query().select("id").where("k", "=", 9)
+        sub = User.query().select("id").where("a", "=", 1)
+        query = (
+            User.query()
+            .with_("c", cte)
+            .select("n", Subquery(sub, "s"))
+            .where("b", "=", 2)
+        )
+        sql, params = query.to_sql()
+        self.assertEqual(params, (9, 1, 2))
+        self.assertTrue(sql.startswith("WITH c AS ("))
+
+    def test_select_list_subquery_params_precede_from_subquery_params(self):
+        sub = User.query().select("id").where("a", "=", 1)
+        source = User.query().select("*").where("f", "=", 8)
+        sql, params = (
+            User.query()
+            .select("p", Subquery(sub, "s"))
+            .from_(source, alias="w")
+            .to_sql()
+        )
+        self.assertEqual(params, (1, 8))
+        self.assertLess(sql.index("AS s"), sql.index("AS w"))
+
+    def test_select_list_subquery_params_across_union_members(self):
+        first = User.query().select("x", Subquery(User.query().where("z", "=", 3), "t"))
+        second = User.query().select(
+            "x", Subquery(User.query().where("a", "=", 1), "s")
+        )
+        _, params = first.union(second).to_sql()
+        self.assertEqual(params, (3, 1))
+
+    def test_nested_select_list_subquery_params(self):
+        innermost = User.query().select("id").where("deep", "=", 1)
+        middle = User.query().select(Subquery(innermost, "d")).where("mid", "=", 2)
+        sql, params = (
+            User.query().select(Subquery(middle, "m")).where("top", "=", 3).to_sql()
+        )
+        self.assertEqual(params, (1, 2, 3))
+        self.assertLess(sql.index("AS d"), sql.index("AS m"))
+
+    def test_str_still_inlines_select_list_subquery_values(self):
+        sub = User.query().select("id").where("a", "=", 1)
+        self.assertEqual(
+            str(User.query().select("name", Subquery(sub, "s"))),
+            "SELECT name, (SELECT id FROM users WHERE a = 1) AS s FROM users",
+        )
 
     def test_cte_params_precede_body_params(self):
         cte = User.query().select("id").where("k", "=", 9)

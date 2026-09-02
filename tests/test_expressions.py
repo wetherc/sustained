@@ -246,3 +246,43 @@ class TestSubqueryExpression(unittest.TestCase):
         self.assertEqual(
             str(subquery), "(SELECT id FROM other_table WHERE x = 1) AS sub"
         )
+
+    def test_render_parameterizes_inner_values(self) -> None:
+        """
+        Tests that render() replaces the inner values with placeholders and
+        collects them in the given context.
+        """
+        from sustained.dialects import Dialects
+        from sustained.rendering import RenderContext
+
+        class Tmp(Model): ...
+
+        subquery_builder = (
+            QueryBuilder(Tmp).select("id").from_("other_table").where("x", "=", 1)
+        )
+        subquery = Subquery(subquery_builder, "sub")
+        ctx = RenderContext(Dialects.get_compiler(Dialects.DEFAULT), parameterize=True)
+        self.assertEqual(
+            subquery.render(ctx), "(SELECT id FROM other_table WHERE x = ?) AS sub"
+        )
+        self.assertEqual(ctx.params, [1])
+
+    def test_render_inlines_values_without_parameterization(self) -> None:
+        """
+        Tests that render() inlines the inner values when the context is not
+        in parameterized mode.
+        """
+        from sustained.dialects import Dialects
+        from sustained.rendering import RenderContext
+
+        class Tmp(Model): ...
+
+        subquery_builder = (
+            QueryBuilder(Tmp).select("id").from_("other_table").where("x", "=", 1)
+        )
+        subquery = Subquery(subquery_builder, "sub")
+        ctx = RenderContext(Dialects.get_compiler(Dialects.DEFAULT))
+        self.assertEqual(
+            subquery.render(ctx), "(SELECT id FROM other_table WHERE x = 1) AS sub"
+        )
+        self.assertEqual(ctx.params, [])

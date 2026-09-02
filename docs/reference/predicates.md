@@ -136,6 +136,8 @@ ticket_count = (Ticket.query()
 Show.query().select('title', Subquery(ticket_count, 'tickets_sold'))
 ```
 
+`render(ctx)` renders the subquery with the outer statement's render context, so its values parameterize with the rest of the statement. `str()` inlines them as literals, for reading and logging.
+
 ## Function registry
 
 `select_func()` and the fluent function methods check the name against `FunctionRegistry` in `sustained.functions`. A registered function that the active dialect cannot spell raises `DialectError` while the query builds. An unregistered name passes through unchecked, so you can call a function the registry does not list.
