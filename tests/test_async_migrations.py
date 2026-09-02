@@ -136,6 +136,21 @@ class TestAsyncMigrator(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await later.applied(), ["a", "b"])
         self.assertEqual(await later.down(allow_changed=True), ["b"])
 
+    async def test_down_reverts_nothing_when_an_older_migration_changed(self):
+        migrations = self.migrations() + [
+            Migration("c", up="CREATE TABLE tc (id INTEGER)", down="DROP TABLE tc")
+        ]
+        await AsyncMigrator(self.adapter, migrations).up()
+        edited = list(migrations)
+        edited[1] = Migration(
+            "b", up="CREATE TABLE tb (id INTEGER, extra INTEGER)", down="DROP TABLE tb"
+        )
+        later = AsyncMigrator(self.adapter, edited)
+        with self.assertRaises(MigrationError):
+            await later.down(steps=2)
+        self.assertEqual(await later.applied(), ["a", "b", "c"])
+        self.assertIn("tc", table_names(self.conn))
+
     async def test_down_to_carries_the_changed_flag(self):
         migrator = AsyncMigrator(self.adapter, self.migrations())
         await migrator.up()

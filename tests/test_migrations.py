@@ -46,6 +46,11 @@ class MigUser(Model):
 SUSTAINED_TABLES = {"sustained_migrations", "sustained_rehearsals"}
 
 
+def column_names(conn, table):
+    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    return {r[1] for r in rows}
+
+
 def table_names(conn):
     rows = conn.execute(
         "SELECT name FROM sqlite_master WHERE type = 'table'"
@@ -145,6 +150,46 @@ class TestMigrator(MigrationTestCase):
         self.assertEqual(later.applied(), ["create_mig_users", "add_flag"])
         # The flag says the caller knows, so the revert runs.
         self.assertEqual(later.down(allow_changed=True), ["add_flag"])
+
+    def test_down_reverts_nothing_when_an_older_migration_changed(self):
+        migrations = self.migrations() + [
+            Migration(
+                "add_note",
+                up="ALTER TABLE mig_users ADD COLUMN note TEXT",
+                down=["ALTER TABLE mig_users DROP COLUMN note"],
+            )
+        ]
+        Migrator(self.conn, migrations).up()
+        edited = list(migrations)
+        edited[1] = Migration(
+            "add_flag",
+            up="ALTER TABLE mig_users ADD COLUMN flag INTEGER DEFAULT 1",
+            down=["ALTER TABLE mig_users DROP COLUMN flag"],
+        )
+        later = Migrator(self.conn, edited)
+        with self.assertRaises(MigrationError):
+            later.down(steps=2)
+        self.assertEqual(later.applied(), ["create_mig_users", "add_flag", "add_note"])
+        self.assertIn("note", column_names(self.conn, "mig_users"))
+
+    def test_down_reverts_nothing_when_an_older_migration_has_no_down_step(self):
+        migrations = [
+            create_table_migration(MigUser),
+            Migration("one_way", up="CREATE TABLE ow (id INTEGER)"),
+            Migration(
+                "add_note",
+                up="ALTER TABLE mig_users ADD COLUMN note TEXT",
+                down=["ALTER TABLE mig_users DROP COLUMN note"],
+            ),
+        ]
+        migrator = Migrator(self.conn, migrations)
+        migrator.up()
+        with self.assertRaises(ValueError):
+            migrator.down(steps=2)
+        self.assertEqual(
+            migrator.applied(), ["create_mig_users", "one_way", "add_note"]
+        )
+        self.assertIn("note", column_names(self.conn, "mig_users"))
 
     def test_down_to_carries_the_changed_flag(self):
         migrator = Migrator(self.conn, self.migrations())

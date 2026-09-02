@@ -46,7 +46,7 @@ migrator.down_to('auto_20260814...')  # revert until this id is newest
 
 `steps` counts migrations and must be 1 or more. A count below 1 raises `ValueError`, and `sustained down --steps 0` stops at the command line.
 
-A revert reads the checksum of every migration it is about to take back. A migration edited after it was applied raises `MigrationError`, because the down step in front of you describes the new contents while the database holds the old ones. Restore the migration, run `repair()` to accept the new contents, or pass `allow_changed=True` (`sustained down --allow-changed`) to revert it as it stands now.
+A revert reads the checksum of every migration it is about to take back, before it reverts the first one. A migration edited after it was applied raises `MigrationError` and nothing is reverted, because the down step in front of you describes the new contents while the database holds the old ones. Restore the migration, run `repair()` to accept the new contents, or pass `allow_changed=True` (`sustained down --allow-changed`) to revert it as it stands now.
 
 A generated migration isn't materialized anywhere outside the actual execution, so its tracking row carries the statements it ran. A later process, on a later deploy, can revert it from that row without having the diff in hand. A rebuild, which has no down step, still cannot be reverted.
 

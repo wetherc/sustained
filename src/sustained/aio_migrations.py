@@ -1362,6 +1362,9 @@ class AsyncMigrator:
         MigrationError, because its down step describes the new contents
         and the database holds the old ones. Pass allow_changed=True to
         revert it with the down step as it stands now.
+
+        Every migration in the window is read and checked first, so a
+        refusal reverts nothing.
         """
         from sustained.exceptions import MigrationError
 
@@ -1377,6 +1380,11 @@ class AsyncMigrator:
             by_id = {m.id: m for m in self._migrations}
             placeholder = self._compiler.placeholder()
             reverted: List[str] = []
+            # Every migration in the window is read and checked before the
+            # first one is reverted. A refusal in the middle of the loop
+            # would leave the newer migrations reverted and committed for a
+            # condition that was knowable before any of them ran.
+            window: List[Tuple[str, Migration, MigrationStep]] = []
             for migration_id in reversed(applied[-steps:]):
                 migration = by_id.get(migration_id)
                 if migration is not None and not allow_changed:
@@ -1391,8 +1399,10 @@ class AsyncMigrator:
                     )
                 if migration.down is None:
                     raise ValueError(f"Migration '{migration_id}' has no down step.")
+                window.append((migration_id, migration, migration.down))
+            for migration_id, migration, down_step in window:
                 async with self._migration_scope(migration.transactional):
-                    await self._run_step(migration.down)
+                    await self._run_step(down_step)
                     await self._execute(
                         f"DELETE FROM {self._table_sql()} WHERE "
                         f"{self._compiler.quote_identifier('id')} = "
