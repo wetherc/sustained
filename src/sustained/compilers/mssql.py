@@ -1,5 +1,5 @@
 import re
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Optional, Sequence
 
 from sustained.exceptions import DialectError
 
@@ -227,10 +227,15 @@ class MssqlCompiler(Compiler):
 
     def migration_lock_sql(self, name: str) -> "list[str]":
         # Session-owned and reentrant; released on disconnect. The negative
-        # timeout waits until the lock is free.
+        # timeout waits until the lock is free. sp_getapplock reports a
+        # refused lock in its return status rather than raising, so the
+        # batch selects that status for migration_lock_problem() to read.
         return [
-            f"EXEC sp_getapplock @Resource = {self.format_value(name)}, "
-            "@LockMode = 'Exclusive', @LockOwner = 'Session', @LockTimeout = -1"
+            "DECLARE @sustained_lock int; "
+            f"EXEC @sustained_lock = sp_getapplock @Resource = "
+            f"{self.format_value(name)}, @LockMode = 'Exclusive', "
+            "@LockOwner = 'Session', @LockTimeout = -1; "
+            "SELECT @sustained_lock"
         ]
 
     def migration_unlock_sql(self, name: str) -> "list[str]":
@@ -238,3 +243,17 @@ class MssqlCompiler(Compiler):
             f"EXEC sp_releaseapplock @Resource = {self.format_value(name)}, "
             "@LockOwner = 'Session'"
         ]
+
+    def migration_lock_problem(
+        self, row: "Optional[Sequence[object]]"
+    ) -> Optional[str]:
+        # sp_getapplock returns 0 or 1 when the lock was granted and a
+        # negative status when it was not: -1 timeout, -2 cancelled, -3
+        # deadlock victim, -999 a bad parameter.
+        status = self.lock_status(row)
+        if status is None:
+            value = row[0] if row else None
+            return f"sp_getapplock returned {value!r} instead of a status"
+        if status >= 0:
+            return None
+        return f"sp_getapplock returned status {status}"

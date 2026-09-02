@@ -624,7 +624,7 @@ Repeatables are the exception: their changed checksum is what schedules the re-r
 
 ## Deploy from two machines at once
 
-Nothing to configure. During a run the migrator holds an exclusive advisory lock named after the tracking table, so a second deploy waits instead of racing. Postgres uses `pg_advisory_lock`, MSSQL uses `sp_getapplock`, and MySQL uses `GET_LOCK`. SQLite and DuckDB serialize writers themselves.
+Nothing to configure. During a run the migrator holds an exclusive advisory lock named after the tracking table, so a second deploy waits instead of racing. Postgres uses `pg_advisory_lock`, MSSQL uses `sp_getapplock`, and MySQL uses `GET_LOCK`. The last two return a status rather than raising, so the run stops with `MigrationError` when the status says the lock is not held. SQLite and DuckDB serialize writers themselves.
 
 Athena has no locking mechanism, so be careful to run only one migrator at a time there.
 

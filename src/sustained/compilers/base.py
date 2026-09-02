@@ -624,6 +624,40 @@ class Compiler:
         """Statements that release the advisory lock taken for migrations."""
         return []
 
+    def migration_lock_problem(
+        self, row: "Optional[Sequence[object]]"
+    ) -> Optional[str]:
+        """
+        What the result of a migration_lock_sql() statement says went
+        wrong, or None when the lock was granted. `row` is the row the
+        statement returned, or None when it returned no row.
+
+        Postgres and the engines without an advisory lock read nothing
+        here: their lock statement waits until it holds the lock and
+        raises otherwise. MySQL and MSSQL report a refused lock in the
+        value instead, so they override this.
+        """
+        return None
+
+    def lock_status(self, row: "Optional[Sequence[object]]") -> Optional[int]:
+        """
+        The number a lock statement returned, or None when it returned no
+        row or something that is not a number. Drivers hand back an int,
+        a decimal, or a string depending on the engine, so the overrides
+        of migration_lock_problem() read the value through this.
+        """
+        value = row[0] if row else None
+        if isinstance(value, bool) or value is None:
+            return None
+        if isinstance(value, (int, float)):
+            return int(value)
+        if isinstance(value, (str, bytes)):
+            try:
+                return int(value)
+            except ValueError:
+                return None
+        return None
+
     def validate_column_def(self, column: "ColumnDef") -> None:
         """
         Rejects ColumnDef features the dialect cannot express in DDL.

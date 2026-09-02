@@ -82,7 +82,7 @@ On engines without transactions, a failing step writes a row with the success fl
 
 ## Concurrency
 
-While a run is in progress, the migrator holds an exclusive advisory lock named after the tracking table, so two application instances deploying at once queue instead of racing each other's DDL. Postgres uses `pg_advisory_lock`, MSSQL uses `sp_getapplock`, and MySQL uses `GET_LOCK`. All three are session-scoped and release on disconnect. SQLite and DuckDB serialize writers on their own. Athena has no lock to take, so run one migrator at a time there.
+While a run is in progress, the migrator holds an exclusive advisory lock named after the tracking table, so two application instances deploying at once queue instead of racing each other's DDL. Postgres uses `pg_advisory_lock`, MSSQL uses `sp_getapplock`, and MySQL uses `GET_LOCK`. All three are session-scoped and release on disconnect. MySQL and MSSQL report a lock they did not grant in the value they return instead of raising, so the migrator reads that value and raises `MigrationError` when the lock is not held. SQLite and DuckDB serialize writers on their own. Athena has no lock to take, so run one migrator at a time there.
 
 ## Adopting an existing database
 

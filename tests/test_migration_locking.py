@@ -5,7 +5,7 @@ Tests for the advisory lock the migrators hold while they run.
 import unittest
 
 from sustained.dialects import Dialects
-from sustained.migrations import Migration, Migrator
+from sustained.migrations import Migration, Migrator, _lock_row
 
 
 class FakeCursor:
@@ -73,6 +73,7 @@ class TestLockStatements(unittest.TestCase):
         compiler = Dialects.get_compiler(Dialects.MSSQL)
         (lock,) = compiler.migration_lock_sql("sustained_migrations")
         self.assertIn("sp_getapplock", lock)
+        self.assertIn("SELECT @sustained_lock", lock)
         self.assertIn("'sustained_migrations'", lock)
         self.assertIn("@LockOwner = 'Session'", lock)
         (unlock,) = compiler.migration_unlock_sql("sustained_migrations")
@@ -88,6 +89,71 @@ class TestLockStatements(unittest.TestCase):
             compiler = Dialects.get_compiler(dialect)
             self.assertEqual(compiler.migration_lock_sql("t"), [])
             self.assertEqual(compiler.migration_unlock_sql("t"), [])
+
+
+class TestLockResults(unittest.TestCase):
+    """
+    What each dialect reads off the row its lock statement returned.
+    """
+
+    def test_engines_whose_lock_statement_raises_read_nothing(self):
+        for dialect in (Dialects.DEFAULT, Dialects.POSTGRES, Dialects.DUCKDB):
+            compiler = Dialects.get_compiler(dialect)
+            for row in (None, (0,), (None,)):
+                with self.subTest(dialect=dialect, row=row):
+                    self.assertIsNone(compiler.migration_lock_problem(row))
+
+    def test_mysql_accepts_only_one(self):
+        compiler = Dialects.get_compiler(Dialects.MYSQL)
+        for row in ((1,), ("1",), (b"1",), (1.0,)):
+            with self.subTest(row=row):
+                self.assertIsNone(compiler.migration_lock_problem(row))
+        for row in (None, (0,), (None,), ("nope",), (True,), ([],)):
+            with self.subTest(row=row):
+                problem = compiler.migration_lock_problem(row)
+                self.assertIsNotNone(problem)
+                self.assertIn("GET_LOCK returned", problem)
+
+    def test_mssql_refuses_a_negative_status(self):
+        compiler = Dialects.get_compiler(Dialects.MSSQL)
+        for row in ((0,), (1,), ("0",)):
+            with self.subTest(row=row):
+                self.assertIsNone(compiler.migration_lock_problem(row))
+        for row in ((-1,), (-999,)):
+            with self.subTest(row=row):
+                self.assertIn("status", compiler.migration_lock_problem(row))
+        for row in (None, (None,), ("what",)):
+            with self.subTest(row=row):
+                self.assertIn(
+                    "instead of a status", compiler.migration_lock_problem(row)
+                )
+
+
+class TestLockRow(unittest.TestCase):
+    """
+    The row helper the sync migrator reads a lock result with.
+    """
+
+    def test_a_cursor_that_cannot_fetch_reads_as_no_row(self):
+        class NoResultCursor:
+            def fetchone(self):
+                raise RuntimeError("no results")
+
+        self.assertIsNone(_lock_row(NoResultCursor()))
+
+    def test_a_row_comes_back_as_a_tuple(self):
+        class RowCursor:
+            def fetchone(self):
+                return [1]
+
+        self.assertEqual(_lock_row(RowCursor()), (1,))
+
+    def test_no_row_stays_none(self):
+        class EmptyCursor:
+            def fetchone(self):
+                return None
+
+        self.assertIsNone(_lock_row(EmptyCursor()))
 
 
 class TestBeginStatements(unittest.TestCase):

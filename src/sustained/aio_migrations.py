@@ -47,6 +47,7 @@ from sustained.migrations import (
     _destructive_prefix_keys,
     _down_sweep,
     _is_current,
+    _lock_message,
     _migration_state,
     _next_seq,
     _rehearsal_column_defs,
@@ -186,7 +187,7 @@ class AsyncMigrator:
             yield
             return
         for statement in lock_statements:
-            await self._adapter.execute(statement, ())
+            await self._take_lock(statement)
         try:
             yield
         finally:
@@ -195,6 +196,22 @@ class AsyncMigrator:
                     await self._adapter.execute(statement, ())
                 except Exception:
                     pass
+
+    async def _take_lock(self, statement: str) -> None:
+        """
+        Runs one lock statement and reads what it returned. MySQL and
+        MSSQL report a refused lock in the result rather than raising, so
+        a run that read nothing here could start while another migrator
+        was working. A statement that returns no row reads as a lock that
+        was not granted.
+        """
+        from sustained.exceptions import MigrationError
+
+        _, rows = await self._adapter.fetch(statement, ())
+        row: Optional[Sequence[RowValue]] = rows[0] if rows else None
+        problem = self._compiler.migration_lock_problem(row)
+        if problem is not None:
+            raise MigrationError([_lock_message(self._table, problem)])
 
     async def _ensure_tracking_table(self) -> None:
         from sustained.schema import build_create_table_sql

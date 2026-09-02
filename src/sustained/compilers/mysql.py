@@ -1,4 +1,4 @@
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Optional, Sequence
 
 from sustained.exceptions import DialectError
 from sustained.types import SqlValue
@@ -269,3 +269,14 @@ class MysqlCompiler(Compiler):
 
     def migration_unlock_sql(self, name: str) -> "list[str]":
         return [f"SELECT RELEASE_LOCK({self.format_value(name)})"]
+
+    def migration_lock_problem(
+        self, row: "Optional[Sequence[object]]"
+    ) -> Optional[str]:
+        # GET_LOCK returns 1 when this session holds the lock, 0 when the
+        # wait timed out, and NULL on an error. It raises for none of
+        # them, so an unread result lets two migrators run at once.
+        if self.lock_status(row) == 1:
+            return None
+        value = row[0] if row else None
+        return f"GET_LOCK returned {value!r} instead of 1"

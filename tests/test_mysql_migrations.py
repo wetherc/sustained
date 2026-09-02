@@ -9,6 +9,7 @@ import unittest
 from sustained.aio import AsyncAdapter
 from sustained.aio_migrations import AsyncMigrator
 from sustained.dialects import Dialects
+from sustained.exceptions import MigrationError
 from sustained.migrations import Migration, Migrator
 
 LOCK = "SELECT GET_LOCK('sustained_migrations', 31536000)"
@@ -24,7 +25,9 @@ class FakeCursor:
         self._conn.log.append(sql)
         if self._conn.fail_on and self._conn.fail_on in sql:
             raise RuntimeError(f"forced failure on: {sql}")
-        if sql.startswith("SELECT") and "checksum" in sql:
+        if "GET_LOCK(" in sql:
+            self._rows = [(self._conn.lock_result,)]
+        elif sql.startswith("SELECT") and "checksum" in sql:
             self._rows = [
                 (i, n, None, ok, False)
                 for n, (i, ok) in enumerate(self._conn.applied, 1)
@@ -51,11 +54,12 @@ class FakeCursor:
 
 
 class FakeMysqlConnection:
-    def __init__(self, fail_on=None):
+    def __init__(self, fail_on=None, lock_result=1):
         self.applied = []
         self.rows = []
         self.log = []
         self.fail_on = fail_on
+        self.lock_result = lock_result
 
     def cursor(self):
         return FakeCursor(self)
@@ -110,6 +114,43 @@ class TestMysqlRun(unittest.TestCase):
         self.assertIn(UNLOCK, conn.log)
 
 
+class TestMysqlLockGrant(unittest.TestCase):
+    """
+    GET_LOCK returns 0 when the wait times out and NULL on an error. Both
+    read as a lock another session still holds.
+    """
+
+    def test_a_lock_that_was_not_granted_stops_the_run(self):
+        for result in (0, None, "nope"):
+            with self.subTest(result=result):
+                conn = FakeMysqlConnection(lock_result=result)
+                with self.assertRaises(MigrationError) as caught:
+                    migrator(
+                        conn, [Migration("one", up="CREATE TABLE t1 (id INT)")]
+                    ).up()
+                message = str(caught.exception)
+                self.assertIn("migration lock for 'sustained_migrations'", message)
+                self.assertIn("GET_LOCK returned", message)
+                self.assertNotIn("CREATE TABLE t1 (id INT)", conn.log)
+
+
+class TestAsyncMysqlLockGrant(unittest.TestCase):
+    def test_a_lock_that_was_not_granted_stops_the_async_run(self):
+        async def run():
+            adapter = RecordingAdapter(lock_result=0)
+            migrator = AsyncMigrator(
+                adapter,
+                [Migration("one", up="CREATE TABLE t1 (id INT)")],
+                dialect=Dialects.MYSQL,
+            )
+            with self.assertRaises(MigrationError) as caught:
+                await migrator.up()
+            self.assertIn("GET_LOCK returned 0", str(caught.exception))
+            self.assertNotIn("CREATE TABLE t1 (id INT)", adapter.log)
+
+        asyncio.run(run())
+
+
 class TestMysqlRehearsal(unittest.TestCase):
     def test_rehearse_refuses_and_names_the_way_out(self):
         conn = FakeMysqlConnection()
@@ -143,11 +184,14 @@ class TestMysqlRehearsal(unittest.TestCase):
 
 
 class RecordingAdapter(AsyncAdapter):
-    def __init__(self):
+    def __init__(self, lock_result=1):
         self.log = []
+        self.lock_result = lock_result
 
     async def fetch(self, sql, params):
         self.log.append(sql)
+        if "GET_LOCK(" in sql:
+            return ["lock"], [(self.lock_result,)]
         return [], []
 
     async def execute(self, sql, params):

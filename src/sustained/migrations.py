@@ -1047,6 +1047,28 @@ def _validation_problems(
     return problems
 
 
+def _lock_row(cursor: "Cursor") -> Optional[Sequence[object]]:
+    """
+    The row a lock statement returned, or None when it returned nothing.
+    A driver whose lock statement produces no result set raises on the
+    fetch, which reads as no row.
+    """
+    try:
+        row = cursor.fetchone()
+    except Exception:
+        return None
+    return None if row is None else tuple(row)
+
+
+def _lock_message(table: str, problem: str) -> str:
+    """The error for a lock the engine did not grant."""
+    return (
+        f"The migration lock for '{table}' was not granted: {problem}. "
+        "Another migrator may be running; wait for it to finish and try "
+        "again."
+    )
+
+
 class Migrator:
     """
     Applies and reverts an ordered list of migrations on one connection.
@@ -1190,6 +1212,7 @@ class Migrator:
         with closing(self._connection.cursor()) as cursor:
             for statement in lock_statements:
                 cursor.execute(statement)
+                self._check_lock(_lock_row(cursor))
         try:
             yield
         finally:
@@ -1199,6 +1222,19 @@ class Migrator:
                         cursor.execute(statement)
                 except Exception:
                     pass
+
+    def _check_lock(self, row: Optional[Sequence[object]]) -> None:
+        """
+        Raises when the lock statement's result says the lock was not
+        granted. MySQL and MSSQL report a refused lock in the value they
+        return instead of raising, so a run that read nothing here could
+        start while another migrator was working.
+        """
+        from sustained.exceptions import MigrationError
+
+        problem = self._compiler.migration_lock_problem(row)
+        if problem is not None:
+            raise MigrationError([_lock_message(self._table, problem)])
 
     def _ensure_tracking_table(self) -> None:
         from sustained.schema import build_create_table_sql
