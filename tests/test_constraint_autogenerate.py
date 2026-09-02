@@ -376,6 +376,8 @@ class RoutingCursor:
         self._current = []
         for marker, rows in self._routes.items():
             if marker in sql:
+                if isinstance(rows, Exception):
+                    raise rows
                 self._current = rows
                 return
 
@@ -660,24 +662,80 @@ class TestUnknownTargetComparison(unittest.TestCase):
         self.assertFalse(_fk_matches(declared, actual))
 
 
+MSSQL_COLUMNS = [
+    ("ms_items", "id", "int", "NO", None),
+    ("ms_items", "price", "int", "YES", None),
+]
+
+
+def mssql_model():
+    model = make_model(
+        "MsI",
+        "ms_items",
+        {"id": Integer(primary_key=True), "price": Integer()},
+    )
+    model.set_dialect(Dialects.MSSQL)
+    model.tableConstraints = [Check("ck_ms_price", "price > 0")]
+    return model
+
+
+class TestSharedPlanChecks(unittest.TestCase):
+    def test_a_declared_check_is_missing_when_the_view_reports_none(self):
+        conn = RoutingConnection({"information_schema.columns": MSSQL_COLUMNS})
+        diff = diff_schema(conn, [mssql_model()], dialect=Dialects.MSSQL)
+        self.assertEqual([check.name for _, check in diff.new_checks], ["ck_ms_price"])
+        self.assertIn(
+            "check 'ck_ms_price' on 'ms_items' was not added", diff.outstanding()
+        )
+
+    def test_a_declared_check_generates_add_constraint(self):
+        conn = RoutingConnection({"information_schema.columns": MSSQL_COLUMNS})
+        migration = autogenerate(conn, [mssql_model()], id="m1", dialect=Dialects.MSSQL)
+        self.assertEqual(
+            migration.up,
+            [
+                "ALTER TABLE [ms_items] ADD CONSTRAINT [ck_ms_price] "
+                "CHECK (price > 0)"
+            ],
+        )
+
+    def test_a_matching_check_reports_nothing(self):
+        conn = RoutingConnection(
+            {
+                "information_schema.columns": MSSQL_COLUMNS,
+                "check_constraints": [("ms_items", "ck_ms_price", "(price > 0)")],
+            }
+        )
+        diff = diff_schema(conn, [mssql_model()], dialect=Dialects.MSSQL)
+        self.assertEqual(diff.new_checks, [])
+        self.assertEqual(diff.extra_checks, [])
+
+    def test_a_generated_not_null_check_is_not_extra(self):
+        conn = RoutingConnection(
+            {
+                "information_schema.columns": MSSQL_COLUMNS,
+                "check_constraints": [
+                    ("ms_items", "ck_ms_price", "(price > 0)"),
+                    ("ms_items", "ms_items_id_not_null", "id IS NOT NULL"),
+                ],
+            }
+        )
+        diff = diff_schema(conn, [mssql_model()], dialect=Dialects.MSSQL)
+        self.assertEqual(diff.extra_checks, [])
+
+
 class TestDegradedReadDiffsNothing(unittest.TestCase):
     def test_checks_not_diffed_without_a_check_read(self):
-        # MSSQL introspects through the generic information_schema plan,
-        # which never reads checks, so a declared Check must not report
-        # as missing there.
-        columns = [
-            ("ms_items", "id", "int", "NO", None),
-            ("ms_items", "price", "int", "YES", None),
-        ]
-        conn = RoutingConnection({"information_schema.columns": columns})
-        model = make_model(
-            "MsI",
-            "ms_items",
-            {"id": Integer(primary_key=True), "price": Integer()},
+        # An engine too old for information_schema.check_constraints
+        # reads no checks at all, and an absent check there is not proof
+        # that the database does not hold it.
+        conn = RoutingConnection(
+            {
+                "information_schema.columns": MSSQL_COLUMNS,
+                "check_constraints": RuntimeError("no check view here"),
+            }
         )
-        model.set_dialect(Dialects.MSSQL)
-        model.tableConstraints = [Check("ck_ms_price", "price > 0")]
-        diff = diff_schema(conn, [model], dialect=Dialects.MSSQL)
+        diff = diff_schema(conn, [mssql_model()], dialect=Dialects.MSSQL)
         self.assertEqual(diff.new_checks, [])
         self.assertEqual(diff.new_foreign_keys, [])
 

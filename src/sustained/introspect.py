@@ -515,6 +515,16 @@ _SYSTEM_SCHEMAS = (
 )
 
 
+def _is_generated_not_null_check(name: str, expression: str) -> bool:
+    """
+    Whether a check row is the constraint an engine writes for a NOT NULL
+    column. Postgres and DuckDB both report one, named after the column
+    with a _not_null suffix. It belongs to the column's own nullable
+    flag, not to the table's checks, and a model never declares it.
+    """
+    return name.endswith("_not_null") and "IS NOT NULL" in expression.upper()
+
+
 class Catalog(NamedTuple):
     """
     How one engine's information_schema differs from the shared read.
@@ -527,12 +537,17 @@ class Catalog(NamedTuple):
             unique within its schema.
         comment_column: The information_schema.columns column holding the
             column comment, or None on engines that store none there.
+        reads_checks: Whether the engine fills
+            information_schema.check_constraints. Presto and Athena have
+            no CHECK constraints at all, so their snapshots must leave
+            checks_read False rather than report an empty mapping.
     """
 
     schema_filter: str
     type_column: str
     join_on_schema: bool
     comment_column: Optional[str] = None
+    reads_checks: bool = True
 
 
 ANSI_CATALOG = Catalog(
@@ -554,7 +569,8 @@ MYSQL_CATALOG = Catalog(
 )
 
 # Presto and Trino put the comment straight on information_schema.columns.
-PRESTO_CATALOG = ANSI_CATALOG._replace(comment_column="comment")
+# Their tables are files on object storage and hold no CHECK constraints.
+PRESTO_CATALOG = ANSI_CATALOG._replace(comment_column="comment", reads_checks=False)
 
 # Athena reads only the connection's schema. Its catalog spans every Glue
 # database in the account, so an unscoped read is slow and fails outright
@@ -653,7 +669,35 @@ def _information_schema_plan(catalog: Catalog = ANSI_CATALOG) -> SchemaPlan:
         # The engine does not expose constraint views; degrade to columns.
         pass
 
-    schema = Snapshot(constraints_read=constraints_read, comments_read=comments_read)
+    checks: Dict[str, Dict[str, str]] = {}
+    checks_read = False
+    if catalog.reads_checks:
+        try:
+            check_rows = yield (
+                "SELECT tc.table_name, tc.constraint_name, cc.check_clause "
+                "FROM information_schema.table_constraints tc "
+                "JOIN information_schema.check_constraints cc "
+                "ON cc.constraint_schema = tc.constraint_schema "
+                "AND cc.constraint_name = tc.constraint_name "
+                "WHERE tc.constraint_type = 'CHECK' "
+                f"AND tc.{schema_filter}"
+            )
+            for table, cname, clause in check_rows:
+                name = str(cname).lower()
+                expression = str(clause)
+                if _is_generated_not_null_check(name, expression):
+                    continue
+                checks.setdefault(str(table).lower(), {})[name] = expression
+            checks_read = True
+        except Exception:
+            # An engine too old for the check view; degrade to no checks.
+            pass
+
+    schema = Snapshot(
+        constraints_read=constraints_read,
+        checks_read=checks_read,
+        comments_read=comments_read,
+    )
     for table, columns in columns_by_table.items():
         pk = tuple(primary_keys.get(table, ()))
         for pk_col in pk:
@@ -664,6 +708,7 @@ def _information_schema_plan(catalog: Catalog = ANSI_CATALOG) -> SchemaPlan:
             primary_key=pk,
             foreign_keys=foreign_keys.get(table, {}),
             indexes=unique_indexes.get(table, {}),
+            checks=checks.get(table, {}),
         )
     return schema
 
@@ -946,10 +991,7 @@ def _postgres_plan() -> SchemaPlan:
         for table, cname, clause in check_rows:
             name = str(cname).lower()
             expression = str(clause)
-            # Postgres spells a NOT NULL as a system check constraint
-            # named ..._not_null. Those belong to the column's own
-            # nullable flag, not to the table's checks.
-            if name.endswith("_not_null") and "IS NOT NULL" in expression.upper():
+            if _is_generated_not_null_check(name, expression):
                 continue
             checks.setdefault(str(table).lower(), {})[name] = expression
         checks_read = True
@@ -1135,6 +1177,16 @@ def _recover_mariadb_json(
         if column is None or normalize_type(column.raw_type) != "TEXT":
             continue
         introspected.columns[name] = column._replace(raw_type="JSON")
+        # MariaDB writes this constraint itself for every JSON column.
+        # It belongs to the column's type, so it is not a check the
+        # model failed to declare.
+        table_key = str(table).lower()
+        remaining = {
+            check: expression
+            for check, expression in introspected.checks.items()
+            if check != name
+        }
+        schema[table_key] = introspected._replace(checks=remaining)
 
 
 def _column_shape(column: IntrospectedColumn) -> Tuple[str, Optional[str], bool, bool]:

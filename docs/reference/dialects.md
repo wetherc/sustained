@@ -103,7 +103,7 @@ SQLite and DuckDB have no advisory lock, because they serialize writers themselv
 
 ## Introspection
 
-The default dialect reads SQLite's PRAGMA tables. Every other dialect reads `information_schema`. When the constraint views are unavailable, introspection falls back to the column data alone rather than failing.
+The default dialect reads SQLite's PRAGMA tables. Every other dialect reads `information_schema`, including `check_constraints` for CHECK expressions on MySQL, MariaDB, MSSQL, and DuckDB. Presto and Athena skip that read, because their tables hold no CHECK constraints. When a view is unavailable, introspection falls back to the column data alone rather than failing.
 
 Postgres has a dedicated read. It takes `udt_name`, varchar lengths, and numeric precision from `information_schema.columns`, every index from `pg_index`, foreign key names, columns, targets, and referential actions from `pg_constraint`, CHECK expressions from `check_constraints`, and enum values from `pg_enum` in sort order. Expression indexes are skipped, as on SQLite.
 

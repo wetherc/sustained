@@ -244,6 +244,8 @@ A `ForeignKey` takes its columns as a string or a sequence, and its targets as `
 
 Constraint differences generate migrations. A constraint the model declares and the database lacks generates `ADD CONSTRAINT`, with the matching drop as the down step. A changed foreign key generates a drop plus an add under `allow_drops=True`; the down step restores the introspected key when its target is known, and the migration is irreversible otherwise. Constraints in the database that no model declares follow the same rules as extra indexes: they block generation unless `ignore_undeclared` is set, and they drop only under `allow_drops=True`.
 
+Checks diff on every engine whose catalog reports them: Postgres, MySQL 8.0.16 and later, MariaDB, MSSQL, DuckDB, and SQLite. Presto and Athena hold no CHECK constraints, so nothing diffs there. An engine too old for `information_schema.check_constraints` reads no checks, and a declared check then stays undiffed rather than reporting as missing.
+
 Check expressions compare normalized, because engines rewrite them: Postgres stores `price > 0` as `((price > 0))`, and keyword case and whitespace vary. A difference that survives normalization is reported as a constraint note on Postgres rather than generating a drop, so a cosmetic rewrite never costs you a constraint. SQLite cannot add or drop a table constraint in place, so those changes route through the same table rebuild as its column changes.
 
 Presto and Athena enforce no table constraints and raise `DialectError` when a model declares them there. Primary key set changes stay reported as notes and are never generated, because a safe primary key migration needs a table rebuild on most engines.

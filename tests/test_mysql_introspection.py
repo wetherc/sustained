@@ -12,6 +12,7 @@ from sustained.model import Model
 from sustained.schema import (
     BigInteger,
     Boolean,
+    Check,
     Integer,
     Json,
     String,
@@ -24,11 +25,19 @@ class FakeCursor:
     """Serves canned MySQL catalog rows, and records the SQL asked for."""
 
     def __init__(
-        self, columns=(), constraints=None, checks=None, commented_columns=None
+        self,
+        columns=(),
+        constraints=None,
+        checks=None,
+        commented_columns=None,
+        table_checks=None,
     ):
         self.columns = list(columns)
         self.constraints = constraints
+        # Rows of the MariaDB json_valid recovery read: (table, clause).
         self.checks = checks
+        # Rows of the shared check read: (table, constraint, clause).
+        self.table_checks = table_checks
         # The same column rows the read asks for first, with the comment
         # selected. None means the engine has no column_comment column.
         self.commented_columns = commented_columns
@@ -44,6 +53,10 @@ class FakeCursor:
                 self._current = self.commented_columns
             else:
                 self._current = self.columns
+        elif "constraint_type = 'CHECK'" in sql:
+            if self.table_checks is None:
+                raise RuntimeError("no check view here")
+            self._current = self.table_checks
         elif "information_schema.table_constraints" in sql:
             if self.constraints is None:
                 raise RuntimeError("no constraint views here")
@@ -249,6 +262,84 @@ class TestMariadbJson(unittest.TestCase):
         cursor = FakeCursor(columns=[("shows", "payload", "json", "YES", None)])
         schema = self.read(cursor)
         self.assertEqual(schema["shows"].columns["payload"].raw_type, "json")
+
+
+class TestMysqlChecks(unittest.TestCase):
+    """
+    MySQL 8.0.16 and MariaDB both fill information_schema.check_constraints,
+    so a declared Check diffs there like it does on Postgres.
+    """
+
+    def model(self, constraints):
+        model = make_model(
+            "MysqlChecked",
+            "shows",
+            {
+                "id": Integer(primary_key=True, autoincrement=True),
+                "seats": Integer(),
+            },
+        )
+        model.tableConstraints = constraints
+        return model
+
+    def cursor(self, table_checks=None, checks=None):
+        return FakeCursor(
+            columns=[
+                ("shows", "id", "int", "NO", None),
+                ("shows", "seats", "int", "YES", None),
+            ],
+            constraints=[("shows", "PRIMARY KEY", "PRIMARY", "id")],
+            table_checks=table_checks,
+            checks=checks,
+        )
+
+    def test_checks_are_read(self):
+        schema = introspect_schema(
+            FakeConnection(
+                self.cursor(table_checks=[("shows", "ck_seats", "(`seats` > 0)")])
+            ),
+            Dialects.MYSQL,
+        )
+        self.assertTrue(schema.checks_read)
+        self.assertEqual(schema["shows"].checks, {"ck_seats": "(`seats` > 0)"})
+
+    def test_a_missing_check_generates_add_constraint(self):
+        model = self.model([Check("ck_seats", "seats > 0")])
+        migration = autogenerate(
+            FakeConnection(self.cursor(table_checks=[])),
+            [model],
+            id="m1",
+            dialect=Dialects.MYSQL,
+        )
+        self.assertEqual(
+            migration.up,
+            ["ALTER TABLE `shows` ADD CONSTRAINT `ck_seats` CHECK (seats > 0)"],
+        )
+        self.assertEqual(
+            migration.down, ["ALTER TABLE `shows` DROP CONSTRAINT `ck_seats`"]
+        )
+
+    def test_the_mariadb_json_check_is_not_an_extra(self):
+        cursor = FakeCursor(
+            columns=[
+                ("shows", "id", "int", "NO", None),
+                ("shows", "payload", "longtext", "YES", None),
+            ],
+            constraints=[("shows", "PRIMARY KEY", "PRIMARY", "id")],
+            table_checks=[("shows", "payload", "json_valid(`payload`)")],
+            checks=[("shows", "json_valid(`payload`)")],
+        )
+        model = make_model(
+            "MysqlJsonChecked",
+            "shows",
+            {
+                "id": Integer(primary_key=True, autoincrement=True),
+                "payload": Json(),
+            },
+        )
+        diff = diff_schema(FakeConnection(cursor), [model], dialect=Dialects.MYSQL)
+        self.assertEqual(diff.extra_checks, [])
+        self.assertTrue(diff.is_empty())
 
 
 class TestMysqlNormalization(unittest.TestCase):
