@@ -103,6 +103,11 @@ class TestAsyncMigrator(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await migrator.up(target="a"), [])
         self.assertEqual(await migrator.up(), ["b"])
 
+    async def test_up_takes_the_diff_options_by_keyword_only(self):
+        migrator = AsyncMigrator(self.adapter, self.migrations())
+        with self.assertRaises(TypeError):
+            await migrator.up(None, True, False, True)
+
     async def test_down_and_down_to(self):
         migrator = AsyncMigrator(self.adapter, self.migrations())
         await migrator.up()

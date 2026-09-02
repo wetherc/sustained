@@ -104,6 +104,11 @@ class TestMigrator(MigrationTestCase):
         with self.assertRaises(ValueError):
             migrator.up(target="nope")
 
+    def test_up_takes_the_diff_options_by_keyword_only(self):
+        migrator = Migrator(self.conn, self.migrations())
+        with self.assertRaises(TypeError):
+            migrator.up(None, True, False, True)
+
     def test_down_reverts_newest_first(self):
         migrator = Migrator(self.conn, self.migrations())
         migrator.up()

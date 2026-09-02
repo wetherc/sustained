@@ -2038,6 +2038,7 @@ class Migrator:
         target: Optional[str] = None,
         validate: bool = True,
         allow_out_of_order: bool = False,
+        *,
         models: Optional[List[Type["Model"]]] = None,
         allow_drops: bool = False,
         ignore_changed_columns: bool = False,
@@ -2073,6 +2074,10 @@ class Migrator:
         migration always runs last of the versioned ones, so it cannot be
         combined with a target, and the remaining arguments are the diff
         options plan() takes.
+
+        Everything after allow_out_of_order is keyword-only, so a call
+        written for an earlier release cannot bind a diff option to a
+        positional argument it never meant.
 
         A run that would remove data stops unless a passing rehearsal
         covers exactly these statements against exactly this applied
