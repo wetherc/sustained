@@ -54,7 +54,7 @@ from typing import (
 from sustained.ddl import DdlStep
 from sustained.dialects import Dialects
 from sustained.execution import cursor_scope, pinned_transaction, transaction
-from sustained.types import Connection, Cursor, SqlValue
+from sustained.types import Connection, Cursor, RowValue, SqlValue
 
 if TYPE_CHECKING:
     from sustained.aio import AsyncAdapter
@@ -855,6 +855,105 @@ def _run_step(
             cursor.execute(statement)
 
 
+def records_from_rows(rows: Iterable[Sequence[RowValue]]) -> List[AppliedRecord]:
+    """The tracking table rows a records_select() read returned."""
+    return [
+        AppliedRecord(str(row[0]), row[1], row[2], bool(row[3]), bool(row[4]))
+        for row in rows
+    ]
+
+
+def render_script(
+    compiler: "Compiler",
+    table_sql: str,
+    migrations: Sequence[Migration],
+    records: Sequence[AppliedRecord],
+    direction: str = "up",
+) -> str:
+    """
+    The SQL a run would execute, rendered from the migrations and the
+    tracking rows that were read, without touching a database. Both
+    migrators call this, so either one renders the same script.
+    """
+    timestamp = datetime.now(timezone.utc).isoformat()
+    format_value = compiler.format_value
+    column = compiler.quote_identifier
+    insert_columns = quoted_columns(
+        compiler, "id", "seq", "checksum", "applied_at", "execution_ms", "success"
+    )
+    versioned = [m for m in migrations if not m.repeatable]
+    repeatables = [m for m in migrations if m.repeatable]
+    lines: List[str] = []
+    if direction == "up":
+        records_by_id = {r.id: r for r in records}
+        applied = {r.id for r in records if r.success}
+        next_seq = _next_seq(list(records))
+        for migration in versioned:
+            if migration.id in applied:
+                continue
+            lines.append(f"-- up: {migration.id}")
+            lines.extend(f"{s};" for s in migration_sql(migration, "up", compiler))
+            lines.append(
+                f"INSERT INTO {table_sql} "
+                f"({insert_columns}) "
+                f"VALUES ({format_value(migration.id)}, {next_seq}, "
+                f"{format_value(migration_checksum(migration))}, "
+                f"{format_value(timestamp)}, NULL, "
+                f"{compiler.compile_boolean(True)});"
+            )
+            next_seq += 1
+        for migration in repeatables:
+            record = records_by_id.get(migration.id)
+            checksum = migration_checksum(migration)
+            if _is_current(record, checksum, True):
+                continue
+            lines.append(f"-- repeat: {migration.id}")
+            lines.extend(f"{s};" for s in migration_sql(migration, "up", compiler))
+            if record is None:
+                lines.append(
+                    f"INSERT INTO {table_sql} "
+                    f"({insert_columns}) "
+                    f"VALUES ({format_value(migration.id)}, {next_seq}, "
+                    f"{format_value(checksum)}, "
+                    f"{format_value(timestamp)}, NULL, "
+                    f"{compiler.compile_boolean(True)});"
+                )
+                next_seq += 1
+            else:
+                lines.append(
+                    f"UPDATE {table_sql} "
+                    f"SET {column('checksum')} = {format_value(checksum)}, "
+                    f"{column('applied_at')} = "
+                    f"{format_value(timestamp)}, "
+                    f"{column('execution_ms')} = NULL, "
+                    f"{column('success')} = "
+                    f"{compiler.compile_boolean(True)} "
+                    f"WHERE {column('id')} = {format_value(migration.id)};"
+                )
+    elif direction == "down":
+        by_id = {m.id: m for m in migrations}
+        repeatable_ids = {m.id for m in repeatables}
+        applied_ids = [
+            r.id for r in records if r.success and r.id not in repeatable_ids
+        ]
+        for migration_id in reversed(applied_ids):
+            registered = by_id.get(migration_id)
+            if registered is None or registered.down is None:
+                lines.append(
+                    f"-- down: {migration_id} has no reversible step; stopping"
+                )
+                break
+            lines.append(f"-- down: {migration_id}")
+            lines.extend(f"{s};" for s in migration_sql(registered, "down", compiler))
+            lines.append(
+                f"DELETE FROM {table_sql} WHERE {column('id')} = "
+                f"{format_value(migration_id)};"
+            )
+    else:
+        raise ValueError("direction must be 'up' or 'down'.")
+    return "\n".join(lines)
+
+
 def _next_seq(records: List[AppliedRecord]) -> int:
     return 1 + max((r.seq or 0 for r in records), default=0)
 
@@ -1529,10 +1628,7 @@ class Migrator:
         """Reads the tracking table rows, assuming the table is there."""
         with closing(self._connection.cursor()) as cursor:
             cursor.execute(records_select(self._compiler, self._table_sql()))
-            return [
-                AppliedRecord(row[0], row[1], row[2], bool(row[3]), bool(row[4]))
-                for row in cursor.fetchall()
-            ]
+            return records_from_rows(cursor.fetchall())
 
     def applied_records(self) -> List[AppliedRecord]:
         """
@@ -2441,91 +2537,13 @@ class Migrator:
         Nothing is written, not even the tracking table: a database
         without one reads as a database with no migrations applied.
         """
-        placeholder_free_ts = datetime.now(timezone.utc).isoformat()
-        format_value = self._compiler.format_value
-        column = self._compiler.quote_identifier
-        insert_columns = quoted_columns(
+        return render_script(
             self._compiler,
-            "id",
-            "seq",
-            "checksum",
-            "applied_at",
-            "execution_ms",
-            "success",
+            self._table_sql(),
+            self._migrations,
+            self.read_applied_records(),
+            direction,
         )
-        lines: List[str] = []
-        records = self.read_applied_records()
-        if direction == "up":
-            records_by_id = {r.id: r for r in records}
-            applied = {r.id for r in records if r.success}
-            next_seq = _next_seq(records)
-            for migration in self._versioned():
-                if migration.id in applied:
-                    continue
-                lines.append(f"-- up: {migration.id}")
-                lines.extend(
-                    f"{s};" for s in migration_sql(migration, "up", self._compiler)
-                )
-                lines.append(
-                    f"INSERT INTO {self._table_sql()} "
-                    f"({insert_columns}) "
-                    f"VALUES ({format_value(migration.id)}, {next_seq}, "
-                    f"{format_value(migration_checksum(migration))}, "
-                    f"{format_value(placeholder_free_ts)}, NULL, "
-                    f"{self._compiler.compile_boolean(True)});"
-                )
-                next_seq += 1
-            for migration in self._repeatables():
-                record = records_by_id.get(migration.id)
-                checksum = migration_checksum(migration)
-                if _is_current(record, checksum, True):
-                    continue
-                lines.append(f"-- repeat: {migration.id}")
-                lines.extend(
-                    f"{s};" for s in migration_sql(migration, "up", self._compiler)
-                )
-                if record is None:
-                    lines.append(
-                        f"INSERT INTO {self._table_sql()} "
-                        f"({insert_columns}) "
-                        f"VALUES ({format_value(migration.id)}, {next_seq}, "
-                        f"{format_value(checksum)}, "
-                        f"{format_value(placeholder_free_ts)}, NULL, "
-                        f"{self._compiler.compile_boolean(True)});"
-                    )
-                    next_seq += 1
-                else:
-                    lines.append(
-                        f"UPDATE {self._table_sql()} "
-                        f"SET {column('checksum')} = {format_value(checksum)}, "
-                        f"{column('applied_at')} = "
-                        f"{format_value(placeholder_free_ts)}, "
-                        f"{column('execution_ms')} = NULL, "
-                        f"{column('success')} = "
-                        f"{self._compiler.compile_boolean(True)} "
-                        f"WHERE {column('id')} = {format_value(migration.id)};"
-                    )
-        elif direction == "down":
-            by_id = {m.id: m for m in self._migrations}
-            applied_ids = [r.id for r in records if r.success]
-            for migration_id in reversed(self._applied_versioned(applied_ids)):
-                registered = by_id.get(migration_id)
-                if registered is None or registered.down is None:
-                    lines.append(
-                        f"-- down: {migration_id} has no reversible step; stopping"
-                    )
-                    break
-                lines.append(f"-- down: {migration_id}")
-                lines.extend(
-                    f"{s};" for s in migration_sql(registered, "down", self._compiler)
-                )
-                lines.append(
-                    f"DELETE FROM {self._table_sql()} WHERE {column('id')} = "
-                    f"{format_value(migration_id)};"
-                )
-        else:
-            raise ValueError("direction must be 'up' or 'down'.")
-        return "\n".join(lines)
 
     def _applied_versioned(self, ids: Optional[List[str]] = None) -> List[str]:
         """

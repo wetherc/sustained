@@ -2,17 +2,28 @@
 Async migration runner tests using the DbApiAsyncAdapter over SQLite.
 """
 
+import re
 import sqlite3
 import unittest
 
 from sustained.aio import DbApiAsyncAdapter
 from sustained.aio_migrations import AsyncMigrator
 from sustained.exceptions import MigrationError, RehearsalRequired
-from sustained.migrations import REHEARSAL_FAILED, REHEARSAL_PASSED, Migration
+from sustained.migrations import (
+    REHEARSAL_FAILED,
+    REHEARSAL_PASSED,
+    Migration,
+    Migrator,
+)
 
 # What a rehearsal leaves behind: the tracking table and the row it
 # earned, both created by the rehearsal itself.
 SUSTAINED_TABLES = {"sustained_migrations", "sustained_rehearsals"}
+
+
+def without_times(script):
+    """The script with its applied_at literals blanked, so two runs compare."""
+    return re.sub(r"'\d{4}-\d\d-\d\dT[^']*'", "'<time>'", script)
 
 
 def table_names(conn):
@@ -671,3 +682,67 @@ class TestAsyncRehearsalRows(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestAsyncScript(unittest.IsolatedAsyncioTestCase):
+    """script() renders the same text the sync migrator renders."""
+
+    def setUp(self):
+        self.conn = sqlite3.connect(":memory:", check_same_thread=False)
+        self.adapter = DbApiAsyncAdapter(self.conn)
+
+    def tearDown(self):
+        self.conn.close()
+
+    def migrations(self):
+        return [
+            Migration("a", up="CREATE TABLE ta (id INTEGER)", down="DROP TABLE ta"),
+            Migration("b", up="CREATE TABLE tb (id INTEGER)", down="DROP TABLE tb"),
+            Migration(
+                "v",
+                up="CREATE VIEW va AS SELECT id FROM ta",
+                repeatable=True,
+            ),
+        ]
+
+    async def test_script_up_matches_the_sync_migrator(self):
+        migrator = AsyncMigrator(self.adapter, self.migrations())
+        expected = Migrator(self.conn, self.migrations()).script("up")
+        self.assertEqual(
+            without_times(await migrator.script("up")), without_times(expected)
+        )
+        self.assertIn("-- up: a", expected)
+        self.assertIn("-- repeat: v", expected)
+
+    async def test_script_writes_nothing(self):
+        migrator = AsyncMigrator(self.adapter, self.migrations())
+        await migrator.script("up")
+        self.assertEqual(table_names(self.conn) & SUSTAINED_TABLES, set())
+        self.assertEqual(await migrator.read_applied_records(), [])
+        self.assertEqual(await migrator.read_applied(), [])
+        self.assertEqual(
+            [m.id for m in await migrator.pending()],
+            [m.id for m in self.migrations()],
+        )
+        self.assertEqual(table_names(self.conn) & SUSTAINED_TABLES, set())
+
+    async def test_script_down_after_a_run_matches_the_sync_migrator(self):
+        migrator = AsyncMigrator(self.adapter, self.migrations())
+        await migrator.up()
+        expected = Migrator(self.conn, self.migrations()).script("down")
+        self.assertEqual(await migrator.script("down"), expected)  # no timestamps
+        self.assertIn("-- down: b", expected)
+        self.assertNotIn("-- down: v", expected)
+
+    async def test_script_reads_the_rows_a_run_left(self):
+        migrator = AsyncMigrator(self.adapter, self.migrations())
+        await migrator.up(target="a")
+        script = await migrator.script("up")
+        self.assertNotIn("-- up: a", script)
+        self.assertIn("-- up: b", script)
+        self.assertEqual(await migrator.read_applied(), ["a"])
+
+    async def test_script_rejects_an_unknown_direction(self):
+        migrator = AsyncMigrator(self.adapter, self.migrations())
+        with self.assertRaises(ValueError):
+            await migrator.script("sideways")

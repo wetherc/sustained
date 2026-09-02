@@ -68,9 +68,11 @@ from sustained.migrations import (
     insert_sql,
     migration_checksum,
     quoted_columns,
+    records_from_rows,
     records_select,
     rehearsal_failed,
     rehearsal_key,
+    render_script,
     update_sql,
 )
 from sustained.types import RowValue, SqlValue
@@ -408,21 +410,69 @@ class AsyncMigrator:
                 )
         await self._adapter.commit()
 
-    async def applied_records(self) -> List[AppliedRecord]:
-        """Returns every tracking table row in application order."""
-        await self._ensure_tracking_table()
+    async def _read_records(self) -> List[AppliedRecord]:
+        """Reads the tracking table rows, assuming the table is there."""
         _, rows = await self._adapter.fetch(
             records_select(self._compiler, self._table_sql()),
             (),
         )
-        return [
-            AppliedRecord(row[0], row[1], row[2], bool(row[3]), bool(row[4]))
-            for row in rows
-        ]
+        return records_from_rows(rows)
+
+    async def applied_records(self) -> List[AppliedRecord]:
+        """
+        Returns every tracking table row in application order, creating
+        the tracking table when it is missing.
+        """
+        await self._ensure_tracking_table()
+        return await self._read_records()
+
+    async def read_applied_records(self) -> List[AppliedRecord]:
+        """
+        Returns every tracking table row without writing anything.
+
+        An empty list means the run has no history to read: either the
+        tracking table does not exist yet, or it still has the shape an
+        earlier version wrote and the read of its columns failed. The
+        paths that only report on a run, such as script() and pending(),
+        read the rows through this, since creating the table would change
+        a database they say they leave alone.
+        """
+        if self._tracking_ready:
+            return await self._read_records()
+        try:
+            return await self._read_records()
+        except Exception:
+            # A failed read can poison an open transaction, so clear the
+            # slate before the next statement.
+            await self._rollback_quietly()
+            return []
 
     async def applied(self) -> List[str]:
         """Returns the applied migration ids in application order."""
         return [r.id for r in await self.applied_records() if r.success]
+
+    async def read_applied(self) -> List[str]:
+        """The applied migration ids, without creating the table."""
+        return [r.id for r in await self.read_applied_records() if r.success]
+
+    async def script(self, direction: str = "up") -> str:
+        """
+        Renders the SQL a run would execute, without executing anything,
+        for review or DBA handoff. 'up' renders every pending migration;
+        'down' renders the applied migrations newest-first. Tracking table
+        bookkeeping statements are included.
+
+        Nothing is written, not even the tracking table: a database
+        without one reads as a database with no migrations applied.
+        Migrator.script() renders the same text.
+        """
+        return render_script(
+            self._compiler,
+            self._table_sql(),
+            self._migrations,
+            await self.read_applied_records(),
+            direction,
+        )
 
     def _versioned(self) -> List[Migration]:
         return [m for m in self._migrations if not m.repeatable]
@@ -436,7 +486,7 @@ class AsyncMigrator:
         versioned migrations without a successful row, then repeatables
         without one or whose checksum changed since the last run.
         """
-        records = {r.id: r for r in await self.applied_records()}
+        records = {r.id: r for r in await self.read_applied_records()}
         result = [
             m
             for m in self._versioned()

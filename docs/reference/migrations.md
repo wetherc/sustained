@@ -464,7 +464,9 @@ AsyncMigrator(adapter, migrations, table='sustained_migrations', dialect=Dialect
 Every method is a coroutine:
 
 - `applied_records`
+- `read_applied_records`
 - `applied`
+- `read_applied`
 - `pending`
 - `status`
 - `statuses`
@@ -478,10 +480,13 @@ Every method is a coroutine:
 - `record_rehearsal`
 - `rehearsal_outcome`
 - `rehearsed`
+- `script`
 
 Both migrators compute the key the same way, so a row written by one migrator opens the gate for the other on the same database.
 
-`AsyncMigrator` has no `plan()`, `drift()`, or `script()`. Sustained has no async autogeneration and no async offline rendering, so `rehearse()` takes no `models` argument here either. Generate the migration against a synchronous connection, then run the result through `AsyncMigrator`.
+`await migrator.script('up')` renders the same text `Migrator.script('up')` renders, and writes nothing, not even the tracking table. `read_applied_records()` and `read_applied()` read the rows the same way.
+
+`AsyncMigrator` has no `plan()` or `drift()`. Sustained has no async autogeneration, so `rehearse()` takes no `models` argument here either. Generate the migration against a synchronous connection, then run the result through `AsyncMigrator`.
 
 A callable step receives the adapter rather than a connection, and its return value is awaited when it is awaitable.
 
