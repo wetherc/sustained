@@ -580,7 +580,7 @@ The canonical spelling of a reported column default, for comparison.
 
 `is_empty()` returns whether the diff holds any difference. `summary()` returns one readable line per difference, with the destructive ones marked, or `schema up to date` when there is no difference.
 
-The enum buckets fill on the dialects with named types. Postgres compares against `pg_enum`, and DuckDB reads the values from the column's inline type spelling. Missing foreign keys and checks generate `ADD CONSTRAINT`; changed and extra ones are gated by `allow_drops`. Primary key set changes, column-level UNIQUE, and default differences always land in `constraint_notes`, and a Postgres check expression whose difference survives normalization lands there too. Generation never migrates a note for you.
+The enum buckets fill on the dialects with named types. Postgres compares against `pg_enum`, and DuckDB against `duckdb_types()`. A DuckDB too old for that view falls back to reading the values from the column's inline type spelling, and a type with no column left reads as absent there. Missing foreign keys and checks generate `ADD CONSTRAINT`; changed and extra ones are gated by `allow_drops`. Primary key set changes, column-level UNIQUE, and default differences always land in `constraint_notes`, and a Postgres check expression whose difference survives normalization lands there too. Generation never migrates a note for you.
 
 ### What generation refuses
 

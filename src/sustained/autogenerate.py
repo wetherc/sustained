@@ -306,11 +306,12 @@ def _diff_enum_types(
 ) -> None:
     """
     Compares the models' enum types against the database, on dialects
-    where an enum is a named type object. With a catalog read (Postgres),
-    absence and value changes come straight from it. Without one
-    (DuckDB), a type is taken as present when a column of it already
-    exists, and its live values are read from the column's own inline
-    type spelling when the engine writes one.
+    where an enum is a named type object. With a catalog read, absence
+    and value changes come straight from it: Postgres reads pg_enum and
+    DuckDB reads duckdb_types(). Without one, a type is taken as present
+    when a column of it already exists, and its live values are read
+    from the column's own inline type spelling when the engine writes
+    one. That fallback cannot see a type no column uses.
     """
     if actual.enum_types_read:
         for type_name, values in declared_types.items():

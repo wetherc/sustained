@@ -14,7 +14,12 @@ from sustained.analysis import destructive_statements
 from sustained.autogenerate import SchemaDiff, autogenerate, diff_schema
 from sustained.dialects import Dialects
 from sustained.guards import no_drops
-from sustained.introspect import IntrospectedColumn, IntrospectedTable, Snapshot
+from sustained.introspect import (
+    IntrospectedColumn,
+    IntrospectedTable,
+    Snapshot,
+    introspect_schema,
+)
 from sustained.migrations import create_table_migration
 from sustained.schema import Enum, Integer, String, collect_enum_types
 from sustained.types import Expression
@@ -635,10 +640,9 @@ class TestEnumColumnAdded(unittest.TestCase):
 @unittest.skipUnless(HAS_DUCKDB, "duckdb not installed")
 class TestDuckDbEnumDiffing(unittest.TestCase):
     """
-    DuckDB reads no enum type catalog, so presence is inferred from the
-    columns: an existing enum column diffs clean, and a value change is
-    detected from the inline type spelling and refused, since DuckDB
-    cannot add a value in place.
+    DuckDB reports its enum types in duckdb_types(), so a type is known
+    to be there whether or not a column still uses it. A value change is
+    refused, since DuckDB cannot add a value in place.
     """
 
     def _model(self, *values):
@@ -672,6 +676,30 @@ class TestDuckDbEnumDiffing(unittest.TestCase):
         Wider = self._model("new", "done", "archived")
         with self.assertRaises(DialectError):
             autogenerate(conn, [Wider], id="m", dialect=Dialects.DUCKDB)
+        conn.close()
+
+    def test_the_type_catalog_is_read(self):
+        conn = duckdb.connect(":memory:")
+        conn.cursor().execute("CREATE TYPE doc_state AS ENUM ('new', 'done')")
+        schema = introspect_schema(conn, Dialects.DUCKDB)
+        self.assertTrue(schema.enum_types_read)
+        self.assertEqual(schema.enum_types["doc_state"], ("new", "done"))
+        conn.close()
+
+    def test_a_type_with_no_column_is_not_created_again(self):
+        # The type is there but nothing uses it yet. Inferring presence
+        # from the columns alone would generate a second CREATE TYPE,
+        # which DuckDB refuses.
+        conn = duckdb.connect(":memory:")
+        conn.cursor().execute("CREATE TYPE doc_state AS ENUM ('new', 'done')")
+        Doc = self._model("new", "done")
+        diff = diff_schema(conn, [Doc], dialect=Dialects.DUCKDB)
+        self.assertEqual(diff.new_enum_types, [])
+        self.assertEqual([m.tableName for m in diff.missing_tables], ["docs"])
+        migration = autogenerate(conn, [Doc], id="m", dialect=Dialects.DUCKDB)
+        self.assertTrue(all("CREATE TYPE" not in step for step in migration.up))
+        for statement in migration.up:
+            conn.cursor().execute(statement)
         conn.close()
 
 

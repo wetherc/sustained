@@ -823,6 +823,22 @@ def _duckdb_plan() -> SchemaPlan:
     except Exception:
         # A DuckDB from before COMMENT ON; degrade to no comments.
         pass
+    try:
+        type_rows = yield (
+            "SELECT type_name, labels FROM duckdb_types() "
+            "WHERE labels IS NOT NULL AND NOT internal"
+        )
+        for name, labels in type_rows:
+            if not labels:
+                continue
+            schema.enum_types[str(name).lower()] = tuple(
+                str(label) for label in cast(Sequence[RowValue], labels)
+            )
+        schema.enum_types_read = True
+    except Exception:
+        # A DuckDB from before duckdb_types(); the diff falls back to
+        # inferring a type's presence from the columns that use it.
+        pass
     return schema
 
 
