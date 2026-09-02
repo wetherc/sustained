@@ -1,7 +1,8 @@
 """
 Static reading of migration SQL, for previews that touch no database.
 
-`destructive_statements()` finds the statements that remove data or
+`MigrationStatement` is a statement with the migration it came from,
+which is what a guard reads. `destructive_statements()` finds the statements that remove data or
 drop a constraint, so a preview can label them. `summarize()` reduces one migration to the count
 and the labels the `plan` command prints.
 
@@ -15,7 +16,15 @@ in `migrate` reads the same list.
 from __future__ import annotations
 
 import re
-from typing import TYPE_CHECKING, List, NamedTuple, Optional, Sequence, Union
+from typing import (
+    TYPE_CHECKING,
+    List,
+    NamedTuple,
+    Optional,
+    Sequence,
+    Tuple,
+    Union,
+)
 
 from sustained.migrations import Migration, migration_sql
 
@@ -53,6 +62,49 @@ _ALTER_DROP_RE = re.compile(
     r"[A-Za-z_`\"\[]",
     re.IGNORECASE,
 )
+
+
+class MigrationStatement(str):
+    """
+    One statement with the migration it came from.
+
+    It is a `str`, so a guard reads it as the statement text and a guard
+    written against `Sequence[str]` needs no change. `migration_id` names
+    the migration the statement belongs to, and `transactional` says
+    whether that migration runs inside a transaction. A rule about a
+    setting that dies at a commit, such as `SET LOCAL`, reads the two to
+    tell one migration from the next.
+
+    `migration_id` is None for a statement that reached a guard with no
+    migration around it. Statements that carry the same id in a row
+    belong to one migration, so None statements next to each other read
+    as one group.
+    """
+
+    migration_id: Optional[str]
+    transactional: bool
+
+    def __new__(
+        cls,
+        statement: str,
+        migration_id: Optional[str] = None,
+        transactional: bool = True,
+    ) -> "MigrationStatement":
+        instance = super().__new__(cls, statement)
+        instance.migration_id = migration_id
+        instance.transactional = transactional
+        return instance
+
+
+def statement_scope(statement: str) -> Tuple[Optional[str], bool]:
+    """
+    The migration a statement came from and whether that migration is
+    transactional. A plain `str` carries neither, and reads as an
+    unnamed statement inside a transaction.
+    """
+    if isinstance(statement, MigrationStatement):
+        return statement.migration_id, statement.transactional
+    return None, True
 
 
 def _rewrite_tokens(statement: str, blank_literals: bool) -> str:
@@ -126,7 +178,9 @@ class PendingSummary(NamedTuple):
     What a preview says about one migration that has not run yet.
 
     `sql` holds the statements the up step would run, and is None for a
-    callable step, which has no SQL to render or scan.
+    callable step, which has no SQL to render or scan. Each one is a
+    MigrationStatement, so a guard reading them can tell which migration
+    they came from.
     """
 
     id: str
@@ -147,7 +201,10 @@ def summarize(
     """
     if callable(migration.up):
         return PendingSummary(migration.id, state, migration.repeatable, None, [])
-    statements = migration_sql(migration, "up", compiler)
+    statements: List[str] = [
+        MigrationStatement(sql, migration.id, migration.transactional)
+        for sql in migration_sql(migration, "up", compiler)
+    ]
     return PendingSummary(
         migration.id,
         state,

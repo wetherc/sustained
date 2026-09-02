@@ -360,11 +360,11 @@ rehearsal_failed(result) -> bool
 Whether one result stops a rehearsal from passing.
 
 ```python
-run_statements(run, compiler=None) -> list[str]
+run_statements(run, compiler=None) -> list[MigrationStatement]
 ```
 {: .sig #run_statements}
 
-Every up statement a run would apply, callable steps skipped. Ddl steps render for the given compiler's dialect, which is how the guards read them.
+Every up statement a run would apply, callable steps skipped. Ddl steps render for the given compiler's dialect, which is how the guards read them. Each statement is a [`MigrationStatement`](#migration-statement) naming the migration it came from.
 
 ```python
 check_guards(guards, run, dialect, reported=None)
@@ -384,7 +384,7 @@ Callbacks(before_migrate=None, after_migrate=None, on_error=None)
 
 ## Guards
 
-Guards live in `sustained.guards`. A guard is a `Callable[[Sequence[str], Dialects], list[Verdict]]`. It reads the statements an up run would apply and returns one `Verdict(rule, verdict, statement)` per objection. The `verdict` field is `BLOCK` (`'block'`) or `WARN` (`'warn'`).
+Guards live in `sustained.guards`. A guard is a `Callable[[Sequence[MigrationStatement], Dialects], list[Verdict]]`. A `MigrationStatement` (in `sustained.analysis`) is a `str` that also carries `migration_id`, the migration the statement came from, and `transactional`, that migration's transaction flag. A guard typed against `Sequence[str]` still fits the type and still runs, because the statements are strings. `statement_scope(statement)` returns the pair for one statement, and gives `(None, True)` for a plain string. It reads the statements an up run would apply and returns one `Verdict(rule, verdict, statement)` per objection. The `verdict` field is `BLOCK` (`'block'`) or `WARN` (`'warn'`).
 
 `up()` raises `GuardBlocked` on a blocking verdict, before any statement runs, and prints warnings on stderr. A callable step renders no SQL, so guards cannot read it. `down()` runs no guards, because a down step undoes work the rules already passed, and `no_drops()` would block every rollback of a create.
 
@@ -416,9 +416,9 @@ no_lock_without_timeout() -> Guard
 ```
 {: .sig #no_lock_without_timeout}
 
-Blocks a statement that alters or drops a table with no `SET lock_timeout` before it in the run. A timeout later in the run does not cover it. Postgres only; silent elsewhere.
+Blocks a statement that alters or drops a table with no `SET lock_timeout` in force before it. A timeout later in the run does not cover it. Postgres only; silent elsewhere.
 
-A guard reads a flat statement list, so it cannot see where one migration ends and the next begins. `SET LOCAL lock_timeout` dies at the commit that ends its migration, but the rule still counts it for the migrations after it. Set the timeout without LOCAL, or repeat the `SET LOCAL` in each migration that needs it.
+A plain `SET lock_timeout`, with or without SESSION, covers the rest of the run. A `SET LOCAL lock_timeout` covers only the statements after it in its own migration, because the commit that ends the migration drops the setting. In a migration with `transactional=False` there is no transaction block to hold a LOCAL setting, so the rule counts it for nothing; use the plain form there.
 
 ```python
 max_statements(limit) -> Guard
@@ -432,7 +432,7 @@ run_guards(guards, statements, dialect) -> list[Verdict]
 ```
 {: .sig #run_guards}
 
-Every guard's verdicts, in guard order.
+Every guard's verdicts, in guard order. A plain string is wrapped in a `MigrationStatement` that names no migration first, so every guard reads the same kind of value.
 
 ```python
 blocking(verdicts) -> list[Verdict]
@@ -611,6 +611,20 @@ summarize(migration, state, compiler=None) -> PendingSummary
 
 One migration reduced to its id, state, repeatable flag, statement count, and destructive statements. Ddl steps render for the given compiler's dialect, or ANSI when none is given.
 
-`PendingSummary(id, state, repeatable, statements, destructive)` holds that summary. `statements` is `None` for a callable step, which has no SQL to count.
+`PendingSummary(id, state, repeatable, statements, destructive)` holds that summary. `statements` is `None` for a callable step, which has no SQL to count. Each statement in it is a `MigrationStatement`.
+
+```python
+MigrationStatement(statement, migration_id=None, transactional=True)
+```
+{: .sig #migration-statement}
+
+One statement with the migration it came from. It subclasses `str`, so anything that reads statements as strings reads these too. `migration_id` is the migration's id, or `None` when nothing named one. `transactional` is that migration's transaction flag.
+
+```python
+statement_scope(statement) -> tuple[str | None, bool]
+```
+{: .sig #statement_scope}
+
+The migration id and transaction flag of one statement. A plain `str` gives `(None, True)`.
 
 The scan is textual. It labels a column drop written without the COLUMN keyword, which MySQL allows. It keeps comments and quoted text out of the scan, so a drop named inside a string literal is not labelled. The label is a report for the operator, and `migrate` reads the same list for its rehearsal gate.

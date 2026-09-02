@@ -59,6 +59,7 @@ from typing import (
 )
 
 from sustained.analysis import (
+    MigrationStatement,
     PendingSummary,
     destructive_statements,
     normalize_statement,
@@ -243,7 +244,9 @@ def _migrate_drift_statements(
 
     This is the drift preview without the drops: migrate generates none
     unless it is called from Python with allow_drops=True. The guards read
-    this set, so a verdict names a statement the run would run.
+    this set, so a verdict names a statement the run would run. Each
+    statement carries the generated migration's id, so a rule that reads
+    migration boundaries sees these as one migration of their own.
     """
     models = getattr(config, "models", None)
     if not models:
@@ -251,7 +254,10 @@ def _migrate_drift_statements(
     migration = migrator.plan(list(models))
     if migration is None:
         return []
-    return migration_sql(migration, "up", migrator.compiler)
+    return [
+        MigrationStatement(sql, migration.id, migration.transactional)
+        for sql in migration_sql(migration, "up", migrator.compiler)
+    ]
 
 
 def _rehearsal_row_covers(migrator: Migrator, config: ModuleType) -> bool:
@@ -312,7 +318,9 @@ def _plan_verdicts(
 
     The guards read the whole run at once, pending migrations and
     generated statements together, so a rule over the run as a whole sees
-    what migrate will see. The drift the plan prints is the wider set: it
+    what migrate will see. Each statement carries the id of the migration
+    it belongs to, so a rule that reads migration boundaries reads the
+    same ones migrate would. The drift the plan prints is the wider set: it
     includes the drops migrate does not generate, and no verdict is
     reported on those, because no run would read them.
     """

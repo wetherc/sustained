@@ -169,5 +169,41 @@ class TestFilterValueTypes(unittest.TestCase):
         self.assertNotIn("error:", run_mypy(VALUES))
 
 
+GUARDS = """
+from typing import List, Sequence
+
+from sustained.dialects import Dialects
+from sustained.guards import BLOCK, Guard, Verdict, run_guards
+
+def no_seed_data() -> Guard:
+    def guard(statements: Sequence[str], dialect: Dialects) -> List[Verdict]:
+        return [
+            Verdict("no_seed_data", BLOCK, statement)
+            for statement in statements
+            if statement.upper().startswith("INSERT")
+        ]
+    return guard
+
+guards: List[Guard] = [no_seed_data()]
+verdicts: List[Verdict] = run_guards(guards, ["INSERT INTO t VALUES (1)"], Dialects.DEFAULT)
+"""
+
+
+@unittest.skipUnless(
+    importlib.util.find_spec("mypy") is not None, "mypy is not installed"
+)
+class TestGuardTypes(unittest.TestCase):
+    """
+    A guard written against a sequence of plain strings still fits the
+    Guard type, which now says the statements name their migration.
+    """
+
+    def test_a_string_guard_is_a_guard(self):
+        import os
+
+        os.environ["MYPYPATH"] = SRC
+        self.assertNotIn("error:", run_mypy(GUARDS))
+
+
 if __name__ == "__main__":
     unittest.main()

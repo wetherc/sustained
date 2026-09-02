@@ -58,6 +58,7 @@ from sustained.types import Connection, Cursor, SqlValue
 
 if TYPE_CHECKING:
     from sustained.aio import AsyncAdapter
+    from sustained.analysis import MigrationStatement
     from sustained.autogenerate import IntrospectedTable
     from sustained.compilers.base import Compiler
     from sustained.guards import Guard, Verdict
@@ -535,18 +536,28 @@ def _destructive_prefix_keys(
 
 def run_statements(
     run: Sequence[Migration], compiler: Optional["Compiler"] = None
-) -> List[str]:
+) -> List["MigrationStatement"]:
     """
     Every up statement a run would apply, in order. Callable steps render
     no SQL and are skipped, so a guard cannot read them, the same limit
     the destructive labels carry. Ddl steps render for the given
     compiler's dialect, which is why the guards can read them.
+
+    Each statement carries the id of the migration it came from and that
+    migration's transaction flag, so a guard can see where one migration
+    ends and the next begins. The values are strings, so a guard that
+    reads them as such needs to know nothing about this.
     """
-    statements: List[str] = []
+    from sustained.analysis import MigrationStatement
+
+    statements: List["MigrationStatement"] = []
     for migration in run:
         if callable(migration.up):
             continue
-        statements.extend(migration_sql(migration, "up", compiler))
+        statements.extend(
+            MigrationStatement(sql, migration.id, migration.transactional)
+            for sql in migration_sql(migration, "up", compiler)
+        )
     return statements
 
 

@@ -1,5 +1,6 @@
 import unittest
 
+from sustained.analysis import MigrationStatement, statement_scope
 from sustained.dialects import Dialects
 from sustained.exceptions import GuardBlocked
 from sustained.guards import (
@@ -246,6 +247,108 @@ class NoLockWithoutTimeoutTest(unittest.TestCase):
         self.assertEqual(verdicts, [])
 
 
+def tagged(sql, migration_id, transactional=True):
+    """One statement as it reaches a guard from a run."""
+    return MigrationStatement(sql, migration_id, transactional)
+
+
+class MigrationStatementTest(unittest.TestCase):
+    def test_it_is_a_string(self):
+        statement = tagged("DROP TABLE users", "001")
+        self.assertIsInstance(statement, str)
+        self.assertEqual(statement, "DROP TABLE users")
+        self.assertEqual(statement.upper(), "DROP TABLE USERS")
+
+    def test_it_carries_its_migration(self):
+        statement = tagged("SELECT 1", "001", transactional=False)
+        self.assertEqual(statement.migration_id, "001")
+        self.assertFalse(statement.transactional)
+
+    def test_defaults(self):
+        statement = MigrationStatement("SELECT 1")
+        self.assertIsNone(statement.migration_id)
+        self.assertTrue(statement.transactional)
+
+    def test_statement_scope_reads_a_tagged_statement(self):
+        self.assertEqual(
+            statement_scope(tagged("SELECT 1", "001", False)), ("001", False)
+        )
+
+    def test_statement_scope_of_a_plain_string(self):
+        self.assertEqual(statement_scope("SELECT 1"), (None, True))
+
+
+class LockTimeoutAcrossMigrationsTest(unittest.TestCase):
+    def setUp(self):
+        self.guard = no_lock_without_timeout()
+
+    def run_on(self, statements):
+        return self.guard(statements, Dialects.POSTGRES)
+
+    def test_a_session_timeout_covers_a_later_migration(self):
+        statements = [
+            tagged("SET lock_timeout = '5s'", "001"),
+            tagged("ALTER TABLE users ADD COLUMN bio TEXT", "001"),
+            tagged("ALTER TABLE shows ADD COLUMN slug TEXT", "003"),
+        ]
+        self.assertEqual(self.run_on(statements), [])
+
+    def test_a_local_timeout_covers_the_rest_of_its_own_migration(self):
+        statements = [
+            tagged("SET LOCAL lock_timeout = '5s'", "001"),
+            tagged("ALTER TABLE users ADD COLUMN bio TEXT", "001"),
+        ]
+        self.assertEqual(self.run_on(statements), [])
+
+    def test_a_local_timeout_does_not_reach_the_next_migration(self):
+        statements = [
+            tagged("SET LOCAL lock_timeout = '5s'", "001"),
+            tagged("ALTER TABLE users ADD COLUMN bio TEXT", "001"),
+            tagged("ALTER TABLE shows ADD COLUMN slug TEXT", "002"),
+        ]
+        verdicts = self.run_on(statements)
+        self.assertEqual(
+            [v.statement for v in verdicts], ["ALTER TABLE shows ADD COLUMN slug TEXT"]
+        )
+
+    def test_each_migration_may_set_its_own_local_timeout(self):
+        statements = [
+            tagged("SET LOCAL lock_timeout = '5s'", "001"),
+            tagged("ALTER TABLE users ADD COLUMN bio TEXT", "001"),
+            tagged("SET LOCAL lock_timeout = '5s'", "002"),
+            tagged("ALTER TABLE shows ADD COLUMN slug TEXT", "002"),
+        ]
+        self.assertEqual(self.run_on(statements), [])
+
+    def test_a_local_timeout_counts_for_nothing_without_a_transaction(self):
+        statements = [
+            tagged("SET LOCAL lock_timeout = '5s'", "001", transactional=False),
+            tagged("ALTER TABLE users ADD COLUMN bio TEXT", "001", False),
+        ]
+        verdicts = self.run_on(statements)
+        self.assertEqual(
+            [v.statement for v in verdicts], ["ALTER TABLE users ADD COLUMN bio TEXT"]
+        )
+
+    def test_a_session_timeout_counts_without_a_transaction(self):
+        statements = [
+            tagged("SET lock_timeout = '5s'", "001", transactional=False),
+            tagged("ALTER TABLE users ADD COLUMN bio TEXT", "001", False),
+        ]
+        self.assertEqual(self.run_on(statements), [])
+
+    def test_a_session_timeout_in_a_bare_migration_covers_later_ones(self):
+        statements = [
+            tagged("SET lock_timeout = '5s'", "001", transactional=False),
+            tagged("ALTER TABLE shows ADD COLUMN slug TEXT", "002"),
+        ]
+        self.assertEqual(self.run_on(statements), [])
+
+    def test_untagged_statements_read_as_one_migration(self):
+        statements = ["SET LOCAL lock_timeout = '5s'", "DROP TABLE users"]
+        self.assertEqual(self.run_on(statements), [])
+
+
 class MaxStatementsTest(unittest.TestCase):
     def test_blocks_every_statement_past_the_limit(self):
         guard = max_statements(2)
@@ -275,6 +378,29 @@ class RunGuardsTest(unittest.TestCase):
             [v.rule for v in verdicts],
             ["no_drops", "no_drops", "max_statements(1)"],
         )
+
+    def test_plain_strings_reach_a_guard_as_migration_statements(self):
+        seen = []
+
+        def collector(statements, dialect):
+            seen.extend(statements)
+            return []
+
+        run_guards([collector], ["SELECT 1"], Dialects.DEFAULT)
+        self.assertEqual(seen, ["SELECT 1"])
+        self.assertIsInstance(seen[0], MigrationStatement)
+        self.assertIsNone(seen[0].migration_id)
+
+    def test_tagged_statements_reach_a_guard_untouched(self):
+        seen = []
+
+        def collector(statements, dialect):
+            seen.extend(statements)
+            return []
+
+        statement = MigrationStatement("SELECT 1", "001", False)
+        run_guards([collector], [statement], Dialects.DEFAULT)
+        self.assertIs(seen[0], statement)
 
     def test_no_guards_no_verdicts(self):
         self.assertEqual(run_guards([], ["DROP TABLE users"], Dialects.DEFAULT), [])

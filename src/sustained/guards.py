@@ -21,6 +21,12 @@ site:
 
     guards = [no_drops(), max_statements(50)]
 
+Each statement a run hands a guard is a `MigrationStatement`: a string
+that also names the migration it came from and says whether that
+migration runs inside a transaction. A rule reads it as a plain string,
+so a guard written against `Sequence[str]` keeps working, and a rule
+about a per-transaction setting can tell one migration from the next.
+
 The scan is textual, like the destructive labels: a rule matches on the
 words in the statement and never parses SQL. Comments and the text
 inside quotes are kept out of the scan, so a rule reads neither a
@@ -31,9 +37,14 @@ prints the statement with its literals intact.
 from __future__ import annotations
 
 import re
-from typing import Callable, List, NamedTuple, Sequence
+from typing import Callable, List, NamedTuple, Optional, Sequence
 
-from sustained.analysis import normalize_statement, scannable_statement
+from sustained.analysis import (
+    MigrationStatement,
+    normalize_statement,
+    scannable_statement,
+    statement_scope,
+)
 from sustained.dialects import Dialects
 
 # The two verdicts a rule can return. There is no third severity: a rule
@@ -54,8 +65,10 @@ class Verdict(NamedTuple):
 
 
 # A guard reads the statements an up run would apply and returns its
-# verdicts.
-Guard = Callable[[Sequence[str], Dialects], List[Verdict]]
+# verdicts. A MigrationStatement is a str that also names the migration
+# it came from, so a guard written against Sequence[str] fits here and
+# reads the statements as plain strings.
+Guard = Callable[[Sequence[MigrationStatement], Dialects], List[Verdict]]
 
 
 def run_guards(
@@ -65,10 +78,17 @@ def run_guards(
     Runs every guard over the statements and returns the verdicts, in
     guard order. An empty guard list returns an empty list, so a caller
     with no guards pays nothing.
+
+    A plain string is wrapped in a MigrationStatement that names no
+    migration, so every guard reads the same kind of value.
     """
+    tagged = [
+        s if isinstance(s, MigrationStatement) else MigrationStatement(s)
+        for s in statements
+    ]
     verdicts: List[Verdict] = []
     for guard in guards:
-        verdicts.extend(guard(statements, dialect))
+        verdicts.extend(guard(tagged, dialect))
     return verdicts
 
 
@@ -205,28 +225,51 @@ def no_lock_without_timeout() -> Guard:
     transaction queues every other query on that table behind it. Silent
     on every other dialect, which has no such setting.
 
-    The rule reads the statements in run order. A `SET lock_timeout`
-    covers the statements after it, and none before it, so a timeout at
-    the end of a run no longer excuses an ALTER at the start.
+    The rule reads the statements in run order, and it reads how far each
+    timeout reaches.
 
-    A guard reads a flat statement list and cannot see where one
-    migration ends and the next begins. `SET LOCAL` dies at the commit
-    that ends its migration, so a `SET LOCAL` in an early migration still
-    counts for a later one, which the server would not honour. Write
-    `SET lock_timeout` without LOCAL to set it for the session, or repeat
-    the `SET LOCAL` in each migration that needs it.
+    `SET lock_timeout`, with or without SESSION, sets the timeout for the
+    session. It covers every statement after it in the run, in its own
+    migration and in the ones that follow, and none before it.
+
+    `SET LOCAL lock_timeout` dies at the commit that ends its migration,
+    so it covers only the statements after it in that same migration. The
+    next migration starts uncovered.
+
+    A migration that runs outside a transaction is the third case.
+    Postgres has no transaction block to attach a LOCAL setting to there,
+    so it ignores the `SET LOCAL` and the statements after it stay
+    uncovered. Write the plain `SET lock_timeout` in a migration like
+    that.
     """
 
-    def guard(statements: Sequence[str], dialect: Dialects) -> List[Verdict]:
+    def guard(
+        statements: Sequence[MigrationStatement], dialect: Dialects
+    ) -> List[Verdict]:
         if dialect is not Dialects.POSTGRES:
             return []
         found = []
-        covered = False
+        session_covered = False
+        local_covered = False
+        current: Optional[str] = None
         for statement in statements:
+            migration_id, transactional = statement_scope(statement)
+            if migration_id != current:
+                # A new migration ends the LOCAL setting of the one
+                # before it, whose commit dropped the setting with it.
+                current = migration_id
+                local_covered = False
             scanned = scannable_statement(statement)
-            if _LOCK_TIMEOUT_RE.search(scanned):
-                covered = True
-            elif not covered and _LOCK_TAKING_RE.search(scanned):
+            match = _LOCK_TIMEOUT_RE.search(scanned)
+            if match:
+                scope = (match.group(1) or "").strip().upper()
+                if scope != "LOCAL":
+                    session_covered = True
+                elif transactional:
+                    local_covered = True
+            elif not (session_covered or local_covered) and _LOCK_TAKING_RE.search(
+                scanned
+            ):
                 found.append(
                     Verdict(
                         "no_lock_without_timeout",

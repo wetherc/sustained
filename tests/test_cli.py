@@ -1257,6 +1257,24 @@ class GuardCliTestCase(CliBase):
             statements[0]["guards"], [{"rule": "loud", "verdict": "block"}]
         )
 
+    def test_plan_tells_a_guard_which_migration_a_statement_came_from(self):
+        name = f"guards_scope_{id(self)}"
+        with open(os.path.join(self.dir.name, f"{name}.py"), "w") as f:
+            f.write(
+                CONFIG_TEMPLATE + "\nfrom sustained.guards import WARN, Verdict\n"
+                "def scoped(statements, dialect):\n"
+                "    return [\n"
+                "        Verdict('scoped', WARN, str(s.migration_id))\n"
+                "        for s in statements\n"
+                "    ]\n"
+                "guards = [scoped]\n"
+            )
+        self.addCleanup(sys.modules.pop, name, None)
+        code, out, _ = self._run(name, "plan")
+        self.assertEqual(code, 2)
+        self.assertIn("warn   scoped  001_users", out)
+        self.assertIn("warn   scoped  002_flag", out)
+
     def test_a_problem_outranks_a_blocked_statement(self):
         self.run_cli("migrate")
         self._write(

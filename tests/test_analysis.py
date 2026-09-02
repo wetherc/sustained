@@ -217,6 +217,16 @@ class SummarizeTestCase(unittest.TestCase):
             ),
         )
 
+    def test_statements_name_their_migration(self):
+        migration = Migration(
+            "005_index",
+            up="CREATE INDEX i ON t (x)",
+            transactional=False,
+        )
+        statement = summarize(migration, "pending").sql[0]
+        self.assertEqual(statement.migration_id, "005_index")
+        self.assertFalse(statement.transactional)
+
     def test_repeatable_carries_its_state(self):
         migration = Migration(
             "vw_active", up="CREATE VIEW v AS SELECT 1", repeatable=True

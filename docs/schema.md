@@ -741,7 +741,7 @@ Both commands exit 3. There is no `--force` flag: fix the statement, or take the
 | `no_drops()` | block | A statement that drops a table, column, view, materialized view, schema, database, enum type, or constraint |
 | `index_must_be_concurrent()` | block | `CREATE INDEX` without `CONCURRENTLY`, on Postgres only |
 | `no_table_rewrite()` | warn | A column type change, or a NOT NULL with nothing to fill existing rows |
-| `no_lock_without_timeout()` | block | A statement that alters or drops a table with no `SET lock_timeout` before it in the run, on Postgres only |
+| `no_lock_without_timeout()` | block | A statement that alters or drops a table with no `SET lock_timeout` still in force before it, on Postgres only |
 | `max_statements(n)` | block | Every statement past the limit |
 
 Every one is a factory, so they all read the same at the call site. `no_table_rewrite()` warns where the others block, because whether a change rewrites the table depends on the engine, its version, and whether the two types coerce. Read it against your own engine rather than trusting it.
@@ -756,7 +756,9 @@ Guards read every SQL statement an up run would apply: SQL file migrations, Pyth
 
 Down runs are not checked. A down undoes work the rules already passed, so `no_drops()` would block every rollback of a create.
 
-A rule reads the run as one flat list of statements, with no mark where one migration ends and the next begins. That matters for `no_lock_without_timeout()`: a `SET LOCAL lock_timeout` only lasts to the commit that ends its migration, but the rule counts it for the statements after it, including the ones in later migrations. Set the timeout without LOCAL, or repeat the `SET LOCAL` in each migration that needs it.
+A rule reads the run in order, and each statement it reads names the migration it came from. That matters for `no_lock_without_timeout()`. A plain `SET lock_timeout`, with or without SESSION, sets the timeout for the session, so it covers every statement after it in the run. A `SET LOCAL lock_timeout` dies at the commit that ends its migration, so it covers only the statements after it in that same migration, and the next migration starts uncovered. In a migration with `transactional=False` there is no transaction block for a LOCAL setting to live in, so Postgres ignores it and the rule counts it for nothing; write the plain `SET lock_timeout` there.
+
+The statements a guard receives are strings, so a rule written as a function over strings needs no change to read them.
 
 `migrate` checks twice. The registered migrations are checked before anything runs. The diff against the models cannot be generated until those have run, so its statements are checked the moment they exist, alongside the registered statements from the same run, so a rule about the whole run counts the whole run. A warning already printed is not printed again.
 

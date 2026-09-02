@@ -11,8 +11,15 @@ from contextlib import redirect_stderr
 from sustained import Model
 from sustained.aio import DbApiAsyncAdapter
 from sustained.aio_migrations import AsyncMigrator
+from sustained.dialects import Dialects
 from sustained.exceptions import GuardBlocked
-from sustained.guards import max_statements, no_drops
+from sustained.guards import (
+    BLOCK,
+    Verdict,
+    max_statements,
+    no_drops,
+    no_lock_without_timeout,
+)
 from sustained.migrations import Callbacks, Migration, Migrator, run_statements
 from sustained.schema import Integer, String, Text
 
@@ -62,6 +69,43 @@ class RunStatementsTest(unittest.TestCase):
         self.assertEqual(run_statements(run), ["SELECT 1"])
 
 
+class RunStatementsScopeTest(unittest.TestCase):
+    def test_statements_name_their_migration(self):
+        run = [
+            Migration("a", up=["SELECT 1", "SELECT 2"]),
+            Migration("b", up="SELECT 3", transactional=False),
+        ]
+        statements = run_statements(run)
+        self.assertEqual([s.migration_id for s in statements], ["a", "a", "b"])
+        self.assertEqual([s.transactional for s in statements], [True, True, False])
+
+    def test_a_local_timeout_does_not_excuse_a_later_migration(self):
+        run = [
+            Migration(
+                "001",
+                up=[
+                    "SET LOCAL lock_timeout = '5s'",
+                    "ALTER TABLE guard_users ADD COLUMN bio TEXT",
+                ],
+            ),
+            Migration("003", up="ALTER TABLE guard_users ADD COLUMN slug TEXT"),
+        ]
+        guard = no_lock_without_timeout()
+        verdicts = guard(run_statements(run), Dialects.POSTGRES)
+        self.assertEqual(
+            [v.statement for v in verdicts],
+            ["ALTER TABLE guard_users ADD COLUMN slug TEXT"],
+        )
+
+    def test_a_session_timeout_excuses_a_later_migration(self):
+        run = [
+            Migration("001", up="SET lock_timeout = '5s'"),
+            Migration("003", up="ALTER TABLE guard_users ADD COLUMN slug TEXT"),
+        ]
+        guard = no_lock_without_timeout()
+        self.assertEqual(guard(run_statements(run), Dialects.POSTGRES), [])
+
+
 class GuardTestCase(unittest.TestCase):
     def setUp(self):
         self.conn = sqlite3.connect(":memory:")
@@ -71,6 +115,53 @@ class GuardTestCase(unittest.TestCase):
 
     def migrator(self, migrations, **kwargs):
         return Migrator(self.conn, migrations, **kwargs)
+
+
+class GuardsReadMigrationBoundariesTest(GuardTestCase):
+    def test_a_guard_written_against_strings_still_runs(self):
+        def no_seed_data():
+            def guard(statements, dialect):
+                return [
+                    Verdict("no_seed_data", BLOCK, s)
+                    for s in statements
+                    if s.upper().startswith("INSERT")
+                ]
+
+            return guard
+
+        migrator = self.migrator(
+            [
+                create_users(),
+                Migration("002_seed", up="INSERT INTO guard_users (id) VALUES (1)"),
+            ],
+            guards=[no_seed_data()],
+        )
+        with self.assertRaises(GuardBlocked):
+            migrator.up()
+
+    def test_a_guard_reads_the_migration_a_statement_came_from(self):
+        seen = []
+
+        def recorder():
+            def guard(statements, dialect):
+                seen.extend((s.migration_id, s.transactional) for s in statements)
+                return []
+
+            return guard
+
+        migrator = self.migrator(
+            [
+                create_users(),
+                Migration(
+                    "002_index",
+                    up="CREATE INDEX guard_users_email ON guard_users (email)",
+                    transactional=False,
+                ),
+            ],
+            guards=[recorder()],
+        )
+        migrator.up()
+        self.assertEqual(seen, [("001_users", True), ("002_index", False)])
 
 
 class MigratorGuardTest(GuardTestCase):
