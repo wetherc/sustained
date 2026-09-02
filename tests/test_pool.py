@@ -100,9 +100,6 @@ class FakeCursor:
     def close(self):
         pass
 
-    def close(self):
-        pass
-
 
 class FakeConnection:
     """A connection that records the hygiene calls the pool makes on it."""
@@ -178,9 +175,24 @@ class TestPoolHygiene(unittest.TestCase):
         self.assertFalse(first.closed)
         self.assertIs(pool.acquire_raw(), first)
         pool.release(first)
-        # The pool asked once, learned the driver refuses, and stopped.
-        self.assertEqual(first.rollbacks, 1)
+        # The pool asks on every release: a driver that refused once with
+        # nothing to roll back can have a transaction open the next time.
+        self.assertEqual(first.rollbacks, 2)
         self.assertEqual(len(made), 1)
+
+    def test_a_refused_rollback_does_not_disable_later_resets(self):
+        conn = FakeConnection(
+            rollback_error=RuntimeError("no transaction is active"),
+            responds=True,
+        )
+        pool = self._pool(lambda: conn, max_size=1)
+        pool.release(pool.acquire_raw())
+        # The driver stops refusing: a transaction is now open, and the
+        # next release must still take it back.
+        conn._rollback_error = None
+        pool.release(pool.acquire_raw())
+        self.assertEqual(conn.rollbacks, 2)
+        self.assertIs(pool.acquire_raw(), conn)
 
     def test_double_release_is_refused(self):
         pool = self._pool(lambda: FakeConnection(), max_size=2)

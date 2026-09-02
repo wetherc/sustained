@@ -65,7 +65,16 @@ class CountingAdapter(AsyncAdapter):
 
 
 class RefusingRollbackAdapter(CountingAdapter):
+    """Refuses rollback but still answers a statement, the duckdb way."""
+
     async def rollback(self):
+        raise RuntimeError("no transaction is active")
+
+
+class BrokenAdapter(RefusingRollbackAdapter):
+    """Refuses rollback and answers nothing: the connection is gone."""
+
+    async def fetch(self, sql, params):
         raise RuntimeError("this connection is gone")
 
 
@@ -223,7 +232,7 @@ class TestPoolRefusals(unittest.IsolatedAsyncioTestCase):
                 await call
 
     async def test_an_adapter_that_cannot_roll_back_is_dropped(self):
-        factory, made = counting_factory(adapter_class=RefusingRollbackAdapter)
+        factory, made = counting_factory(adapter_class=BrokenAdapter)
         pool = AsyncConnectionPool(factory, max_size=1)
         adapter = await pool.acquire()
         await pool.release(adapter)
@@ -232,6 +241,19 @@ class TestPoolRefusals(unittest.IsolatedAsyncioTestCase):
         # The slot reopened, so the next checkout gets a new adapter.
         async with pool.scope() as fresh:
             self.assertIsNot(fresh, adapter)
+
+    async def test_an_adapter_that_refuses_rollback_but_answers_is_kept(self):
+        # duckdb raises on rollback when no transaction is open. Dropping
+        # the adapter for that would close and reopen the connection on
+        # every release, and lose an in-memory database entirely.
+        factory, made = counting_factory(adapter_class=RefusingRollbackAdapter)
+        pool = AsyncConnectionPool(factory, max_size=1)
+        adapter = await pool.acquire()
+        await pool.release(adapter)
+        self.assertFalse(adapter.closed)
+        self.assertEqual(pool.size, 1)
+        async with pool.scope() as again:
+            self.assertIs(again, adapter)
 
 
 class TestPoolClose(unittest.IsolatedAsyncioTestCase):
@@ -321,6 +343,36 @@ class TestPoolRunsQueries(unittest.IsolatedAsyncioTestCase):
         for index in range(5):
             await Widget.query().insert({"id": index + 10, "name": "x"}).arun()
         self.assertLessEqual(self.pool.size, 2)
+
+    async def test_a_query_handed_the_pool_joins_the_open_transaction(self):
+        # arun(pool) inside async_transaction(pool) must run on the
+        # adapter the block checked out. A second checkout would
+        # autocommit outside the transaction, and would deadlock a pool
+        # of one.
+        from sustained.aio import async_transaction
+
+        with self.assertRaises(RuntimeError):
+            async with async_transaction(self.pool):
+                await Widget.query().insert({"id": 4, "name": "cam"}).arun(self.pool)
+                raise RuntimeError("boom")
+        rows = await Widget.query().select("name").arun()
+        self.assertEqual(rows, [])
+        self.assertEqual(self.pool.size, 1)
+
+    async def test_a_nested_block_on_the_pool_nests_a_savepoint(self):
+        # A nested async_transaction(pool) belongs inside the outer
+        # block, the way the sync twin nests, not on a second adapter
+        # whose commit the outer rollback cannot take back.
+        from sustained.aio import async_transaction
+
+        with self.assertRaises(RuntimeError):
+            async with async_transaction(self.pool):
+                async with async_transaction(self.pool):
+                    await Widget.query().insert({"id": 5, "name": "pin"}).arun()
+                raise RuntimeError("boom")
+        rows = await Widget.query().select("name").arun()
+        self.assertEqual(rows, [])
+        self.assertEqual(self.pool.size, 1)
 
 
 class TestPoolRunsInParallel(unittest.IsolatedAsyncioTestCase):

@@ -132,7 +132,7 @@ release(connection)
 ```
 {: .sig #release}
 
-Returns the connection to the pool, or closes it when the pool is closed.
+Returns the connection to the pool, or closes it when the pool is closed. Any open transaction is rolled back first, on every release, so the next caller never inherits a stale snapshot or an aborted transaction. When the rollback raises, the pool probes the connection with `SELECT 1`: one that answers is kept, because some drivers, duckdb among them, refuse rollback with no transaction open rather than reporting a broken connection. One that does not answer is closed and dropped. A connection the pool did not hand out raises `ValueError`, which is what catches a double release.
 
 ```python
 close()
@@ -232,7 +232,7 @@ await release(adapter)
 ```
 {: .sig #async_release}
 
-Gives an adapter back, rolling it back first so a failed statement does not reach the next task. An adapter the pool did not hand out raises `ValueError`, which is what catches a double release. An adapter that cannot roll back is closed and dropped, and its slot reopens.
+Gives an adapter back, rolling it back first so a failed statement does not reach the next task. An adapter the pool did not hand out raises `ValueError`, which is what catches a double release. When the rollback raises, the pool probes the adapter with `SELECT 1`: one that answers is kept, because some drivers, duckdb among them, refuse rollback with no transaction open rather than reporting a broken connection. One that does not answer is closed and dropped, and its slot reopens.
 
 ```python
 await close()
@@ -261,6 +261,8 @@ async_transaction(adapter, dialect=None)
 {: .sig #async_transaction}
 
 An async context manager that opens, commits, and rolls back the transaction. An adapter whose driver has no transaction control gets the dialect's own statements; the default dialect issues `BEGIN`, `COMMIT`, and `ROLLBACK`. An adapter over a DB-API 2.0 driver ends the block with `commit()` or `rollback()` instead, because that driver opened the transaction itself. Nested blocks on one adapter use savepoints named `sustained_sp_<depth>`, spelled per dialect; a dialect with no savepoints raises `DialectError` on nesting. A failed inner block rolls back to its savepoint and then releases it, so a later block can take the same name. If the rollback itself fails, the block's own error still propagates, with the rollback failure as its cause. `Model.async_transaction()` passes the model's dialect. Sustained tracks the nesting per adapter, so give each concurrent task its own adapter.
+
+Handed a pool, the block checks one adapter out and keeps it to the end. Inside the block, a call handed the same pool runs on that adapter, and a nested `async_transaction(pool)` opens a savepoint on it instead of checking a second adapter out, which would commit on its own and deadlock a pool of one.
 
 ```python
 in_async_transaction(adapter) -> bool

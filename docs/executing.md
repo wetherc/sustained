@@ -368,7 +368,7 @@ shows, tickets = await asyncio.gather(
 )
 ```
 
-Each call checks one adapter out for its whole length, the statement, its eager loads, and its commit alike, then gives it back. An `async_transaction()` block keeps one adapter from BEGIN to COMMIT. A released adapter is rolled back first, so a failed statement never reaches the next task. An exhausted pool raises `PoolTimeout`, the same error the blocking pool raises, and `await pool.close()` closes the idle adapters.
+Each call checks one adapter out for its whole length, the statement, its eager loads, and its commit alike, then gives it back. An `async_transaction()` block keeps one adapter from BEGIN to COMMIT. A call handed the same pool inside that block, such as `arun(query, pool)`, runs on the adapter the block checked out, and a nested `async_transaction(pool)` opens a savepoint on it, the way the blocking `transaction(pool)` nests. A released adapter is rolled back first, so a failed statement never reaches the next task; an adapter whose driver refuses rollback with no transaction open, the way duckdb does, is probed with `SELECT 1` and kept when it answers. An exhausted pool raises `PoolTimeout`, the same error the blocking pool raises, and `await pool.close()` closes the idle adapters.
 
 The pool runs no statement itself. `await pool.fetch(...)` raises, because a write and its commit would land on two different connections; take an adapter out with `async with pool.scope() as adapter` when you want to run something by hand. `AsyncMigrator` takes an adapter, not a pool: a migration run belongs on one session.
 

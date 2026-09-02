@@ -43,7 +43,6 @@ class ConnectionPool:
         self._lock = threading.Lock()
         self._closed = False
         self._checked_out: Dict[int, Connection] = {}
-        self._driver_rolls_back = True
 
     @property
     def size(self) -> int:
@@ -112,8 +111,6 @@ class ConnectionPool:
         Ends any transaction the caller left open. Returns False when the
         connection cannot be reset and must be discarded.
         """
-        if not self._driver_rolls_back:
-            return True
         if getattr(connection, "autocommit", False) is True:
             return True
         if getattr(connection, "in_transaction", None) is False:
@@ -121,12 +118,13 @@ class ConnectionPool:
         try:
             connection.rollback()
         except Exception:
+            # The driver refuses rollback outside a transaction (duckdb)
+            # rather than reporting a broken connection. The probe tells
+            # the two apart. The rollback is still attempted on every
+            # release, because a driver that raised once with nothing to
+            # roll back can have a real transaction open the next time.
             if not self._responds(connection):
                 return False
-            # The driver refuses rollback outside a transaction (duckdb)
-            # rather than reporting a broken connection. Learn that once
-            # and stop asking.
-            self._driver_rolls_back = False
         return True
 
     @staticmethod

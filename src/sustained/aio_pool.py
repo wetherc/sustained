@@ -107,15 +107,28 @@ class AsyncConnectionPool(AsyncAdapter):
         try:
             await adapter.rollback()
         except Exception:
-            # A connection that cannot roll back is not fit to hand on.
-            await self._discard(adapter)
-            return
+            # Some drivers refuse rollback outside a transaction (duckdb)
+            # rather than reporting a broken connection. The probe tells
+            # the two apart, and only a connection that no longer answers
+            # is dropped.
+            if not await self._responds(adapter):
+                await self._discard(adapter)
+                return
         async with self._lock:
             if self._closed:
                 await adapter.close()
                 self._created -= 1
                 return
             self._idle.put_nowait(adapter)
+
+    @staticmethod
+    async def _responds(adapter: AsyncAdapter) -> bool:
+        """Whether the adapter still answers a trivial statement."""
+        try:
+            await adapter.fetch("SELECT 1", ())
+        except Exception:
+            return False
+        return True
 
     async def _discard(self, adapter: AsyncAdapter) -> None:
         """Drops a broken adapter and frees its slot for a new one."""

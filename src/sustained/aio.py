@@ -359,6 +359,14 @@ class AsyncpgAdapter(AsyncAdapter):
 _pinned_adapter: ContextVar[Optional[AsyncAdapter]] = ContextVar(
     "sustained_pinned_adapter", default=None
 )
+# The adapter async_transaction() was called with, when that differs from
+# the one it pinned: a pool. A statement handed the same pool inside the
+# block must run on the adapter the block checked out, not on a second
+# checkout, which would sit outside the transaction and deadlock a pool
+# of one.
+_pinned_source: ContextVar[Optional[AsyncAdapter]] = ContextVar(
+    "sustained_pinned_source", default=None
+)
 # Adapters with an open transaction; arun() skips per-statement commits.
 # The value holds a strong reference to the adapter, so the id cannot be
 # reused while the entry exists, plus the current savepoint nesting depth.
@@ -369,9 +377,15 @@ def resolve_adapter(
     explicit: Optional[AsyncAdapter], model_class: Type["Model"]
 ) -> AsyncAdapter:
     """Resolves the adapter: explicit, then pinned, then the model binding."""
-    if explicit is not None:
-        return explicit
     pinned = _pinned_adapter.get()
+    if explicit is not None:
+        if pinned is not None and (
+            explicit is pinned or explicit is _pinned_source.get()
+        ):
+            # The caller named the adapter or pool of an open block, so
+            # the statement joins that transaction.
+            return pinned
+        return explicit
     if pinned is not None:
         return pinned
     bound = getattr(model_class, "_async_adapter", None)
@@ -418,9 +432,23 @@ async def async_transaction(
     ROLLBACK statements instead, as does any adapter on a dialect whose
     driver has no transaction control, such as DuckDB.
     """
-    async with adapter.scope() as pooled:
-        async with _transaction_on(pooled, dialect) as active:
+    pinned = _pinned_adapter.get()
+    if pinned is not None and (adapter is pinned or adapter is _pinned_source.get()):
+        # The caller named the adapter or pool of an open block. Nesting
+        # on the pinned adapter gives the block a savepoint there; a
+        # second checkout from the pool would open an independent
+        # transaction, and would deadlock against the outer block on a
+        # pool of one adapter.
+        async with _transaction_on(pinned, dialect) as active:
             yield active
+        return
+    async with adapter.scope() as pooled:
+        source = _pinned_source.set(adapter if adapter is not pooled else None)
+        try:
+            async with _transaction_on(pooled, dialect) as active:
+                yield active
+        finally:
+            _pinned_source.reset(source)
 
 
 async def _undo_savepoint_async(
