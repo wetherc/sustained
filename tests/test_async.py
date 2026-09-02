@@ -171,6 +171,42 @@ class TestAsyncExecution(AsyncTestCase):
             await AioOwner.query().arun()
 
 
+class TestAutocommitDbApiAdapter(unittest.IsolatedAsyncioTestCase):
+    """A DB-API connection already in autocommit needs the BEGIN itself."""
+
+    def setUp(self):
+        self.conn = sqlite3.connect(
+            ":memory:", autocommit=True, check_same_thread=False
+        )
+        self.adapter = DbApiAsyncAdapter(self.conn)
+
+    def tearDown(self):
+        self.conn.close()
+
+    def test_a_connection_in_autocommit_has_no_driver_control(self):
+        self.assertFalse(self.adapter.driver_transaction_control())
+
+    def test_a_connection_with_driver_control_reports_it(self):
+        conn = sqlite3.connect(":memory:", check_same_thread=False)
+        self.addCleanup(conn.close)
+        self.assertTrue(DbApiAsyncAdapter(conn).driver_transaction_control())
+
+    async def test_the_block_opens_and_rolls_back_a_transaction(self):
+        with self.assertRaises(RuntimeError):
+            async with async_transaction(self.adapter):
+                await self.adapter.execute("CREATE TABLE t (x)", ())
+                self.assertTrue(self.conn.in_transaction)
+                raise RuntimeError("boom")
+        rows = self.conn.execute("SELECT name FROM sqlite_master").fetchall()
+        self.assertEqual(rows, [])
+
+    async def test_the_block_commits_what_it_ran(self):
+        async with async_transaction(self.adapter):
+            await self.adapter.execute("CREATE TABLE t (x)", ())
+        rows = self.conn.execute("SELECT name FROM sqlite_master").fetchall()
+        self.assertEqual(rows, [("t",)])
+
+
 class TestAsyncTransactions(AsyncTestCase):
     async def test_commit_on_success(self):
         async with AioOwner.async_transaction():

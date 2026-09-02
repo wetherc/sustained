@@ -166,7 +166,7 @@ These live in `sustained.aio`. Every adapter has the same methods, so a query do
 
 A row count of `-1` means the driver reported none. Add `returning()` to the write when you need an exact count.
 
-`driver_transaction_control()` tells `async_transaction()` how to open and close a block. It returns `False` on the base class and on `AsyncpgAdapter`, so the block runs `BEGIN`, `COMMIT`, and `ROLLBACK` as statements. `DbApiAsyncAdapter` returns `True`, because a DB-API 2.0 driver opens the transaction itself; the block then ends with `commit()` or `rollback()`. `begin_where_ddl_autocommits()` covers the one gap in that promise: sqlite3 in legacy transaction control leaves schema statements outside its implicit transaction, so `DbApiAsyncAdapter` sends a `BEGIN` there.
+`driver_transaction_control()` tells `async_transaction()` how to open and close a block. It returns `False` on the base class and on `AsyncpgAdapter`, so the block runs `BEGIN`, `COMMIT`, and `ROLLBACK` as statements. `DbApiAsyncAdapter` returns `True`, because a DB-API 2.0 driver opens the transaction itself; the block then ends with `commit()` or `rollback()`. It returns `False` when the connection it wraps reports `autocommit` as `True`, because such a connection commits every statement as it runs and its `commit()` closes nothing. `begin_where_ddl_autocommits()` covers the one gap in that promise: sqlite3 in legacy transaction control leaves schema statements outside its implicit transaction, so `DbApiAsyncAdapter` sends a `BEGIN` there.
 
 `scope()` is what every call opens before it runs. A plain adapter yields itself; a pool yields one of the adapters it holds and takes it back at the end, so a statement and its commit stay on one connection.
 

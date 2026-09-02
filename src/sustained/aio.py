@@ -244,8 +244,12 @@ class DbApiAsyncAdapter(AsyncAdapter):
 
     def driver_transaction_control(self) -> bool:
         # A DB-API 2.0 connection opens its transaction itself and ends it
-        # through commit() and rollback().
-        return True
+        # through commit() and rollback(). A connection the caller put in
+        # autocommit does not: it commits every statement as it runs, and
+        # commit() closes nothing. The block is then driven with BEGIN,
+        # COMMIT and ROLLBACK statements, the way it is for an adapter
+        # that runs in autocommit of its own.
+        return getattr(self._connection, "autocommit", False) is not True
 
     async def begin_where_ddl_autocommits(self) -> None:
         from sustained.execution import needs_explicit_begin
