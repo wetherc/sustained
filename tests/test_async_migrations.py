@@ -983,6 +983,35 @@ class TestAsyncPlanAndDrift(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(await migrator.plan(self.models()))
         self.assertEqual(await migrator.drift(self.models()), [])
 
+    async def test_plan_refuses_a_not_null_column_it_cannot_probe(self):
+        # plan() runs the schema read and nothing else on the async path,
+        # so it cannot ask whether the table holds a row. An unprobeable
+        # table counts as rows, and the NOT NULL column is refused even
+        # where the blocking path would take it.
+        from sustained.model import Model
+        from sustained.schema import Integer, Text
+
+        self.conn.execute("CREATE TABLE async_plan_users (id INTEGER PRIMARY KEY)")
+        models = [
+            type(
+                "AsyncPlanNotNull",
+                (Model,),
+                {
+                    "tableName": "async_plan_users",
+                    "tableColumns": {
+                        "id": Integer(primary_key=True),
+                        "name": Text(nullable=False),
+                    },
+                },
+            )
+        ]
+        migrator = AsyncMigrator(self.adapter, [])
+        with self.assertRaises(ValueError) as caught:
+            await migrator.plan(models)
+        self.assertIn("without a default or backfill", str(caught.exception))
+        # The blocking migrator probes the empty table and takes it.
+        self.assertIsNotNone(Migrator(self.conn, []).plan(models))
+
     async def test_drift_matches_the_sync_migrator(self):
         migrator = AsyncMigrator(self.adapter, [])
         self.assertEqual(

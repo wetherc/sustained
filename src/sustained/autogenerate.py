@@ -1676,6 +1676,19 @@ def _rebuild_drops_a_referenced_table(
     return False
 
 
+def _can_probe_rows(connection: Connection) -> bool:
+    """
+    Whether a connection can run the row probe.
+
+    A recorded schema read answers the statements of the read and
+    nothing else. The async path hands one of those in place of a
+    connection, so the probe has no way to run there.
+    """
+    from sustained.migrations import _ReplayConnection
+
+    return not isinstance(connection, _ReplayConnection)
+
+
 def _table_has_rows(
     connection: Connection, compiler: "Compiler", table_sql: str
 ) -> bool:
@@ -1686,9 +1699,17 @@ def _table_has_rows(
 
     A read that fails answers True, so the refusal stands whenever the
     table cannot be read.
+
+    A connection that replays a recorded schema read runs no statement of
+    its own, so the probe cannot run on it and the answer is True. The
+    async migrator reads the schema through its adapter and replays the
+    recording here, so it always refuses such a column, where the
+    blocking path takes it on an empty table.
     """
     from sustained.execution import cursor_scope
 
+    if not _can_probe_rows(connection):
+        return True
     try:
         top = f"{compiler.compile_top(1)} "
         limit = ""

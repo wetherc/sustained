@@ -1088,6 +1088,22 @@ class TestTableHasRows(unittest.TestCase):
         self.assertFalse(self.has_rows(cursor, Dialects.MSSQL))
         self.assertEqual(cursor.statements, ["SELECT TOP 1 1 FROM t"])
 
+    def test_a_recorded_read_cannot_be_probed(self):
+        # The async path replays a recorded schema read, which answers
+        # the statements of the read and nothing else. The probe cannot
+        # run there, and an unprobeable table counts as rows so that the
+        # refusal stands.
+        from sustained.migrations import SchemaRead
+
+        connection = SchemaRead().connection()
+        self.assertFalse(autogenerate_module._can_probe_rows(connection))
+        self.assertTrue(autogenerate_module._can_probe_rows(self.Connection(None)))
+        self.assertTrue(
+            autogenerate_module._table_has_rows(
+                connection, Dialects.get_compiler(Dialects.DEFAULT), "t"
+            )
+        )
+
     def test_a_read_that_fails_counts_as_rows(self):
         self.assertTrue(self.has_rows(self.Cursor(error=RuntimeError("no table"))))
 

@@ -488,7 +488,7 @@ Both migrators compute the key the same way, so a row written by one migrator op
 
 `await migrator.script('up')` renders the same text `Migrator.script('up')` renders, and writes nothing, not even the tracking table. `read_applied_records()` and `read_applied()` read the rows the same way.
 
-`await migrator.plan(models)` and `await migrator.drift(models)` diff the models against the database and return what `Migrator.plan()` and `Migrator.drift()` return. Both read the schema through the adapter and write nothing.
+`await migrator.plan(models)` and `await migrator.drift(models)` diff the models against the database and return what `Migrator.plan()` and `Migrator.drift()` return. Both read the schema through the adapter and write nothing. The schema read is the only statement `plan()` runs, so it cannot ask whether a table holds a row. A table it cannot read counts as one that holds rows, so a new NOT NULL column with no `default` and no `backfill` is refused here even on an empty table, where `Migrator.plan()` adds it.
 
 `up(models=[...])` and `rehearse(models=[...])` take the same arguments the synchronous ones take, and behave the same way: the generated migration runs last of the versioned ones, its statements go on its tracking row rather than into the migrations directory, and it joins the registered list only after it applied.
 
