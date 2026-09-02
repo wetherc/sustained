@@ -333,7 +333,13 @@ def _finished(stop: StopIteration) -> Snapshot:
     return cast(Snapshot, stop.value)
 
 
-# The savepoint a guarded read takes before each statement.
+# The savepoint a guarded read takes before each statement. A read
+# releases it whether the statement worked or failed. ROLLBACK TO
+# SAVEPOINT leaves the savepoint in place, so without the release one
+# savepoint per failed statement would pile up until the outer
+# transaction ends. A driver that takes SAVEPOINT and refuses RELEASE
+# SAVEPOINT must not lose the read, so the release ignores its own
+# error: the rows are in hand and the transaction is not lost.
 _READ_SAVEPOINT = "sustained_read"
 
 
@@ -382,6 +388,13 @@ def introspect_schema(
     # unread on it otherwise.
     with cursor_scope(connection) as cursor:
 
+        def release() -> None:
+            """Takes the savepoint off the stack, ignoring a refusal."""
+            try:
+                cursor.execute(f"RELEASE SAVEPOINT {_READ_SAVEPOINT}")
+            except Exception:
+                pass
+
         def run(sql: str) -> List[Sequence[RowValue]]:
             if not guarded[0]:
                 cursor.execute(sql)
@@ -402,8 +415,9 @@ def introspect_schema(
                     cursor.execute(f"ROLLBACK TO SAVEPOINT {_READ_SAVEPOINT}")
                 except Exception:
                     pass
+                release()
                 raise
-            cursor.execute(f"RELEASE SAVEPOINT {_READ_SAVEPOINT}")
+            release()
             return rows
 
         sql = next(plan)
@@ -435,7 +449,15 @@ async def async_introspect_schema(
     plan = _schema_plan(dialect, tuple(schemas))
     guarded = _dooms_transaction(dialect)
 
+    async def release() -> None:
+        """Takes the savepoint off the stack, ignoring a refusal."""
+        try:
+            await adapter.execute(f"RELEASE SAVEPOINT {_READ_SAVEPOINT}", ())
+        except Exception:
+            pass
+
     async def run(sql: str) -> List[Sequence[RowValue]]:
+        nonlocal guarded
         if not guarded:
             _, rows = await adapter.fetch(sql, ())
             return list(rows)
@@ -443,6 +465,10 @@ async def async_introspect_schema(
             await adapter.execute(f"SAVEPOINT {_READ_SAVEPOINT}", ())
         except Exception:
             # No transaction to take a savepoint in, and none to lose.
+            # The refusal stands for the whole read, the way it does on
+            # the blocking path, so the plan does not try a savepoint
+            # again for every statement left in it.
+            guarded = False
             return list((await adapter.fetch(sql, ()))[1])
         try:
             _, rows = await adapter.fetch(sql, ())
@@ -451,8 +477,9 @@ async def async_introspect_schema(
                 await adapter.execute(f"ROLLBACK TO SAVEPOINT {_READ_SAVEPOINT}", ())
             except Exception:
                 pass
+            await release()
             raise
-        await adapter.execute(f"RELEASE SAVEPOINT {_READ_SAVEPOINT}", ())
+        await release()
         return list(rows)
 
     sql = next(plan)

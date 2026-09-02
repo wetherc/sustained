@@ -472,6 +472,95 @@ class TestAsyncIntrospection(unittest.IsolatedAsyncioTestCase):
         await async_introspect_schema(adapter, Dialects.POSTGRES)
         self.assertIn("ROLLBACK TO SAVEPOINT sustained_read", adapter.log)
 
+    async def test_a_guarded_read_releases_every_savepoint(self):
+        # ROLLBACK TO SAVEPOINT leaves the savepoint in place, so a read
+        # that only rolls back piles one savepoint up per failed query.
+        from sustained.autogenerate import async_introspect_schema
+        from sustained.dialects import Dialects
+
+        class Adapter:
+            def __init__(self):
+                self.stack = []
+                self.failures = 0
+
+            async def execute(self, sql, params):
+                word = sql.split()[0].upper()
+                if word == "SAVEPOINT":
+                    self.stack.append(sql.split()[1])
+                elif word == "RELEASE" and self.stack:
+                    self.stack.pop()
+                return 0
+
+            async def fetch(self, sql, params):
+                if "pg_catalog" in sql:
+                    self.failures += 1
+                    raise RuntimeError("no such catalog")
+                return [], []
+
+        adapter = Adapter()
+        await async_introspect_schema(adapter, Dialects.POSTGRES)
+        self.assertGreater(adapter.failures, 1)
+        self.assertEqual(adapter.stack, [])
+
+    async def test_a_refused_release_keeps_the_rows(self):
+        # A driver may take a savepoint and refuse to release it. The
+        # rows are already read, so the read keeps them.
+        from sustained.autogenerate import async_introspect_schema
+        from sustained.dialects import Dialects
+
+        class Adapter:
+            async def execute(self, sql, params):
+                if sql.startswith("RELEASE"):
+                    raise RuntimeError("this driver has no RELEASE SAVEPOINT")
+                return 0
+
+            async def fetch(self, sql, params):
+                if "information_schema.columns" in sql:
+                    return [], [
+                        (
+                            "users",
+                            "id",
+                            "integer",
+                            "int4",
+                            None,
+                            None,
+                            None,
+                            "NO",
+                            None,
+                        )
+                    ]
+                return [], []
+
+        schema = await async_introspect_schema(Adapter(), Dialects.POSTGRES)
+        self.assertEqual(list(schema), ["users"])
+
+    async def test_a_refused_savepoint_is_not_asked_for_again(self):
+        # A connection in autocommit refuses every savepoint. The read
+        # gives up on savepoints for the rest of the plan instead of
+        # asking again before every statement.
+        from sustained.autogenerate import async_introspect_schema
+        from sustained.dialects import Dialects
+
+        class Adapter:
+            def __init__(self):
+                self.attempts = 0
+                self.reads = 0
+
+            async def execute(self, sql, params):
+                if sql.startswith("SAVEPOINT"):
+                    self.attempts += 1
+                    raise RuntimeError("no transaction is active")
+                return 0
+
+            async def fetch(self, sql, params):
+                self.reads += 1
+                return [], []
+
+        adapter = Adapter()
+        await async_introspect_schema(adapter, Dialects.POSTGRES)
+        self.assertEqual(adapter.attempts, 1)
+        self.assertGreater(adapter.reads, 1)
+
     async def test_a_failing_read_raises(self):
         from sustained.autogenerate import async_introspect_schema
         from sustained.dialects import Dialects

@@ -865,5 +865,80 @@ class TestGuardedRead(unittest.TestCase):
         )
 
 
+class StackingCursor:
+    """
+    A cursor that keeps the savepoint stack, so a read that forgets a
+    release leaves the stack deep. Postgres takes a duplicate savepoint
+    name, and ROLLBACK TO SAVEPOINT leaves the name on the stack.
+    """
+
+    def __init__(self, failing="pg_catalog", releases=True):
+        self.failing = failing
+        self.releases = releases
+        self.stack = []
+        self.statements = []
+        self.failures = 0
+        self.doomed = False
+        self._current = []
+
+    def execute(self, sql, params=()):
+        statement = " ".join(sql.split())
+        self.statements.append(statement)
+        word = statement.split()[0].upper()
+        if word == "SAVEPOINT":
+            self.stack.append(statement.split()[1])
+            return
+        if word == "ROLLBACK":
+            self.doomed = False
+            return
+        if word == "RELEASE":
+            if not self.releases:
+                raise RuntimeError("this driver has no RELEASE SAVEPOINT")
+            if self.stack:
+                self.stack.pop()
+            return
+        if self.doomed:
+            raise RuntimeError("current transaction is aborted")
+        if self.failing in statement:
+            self.doomed = True
+            self.failures += 1
+            raise RuntimeError("no such catalog")
+        self._current = (
+            [column_row("users", "id", "integer")]
+            if "information_schema.columns" in statement
+            else []
+        )
+
+    def fetchall(self):
+        return self._current
+
+    def close(self):
+        pass
+
+
+class TestSavepointStack(unittest.TestCase):
+    """
+    A guarded read releases the savepoint it takes, and keeps its rows
+    when the driver refuses the release.
+    """
+
+    def test_a_failed_query_leaves_no_savepoint_behind(self):
+        cursor = StackingCursor()
+        introspect_schema(FakeConnection(cursor), Dialects.POSTGRES)
+        self.assertGreater(cursor.failures, 1)
+        self.assertEqual(cursor.stack, [])
+
+    def test_a_driver_that_refuses_the_release_keeps_the_rows(self):
+        cursor = StackingCursor(failing="never", releases=False)
+        schema = introspect_schema(FakeConnection(cursor), Dialects.POSTGRES)
+        self.assertEqual(list(schema), ["users"])
+
+    def test_a_refused_release_after_a_failure_keeps_the_read(self):
+        cursor = StackingCursor(releases=False)
+        schema = introspect_schema(FakeConnection(cursor), Dialects.POSTGRES)
+        self.assertEqual(list(schema), ["users"])
+        self.assertIn("ROLLBACK TO SAVEPOINT sustained_read", cursor.statements)
+
+
 if __name__ == "__main__":
     unittest.main()

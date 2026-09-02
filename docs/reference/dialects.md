@@ -125,7 +125,7 @@ The declared schemas make their own `IN` list, and the current-schema expression
 
 The constraint join matches schema names as well as constraint names, because a constraint name is only unique within its schema. An engine whose `key_column_usage` has no `table_schema` column falls back to the plain join, but only on a read that covers one schema. The plain join cannot keep two schemas apart, so on a wider read the constraints stay unread instead.
 
-Postgres refuses every later statement in a transaction once one has failed. A read tries a catalog and falls back when it is not there, so on Postgres each query runs inside the savepoint `sustained_read` and a failure rolls back to it. A connection with no transaction open takes no savepoint.
+Postgres refuses every later statement in a transaction once one has failed. A read tries a catalog and falls back when it is not there, so on Postgres each query runs inside the savepoint `sustained_read` and a failure rolls back to it. The read then releases the savepoint, whether the query worked or failed, because `ROLLBACK TO SAVEPOINT` leaves the savepoint in place and one per failed query would pile up. A driver that refuses `RELEASE SAVEPOINT` does not stop the read: the rows are already read. A connection with no transaction open takes no savepoint, and the read stops asking for one for the rest of that read.
 
 Athena scopes every introspection query to the schema the connection was opened on. Its catalog spans every Glue database in the account, so an unscoped read would be slow and would fail outright when any other database holds a table with broken metadata. Models on an Athena connection must live in that schema for a diff to see them.
 
