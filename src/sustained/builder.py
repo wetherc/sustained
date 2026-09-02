@@ -414,7 +414,7 @@ class QueryBuilder:
                 # A model without a table renders a FROM-less SELECT.
                 full_table_name = ""
 
-        joins_str = str(self._join_builder)
+        joins_str = self._join_builder.render(ctx)
         where_str = self._where_builder.render(ctx)
         group_by_str = str(self._group_by_builder)
         having_str = self._having_builder.render(ctx)

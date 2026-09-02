@@ -215,6 +215,8 @@ Show.query().select('shows.title', 'tickets.price').join(
 #   AND tickets.price = (SELECT MAX(price) FROM tickets WHERE (tickets.show_id = shows.id))
 ```
 
+The inner query renders like any other part of the statement. Under `to_sql()` its values become placeholders and join the outer parameter tuple, in the order they appear in the SQL.
+
 ### Joins against derived results
 
 The table argument has to be a table name. To join against a derived result set, put the subquery in a CTE with `with_()` and join the CTE by its alias, as in [Queries](./queries#common-table-expressions). Nested join conditions beyond the `on`/`andOn`/`orOn` chain are not supported either; a condition that complex is usually clearer as a CTE.

@@ -230,6 +230,43 @@ class TestFunctionArgumentParameters(unittest.TestCase):
         self.assertEqual(params, (1, 7))
 
 
+class TestJoinSubqueryParameters(unittest.TestCase):
+    """A subquery on the right of ON parameterizes with the statement."""
+
+    def test_static_on_form_params(self):
+        sub = User.query().select("id").where("a", "=", 1)
+        query = User.query().join("orders", "users.id", "=", sub)
+        sql, params = query.to_sql()
+        self.assertEqual(
+            sql,
+            "SELECT * FROM users JOIN orders "
+            "ON users.id = (SELECT id FROM users WHERE a = ?)",
+        )
+        self.assertEqual(params, (1,))
+
+    def test_lambda_on_form_params_sit_between_the_other_bindings(self):
+        select_sub = User.query().select("id").where("s", "=", 1)
+        join_sub = User.query().select("id").where("j", "=", 2)
+        query = (
+            User.query()
+            .select("name", Subquery(select_sub, "s"))
+            .join("orders", lambda o: o.on("users.id", "=", join_sub))
+            .where("w", "=", 3)
+        )
+        sql, params = query.to_sql()
+        self.assertEqual(params, (1, 2, 3))
+        self.assertLess(sql.index("JOIN orders"), sql.index("WHERE w"))
+
+    def test_str_still_inlines_a_join_subquery(self):
+        sub = User.query().select("id").where("a", "=", 1)
+        query = User.query().join("orders", "users.id", "=", sub)
+        self.assertEqual(
+            str(query),
+            "SELECT * FROM users JOIN orders "
+            "ON users.id = (SELECT id FROM users WHERE a = 1)",
+        )
+
+
 class TestExpressionOperands(unittest.TestCase):
     """An expression on the value side of a comparison renders as SQL."""
 

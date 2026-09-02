@@ -4,6 +4,7 @@ from typing import Callable, Dict, List, Optional, Type, Union, overload
 
 from ..compilers import Compiler
 from ..model import Model
+from ..rendering import RenderContext
 from ..types import AnyQuery
 
 # The object a join lambda receives. Whatever the lambda returns is
@@ -19,6 +20,7 @@ class OnClauseBuilder:
     def orOn(
         self, col1: str, op: str, col2: Union[str, AnyQuery]
     ) -> OnClauseBuilder: ...
+    def render(self, ctx: RenderContext) -> str: ...
     def __str__(self) -> str: ...
 
 class JoinClauseBuilder:
@@ -26,6 +28,7 @@ class JoinClauseBuilder:
     def __init__(
         self, model_class: Type[Model], compiler: Optional[Compiler] = None
     ) -> None: ...
+    def render(self, ctx: RenderContext) -> str: ...
     def __str__(self) -> str: ...
 
     # Raw form: an ON condition, a lambda, or a USING list.

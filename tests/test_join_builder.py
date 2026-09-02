@@ -2,8 +2,9 @@ import unittest
 from typing import Dict
 
 from sustained import Model, RelationType
-from sustained.builders.join_builder import (
-    JoinClauseBuilder,  # For direct testing where needed
+from sustained.builders.join_builder import (  # For direct testing where needed
+    JoinClauseBuilder,
+    OnClauseBuilder,
 )
 from sustained.types import RelationMapping
 
@@ -310,6 +311,34 @@ class TestJoinBuilder(unittest.TestCase):
             "SELECT * FROM posts INNER JOIN post_tags ON posts.id = post_tags.postId INNER JOIN tags AS t ON post_tags.tagId = another_tags_table.id",
         )
         del sys.modules[__name__].Tag
+
+
+class TestJoinBuilderStr(unittest.TestCase):
+    """str() renders the join clauses with the values inlined."""
+
+    def setUp(self):
+        class Ticket(Model):
+            tableName = "tickets"
+
+        self.Ticket = Ticket
+
+    def test_str_of_the_join_builder(self):
+        builder = JoinClauseBuilder(self.Ticket)
+        builder.join("shows", "tickets.show_id", "=", "shows.id")
+        self.assertEqual(str(builder), "JOIN shows ON tickets.show_id = shows.id")
+
+    def test_str_of_the_on_clause_builder(self):
+        sub = self.Ticket.query().select("show_id").where("a", "=", 1)
+        on_builder = OnClauseBuilder()
+        on_builder.on("tickets.show_id", "=", sub)
+        self.assertEqual(
+            str(on_builder),
+            "tickets.show_id = (SELECT show_id FROM tickets WHERE a = 1)",
+        )
+
+    def test_on_clause_builder_without_a_condition_raises(self):
+        with self.assertRaises(RuntimeError):
+            str(OnClauseBuilder())
 
 
 if __name__ == "__main__":

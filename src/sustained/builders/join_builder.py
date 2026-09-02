@@ -13,6 +13,7 @@ from typing import (
     cast,
 )
 
+from ..rendering import Renderable, RenderContext, render_part
 from ..types import BasicJoinMapping, JoinMappingWithThrough
 
 if TYPE_CHECKING:
@@ -34,7 +35,7 @@ class OnClauseBuilder:
         self._compiler = (
             compiler if compiler else Dialects.get_compiler(Dialects.DEFAULT)
         )
-        self._conditions: List[Tuple[str, str]] = []
+        self._conditions: List[Tuple[str, Renderable]] = []
 
     def on(self, col1: str, op: str, col2: Union[str, "AnyQuery"]) -> "OnClauseBuilder":
         """Adds an ON condition. If this is not the first condition, it's treated as AND ON."""
@@ -78,23 +79,37 @@ class OnClauseBuilder:
         # identifiers, so it goes through the same check where() applies.
         op = self._compiler.validate_operator(op)
         formatted_col1 = self._compiler.quote_fully_qualified_identifier(col1)
+        condition: Renderable
         if isinstance(col2, QueryBuilder):
-            formatted_col2 = f"({col2})"
+            sub_query = col2
+
+            def render(ctx: RenderContext) -> str:
+                return f"{formatted_col1} {op} ({sub_query._render_sql(ctx)})"
+
+            condition = render
         else:
             formatted_col2 = self._compiler.quote_fully_qualified_identifier(col2)
-        condition_str = f"{formatted_col1} {op} {formatted_col2}"
-        self._conditions.append((conjunction, condition_str))
+            condition = f"{formatted_col1} {op} {formatted_col2}"
+        self._conditions.append((conjunction, condition))
 
-    def __str__(self) -> str:
-        """Builds the final ON clause string."""
+    def render(self, ctx: RenderContext) -> str:
+        """
+        Builds the ON clause with the statement's render context. A
+        subquery on the right of a condition renders through it, so its
+        values join the statement's parameter list.
+        """
         if not self._conditions:
             raise RuntimeError("A join condition must be specified inside the lambda.")
 
         # The first condition doesn't have a preceding conjunction
-        parts = [self._conditions[0][1]]
+        parts = [render_part(self._conditions[0][1], ctx)]
         for conjunction, clause in self._conditions[1:]:
-            parts.append(f"{conjunction} {clause}")
+            parts.append(f"{conjunction} {render_part(clause, ctx)}")
         return " ".join(parts)
+
+    def __str__(self) -> str:
+        """Builds the ON clause with the values inlined as literals."""
+        return self.render(RenderContext(self._compiler))
 
 
 class JoinClauseBuilder:
@@ -121,10 +136,19 @@ class JoinClauseBuilder:
         self._compiler = (
             compiler if compiler else Dialects.get_compiler(Dialects.DEFAULT)
         )
-        self._joins: List[str] = []
+        self._joins: List[Renderable] = []
+
+    def render(self, ctx: RenderContext) -> str:
+        """
+        Builds the join clauses with the statement's render context, so a
+        subquery in an ON condition contributes its values to the
+        statement's parameter list.
+        """
+        return " ".join(render_part(join, ctx) for join in self._joins)
 
     def __str__(self) -> str:
-        return " ".join(self._joins)
+        """Builds the join clauses with the values inlined as literals."""
+        return self.render(RenderContext(self._compiler))
 
     def __getattr__(self, name: str) -> Callable[..., "JoinClauseBuilder"]:
         """
@@ -190,18 +214,27 @@ class JoinClauseBuilder:
                             self._compiler.quote_identifier(u) for u in using
                         )
                         join_condition = f"USING ({quoted_using})"
-                    elif len(args) == 3:
-                        # Static syntax: .join('table', 'col1', '=', 'col2')
-                        col1, op, col2 = args
+                    elif len(args) == 3 or (len(args) == 1 and callable(args[0])):
                         on_clause_builder = OnClauseBuilder(self._compiler)
-                        on_clause_builder.on(col1, op, col2)
-                        join_condition = f"ON {on_clause_builder}"
-                    elif len(args) == 1 and callable(args[0]):
-                        # Composable syntax: .join('table', lambda j: ...)
-                        join_builder_fn = args[0]
-                        on_clause_builder = OnClauseBuilder(self._compiler)
-                        join_builder_fn(on_clause_builder)
-                        join_condition = f"ON {on_clause_builder}"
+                        if len(args) == 3:
+                            # Static syntax: .join('table', 'col1', '=', 'col2')
+                            col1, op, col2 = args
+                            on_clause_builder.on(col1, op, col2)
+                        else:
+                            # Composable syntax: .join('table', lambda j: ...)
+                            args[0](on_clause_builder)
+                        # The ON clause can hold a subquery, whose values
+                        # belong to the statement, so it renders later.
+                        on_builder = on_clause_builder
+
+                        def render_join(ctx: RenderContext) -> str:
+                            return (
+                                f"{sql_join_type} {quoted_table} "
+                                f"ON {on_builder.render(ctx)}"
+                            )
+
+                        self._joins.append(render_join)
+                        return self
                     elif not args and sql_join_type == "CROSS JOIN":
                         # A cross join pairs every row with every row, so it
                         # takes no condition.
