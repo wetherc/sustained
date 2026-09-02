@@ -3,7 +3,7 @@ layout: default
 title: Defining Models
 ---
 
-Tables and their schema are represented within Sustained as Models: this provides a consistent interface for describing columns, declaring relationships, and querying data.
+A model represents one table. It is the one place you describe the table's columns, declare its relations, and start its queries.
 
 ```python
 from sustained import Model
@@ -12,7 +12,7 @@ class Venue(Model):
     tableName = 'venues'
 ```
 
-Minimally, a Model only needs a table name; everything else on this page is strictly optional.
+A model needs only a table name. Everything else on this page is optional.
 
 The examples use the venue booking schema from [Getting Started](./getting-started): venues host shows, shows sell tickets, and artists play shows through a link table.
 
@@ -50,7 +50,7 @@ Instances do not behave this way. An instance has one attribute per column the q
 
 ## Catching column typos
 
-Attribute access is generous by default: an undeclared name still resolves, so `Venue.citty` becomes the string `'venues.citty'` and the mistake surfaces as a database error at run time. To strictly enforce allowed columns in queries, you can explicitly declare them on the model:
+Attribute access is generous by default: an undeclared name still resolves, so `Venue.citty` becomes the string `'venues.citty'` and the mistake surfaces as a database error at runtime. To restrict access to known columns, declare them on the model:
 
 ```python
 class Venue(Model):
@@ -98,8 +98,7 @@ Venue.query().where((Venue.c.capacity > 1000) & (Venue.c.city == 'Minneapolis'))
 # SELECT * FROM venues WHERE (venues.capacity > 1000 AND venues.city = 'Minneapolis')
 ```
 
-The result of a comparison is a `Predicate`, which combines with `&`, `|`, and `~`. Pass it to `where()` or `having()`. For a table with no model in scope, `col('show_artists.artist_id')` builds the same kind of reference from
-a dotted path.
+The result of a comparison is a `Predicate`, which combines with `&`, `|`, and `~`. Pass it to `where()` or `having()`. For a table with no model in scope, `col('show_artists.artist_id')` builds the same kind of reference from a dotted path.
 
 [Filtering](./filtering#typed-predicates) covers the full operator set and the methods for `LIKE`, `IN`, `BETWEEN`, and `NULL`.
 
@@ -129,7 +128,7 @@ The registry never drops an entry. A model class registered once stays reachable
 
 ## Dialects and database connections
 
-Both are class attributes, set once and inherited by subclasses:
+The dialect and the connection are both class attributes, set once and inherited by subclasses:
 
 ```python
 from sustained.dialects import Dialects

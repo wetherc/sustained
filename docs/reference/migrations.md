@@ -304,7 +304,7 @@ script(direction='up') -> str
 
 The tracking table is named `sustained_migrations` by default and has these columns:
 
-| Column | Type | Holds |
+| Column | Type | Contains |
 | --- | --- | --- |
 | `id` | `VARCHAR(255)` primary key | The migration id |
 | `seq` | `INTEGER` | The apply order |
@@ -321,7 +321,7 @@ On Athena the same columns are all plain and nullable, because Athena enforces n
 
 The rehearsal table is named `sustained_rehearsals` by default, is created on first use, and has these columns:
 
-| Column | Type | Holds |
+| Column | Type | Contains |
 | --- | --- | --- |
 | `rehearsal_key` | `VARCHAR(64)` primary key | The key `rehearsal_key()` computes |
 | `outcome` | `VARCHAR(16)` not null | `passed` or `failed` |
@@ -573,7 +573,7 @@ The canonical spelling of a reported column default, for comparison. Balanced ou
 
 ### `SchemaDiff`
 
-| Attribute | Holds |
+| Attribute | Contains |
 | --- | --- |
 | `missing_tables` | Models with no table |
 | `new_columns` | `(model, name, ColumnDef)` |

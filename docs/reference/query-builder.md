@@ -327,7 +327,7 @@ except_(*queries)
 
 EXCEPT. The trailing underscore keeps the name off the Python keyword.
 
-`ORDER BY`, `LIMIT`, and `OFFSET` on the outer query apply to the whole result. The same clauses on a member query render inside that member's parentheses. CTEs from every member hoist to one top-level `WITH`.
+`ORDER BY`, `LIMIT`, and `OFFSET` on the outer query apply to the whole result. The same clauses on a member query render inside that member's parentheses. CTEs from every member are elevated to one top-level `WITH`.
 
 ## Writing data
 

@@ -3,9 +3,9 @@ layout: default
 title: Recipes
 ---
 
-Each recipe here is an independent, standalone code snippet that demonstrates how to accomplish a common task using Sustained.
+Each recipe is a standalone snippet that completes one common task.
 
-Every example uses the same four tables from [Getting Started](./getting-started), plus two more so the joins have somewhere to go.
+Every example uses the venue booking schema from [Getting Started](./getting-started), extended with artists, tickets, and a link table so the joins have somewhere to go.
 
 ```python
 from sustained import Model, RelationType
@@ -123,7 +123,7 @@ Show.query().where('venue_id', '=', 1).andWhere(
 # WHERE venue_id = 1 AND (sold_out = TRUE OR starts_at > '2026-09-01')
 ```
 
-Groups can nest arbitrarily deeply, the only limit is what your peers are willing to code review. The first condition in any chain must be a plain `where`, never `andWhere` or `orWhere`.
+Groups can nest arbitrarily deep. The only limit is what your peers are willing to code review. The first condition in any chain must be a plain `where`, never `andWhere` or `orWhere`.
 
 ## Filter the result of an aggregate
 
@@ -270,8 +270,7 @@ Artist.query().select('artists.name', 'shows.title').innerJoinRelated('shows')
 # INNER JOIN shows ON show_artists.show_id = shows.id
 ```
 
-The first hop is always an `INNER JOIN`. The join type you name applies to the second hop, which is where it changes the
-result.
+The first hop is always an `INNER JOIN`. The join type you name applies to the second hop, which is where it changes the result.
 
 ## Join the same table twice
 
@@ -320,8 +319,7 @@ Artist.query().insert({'name': 'Duster', 'country': 'US'}) \
     .onConflict('name').ignore().run()     # keep the existing row
 ```
 
-The conflict columns must have a unique constraint or primary key in the database, or the statement fails there. `merge()` updates every inserted column except the conflict columns; pass a list to narrow it. Postgres,
-SQLite, and DuckDB render `ON CONFLICT`, MSSQL renders `MERGE`, and Presto raises `DialectError`.
+The conflict columns must have a unique constraint or primary key in the database, or the statement fails there. `merge()` updates every inserted column except the conflict columns; pass a list to narrow it. Postgres, SQLite, and DuckDB render `ON CONFLICT`, MSSQL renders `MERGE`, and Presto raises `DialectError`.
 
 ## Get the generated id back from an insert
 
@@ -559,8 +557,7 @@ def get_rehearsal_connection():
     return psycopg.connect('postgresql://localhost/app_rehearsal')
 ```
 
-The scratch database is usually empty, so the whole history replays instead of only what is pending, which proves the migrations run from nothing. The changes may survive the rollback there, so recreate the database before the
-next rehearsal. In Python, this is `migrator.rehearse(scratch=True)`.
+The scratch database is usually empty, so the whole history replays instead of only what is pending, which proves the migrations run from nothing. The changes may survive the rollback there, so recreate the database before the next rehearsal. In Python, this is `migrator.rehearse(scratch=True)`.
 
 ## Hand the SQL to a DBA instead of running it
 
@@ -609,7 +606,7 @@ $ sustained repair
 repaired removed the failed attempt of '004_trim'
 ```
 
-`repair` only fixes tracking rows. It does not undo half-applied schema changes, and it will not tell you which ones there were. You will need to manually correct any underlying problems and verify their fixes before `repair`-ing with Sustained.
+`repair` only fixes tracking rows. It does not undo half-applied schema changes, and it will not tell you which ones there were. Fix the schema by hand and verify it before you run `repair`.
 
 ## Accept an edit to a migration that already ran
 
@@ -642,7 +639,7 @@ The connection's parameter style must match the dialect's placeholder, or execut
 | `POSTGRES` | `psycopg`, `psycopg2` | `%s` |
 | `MSSQL` | `pyodbc` | `?` |
 | `PRESTO` | `trino` | `?` |
-| `ATHENA` | `pyathena` | `%s` |
+| `ATHENA` | `pyathena` with `pyathena.paramstyle = "qmark"` | `?` |
 | `MYSQL` | `PyMySQL`, `mysqlclient` | `%s` |
 | `DUCKDB` | `duckdb` | `?` |
 

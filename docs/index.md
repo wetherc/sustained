@@ -3,7 +3,7 @@ layout: default
 title: Sustained Documentation
 ---
 
-Sustained is a Python query builder, lightweight ORM, and schema migration tool, originally inspired by [Objection.js](https://vincit.github.io/objection.js/). You define one set of model classes to describe your tables, and Sustained builds and runs the queries against them, and keeps the schema itself in step.
+Sustained is a Python query builder, lightweight ORM, and schema migration tool, originally inspired by [Objection.js](https://vincit.github.io/objection.js/). You define one set of model classes to describe your tables. Sustained builds and runs the queries against them, and keeps the schema itself in step.
 
 The syntax will look familiar if you have worked with Objection, Kysely, or even knex before:
 
@@ -24,15 +24,15 @@ With Sustained, you can:
 
 ## Schema management with Sustained
 
-Sustained also provides strong support for database schema change management, to allow you easily and reliably test schema changes safely, evolve your database schema, and easily roll back migrations. These features are discussed in detail at [Schema and Migrations](./schema).
+Sustained also manages schema changes. It generates migrations from your models, tests each change before it runs, and rolls a migration back when you ask. These features are described in detail at [Schema and Migrations](./schema).
 
 With Sustained, schema migrations are:
 
 - **Generated from your models.** `Migrator.up(models=[...])` diffs the live database against your models, generates the migration, records it, and applies it. Run it again after a model change and only the difference is applied. `down()` rolls it back.
 - **Rehearsed before they land.** `sustained rehearse` applies every pending migration, runs the downgrade steps to test the revert plan, and rolls the whole thing back. A migration that does not run, or does not reverse, says so before it reaches the real schema. A config module can send the rehearsal to a scratch database instead.
 - **Planned in one screen.** `sustained plan` shows your pending migrations, outstanding problems that `validate` would report, and any gap between your models and the database's current state.
-- **Checked, not trusted.** Sustained manages a per-database tracking table that records a sequence number, a SHA-256 checksum, an apply timestamp, execution time, and a success flag per migration. `validate` refuses a run when a migration was edited after it ran, arrives out of order, or left a failed attempt behind. `repair` will delete failed runs from the tracking table and update script checksums after manual corrections.
-- **Gated by custom safeguards.** Guards can be built-in functions (`no_drops()`, `index_must_be_concurrent()`, `max_statements(n)`) or can be a custom function you write. These read every statement of a migration that would run and block the deployment if any of the rule checks fail.
+- **Verified before every run.** Sustained keeps a per-database tracking table that records a sequence number, a SHA-256 checksum, an apply timestamp, execution time, and a success flag per migration. `validate` refuses a run when a migration was edited after it ran, arrives out of order, or left a failed attempt behind. `repair` will delete failed runs from the tracking table and update script checksums after manual corrections.
+- **Gated by custom safeguards.** A guard is a built-in rule such as `no_drops()`, `index_must_be_concurrent()`, or `max_statements(n)`, or a function you write. Guards read every statement a run would apply and block the deployment when a rule fails.
 - **Safe by default.** Drops need explicit `allow_drops=True`, renames need explicit hints, NOT NULL changes need a `default` or `backfill`. Destructive changes will never run by default.
 - **Written your way.** Migrations can be Python `Migration` objects, `<id>.up.sql` and `<id>.down.sql` files with `${placeholders}`, or `<id>.repeat.sql` files for views and seed data, which re-run whenever their contents change.
 - **Ready for deploys.** The `sustained` console script runs `plan`, `status`, `rehearse`, `migrate`, `down`, `validate`, `repair`, `script`, and `baseline`, with exit codes for pipelines and `before_migrate`, `after_migrate`, and `on_error` callbacks around a run. Concurrent deploys queue on an advisory lock. `baseline` adopts a database that already matches. `script('up')` renders the SQL for a DBA instead of running it. `AsyncMigrator` does all of it on an async adapter.
@@ -42,9 +42,9 @@ With Sustained, schema migrations are:
 
 **New here?** [Getting Started](./getting-started) builds a working application in one sitting: a schema that Sustained creates, queries that join across tables, a scripted generated migration, and the same migrations run interactively from the shell. It needs nothing but SQLite to run.
 
-**Have a task in mind?** [Recipes](./recipes) provides concrete examples of how to complete specific, common tasks with Sustained.
+**Have a task in mind?** [Recipes](./recipes) pairs each common task with the code that does it.
 
-**Looking up a method?** The [API Reference](./reference/) provides a comprehensive reference for all of Sustained's public API methods.
+**Looking up a method?** The [API Reference](./reference/) gives every public name its signature, return type, and the conditions that raise.
 
 The guides each explain one area in depth, and they build on each other in this order:
 
@@ -67,4 +67,4 @@ Released versions are listed in the [Changelog](./changelog).
 python3 -m pip install sustained
 ```
 
-Sustained has no required dependencies. pandas and pyarrow are optional, only needed for `to_df()` and `to_arrow()`.
+Sustained has no required dependencies. `pandas` and `pyarrow` are optional, and only `to_df()` and `to_arrow()` need them.

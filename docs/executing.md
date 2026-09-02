@@ -51,7 +51,7 @@ Show.unbind()        # remove it again
 
 A connection passed to `run()` or `first()` overrides any binding. This is useful when, e.g., one query needs to run against a replica while the rest use the primary.
 
-Sustained looks for a connection in this order: the connection you passed to the call, then the model's own binding, then a binding inherited from a parent class. Running with none of those raises `RuntimeError`.
+Sustained looks for a connection in this order: the connection you passed to the call, then the connection pinned by an open `transaction()` block, then the model's binding, whether set on the model or inherited from a parent class. Running with none of those raises `RuntimeError`.
 
 ## Reading rows
 
@@ -70,7 +70,7 @@ show = Show.query().where('title', '=', 'Nightcrawler').first()
 
 ### Other result data structures
 
-`run()` gives you Model instances. If you want the same rows in another form, these methods are also available:
+`run()` returns model instances. To get the same rows in another form, use one of these methods instead:
 
 | Method | Returns |
 | --- | --- |
@@ -82,7 +82,7 @@ show = Show.query().where('title', '=', 'Nightcrawler').first()
 
 ### Type checking
 
-The builder includes the underlying Model: `Show.query()` is a `QueryBuilder[Show]`, and the model survives every clause you chain, so `mypy` and Pyright read the results without a cast or an annotation:
+The builder carries its model type: `Show.query()` is a `QueryBuilder[Show]`, and the model survives every clause you chain, so `mypy` and Pyright read the results without a cast or an annotation:
 
 ```python
 shows = (Show.query()
@@ -110,7 +110,7 @@ removed = (Show.query()
 # removed: Union[int, List[Dict[str, Any]]]
 ```
 
-`QueryBuilder` and `WriteBuilder` are one class at run time. The two names exist so that a type checker never reads a row count as a list of models. `isinstance(query, WriteBuilder)` is true for any builder, so do not test with it.
+`QueryBuilder` and `WriteBuilder` are one class at runtime. The two names exist so that a type checker never reads a row count as a list of models. `isinstance(query, WriteBuilder)` is true for any builder, so do not test with it.
 
 The columns are not typed. A `select()` does not narrow the model, and `to_dicts()` values stay `RowValue`, which is `Any`, because Python has no reasonable way to infer narrower types back out of the SQL string.
 
@@ -197,7 +197,7 @@ Chain `onConflict(columns)` after `insert()`, then `merge()` to update the exist
 )
 ```
 
-`merge()` updates every inserted column except the conflict columns, or just the columns in an explicit list you pass it. The conflict columns need a unique constraint or primary key in the database, or the engine rejects the statement. A `merge()` with nothing left to update raises `ValueError`, which happens when every inserted column is also a conflict column.
+`merge()` updates every inserted column except the conflict columns, or only the columns in a list you pass it. The conflict columns need a unique constraint or primary key in the database, or the engine rejects the statement. A `merge()` with nothing left to update raises `ValueError`, which happens when every inserted column is also a conflict column.
 
 Postgres, SQLite, and DuckDB render `ON CONFLICT`. MSSQL renders a `MERGE` statement. Presto raises `DialectError`.
 

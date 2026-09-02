@@ -43,7 +43,7 @@ Venue.nmae        # AttributeError, listing the declared columns
 | Form | Returns | Notes |
 | --- | --- | --- |
 | `Model.column` | `str` | The fully qualified name: `database.schema.table.column`, skipping the parts the model does not set. |
-| `instance.column` | the row value | An attribute hydration set from the selected columns. A name the query did not select raises `AttributeError`. |
+| `instance.column` | the row value | An attribute set during hydration from the selected columns. A name the query did not select raises `AttributeError`. |
 | `Model.c.column` | `ColumnExpr` | A typed reference. Python operators on a `ColumnExpr` build `Predicate` objects. |
 
 `Model.column` and `Model.c.column` raise `AttributeError` when `tableName` is unset, when the name starts with `_`, or when the model declares `columns` and the name is not one of them.

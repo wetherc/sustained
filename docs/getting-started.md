@@ -3,7 +3,7 @@ layout: default
 title: Getting Started
 ---
 
-Sustained needs no database to start, and can be used purely to generate SQL based on data models that you define. With no other setup, you can just describe a table, and start printing the SQL against it:
+Sustained needs no database to start. Describe a table, and you can print SQL against it before anything is connected:
 
 ```python
 from sustained import Model
@@ -15,9 +15,9 @@ print(Show.query().select('title').where('sold_out', '=', False))
 # SELECT title FROM shows WHERE sold_out = FALSE
 ```
 
-This guide will take that one class and grow it into a full, working application. This will include a schema Sustained creates for you, queries that join across tables, schema changes added through a generated, scripted migration, and the same migrations run from an interactive command line. Everything here runs against SQLite through the Python standard library, so there is nothing to install but Sustained itself.
+This guide grows that one class into a working application: a schema Sustained creates for you, queries that join across tables, a schema change applied through a generated migration, and the same migrations run from the command line. Everything here runs against SQLite through the Python standard library, so there is nothing to install but Sustained itself.
 
-Each step in this guide builds on the ones before it, and we recommend running through it top-to-bottom in one sitting if you're new to the package.
+Each step builds on the ones before it. If you are new to the package, run through it top to bottom in one sitting.
 
 ## Install
 
@@ -29,7 +29,7 @@ Sustained has no required dependencies. `pandas` and `pyarrow` are optional, and
 
 ## Describe your tables
 
-A model is a class with a table name. You can optionally also define its `tableColumns`; doing so allows Sustained to manage its schema changes.
+A model is a class with a table name. If you also define its `tableColumns`, Sustained can manage its schema changes.
 
 Save this as `venues.py`. It is the schema for the rest of the guide: venues that host shows.
 
@@ -73,7 +73,7 @@ class Show(Model):
     }
 ```
 
-Two things to notice. `modelClass` names `'Show'` as a string, because `Show` is not defined yet when `Venue` is read; the name resolves through the modelregistry when a query needs it. And declaring `tableColumns` turns on strict column names: `Show.c.titel` raises `AttributeError` instead of reaching the database as a bad column.
+`modelClass` names `'Show'` as a string, because `Show` is not defined yet when `Venue` is read. The name resolves through the model registry when a query needs it. Declaring `tableColumns` also turns on strict column names, so `Show.c.titel` raises `AttributeError` instead of reaching the database as a bad column.
 
 ## Build a query before you connect
 
@@ -95,7 +95,7 @@ print(query.to_sql())
 
 ## Create the schema
 
-`Migrator.up(models=[...])` compares the models you've defined in your code against the live database, generates any migration needed to catch the database up, records it, and applies it. Note that the source of truth is always assumed to be the table you've defined in code, and Sustained will always defer to that rather than the live database.
+`Migrator.up(models=[...])` compares the models in your code against the live database, generates the migration that brings the database up to date, records it, and applies it. The models are the source of truth. Sustained changes the database to match them, never the other way round.
 
 ```python
 import sqlite3
@@ -140,11 +140,11 @@ for show in Show.query().where('sold_out', '=', True).orderBy('title').run():
 
 `run()` hydrates each row into a model instance. `first()` runs the same query with `LIMIT 1` and returns one instance or `None`. Writes commit and return the number of rows they touched.
 
-`update()` and `delete()` statements both will refuse to run if no filter is supplied, and will raise `ValueError` when the query has no `where()`. Any destructive action in Sustained will always require explicit user permission to run; if you want to mass-update or mass-delete all rows in a table, supply a where clause that always evaluates to `TRUE`.
+An `update()` or `delete()` with no `where()` raises `ValueError` before it reaches the database. To change or remove every row on purpose, supply a condition that always evaluates to `TRUE`.
 
 ## Join across a relation
 
-`innerJoinRelated()` reads the join condition from `relationMappings`, so joins can be made without re-declaring the key columns every time you go to make a join.
+`innerJoinRelated()` reads the join condition from `relationMappings`, so you never restate the key columns at the join.
 
 ```python
 from sustained import col
@@ -195,7 +195,7 @@ for venue in Venue.query().withGraphFetched('shows').run():
 
 ## Change a model and migrate it
 
-Add a column to the model, then ask what a migration would do about it: `plan()` returns the migration that `up(models=[...])` would generate, without recording or running anything. This allows you to safely preview the actions your migration would take against the database.
+Add a column to the model, then ask what a migration would do about it. `plan()` returns the migration that `up(models=[...])` would generate, without recording or running anything, so you can read the statements before they touch the database.
 
 ```python
 from sustained.schema import String
@@ -214,9 +214,9 @@ Migration generation refuses to guess about anything that loses data. Dropping a
 
 ## Move migrations to the shell
 
-Generated migrations are suitable for development in a notebook. For deploys, you can keep migrations as files you can commit and review, and run them with the `sustained` CLI command.
+Generated migrations suit development in a notebook. For deploys, keep migrations as files you can commit and review, and run them with the `sustained` command.
 
-A migration is a pair of SQL files named for its id. Migrations' order of execution is determined by their ID, sorted in ascending order.
+A migration is a pair of SQL files named for its id. Migrations run in ascending id order.
 
 ```
 migrations/
@@ -296,7 +296,7 @@ applied  002_create_shows
 
 A rehearsal proves the statements are valid and that the down steps reverse them. It does not indicate anything about how long they take to execute on a production-sized table.
 
-Only databases whose schema changes roll back can rehearse: SQLite, Postgres, and DuckDB. Elsewhere, point the rehearsal at a scratch database with `get_rehearsal_connection()` in the config module. This is based purely on each engine's level of support for rolling back schema changes. More detail on this is available in [Schema and Migrations](./schema).
+Only databases whose schema changes roll back can rehearse in place: SQLite, Postgres, and DuckDB. Elsewhere, point the rehearsal at a scratch database with `get_rehearsal_connection()` in the config module. [Schema and Migrations](./schema) explains both paths.
 
 ## Where to go next
 

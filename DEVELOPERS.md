@@ -11,7 +11,7 @@ The architecture is composed of several key components that work together to tra
 ### The `Model`
 
 The `Model` class (`sustained/model.py`) is the primary entry point for users of the library. Its main responsibilities are:
--   Holding metadata about a database table (name, schema, relations).
+-   Storing metadata about a database table (name, schema, relations).
 -   Storing the dialect configuration for queries generated from it (`Dialects.DEFAULT` by default).
 -   Acting as a factory for creating new `QueryBuilder` instances via the `.query()` class method.
 
@@ -21,7 +21,7 @@ The `QueryBuilder` (`sustained/builder.py`) is the central component of the libr
 
 -   **State Management:** It does not manage the complex state of the query directly. Instead, each clause lives in its own specialized `*ClauseBuilder` object.
 -   **Composition:** When a method like `.where()` or `.select()` is called on the `QueryBuilder`, it delegates that call to the appropriate internal builder (e.g., `self._where_builder` or `self._select_clause_builder`).
--   **Assembly:** Rendering happens through a `RenderContext` (`sustained/rendering.py`) that carries the compiler and the value-handling mode. `str(query)` renders with values inlined as SQL literals. `to_sql()` renders with dialect placeholders and returns the collected parameters. Clauses that hold user values store deferred render functions instead of finished strings, so both modes share one code path.
+-   **Assembly:** Rendering happens through a `RenderContext` (`sustained/rendering.py`) that carries the compiler and the value-handling mode. `str(query)` renders with values inlined as SQL literals. `to_sql()` renders with dialect placeholders and returns the collected parameters. Clauses that carry user values store deferred render functions instead of finished strings, so both modes share one code path.
 -   **Execution:** `run()` and `first()` (`sustained/execution.py`) execute the parameterized statement on a DB-API 2.0 connection and hydrate result rows into model instances.
 
 ### The `*ClauseBuilder`s
@@ -43,12 +43,12 @@ Located in `sustained/expressions.py`, classes like `Func`, `Column`, and `Aggre
 
 ## The Query Building Lifecycle
 
-Understanding the lifecycle of a query is key to understanding the architecture.
+The lifecycle of one query shows how the components fit together.
 
 1.  **Instantiation:** A user calls `MyModel.query()`. The `Model` creates a `QueryBuilder` instance, passing it the currently configured `Dialect`.
 2.  **Construction:** The user chains methods like `.select()`, `.where()`, and `.orderBy()`. Each of these calls is delegated to the corresponding internal `*ClauseBuilder`, which updates its internal state.
 3.  **Compilation:** The user calls `str(query_builder)` to get the final SQL string.
-4.  **Assembly:** `QueryBuilder._render_sql(ctx)` walks the statement in SQL order. It hoists CTEs, renders each internal builder, and threads the `RenderContext` into every clause with user values. `__str__()` calls it with an inline-literal context; `to_sql()` calls it with a parameterizing context and returns `(sql, params)`.
+4.  **Assembly:** `QueryBuilder._render_sql(ctx)` walks the statement in SQL order. It elevates CTEs to the top of the statement, renders each internal builder, and threads the `RenderContext` into every clause with user values. `__str__()` calls it with an inline-literal context; `to_sql()` calls it with a parameterizing context and returns `(sql, params)`.
 5.  **Dialect-Specific Rendering:** For parts of the query that are dialect-dependent (like `LIMIT`/`OFFSET`, identifier quoting, booleans, and ILIKE), the builders call methods on the configured `Compiler` instance.
 6.  **Final String:** The `QueryBuilder` joins all the rendered fragments together into the final, complete SQL statement.
 
@@ -70,10 +70,7 @@ python3 -m coverage report
 
 ## The Support Matrix
 
-`support.json` is the one list of databases Sustained claims to run against.
-Two things read it. `sync_support.py` renders the tables on the support
-documentation page, and a pre-commit hook fails when the page is stale.
-`matrix.py` starts each server and runs the integration suite against it:
+`support.json` is the one list of databases Sustained claims to run against. `sync_support.py` renders the tables on the support documentation page from it, and a pre-commit hook fails when the page is stale. `matrix.py` reads the same file, starts each server, and runs the integration suite against it:
 
 ```bash
 python3 matrix.py                  # every server this machine can serve
@@ -83,38 +80,19 @@ python3 matrix.py python           # the unit suite on each interpreter on PATH
 python3 matrix.py --check          # what would run, and what is missing
 ```
 
-Each container row also carries a `latest` block in `support.json`. That
-block pins the newest release the vendor supports, and the runner shows it
-as a `-latest` target. The target runs the same test module against that
-release.
+Each container row also carries a `latest` block in `support.json`. That block pins the newest release the vendor supports, and the runner shows it as a `-latest` target. The target runs the same test module against that release.
 
-Servers other than SQLite and DuckDB come from `docker/compose.yaml`, which
-the runner starts and removes for you. Ports are the usual port plus 50000,
-or plus 50100 for a `-latest` service, so a server you already run locally
-is left alone. Set a row's connection variable, for example
-`SUSTAINED_TEST_POSTGRES_DSN` or `SUSTAINED_TEST_POSTGRES_LATEST_DSN`, to
-use your own server instead of a container.
+Servers other than SQLite and DuckDB come from `docker/compose.yaml`, which the runner starts and removes for you. Ports are the usual port plus 50000, or plus 50100 for a `-latest` service, so a server you already run locally is left alone. Set a row's connection variable, for example `SUSTAINED_TEST_POSTGRES_DSN` or `SUSTAINED_TEST_POSTGRES_LATEST_DSN`, to use your own server instead of a container.
 
-Each driver has to match the paramstyle its dialect emits, which is why
-SQL Server uses `pyodbc` and needs the Microsoft ODBC driver installed:
+Each driver has to match the paramstyle its dialect emits, which is why SQL Server uses `pyodbc` and needs the Microsoft ODBC driver installed:
 
 ```bash
 pip install "psycopg[binary]" pymysql pyodbc trino duckdb pyathena
 ```
 
-The tests live in `tests/integration/`. `harness.py` opens the connections
-and `lifecycle.py` defines the body that every server runs: apply the models,
-read the schema back, roll it down, rehearse, validate, repair, contend for the
-advisory lock with two migrators, and round trip a query. A server module
-is a subclass naming its row and the optional behaviours that server has.
-The suite skips a server that is not there, unless `SUSTAINED_TEST_STRICT=1`
-is set, which turns those skips into failures. `matrix.py` sets it for every
-server it starts.
+The tests live in `tests/integration/`. `harness.py` opens the connections and `lifecycle.py` defines the body that every server runs: apply the models, read the schema back, roll it down, rehearse, validate, repair, contend for the advisory lock with two migrators, and round trip a query. A server module is a subclass naming its row and the optional behaviours that server has. The suite skips a server that is not there, unless `SUSTAINED_TEST_STRICT=1` is set, which turns those skips into failures. `matrix.py` sets it for every server it starts.
 
-Adding a database means adding a row to `support.json`, a service to the
-compose file, and a `tests/integration/test_<name>.py` module.
-`sync_support.py --check` refuses a `runs` row that is missing either one,
-so the table cannot claim coverage that does not exist.
+Adding a database means adding a row to `support.json`, a service to the compose file, and a `tests/integration/test_<name>.py` module. `sync_support.py --check` refuses a `runs` row that is missing either one, so the table cannot claim coverage that does not exist.
 
 ## Extending the ORM
 
@@ -134,7 +112,7 @@ so the table cannot claim coverage that does not exist.
         FunctionMetadata(supported_dialects=[Dialects.POSTGRES, Dialects.MSSQL])
     )
     ```
-3.  That's it. The `QueryBuilder.select_func()` method will now automatically validate the new function against the active dialect. If the function requires special rendering syntax for a specific dialect, you can add a custom renderer.
+3.  `QueryBuilder.select_func()` now validates the new function against the active dialect. If the function requires special rendering syntax for a specific dialect, you can add a custom renderer.
 
 ## Dynamic Method Resolution with `__getattr__`
 

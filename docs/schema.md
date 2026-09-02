@@ -5,7 +5,7 @@ title: Schema and Migrations
 
 Sustained manages your database schema from your models. You declare typed columns once, then the migrator creates tables, detects drift, generates migrations, rehearses them, applies them, and rolls them back.
 
-A schema change is hard to take back once it has run, so the migrator is built around proving one first. This page follows the path a migration takes: generated or hand-written, planned, rehearsed, applied under a lock, checksummed in a tracking table, and reverted.
+A schema change is hard to take back once it has run, so the migrator is built around proving one first.
 
 ## Automated migration in one call
 
@@ -48,13 +48,13 @@ migrator.down_to('auto_20260814...')  # revert until this id is newest
 
 A revert reads the checksum of every migration it is about to take back, before it reverts the first one. A migration edited after it was applied raises `MigrationError` and nothing is reverted, because the down step in front of you describes the new contents while the database still contains the old ones. Restore the migration, run `repair()` to accept the new contents, or pass `allow_changed=True` (`sustained down --allow-changed`) to revert it as it stands now.
 
-A generated migration isn't materialized anywhere outside the actual execution, so its tracking row carries the statements it ran. A later process, on a later deploy, can revert it from that row without having the diff in hand. A rebuild, which has no down step, still cannot be reverted.
+A generated migration exists only in the run that produced it, so its tracking row stores the statements it ran. A later process, on a later deploy, can revert it from that row without having the diff in hand. A rebuild, which has no down step, still cannot be reverted.
 
 Every applied migration is recorded in a tracking table, each runs inside a transaction, and a failing step rolls itself back and leaves earlier migrations applied.
 
 ## Validation and repair
 
-The tracking table records the run id, a sequence number that deterministically sets the apply order, a SHA-256 checksum of the up statements pins the migration's contents, the apply timestamp, the execution time in milliseconds, and a success flag. Tracking tables written by earlier versions upgrade in place on first use.
+The tracking table records the migration id, a sequence number that fixes the apply order, a SHA-256 checksum of the up statements that pins the migration's contents, the apply timestamp, the execution time in milliseconds, and a success flag. Tracking tables written by earlier versions upgrade in place on first use.
 
 `up()` validates before it runs and raises `MigrationError` when the history and the registry disagree:
 
@@ -123,10 +123,10 @@ print(migration.down)  # ['ALTER TABLE users DROP COLUMN bio']
 
 Autogeneration refuses to guess about anything that loses data or fails on populated tables:
 
-- **A NOT NULL column needs a value for the rows already there.** Adding one with no default and no `backfill` is refused, since the rows already in the table would have no value. An empty table has no such rows, so the column is added there. The async migrator runs no statement but the schema read, so it cannot look for those rows. It refuses the column whether the table is empty or not.
+- **A NOT NULL column needs a value for the rows already there.** Adding a NOT NULL column, or tightening an existing column to NOT NULL, requires a `default` or a `backfill` on the column definition. Without one the change is refused, since the rows already in the table would have no value. Generation emits add-nullable, an UPDATE backfill, then SET NOT NULL, or folds the backfill into a SQLite rebuild. An empty table has no such rows, so a new column is added there without a value. The async migrator runs no statement but the schema read, so it cannot look for those rows and refuses the column whether the table is empty or not.
 - **Drops are opt-in.** Extra tables and columns are left alone unless you pass `allow_drops=True`, which generates the drops. A migration containing drops has no down step, because the dropped data cannot come back. `autogenerate()` called directly still raises on undeclared objects; the migrator passes `ignore_undeclared=True`, since a database that hand-written migrations also touch may have undeclared tables.
-- **Type and nullability changes migrate per dialect.** Postgres, MySQL, MSSQL, and DuckDB alter in place with reversible down steps, and Postgres casts take a hint through `type_casts={'table.col': 'col::integer'}`. SQLite rebuilds the table (create new, copy rows, replace), which is not reversible. The rebuild drops the old table, which SQLite refuses while rows in another table point at it, so the steps run between `PRAGMA foreign_keys = OFF` and `PRAGMA foreign_keys = ON`. SQLite ignores both statements inside an open transaction, so a migration that carries them is generated with `transactional=False` and the migrator runs it outside one. The migrator turns the driver's own transaction control off for that run and puts it back at the end, so a stock `sqlite3` connection carries the rebuild. A rebuild that nothing points at needs no pragma and keeps its transaction. Because the guarded rebuild runs bare, a step that fails leaves the steps before it applied, leaves the copy table `<table>_sustained_new` behind, and leaves foreign key enforcement off on that connection. Turn it back on with `PRAGMA foreign_keys = ON`, or open a new connection, then finish or undo the rest by hand and run `repair()`. Presto and Trino can do neither, so generation raises `DialectError` there and you write the migration by hand. Columns and indexes the models do not declare survive the rebuild unless you pass `allow_drops=True`. An index on an expression is invisible to introspection, so a rebuild loses it and you have to recreate it by hand. Pass `ignore_changed_columns=True` to skip changed columns entirely.
-- **NOT NULL needs a value for existing rows.** Adding or tightening to NOT NULL requires a `default` or a `backfill` value on the ColumnDef, on the rebuild path as well as the ALTER TABLE one. Generation emits add-nullable, UPDATE backfill, SET NOT NULL, or folds the backfill into a SQLite rebuild. New primary key or autoincrement columns cannot be added with ALTER TABLE.
+- **Type and nullability changes migrate per dialect.** Postgres, MySQL, MSSQL, and DuckDB alter in place with reversible down steps, and Postgres casts take a hint through `type_casts={'table.col': 'col::integer'}`. SQLite cannot alter a column, so it rebuilds the table, which is not reversible; [Column changes on SQLite](#column-changes-on-sqlite) describes that path. Presto and Trino can do neither, so generation raises `DialectError` there and you write the migration by hand. Pass `ignore_changed_columns=True` to skip changed columns entirely.
+- **A primary key or autoincrement column cannot be added to an existing table.** ALTER TABLE cannot add one, so generation refuses.
 - **Statements that remove data need a rehearsal.** `up()` refuses to run a DROP, a column drop, or a TRUNCATE until a passing rehearsal has proved that exact set of statements. `up(unrehearsed=True)` applies them anyway. See [Rehearsal logging and tracking](#rehearsal-logging-and-tracking).
 - **Your own rules run too.** Guards read every statement an up run would apply, generated or hand-written, and can block it. Down runs are not checked. See [Guards](#guards).
 - The tracking table and the rehearsal table are excluded from diffing, and `exclude_tables` protects any other tables Sustained does not manage.
@@ -134,6 +134,16 @@ Autogeneration refuses to guess about anything that loses data or fails on popul
 Renames cannot be detected from the catalog, so pass hints: `up(models=models, renames={'users.name': 'full_name'}, table_renames={'old': 'new'})` emits reversible RENAME statements instead of a destructive drop-plus-add.
 
 Foreign keys and CHECK constraints declared in `tableConstraints` are diffed and migrated; see [Table constraints](#table-constraints). Primary key set changes, column-level unique, and default differences are reported as constraint notes in the diff, but never auto-migrated.
+
+### Column changes on SQLite
+
+SQLite cannot alter a column in place, so a type or nullability change rebuilds the table: the migration creates the new table, copies the rows over, and replaces the old table. A rebuild has no down step, because it does not reverse.
+
+The rebuild drops the old table, which SQLite refuses while rows in another table point at it, so the steps run between `PRAGMA foreign_keys = OFF` and `PRAGMA foreign_keys = ON`. SQLite ignores both statements inside an open transaction, so a migration that carries them is generated with `transactional=False` and the migrator runs it outside one. The migrator turns the driver's own transaction control off for that run and puts it back at the end, so a stock `sqlite3` connection carries the rebuild. A rebuild that nothing points at needs no pragma and keeps its transaction.
+
+Because the guarded rebuild runs bare, a step that fails leaves the steps before it applied, leaves the copy table `<table>_sustained_new` behind, and leaves foreign key enforcement off on that connection. Turn it back on with `PRAGMA foreign_keys = ON`, or open a new connection, then finish or undo the rest by hand and run `repair()`.
+
+Columns and indexes the models do not declare survive the rebuild unless you pass `allow_drops=True`. An index on an expression is invisible to introspection, so a rebuild loses it and you have to recreate it by hand.
 
 ## Typed columns
 
@@ -164,7 +174,7 @@ class User(Model):
     indexes = [Index('ix_users_email', 'email', unique=True)]
 ```
 
-`autoincrement` requires a single integer primary key. DuckDB and Presto raise `DialectError` because they have no identity columns. A model with `tableColumns` also gets strict column-name access automatically, so a typo'd column raises `AttributeError`.
+`autoincrement` requires a single integer primary key. DuckDB and Presto raise `DialectError` because they have no identity columns. A model with `tableColumns` also gets strict column-name access automatically, so a misspelled column raises `AttributeError`.
 
 ## Enum columns
 
@@ -215,7 +225,7 @@ Where the comment lands follows the dialect. MySQL, MariaDB, Presto, Trino, and 
 
 Introspection reads the comments back on every dialect that stores them, and generation keeps them in sync. A comment changed or removed out of band shows up in `plan` and `diff`, and the generated migration writes the declared text back, with a down step that restores what the database had. A dialect that stores no comments never reports comment drift, and neither does a catalog read that could not see them, so absence is never mistaken for removal.
 
-Two edges are deliberate. The comment is not part of a step's identity when it is absent, so adding `comment` support changed no existing migration checksums. And Athena stores a comment at `CREATE TABLE` but cannot change one in place, so a drifted comment there becomes a constraint note and the rest of the migration still generates; recreate the table or write the `CHANGE COLUMN` statement by hand. A hand-written `set_column_comment` step still raises `DialectError` on Athena.
+The comment is not part of a step's identity when it is absent, so adding `comment` support changed no existing migration checksums. Athena stores a comment at `CREATE TABLE` but cannot change one in place, so a drifted comment there becomes a constraint note and the rest of the migration still generates; recreate the table or write the `CHANGE COLUMN` statement by hand. A hand-written `set_column_comment` step still raises `DialectError` on Athena.
 
 Hand-written migrations set or clear a comment with the [`set_column_comment` step](./reference/migrations#typed-ddl-steps).
 
@@ -411,7 +421,7 @@ Edit the file and the next `migrate` re-runs it, so keep the SQL replace-safe (`
 
 ## Placeholders
 
-SQL files may hold `${key}` placeholders, filled from a mapping at load time:
+SQL files may contain `${key}` placeholders, filled from a mapping at load time:
 
 ```sql
 -- 003_grant.up.sql
@@ -507,7 +517,7 @@ A difference prints one `drift` line each. This is a report only: the run has al
 
 ### Reading a plan
 
-`sustained plan` shows what a run would do, in one screen. It merges three sources: the migrations waiting to run, the problems `validate` would report, and the gap between the config module's `models` and the database.
+`sustained plan` shows what a run would do, in one screen: the migrations waiting to run, the problems `validate` would report, and the gap between the config module's `models` and the database.
 
 ```console
 $ sustained plan
@@ -660,7 +670,7 @@ Ids are not part of the key, only statements. A generated migration takes a new 
 
 A refused run exits 4, which a pipeline can tell apart from a failure. A targeted run gets the target back in the suggested command, so the line can be copied as it stands.
 
-There are two limits here, both shared with the `destructive` labels in `plan`:
+The gate shares its limits with the `destructive` labels in `plan`:
 
 - A callable step has no SQL to read, so it never triggers the gate. A callable that drops a table applies without a rehearsal row.
 - The scan is textual. It reads the words in a statement, not its structure. A `DELETE FROM` that removes one row gates the run the same way as one that removes every row.
@@ -827,4 +837,6 @@ Only `up()` calls them. `rehearse` does not, since nothing real happened. `Async
 
 ## Offline review and async
 
-`migrator.script('up')` renders every statement a run would execute, including tracking bookkeeping, without touching the database, for review or DBA handoff. `script('down')` renders the rollback. Neither writes anything, not even the tracking table: a database without one renders as a database with no migrations applied. `status()`, `statuses()`, `pending()`, and `validate()` read the same way, and `read_applied_records()` gives you those rows directly. For async services, `AsyncMigrator` in `sustained.aio_migrations` runs the same `Migration` objects on an `AsyncAdapter` with the same `up`, `down`, `down_to`, `status`, `statuses`, `validate`, `repair`, `baseline`, and `script` surface; callable steps receive the adapter and are awaited. `await migrator.script('up')` renders the same text, and reads the rows through `read_applied_records()` the same way.
+`migrator.script('up')` renders every statement a run would execute, including tracking bookkeeping, without touching the database, for review or a DBA handoff. `script('down')` renders the rollback. Neither writes anything, not even the tracking table: a database without one renders as a database with no migrations applied. `status()`, `statuses()`, `pending()`, and `validate()` read the same way, and `read_applied_records()` gives you those rows directly.
+
+For async services, `AsyncMigrator` in `sustained.aio_migrations` runs the same `Migration` objects on an `AsyncAdapter` with the same `up`, `down`, `down_to`, `status`, `statuses`, `validate`, `repair`, `baseline`, and `script` methods. Callable steps receive the adapter and are awaited. `await migrator.script('up')` renders the same text, and `read_applied_records()` reads the rows the same way.

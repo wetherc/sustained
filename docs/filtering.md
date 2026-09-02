@@ -13,8 +13,7 @@ Show.query().where(Show.c.sold_out == True)
 # SELECT * FROM shows WHERE shows.sold_out = TRUE
 ```
 
-The three-argument form takes a column name, an operator, and a value, and renders the name exactly as written. The typed form uses Python's own comparison operators against `Model.c`, checks the name against the model's declared
-columns, and qualifies it with the table. Strings are quicker to type and work on any column, including ones not explicitly declaured on a model. Typed predicates combine with `&`, `|`, and `~`, which is what you want for more complicated compound and nested where clauses.
+The three-argument form takes a column name, an operator, and a value, and renders the name exactly as written. The typed form uses Python's own comparison operators against `Model.c`, checks the name against the model's declared columns, and qualifies it with the table. Strings are quicker to type and work on any column, including ones not declared on a model. Typed predicates combine with `&`, `|`, and `~`, which is what you want for more complicated compound and nested where clauses.
 
 The examples on this page use the venue booking schema from [Getting Started](./getting-started). Either syntax can be used interchangeably throughout the examples.
 
@@ -109,7 +108,7 @@ A predicate goes to `where()` or to `having()`, and works anywhere the three-arg
 
 ## The where family
 
-Each of the following methods can be used as-is, or can be prefixed with `and` or `or`. I.e., `whereBetween` can also be written as `andWhereBetween` and `orWhereBetween` for more complicated conditional statements.
+Each of the following methods can be used as is, or prefixed with `and` or `or`. For example, `whereBetween` can also be written as `andWhereBetween` or `orWhereBetween` when it joins an earlier condition.
 
 | Method | Arguments | Renders |
 | --- | --- | --- |
@@ -121,7 +120,7 @@ Each of the following methods can be used as-is, or can be prefixed with `and` o
 | `whereExists` / `whereNotExists` | query or callable | `EXISTS (...)` |
 | `whereRaw` | SQL, parameters | the fragment, in parentheses |
 
-The same twelve bases exist as `having` methods for filtering groups. See [Grouping](./grouping).
+Each base also exists as a `having` method for filtering groups. See [Grouping](./grouping).
 
 ### IN and NOT IN
 

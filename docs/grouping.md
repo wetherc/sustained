@@ -75,7 +75,7 @@ Write the aggregate as it appears in the source, not as its alias. Standard SQL 
 
 ## The having family
 
-The `having` methods all have the same `and`, and `or` forms as [the where family](./filtering#the-where-family). These forms all accept the same parameters and raise the same exceptions.
+The `having` methods have the same `and` and `or` forms as [the where family](./filtering#the-where-family), take the same arguments, and raise the same exceptions.
 
 | Method | Arguments |
 | --- | --- |

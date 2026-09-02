@@ -71,7 +71,6 @@ Method names also match case-insensitively, so `WHERE` and `leftouterjoin` resol
 
 **At render time**, when `str(query)`, `to_sql()`, or `run()` walks the builder. Sustained checks dialect support and the whole-statement rules: `top()` on Postgres, `RETURNING` on MSSQL, an `UPDATE` with no `WHERE`, a duplicate CTE alias. These raise `DialectError` or `ValueError` from the render call rather than from the method that set them up.
 
-Sustained checks dialect support while you build the statement, so a feature the active dialect lacks fails before the statement reaches the database.
 
 ## Reading the signatures
 

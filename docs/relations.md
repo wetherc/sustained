@@ -3,7 +3,7 @@ layout: default
 title: Relations and Joins
 ---
 
-Joins are defined once, in a model's `relationMappings`. Once declared here, you can join by simply referencing the relation name rather than having to manually construct the full `JOIN` statement yourself:
+Joins are defined once, in a model's `relationMappings`. Once a relation is declared, you join by its name instead of writing the `JOIN` condition each time:
 
 ```python
 Show.query().select('shows.title', 'venues.name').innerJoinRelated('venue')
@@ -33,7 +33,7 @@ class Show(Model):
     }
 ```
 
-The named key that you set for each relation is what you pass to `innerJoinRelated('venue')` and `withGraphFetched('venue')`. You can set this name to be whatever you like and whatever makes sense in context; it does not have to strictly be the name of the table being joined out to.
+The key is the name you pass to `innerJoinRelated('venue')` and `withGraphFetched('venue')`. It can be any name that reads well in context; it does not have to match the joined table.
 
 ### Relation types
 
@@ -46,7 +46,7 @@ The named key that you set for each relation is what you pass to `innerJoinRelat
 
 The type does not change the SQL a `joinRelated` call produces, apart from the extra hop a `ManyToManyRelation` makes through its link table. It does change what eager loading attaches to each instance, and it is what the migrator reads when it works out which side has the foreign key.
 
-A `Show` belongs to one `Venue` (a `BelongsToOneRelation` relation), and the same relation seen from the other side is a `HasManyRelation`:
+A `Show` belongs to one `Venue`, a `BelongsToOneRelation`, and the same relation seen from the other side is a `HasManyRelation`:
 
 ```python
 class Venue(Model):
@@ -119,7 +119,7 @@ Show.query().select('shows.title', 'venues.name').leftOuterJoinRelated('venue')
 # LEFT OUTER JOIN venues ON shows.venue_id = venues.id
 ```
 
-Once a query joins, prefer qualified column names. `select('name')` is ambiguous when both tables have a `name` column, and the SQL engine will complain loudly.
+Once a query joins, use qualified column names. `select('name')` is ambiguous when both tables have a `name` column, and the database rejects it.
 
 ### Aliasing the joined table
 
@@ -159,7 +159,7 @@ You can fetch nested relations through a `withGraphFetched()` call as well: `wit
 
 For a join with no relation behind it, the raw methods take a table name directly. There is one per join type: `join`, `innerJoin`, `leftJoin`, `leftOuterJoin`, `rightJoin`, `rightOuterJoin`, `fullJoin`, `fullOuterJoin`, and `crossJoin`.
 
-The simplest form is a table the three parts of an `ON` condition:
+The simplest form is a table name and the three parts of an `ON` condition:
 
 ```python
 Venue.query().leftJoin('shows', 'venues.id', '=', 'shows.venue_id')
@@ -219,7 +219,7 @@ The inner query renders like any other part of the statement. Under `to_sql()` i
 
 ### Joins against derived results
 
-The table argument has to be a table name. To join against a derived result set, put the subquery in a CTE with `with_()` and join the CTE by its alias, as in [Queries](./queries#common-table-expressions). Nested join conditions beyond the `on`/`andOn`/`orOn` chain are not supported either; a condition that complex is usually clearer as a CTE.
+The table argument has to be a table name. To join against a derived result set, put the subquery in a CTE with `with_()` and join the CTE by its alias, as in [Queries](./queries#common-table-expressions). Nested join conditions beyond the `on`, `andOn`, and `orOn` chain are not supported either. Write such a condition as a CTE.
 
 ## Where to go next
 

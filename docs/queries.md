@@ -3,7 +3,7 @@ layout: default
 title: Building Queries
 ---
 
-`Model.query()` returns a `QueryBuilder`. Query methods are chained onto this to build out a full query:
+`Model.query()` returns a `QueryBuilder`. Chain query methods onto it to build the statement:
 
 ```python
 print(
@@ -15,7 +15,7 @@ print(
 # SELECT title FROM shows WHERE sold_out = TRUE ORDER BY starts_at ASC
 ```
 
-The chain mutates the builder in place. If you want to run multiple branching queries off of the same base query, you must make a deep copy with [`clone()`](#reusing-a-query) first.
+The chain mutates the builder in place. If you want to branch several queries from one base query, make a deep copy with [`clone()`](#reusing-a-query) first.
 
 This page continues to use the venue booking schema from [Getting Started](./getting-started).
 
@@ -103,7 +103,7 @@ Artist.query().select(AggregateExpression('STRING_AGG', "name, ', '"))
 # SELECT STRING_AGG(name, ', ') FROM artists
 ```
 
-The argument to `AggregateExpression` is raw SQL, so you do need to get the dialect-specific quoting right there. Grouping those aggregates and filtering the groups is detailed in [Grouping](./grouping).
+The argument to `AggregateExpression` is raw SQL, so any dialect-specific quoting is yours to write. Grouping those aggregates and filtering the groups is detailed in [Grouping](./grouping).
 
 ### Functions
 
@@ -124,7 +124,7 @@ Venue.query().select_func('COALESCE', 'not a column', alias='x')
 # Wrap literal values in Literal() or raw SQL in Column().
 ```
 
-That rule exists because without it, a forgotten `Literal` turns a value into a column reference and the query silently returns the wrong rows rather than failing.
+The rule exists because a forgotten `Literal` would turn a value into a column reference, and the query would return the wrong rows instead of failing.
 
 An argument can be another expression: a nested `Func`, an aggregate, a window call, or a `Subquery`. A subquery argument renders through the statement, so under `to_sql()` its values become placeholders and join the outer parameter tuple in the order they appear in the SQL. It renders without its alias, because a function argument takes a bare SELECT:
 
@@ -254,8 +254,7 @@ On a query built with `union()`, the ordering applies to the combined result.
 
 ## Limiting and paging
 
-`limit()` and `offset()` are paired methods. Each takes a non-negative
-integer and can be called once:
+`limit()` and `offset()` are paired methods. Each takes a non-negative integer and can be called once:
 
 ```python
 Show.query().orderBy('starts_at', 'desc').limit(10).offset(5)
@@ -277,7 +276,9 @@ Show.query().top(10)
 # others:  DialectError: TOP is not supported by the 'DEFAULT' dialect. Use limit() instead.
 ```
 
-`limit()` and `top()` on the same query raise `ValueError`. On MSSQL, `limit()` and `offset()` compile to `OFFSET ... FETCH`, which T-SQL only allows after an `ORDER BY`, so the query raises `DialectError` without one. On Presto, `OFFSET` renders before `LIMIT`. An `offset()` with no `limit()` needs a row cap on the dialects that reject a bare `OFFSET`: the default dialect renders `LIMIT -1 OFFSET n`, which SQLite reads as all rows, and MySQL renders its own all-rows cap. Postgres and DuckDB keep the bare `OFFSET`. And an offset deep into a large table costs a scan that grows with the offset. To avoid this, use `cursor_page()`:
+`limit()` and `top()` on the same query raise `ValueError`. On MSSQL, `limit()` and `offset()` compile to `OFFSET ... FETCH`, which T-SQL only allows after an `ORDER BY`, so the query raises `DialectError` without one. On Presto, `OFFSET` renders before `LIMIT`. An `offset()` with no `limit()` needs a row limit on the dialects that reject a bare `OFFSET`: the default dialect renders `LIMIT -1 OFFSET n`, which SQLite reads as all rows, and MySQL renders its own all-rows limit. Postgres and DuckDB keep the bare `OFFSET`.
+
+An offset deep into a large table costs a scan that grows with the offset, because the database still walks the skipped rows. `cursor_page()` avoids that scan:
 
 ```python
 first = Ticket.query().cursor_page('id', 100).run()

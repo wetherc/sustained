@@ -7,7 +7,7 @@ This page describes supported databases, database versions, and Python versions,
 
 ## What support means
 
-For every database with a server in the table, "supported" means that we guarantee Sustained's behavior against this database for all versions of the database between the minimum and maximum listed versions (inclusive). Our testing posture currently only runs a full suite of integration tests against the oldest supported and newest supported versions, and assumes any intermediate version between those remains compatible with Sustained. This is, notably, a gap in our posture today and one that will be closed; however, it is called out here until then.
+For every database with a server in the table, "supported" means that we guarantee Sustained's behavior against this database for all versions of the database between the minimum and maximum listed versions (inclusive). Our testing posture currently only runs a full suite of integration tests against the oldest supported and newest supported versions, and assumes any intermediate version between those remains compatible with Sustained. This is a gap in our posture today and one that will be closed.
 
 Note that the ANSI dialect has no server to run. Sustained compiles SQL for it, and unit tests check the SQL text.
 
@@ -68,7 +68,7 @@ A Python version stays supported until CPython itself ends support for it. After
 
 ## Run it yourself
 
-Running `matrix.py` in the repository starts each database server evaluated and runs the integration suite against it:
+Running `matrix.py` in the repository starts each database server and runs the integration suite against it:
 
 ```console
 $ python3 matrix.py
@@ -91,7 +91,7 @@ removing postgres, postgres-latest, mysql, mysql-latest, mariadb, mariadb-latest
 1 of 13 still waiting
 ```
 
-Containers are defined in `docker/compose.yaml` and are removed at the end of the test suite. Docker is obviously a prerequisite, although the test suite doesn't require you interact with it directly. You can name a target database engine to run only tests against that database:
+Containers are defined in `docker/compose.yaml` and are removed at the end of the test suite. Docker must be installed, but you never interact with it directly. You can name a target database engine to run only tests against that database:
 
 ```console
 $ python3 matrix.py postgres
