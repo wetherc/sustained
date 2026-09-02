@@ -1,5 +1,7 @@
+import inspect
 import re
-from typing import TYPE_CHECKING, Optional, Sequence, Union
+from functools import wraps
+from typing import TYPE_CHECKING, Callable, Optional, Sequence, Union
 
 from sustained.expressions import (
     AggregateExpression,
@@ -46,9 +48,68 @@ _VALID_OPERATORS = frozenset(
 )
 
 
+# The methods that gained a render context after 2.20. A subclass written
+# against the older one-argument spelling still overrides them, so the
+# context is dropped for that override instead of raising TypeError.
+_CONTEXT_METHODS = (
+    "compile_function",
+    "compile_function_call",
+    "compile_window",
+    "compile_window_call",
+)
+
+
+def _takes_context(method: Callable[..., str]) -> bool:
+    """Whether an override accepts the render context as well."""
+    try:
+        parameters = list(inspect.signature(method).parameters.values())
+    except (TypeError, ValueError):
+        # A callable the inspect module cannot read is left alone.
+        return True
+    for parameter in parameters[2:]:
+        if parameter.kind in (
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            inspect.Parameter.VAR_POSITIONAL,
+            inspect.Parameter.VAR_KEYWORD,
+        ):
+            return True
+    return len(parameters) > 2
+
+
+def _dropping_context(method: Callable[..., str]) -> Callable[..., str]:
+    """The override, called without the context it does not accept."""
+
+    @wraps(method)
+    def call(self: "Compiler", expression: object, ctx: object = None) -> str:
+        return method(self, expression)
+
+    return call
+
+
 class Compiler:
     def __init__(self, dialect: "Dialects") -> None:
         self._dialect = dialect
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        """
+        Keeps a compiler subclass written against the older signatures
+        working.
+
+        compile_function(), compile_function_call(), compile_window() and
+        compile_window_call() take a render context after the expression,
+        and every caller passes one. An override that was written before
+        that takes the expression only, so the call would raise
+        TypeError. Such an override is wrapped here to accept the context
+        and drop it. It renders what it always rendered, which inlines a
+        subquery argument's values instead of parameterizing them.
+        """
+        super().__init_subclass__(**kwargs)
+        for name in _CONTEXT_METHODS:
+            override = cls.__dict__.get(name)
+            if not callable(override) or _takes_context(override):
+                continue
+            setattr(cls, name, _dropping_context(override))
 
     def dialect_name(self) -> str:
         """The dialect's name, for error messages."""

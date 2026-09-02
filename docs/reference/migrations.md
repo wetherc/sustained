@@ -620,7 +620,7 @@ summarize(migration, state, compiler=None) -> PendingSummary
 
 One migration reduced to its id, state, repeatable flag, statement count, and destructive statements. Ddl steps render for the given compiler's dialect, or ANSI when none is given.
 
-`PendingSummary(id, state, repeatable, statements, destructive)` holds that summary. `statements` is `None` for a callable step, which has no SQL to count. Each statement in it is a `MigrationStatement`.
+`PendingSummary(id, state, repeatable, sql, destructive)` holds that summary. `sql` is `None` for a callable step, which has no SQL to count. Each statement in it is a `MigrationStatement`.
 
 ```python
 MigrationStatement(statement, migration_id=None, transactional=True)
