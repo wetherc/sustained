@@ -880,6 +880,25 @@ class TestGeneratedRows(MigrationTestCase):
         self.assertTrue(record.generated)
         self.assertEqual(Migrator(self.conn, []).validate(), [])
 
+    def test_a_failed_generated_migration_is_not_kept(self):
+        migrator = Migrator(self.conn, [])
+        models = self.models()
+        real_run_step = migrations_module._run_step
+
+        def refuse(connection, step, compiler):
+            raise RuntimeError("no")
+
+        with mock.patch.object(migrations_module, "_run_step", refuse):
+            with self.assertRaises(RuntimeError):
+                migrator.up(models=models)
+        # The failed migration is gone from the list, so the next run
+        # diffs the models again instead of repeating the failed SQL.
+        self.assertEqual(migrator._migrations, [])
+        applied = migrator.up(models=models)
+        self.assertEqual(len(applied), 1)
+        self.assertIn("gen_users", table_names(self.conn))
+        self.assertIs(migrations_module._run_step, real_run_step)
+
     def test_a_later_process_can_revert_a_generated_migration(self):
         Migrator(self.conn, []).up(models=self.models())
         self.assertIn("gen_users", table_names(self.conn))

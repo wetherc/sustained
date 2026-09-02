@@ -1748,8 +1748,12 @@ class Migrator:
                     except Exception as error:
                         _tag_applied(error, applied_now)
                         raise
-                    self._migrations.append(generated)
+                    # The migration joins the registered list only after
+                    # it applied. A failed one left there would run again
+                    # on the next up() of a long-lived migrator, and would
+                    # run alongside a fresh diff of the same models.
                     self._apply(generated, next_seq, update=False, generated=True)
+                    self._migrations.append(generated)
                     next_seq += 1
                     applied_now.append(generated.id)
             for migration in repeatables_now:
