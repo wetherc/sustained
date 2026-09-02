@@ -149,7 +149,7 @@ guards
   warn   no_table_rewrite  ALTER TABLE users ALTER COLUMN age TYPE BIGINT
 ```
 
-The drift section appears only when the config names `models`. It reports every difference, drops included, and `migrate` never generates a drop. A drift section that holds only drops says so instead of offering the command. The `run:` line prints only when validation found no problems.
+The drift section appears only when the config names `models`. It reports every difference, drops included, and `migrate` never generates a drop. A drift section of only drops says so instead of offering the command. The `run:` line prints only when validation found no problems.
 
 ```console
 $ sustained rehearse

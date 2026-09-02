@@ -20,7 +20,7 @@ Venue.c.capacity > 1400          # the same predicate, with a typo check
 
 ### `ColumnExpr`
 
-The `name` attribute holds the column path as you wrote it.
+The `name` attribute is the column path as you wrote it.
 
 Comparison operators return a `Predicate`. A `ColumnExpr` on the right side of a comparison renders as a column, not as a bound value.
 
@@ -146,7 +146,7 @@ Show.query().select('title', Subquery(ticket_count, 'tickets_sold'))
 
 An alias belongs to the select list. Where one of these objects stands as a value, the alias is left off: a function argument, or the value side of a comparison. `Func`, `AggregateExpression`, `WindowExpression`, `CaseExpression` and `Subquery` all drop it there, so you can pass the same object to `select()` and to a function call and get valid SQL from both.
 
-A nested object also renders through the compiler of the statement that holds it, not through the default dialect. A `CASE` with boolean results renders `1` and `0` on MS SQL Server and `TRUE` and `FALSE` elsewhere, in the select list and inside a function call alike.
+A nested object also renders through the compiler of the statement that contains it, not through the default dialect. A `CASE` with boolean results renders `1` and `0` on MS SQL Server and `TRUE` and `FALSE` elsewhere, in the select list and inside a function call alike.
 
 ## Function registry
 

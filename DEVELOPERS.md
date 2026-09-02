@@ -19,7 +19,7 @@ The `Model` class (`sustained/model.py`) is the primary entry point for users of
 
 The `QueryBuilder` (`sustained/builder.py`) is the central component of the library. It acts as the main fluent interface that users interact with.
 
--   **State Management:** It does not manage the complex state of the query directly. Instead, it holds instances of several specialized `*ClauseBuilder` objects.
+-   **State Management:** It does not manage the complex state of the query directly. Instead, each clause lives in its own specialized `*ClauseBuilder` object.
 -   **Composition:** When a method like `.where()` or `.select()` is called on the `QueryBuilder`, it delegates that call to the appropriate internal builder (e.g., `self._where_builder` or `self._select_clause_builder`).
 -   **Assembly:** Rendering happens through a `RenderContext` (`sustained/rendering.py`) that carries the compiler and the value-handling mode. `str(query)` renders with values inlined as SQL literals. `to_sql()` renders with dialect placeholders and returns the collected parameters. Clauses that hold user values store deferred render functions instead of finished strings, so both modes share one code path.
 -   **Execution:** `run()` and `first()` (`sustained/execution.py`) execute the parameterized statement on a DB-API 2.0 connection and hydrate result rows into model instances.
@@ -48,7 +48,7 @@ Understanding the lifecycle of a query is key to understanding the architecture.
 1.  **Instantiation:** A user calls `MyModel.query()`. The `Model` creates a `QueryBuilder` instance, passing it the currently configured `Dialect`.
 2.  **Construction:** The user chains methods like `.select()`, `.where()`, and `.orderBy()`. Each of these calls is delegated to the corresponding internal `*ClauseBuilder`, which updates its internal state.
 3.  **Compilation:** The user calls `str(query_builder)` to get the final SQL string.
-4.  **Assembly:** `QueryBuilder._render_sql(ctx)` walks the statement in SQL order. It hoists CTEs, renders each internal builder, and threads the `RenderContext` into every clause that holds user values. `__str__()` calls it with an inline-literal context; `to_sql()` calls it with a parameterizing context and returns `(sql, params)`.
+4.  **Assembly:** `QueryBuilder._render_sql(ctx)` walks the statement in SQL order. It hoists CTEs, renders each internal builder, and threads the `RenderContext` into every clause with user values. `__str__()` calls it with an inline-literal context; `to_sql()` calls it with a parameterizing context and returns `(sql, params)`.
 5.  **Dialect-Specific Rendering:** For parts of the query that are dialect-dependent (like `LIMIT`/`OFFSET`, identifier quoting, booleans, and ILIKE), the builders call methods on the configured `Compiler` instance.
 6.  **Final String:** The `QueryBuilder` joins all the rendered fragments together into the final, complete SQL statement.
 
@@ -103,9 +103,9 @@ pip install "psycopg[binary]" pymysql pyodbc trino duckdb pyathena
 ```
 
 The tests live in `tests/integration/`. `harness.py` opens the connections
-and `lifecycle.py` holds the body that every server runs: apply the models,
-read the schema back, roll it down, rehearse, validate, repair, hold the
-advisory lock across two migrators, and round trip a query. A server module
+and `lifecycle.py` defines the body that every server runs: apply the models,
+read the schema back, roll it down, rehearse, validate, repair, contend for the
+advisory lock with two migrators, and round trip a query. A server module
 is a subclass naming its row and the optional behaviours that server has.
 The suite skips a server that is not there, unless `SUSTAINED_TEST_STRICT=1`
 is set, which turns those skips into failures. `matrix.py` sets it for every

@@ -428,7 +428,7 @@ Give the column a value for the rows that already exist, either a `default` or a
 'country': String(2, nullable=False, backfill='US')
 ```
 
-Generation then emits three steps: add the new column as nullable, `UPDATE` the existing rows, then set `NOT NULL`. Without a value it refuses, because the existing rows would have nothing to hold.
+Generation then emits three steps: add the new column as nullable, `UPDATE` the existing rows, then set `NOT NULL`. Without a value it refuses, because the existing rows would have no value to store.
 
 ## Write a migration by hand
 
@@ -624,7 +624,7 @@ Repeatables are the exception: their changed checksum is what schedules the re-r
 
 ## Deploy from two machines at once
 
-Nothing to configure. During a run the migrator holds an exclusive advisory lock named after the tracking table, so a second deploy waits instead of racing. Postgres uses `pg_advisory_lock`, MSSQL uses `sp_getapplock`, and MySQL uses `GET_LOCK`. The last two return a status rather than raising, so the run stops with `MigrationError` when the status says the lock is not held. SQLite and DuckDB serialize writers themselves.
+Nothing to configure. During a run the migrator keeps an exclusive advisory lock named after the tracking table, so a second deploy waits instead of racing. Postgres uses `pg_advisory_lock`, MSSQL uses `sp_getapplock`, and MySQL uses `GET_LOCK`. The last two return a status rather than raising, so the run stops with `MigrationError` when the status says the lock was not granted. SQLite and DuckDB serialize writers themselves.
 
 Athena has no locking mechanism, so be careful to run only one migrator at a time there.
 

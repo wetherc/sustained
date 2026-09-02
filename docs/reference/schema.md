@@ -3,7 +3,7 @@ layout: default
 title: Schema types reference
 ---
 
-Everything in `sustained.schema`. These objects are what a model's `tableColumns`, `indexes`, and `tableOptions` hold, together with the renderers that turn them into DDL.
+Everything in `sustained.schema`. These objects are what goes in a model's `tableColumns`, `indexes`, and `tableOptions`, together with the renderers that turn them into DDL.
 
 Guide: [Schema and Migrations](/schema).
 
@@ -43,7 +43,7 @@ Each type is a factory that returns a `ColumnDef`. Every factory accepts the ful
 | JSON | `JSON` | `JSONB` | `JSON` | `NVARCHAR(MAX)` | `STRING` | `JSON` |
 | ENUM | `VARCHAR(n)` + CHECK | the named type | `ENUM(...)` | `NVARCHAR(n)` + CHECK | `DialectError` | the named type |
 
-An ENUM column renders per the dialect's enum strategy. Postgres and DuckDB reference a named type created with `CREATE TYPE`. MySQL writes the value list inline. The default dialect and MSSQL render a VARCHAR sized to the longest value, held to the list by a CHECK constraint named `ck_<table>_<column>_enum`. Presto raises like Athena. [SQL Dialects](/dialects#enum-columns) has the details.
+An ENUM column renders per the dialect's enum strategy. Postgres and DuckDB reference a named type created with `CREATE TYPE`. MySQL writes the value list inline. The default dialect and MSSQL render a VARCHAR sized to the longest value, constrained to the list by a CHECK constraint named `ck_<table>_<column>_enum`. Presto raises like Athena. [SQL Dialects](/dialects#enum-columns) has the details.
 
 MySQL spells `BOOLEAN` as `TINYINT(1)` because its catalog reports the underlying type rather than the synonym. It spells `TIMESTAMP` as `DATETIME` because a MySQL `TIMESTAMP` column is four bytes, stops in 2038, and converts time zones, while `Timestamp()` describes a plain wall clock.
 
@@ -103,11 +103,11 @@ ForeignKey(name, columns, references, on_delete=None, on_update=None)
 ```
 {: .sig}
 
-A named FOREIGN KEY constraint, listed in `tableConstraints`. `columns` is a string or a sequence of the constrained columns, in order. `references` is a `'table.column'` string, or a sequence of them, one per constrained column; every target column must belong to the same table. `on_delete` and `on_update` accept `CASCADE`, `SET NULL`, `RESTRICT`, `NO ACTION`, and `SET DEFAULT`, case-insensitively; `FOREIGN_KEY_ACTIONS` holds that tuple.
+A named FOREIGN KEY constraint, listed in `tableConstraints`. `columns` is a string or a sequence of the constrained columns, in order. `references` is a `'table.column'` string, or a sequence of them, one per constrained column; every target column must belong to the same table. `on_delete` and `on_update` accept `CASCADE`, `SET NULL`, `RESTRICT`, `NO ACTION`, and `SET DEFAULT`, case-insensitively; `FOREIGN_KEY_ACTIONS` is that tuple.
 
 `ForeignKey` raises `ValueError` for an empty name, no columns, a column and target count that differ, a target without a dot, targets in more than one table, and an action outside the list.
 
-For a single column with no actions, `references='table.column'` on the column definition renders the same constraint. `TableConstraint` is the union type of `Check` and `ForeignKey`, which is what `tableConstraints` holds.
+For a single column with no actions, `references='table.column'` on the column definition renders the same constraint. `TableConstraint` is the union type of `Check` and `ForeignKey`, which is what `tableConstraints` accepts.
 
 Guide: [Table constraints](/schema#table-constraints).
 
@@ -130,7 +130,7 @@ Index(name, *columns, unique=False)
 ```
 {: .sig #index-factory}
 
-An `Index` holds `name`, `columns`, and `unique`. It raises `ValueError` for an empty name or for no columns.
+An `Index` has `name`, `columns`, and `unique`. It raises `ValueError` for an empty name or for no columns.
 
 ```python
 from sustained.schema import Index
@@ -150,7 +150,7 @@ TableOptions(location=None, partitioned_by=None, properties=None)
 ```
 {: .sig}
 
-`TableOptions` holds storage clauses for engines that need them. Athena renders `PARTITIONED BY`, `LOCATION`, and `TBLPROPERTIES` after the column list. Every other dialect raises `DialectError` when the model sets `tableOptions`.
+`TableOptions` declares storage clauses for engines that need them. Athena renders `PARTITIONED BY`, `LOCATION`, and `TBLPROPERTIES` after the column list. Every other dialect raises `DialectError` when the model sets `tableOptions`.
 
 ```python
 from sustained.schema import TableOptions

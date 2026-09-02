@@ -144,7 +144,7 @@ Venue.query().select_func('COALESCE', 'name', Literal('unknown'), alias='label')
 Venue.query().coalesce('name', Literal('unknown'), alias='label')
 ```
 
-The registry holds the scalar functions `LOWER`, `UPPER`, `COALESCE`, `CONCAT`, `SUBSTRING`, `TRIM`, `LENGTH`, `ROUND`, `ABS`, `CEILING`, `FLOOR`, `MOD`, `NOW`, and `GETDATE`, plus the aggregates `COUNT`, `SUM`, `AVG`, `MIN`, `MAX`, and `STRING_AGG`. A registered function checks itself against the configured dialect and raises `DialectError` at build time when the engine has no spelling for it:
+The registry covers the scalar functions `LOWER`, `UPPER`, `COALESCE`, `CONCAT`, `SUBSTRING`, `TRIM`, `LENGTH`, `ROUND`, `ABS`, `CEILING`, `FLOOR`, `MOD`, `NOW`, and `GETDATE`, plus the aggregates `COUNT`, `SUM`, `AVG`, `MIN`, `MAX`, and `STRING_AGG`. A registered function checks itself against the configured dialect and raises `DialectError` at build time when the engine has no spelling for it:
 
 ```python
 from sustained.dialects import Dialects

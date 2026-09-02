@@ -44,7 +44,7 @@ The named key that you set for each relation is what you pass to `innerJoinRelat
 | `HasManyRelation` | one to many | a list |
 | `ManyToManyRelation` | many to many, through a link table | a list |
 
-The type does not change the SQL a `joinRelated` call produces, apart from the extra hop a `ManyToManyRelation` makes through its link table. It does change what eager loading attaches to each instance, and it is what the migrator reads when it works out which side holds the foreign key.
+The type does not change the SQL a `joinRelated` call produces, apart from the extra hop a `ManyToManyRelation` makes through its link table. It does change what eager loading attaches to each instance, and it is what the migrator reads when it works out which side has the foreign key.
 
 A `Show` belongs to one `Venue` (a `BelongsToOneRelation` relation), and the same relation seen from the other side is a `HasManyRelation`:
 
@@ -62,7 +62,7 @@ class Venue(Model):
 
 ### Relations through a link table
 
-A `ManyToManyRelation` adds a `through` key naming the link table and the two columns in it. An artist plays many shows, a show has many artists, and `show_artists` holds the pairs:
+A `ManyToManyRelation` adds a `through` key naming the link table and the two columns in it. An artist plays many shows, a show has many artists, and `show_artists` stores the pairs:
 
 ```python
 class Artist(Model):

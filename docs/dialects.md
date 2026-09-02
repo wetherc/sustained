@@ -48,7 +48,7 @@ Upserts render `ON CONFLICT`, RETURNING works, and `whereILike()` compiles to `L
 
 ## PostgreSQL
 
-Postgres supports the largest set of features: native `ILIKE`, `DISTINCT ON`, `RETURNING`, `ON CONFLICT` upserts, `for_update()` row locking, identity columns for `autoincrement`, `JSONB` for the `Json` type, and in-place `ALTER COLUMN` migrations with `USING` cast hints. Migration runs hold a `pg_advisory_lock`, so concurrent deploys queue. Placeholders are `%s`, matching psycopg.
+Postgres supports the largest set of features: native `ILIKE`, `DISTINCT ON`, `RETURNING`, `ON CONFLICT` upserts, `for_update()` row locking, identity columns for `autoincrement`, `JSONB` for the `Json` type, and in-place `ALTER COLUMN` migrations with `USING` cast hints. Migration runs take a `pg_advisory_lock`, so concurrent deploys queue. Placeholders are `%s`, matching psycopg.
 
 ```python
 import psycopg
@@ -90,11 +90,11 @@ newest = (User.query()
 )
 ```
 
-RETURNING, CTAS, and `explain()` raise `DialectError`. Use `OUTPUT`, `SELECT INTO`, and SSMS plans through raw SQL instead. Migrations rename with `sp_rename`, alter columns by restating the full definition, and hold an `sp_getapplock` session lock while they run.
+RETURNING, CTAS, and `explain()` raise `DialectError`. Use `OUTPUT`, `SELECT INTO`, and SSMS plans through raw SQL instead. Migrations rename with `sp_rename`, alter columns by restating the full definition, and keep an `sp_getapplock` session lock while they run.
 
 ## MySQL and MariaDB
 
-The `MYSQL` dialect serves both MySQL and MariaDB; Sustained does not distinguish between the two. Identifiers quote with backticks and placeholders are `%s`, matching PyMySQL, mysqlclient, and mysql-connector. Upserts render `ON DUPLICATE KEY UPDATE`. `for_update()` works, with `SKIP LOCKED` and `NOWAIT` on MySQL 8.0 and later. Migration runs hold a `GET_LOCK` session lock.
+The `MYSQL` dialect serves both MySQL and MariaDB; Sustained does not distinguish between the two. Identifiers quote with backticks and placeholders are `%s`, matching PyMySQL, mysqlclient, and mysql-connector. Upserts render `ON DUPLICATE KEY UPDATE`. `for_update()` works, with `SKIP LOCKED` and `NOWAIT` on MySQL 8.0 and later. Migration runs take a `GET_LOCK` session lock.
 
 ```python
 import pymysql
@@ -215,14 +215,14 @@ top = (Event.query()
 
 ## Enum columns
 
-An `Enum` column declares its values once, and each engine holds the column to them with the mechanism it has:
+An `Enum` column declares its values once, and each engine enforces the list with the mechanism it has:
 
 | Dialect | Strategy | Renders |
 | --- | --- | --- |
 | `POSTGRES` | named type | `CREATE TYPE post_status AS ENUM (...)`, referenced by the column. Values append in place with `ALTER TYPE ... ADD VALUE`. |
 | `DUCKDB` | named type | `CREATE TYPE ... AS ENUM (...)`. Appending a value in place raises `DialectError`. |
 | `MYSQL` | inline | `ENUM('draft', 'published')` written into the column type. Value changes restate the list with `MODIFY COLUMN`. |
-| `DEFAULT`, `MSSQL` | CHECK constraint | A VARCHAR sized to the longest value, held to the list by `CONSTRAINT ck_<table>_<column>_enum CHECK (col IN (...))`. |
+| `DEFAULT`, `MSSQL` | CHECK constraint | A VARCHAR sized to the longest value, constrained to the list by `CONSTRAINT ck_<table>_<column>_enum CHECK (col IN (...))`. |
 | `PRESTO`, `ATHENA` | refused | `DialectError` at DDL time, because neither engine can enforce the list. |
 
 On Postgres, `ALTER TYPE ... ADD VALUE` rolls back inside a transaction on PostgreSQL 12 and later, which is what lets `rehearse` prove a migration that carries one. See [Schema and Migrations](./schema#enum-columns) for how enum changes generate.

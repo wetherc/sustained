@@ -97,13 +97,13 @@ Presto and Trino can neither alter a column nor rebuild a table, so migration ge
 
 Only a dialect whose schema changes roll back may rehearse against the real database: the default dialect, Postgres, and DuckDB. On every other dialect, rehearse with `scratch=True` against a throwaway database.
 
-Athena has no transactions, and MySQL has transactions for rows but not for schema changes. Both dialects run each migration without a surrounding transaction, so a multi-step migration that fails leaves the steps before the failure applied. Both write a failed-attempt row, which makes the interrupted run visible and holds the next run back until `repair()` clears the row.
+Athena has no transactions, and MySQL has transactions for rows but not for schema changes. Both dialects run each migration without a surrounding transaction, so a multi-step migration that fails leaves the steps before the failure applied. Both write a failed-attempt row, which makes the interrupted run visible and blocks the next run until `repair()` clears the row.
 
 SQLite and DuckDB have no advisory lock, because they serialize writers themselves. Athena has no lock to take, so run one migrator at a time there. MySQL's `GET_LOCK` is scoped to the session, is reentrant, and releases on disconnect, the same way the Postgres and MSSQL locks do.
 
 ## Introspection
 
-The default dialect reads SQLite's PRAGMA tables. Every other dialect reads `information_schema`, including `check_constraints` for CHECK expressions on MySQL, MariaDB, MSSQL, and DuckDB. Presto and Athena skip that read, because their tables hold no CHECK constraints. When a view is unavailable, introspection falls back to the column data alone rather than failing.
+The default dialect reads SQLite's PRAGMA tables. Every other dialect reads `information_schema`, including `check_constraints` for CHECK expressions on MySQL, MariaDB, MSSQL, and DuckDB. Presto and Athena skip that read, because their tables have no CHECK constraints. When a view is unavailable, introspection falls back to the column data alone rather than failing.
 
 Postgres has a dedicated read. It takes `udt_name`, varchar lengths, and numeric precision from `information_schema.columns`, every index from `pg_index`, foreign key names, columns, targets, and referential actions from `pg_constraint`, CHECK expressions from `check_constraints`, and enum values from `pg_enum` in sort order. Expression indexes are skipped, as on SQLite.
 
@@ -117,9 +117,9 @@ MySQL introspection differs from the rest. It reads `column_type` rather than `d
 
 A snapshot keys its tables on the bare table name, so a read that covered two schemas would merge `app.users` into `public.users` and the diff would never converge. Every read is scoped instead.
 
-Postgres reads `current_schema()`, MSSQL reads `SCHEMA_NAME()`, DuckDB reads `current_schema()`, MySQL reads `DATABASE()`, and Athena reads `current_schema`. A model that sets `tableSchema` widens the read to that schema as well, so a model outside the connection's own schema still diffs. Two models that declare the same table name in different schemas are refused: the read cannot tell the two tables apart. Diff them in separate calls. The database can hold such a pair as well, where one of the two tables is undeclared. The information_schema read reads the schema name with every column and raises `ValueError` when one table name arrives from two schemas, rather than merging the columns of both into one table.
+Postgres reads `current_schema()`, MSSQL reads `SCHEMA_NAME()`, DuckDB reads `current_schema()`, MySQL reads `DATABASE()`, and Athena reads `current_schema`. A model that sets `tableSchema` widens the read to that schema as well, so a model outside the connection's own schema still diffs. Two models that declare the same table name in different schemas are refused: the read cannot tell the two tables apart. Diff them in separate calls. The database can contain such a pair as well, where one of the two tables is undeclared. The information_schema read reads the schema name with every column and raises `ValueError` when one table name arrives from two schemas, rather than merging the columns of both into one table.
 
-Presto and Trino have no expression for the schema the connection is on. Their read covers every schema but the system ones, and a declared `tableSchema` leaves it that wide: narrowing the read to the declared schema would drop the tables the connection's own schema holds.
+Presto and Trino have no expression for the schema the connection is on. Their read covers every schema but the system ones, and a declared `tableSchema` leaves it that wide: narrowing the read to the declared schema would drop the tables in the connection's own schema.
 
 The declared schemas make their own `IN` list, and the current-schema expression is compared beside it with `OR`. Postgres returns NULL from `current_schema()` when the first `search_path` entry names a schema that does not exist, and a NULL inside the `IN` list would make the whole list match nothing.
 
@@ -127,6 +127,6 @@ The constraint join matches schema names as well as constraint names, because a 
 
 Postgres refuses every later statement in a transaction once one has failed. A read tries a catalog and falls back when it is not there, so on Postgres each query runs inside the savepoint `sustained_read` and a failure rolls back to it. The read then releases the savepoint, whether the query worked or failed, because `ROLLBACK TO SAVEPOINT` leaves the savepoint in place and one per failed query would pile up. A driver that refuses `RELEASE SAVEPOINT` does not stop the read: the rows are already read. A connection with no transaction open takes no savepoint, and the read stops asking for one for the rest of that read.
 
-Athena scopes every introspection query to the schema the connection was opened on. Its catalog spans every Glue database in the account, so an unscoped read would be slow and would fail outright when any other database holds a table with broken metadata. Models on an Athena connection must live in that schema for a diff to see them.
+Athena scopes every introspection query to the schema the connection was opened on. Its catalog spans every Glue database in the account, so an unscoped read would be slow and would fail outright when any other database contains a table with broken metadata. Models on an Athena connection must live in that schema for a diff to see them.
 
 MariaDB stores a `Json()` column as `longtext` with a `json_valid` CHECK constraint, and reports the storage type. Introspection looks those constraints up and restores the JSON type, so the column does not report as drift that no migration can close. MariaDB before 10.2.22 has no `check_constraints` view, so on those versions the column does report as drift.

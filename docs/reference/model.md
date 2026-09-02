@@ -3,7 +3,7 @@ layout: default
 title: Model reference
 ---
 
-Subclass `sustained.Model` to describe a table. The subclass holds the table's name, its columns, its relations, and the dialect and connection its queries use.
+Subclass `sustained.Model` to describe a table. The subclass declares the table's name, its columns, its relations, and the dialect and connection its queries use.
 
 Guide: [Models](/models).
 

@@ -14,7 +14,7 @@ class Venue(Model):
 
 Minimally, a Model only needs a table name; everything else on this page is strictly optional.
 
-The examples use the venue booking schema from [Getting Started](./getting-started): venues hold shows, shows sell tickets, and artists play shows through a link table.
+The examples use the venue booking schema from [Getting Started](./getting-started): venues host shows, shows sell tickets, and artists play shows through a link table.
 
 ## Naming the table
 
@@ -46,7 +46,7 @@ Venue.query().select(Venue.name, Venue.city)
 
 Qualified names matter in joins, where two tables can both have columns with the same name. They come from the same three parts as the table name, so a model with a `database` and `tableSchema` produces `analytics.public.venues.city`.
 
-Instances do not behave this way. An instance holds one attribute per column the query selected, so `venue.city` gives the value of that row. A column the query left out raises `AttributeError`, which keeps `hasattr(venue, 'city')` and `if venue.city:` truthful about what the row holds.
+Instances do not behave this way. An instance has one attribute per column the query selected, so `venue.city` gives the value of that row. A column the query left out raises `AttributeError`, which keeps `hasattr(venue, 'city')` and `if venue.city:` truthful about what the row contains.
 
 ## Catching column typos
 

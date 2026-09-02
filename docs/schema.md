@@ -46,7 +46,7 @@ migrator.down_to('auto_20260814...')  # revert until this id is newest
 
 `steps` counts migrations and must be 0 or more. A count of 0 reverts nothing. A negative count raises `ValueError`, and `sustained down --steps -1` stops at the command line.
 
-A revert reads the checksum of every migration it is about to take back, before it reverts the first one. A migration edited after it was applied raises `MigrationError` and nothing is reverted, because the down step in front of you describes the new contents while the database holds the old ones. Restore the migration, run `repair()` to accept the new contents, or pass `allow_changed=True` (`sustained down --allow-changed`) to revert it as it stands now.
+A revert reads the checksum of every migration it is about to take back, before it reverts the first one. A migration edited after it was applied raises `MigrationError` and nothing is reverted, because the down step in front of you describes the new contents while the database still contains the old ones. Restore the migration, run `repair()` to accept the new contents, or pass `allow_changed=True` (`sustained down --allow-changed`) to revert it as it stands now.
 
 A generated migration isn't materialized anywhere outside the actual execution, so its tracking row carries the statements it ran. A later process, on a later deploy, can revert it from that row without having the diff in hand. A rebuild, which has no down step, still cannot be reverted.
 
@@ -84,7 +84,7 @@ On engines without transactions, a failing step writes a row with the success fl
 
 ## Concurrency
 
-While a run is in progress, the migrator holds an exclusive advisory lock named after the tracking table, so two application instances deploying at once queue instead of racing each other's DDL. Postgres uses `pg_advisory_lock`, MSSQL uses `sp_getapplock`, and MySQL uses `GET_LOCK`. All three are session-scoped and release on disconnect. MySQL and MSSQL report a lock they did not grant in the value they return instead of raising, so the migrator reads that value and raises `MigrationError` when the lock is not held. SQLite and DuckDB serialize writers on their own. Athena has no lock to take, so run one migrator at a time there.
+While a run is in progress, the migrator keeps an exclusive advisory lock named after the tracking table, so two application instances deploying at once queue instead of racing each other's DDL. Postgres uses `pg_advisory_lock`, MSSQL uses `sp_getapplock`, and MySQL uses `GET_LOCK`. All three are session-scoped and release on disconnect. MySQL and MSSQL report a lock they did not grant in the value they return instead of raising, so the migrator reads that value and raises `MigrationError` when the lock was not granted. SQLite and DuckDB serialize writers on their own. Athena has no lock to take, so run one migrator at a time there.
 
 ## Adopting an existing database
 
@@ -188,7 +188,7 @@ Pass the values as strings, or pass one Python `enum.Enum` class whose member va
 
 `name` is required. A Postgres enum is a database object with its own identity, so an explicit name gives the diff something stable to compare, and it lets two models share one type: the same name with the same values in two models is one type, and the same name with different values raises `ValueError`.
 
-Rendering follows the dialect. Postgres and DuckDB create a named type with `CREATE TYPE ... AS ENUM` and reference it by name. MySQL writes the value list into the column type as `ENUM('draft', 'published', ...)`. ANSI, SQLite, and MSSQL have no enum type, so the column renders as a VARCHAR sized to the longest value, held to the list by a CHECK constraint named `ck_<table>_<column>_enum`. Presto and Athena refuse the column with `DialectError`, because neither engine can enforce it. [SQL Dialects](./dialects#enum-columns) has the full table.
+Rendering follows the dialect. Postgres and DuckDB create a named type with `CREATE TYPE ... AS ENUM` and reference it by name. MySQL writes the value list into the column type as `ENUM('draft', 'published', ...)`. ANSI, SQLite, and MSSQL have no enum type, so the column renders as a VARCHAR sized to the longest value, constrained to the list by a CHECK constraint named `ck_<table>_<column>_enum`. Presto and Athena refuse the column with `DialectError`, because neither engine can enforce it. [SQL Dialects](./dialects#enum-columns) has the full table.
 
 On the dialects with a named type, `CREATE TYPE` renders before the table that uses it, and dropping the table drops the type with it once no remaining model references it, under the same `allow_drops=True` the table drop needs. `DROP TYPE` is destructive: `plan` labels it, `no_drops()` blocks it, and the rehearsal gate covers it.
 
@@ -249,7 +249,7 @@ Constraint differences generate migrations. A constraint the model declares and 
 
 A CHECK constraint is the exception. It never blocks generation. Engines rewrite a check expression on the way in, so a check the models do declare can read back as one they do not, and a refusal there would stop a diff that has nothing wrong with it. An undeclared check comes back as a note on the diff instead, and `allow_drops=True` still drops it.
 
-Checks diff on every engine whose catalog reports them: Postgres, MySQL 8.0.16 and later, MariaDB, MSSQL, DuckDB, and SQLite. Presto and Athena hold no CHECK constraints, so nothing diffs there. An engine too old for `information_schema.check_constraints` reads no checks, and a declared check then stays undiffed rather than reporting as missing.
+Checks diff on every engine whose catalog reports them: Postgres, MySQL 8.0.16 and later, MariaDB, MSSQL, DuckDB, and SQLite. Presto and Athena have no CHECK constraints, so nothing diffs there. An engine too old for `information_schema.check_constraints` reads no checks, and a declared check then stays undiffed rather than reporting as missing.
 
 Check expressions compare normalized, because engines rewrite them: Postgres stores `price > 0` as `((price > 0))`, and keyword case and whitespace vary. A difference that survives normalization is reported as a constraint note on Postgres rather than generating a drop, so a cosmetic rewrite never costs you a constraint. SQLite cannot add or drop a table constraint in place, so those changes route through the same table rebuild as its column changes.
 
@@ -405,7 +405,7 @@ DROP VIEW IF EXISTS active_users;
 CREATE VIEW active_users AS SELECT * FROM users WHERE active = 1;
 ```
 
-Edit the file and the next `migrate` re-runs it, so keep the SQL replace-safe (`CREATE OR REPLACE`, or a drop first). The tracking table holds one row per repeatable, updated in place on re-runs with its original sequence number. Repeatables have no down file, and `down` never touches them. `baseline` records every repeatable at its current checksum, so adopting an existing schema does not re-run objects it already holds.
+Edit the file and the next `migrate` re-runs it, so keep the SQL replace-safe (`CREATE OR REPLACE`, or a drop first). The tracking table keeps one row per repeatable, updated in place on re-runs with its original sequence number. Repeatables have no down file, and `down` never touches them. `baseline` records every repeatable at its current checksum, so adopting an existing schema does not re-run objects it already contains.
 
 `status` (and `Migrator.statuses()`) reports each migration as `applied`, `pending`, or `changed`. `changed` marks a repeatable whose contents differ from its last run. In Python, pass `Migration(id, up=..., repeatable=True)`. A repeatable with a callable step needs an explicit `checksum` so that re-runs can be detected. An id may not have both an up file and a repeat file.
 
@@ -522,7 +522,7 @@ drift
 run: sustained rehearse
 ```
 
-A statement that removes data or an object that holds it is labelled `destructive`: `DROP TABLE`, `DROP COLUMN`, `DROP TYPE`, `DROP VIEW`, `DROP MATERIALIZED VIEW`, `DROP DATABASE`, `DROP SCHEMA ... CASCADE`, a constraint drop, `TRUNCATE`, and `DELETE FROM`. A column drop written without the COLUMN keyword, as MySQL allows, is labelled as well. A plain `DROP SCHEMA` refuses a schema that holds anything, so only the CASCADE form is labelled. The scan is textual, but it keeps comments and quoted text out, so a drop named inside a string literal is not labelled.
+A statement that removes data or an object that contains it is labelled `destructive`: `DROP TABLE`, `DROP COLUMN`, `DROP TYPE`, `DROP VIEW`, `DROP MATERIALIZED VIEW`, `DROP DATABASE`, `DROP SCHEMA ... CASCADE`, a constraint drop, `TRUNCATE`, and `DELETE FROM`. A column drop written without the COLUMN keyword, as MySQL allows, is labelled as well. A plain `DROP SCHEMA` refuses a non-empty schema, so only the CASCADE form is labelled. The scan is textual, but it keeps comments and quoted text out, so a drop named inside a string literal is not labelled.
 
 The footer points at `rehearse` rather than `migrate` when a pending migration carries one of these labels, because `migrate` will refuse it until a rehearsal has proved it. Once a rehearsal has recorded a row for that run, the footer reads `run: sustained migrate` again. With nothing destructive waiting, it reads `run: sustained migrate` from the start.
 
@@ -619,7 +619,7 @@ Only databases whose schema changes roll back can rehearse: SQLite, Postgres, an
 
 ### Rehearsal logging and tracking
 
-A rehearsal that passes writes one row into a second table, `sustained_rehearsals`, created on first use like the tracking table. The row holds a key, whether the run passed, and when it ran.
+A rehearsal that passes writes one row into a second table, `sustained_rehearsals`, created on first use like the tracking table. The row records a key, whether the run passed, and when it ran.
 
 `migrate` reads it. A run that would remove data stops unless a passing rehearsal row covers it. It reads the same list the `destructive` labels use, `DELETE FROM` included:
 

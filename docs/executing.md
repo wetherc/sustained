@@ -287,7 +287,7 @@ for venue in venues:
         print(show.title, len(show.tickets))
 ```
 
-Each level costs one query, batched over every instance at that level, so three venues holding twelve shows load their tickets with one query, not twelve. Paths that share a prefix load the prefix once, so `withGraphFetched('shows.tickets', 'shows.artists')` runs three queries after the first. An unknown segment raises `ValueError` when you build the query, naming the segment and the model it was read from.
+Each level costs one query, batched over every instance at that level, so three venues with twelve shows load their tickets with one query, not twelve. Paths that share a prefix load the prefix once, so `withGraphFetched('shows.tickets', 'shows.artists')` runs three queries after the first. An unknown segment raises `ValueError` when you build the query, naming the segment and the model it was read from.
 
 A join flattens the related rows into the result and repeats the parent row once per child. Eager loading costs one extra query and returns each object separately; a join costs one query and gives you a wide, flattened result.
 
@@ -349,7 +349,7 @@ async with Show.async_transaction():
 
 ### Async pooling
 
-One adapter runs one statement at a time. A connection carries one transaction, `DbApiAsyncAdapter` holds a lock across every call, and asyncpg sends one statement per connection. Ten concurrent `arun()` calls on one adapter queue up behind each other.
+One adapter runs one statement at a time. A connection carries one transaction, `DbApiAsyncAdapter` serializes every call behind one lock, and asyncpg sends one statement per connection. Ten concurrent `arun()` calls on one adapter queue up behind each other.
 
 `AsyncConnectionPool` is the async twin of `ConnectionPool`. It opens adapters from an async factory, up to `max_size`, and binds like one:
 
@@ -368,7 +368,7 @@ shows, tickets = await asyncio.gather(
 )
 ```
 
-Each call checks one adapter out for its whole length, the statement, its eager loads, and its commit alike, then gives it back. An `async_transaction()` block holds one adapter from BEGIN to COMMIT. A released adapter is rolled back first, so a failed statement never reaches the next task. An exhausted pool raises `PoolTimeout`, the same error the blocking pool raises, and `await pool.close()` closes the idle adapters.
+Each call checks one adapter out for its whole length, the statement, its eager loads, and its commit alike, then gives it back. An `async_transaction()` block keeps one adapter from BEGIN to COMMIT. A released adapter is rolled back first, so a failed statement never reaches the next task. An exhausted pool raises `PoolTimeout`, the same error the blocking pool raises, and `await pool.close()` closes the idle adapters.
 
 The pool runs no statement itself. `await pool.fetch(...)` raises, because a write and its commit would land on two different connections; take an adapter out with `async with pool.scope() as adapter` when you want to run something by hand. `AsyncMigrator` takes an adapter, not a pool: a migration run belongs on one session.
 

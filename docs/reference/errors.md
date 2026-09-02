@@ -28,7 +28,7 @@ The rest are the standard builtins, raised where a builtin says the right thing.
 
 ## `AmbiguousColumns`
 
-A result set returns the same column name more than once, which a join over tables that share a column name does. A row is keyed by column name, so one value would replace the other. Sustained raises this before it hydrates the first row, from `run()`, `to_dicts()`, `to_df()`, `to_arrow()`, and their async twins. The `columns` attribute holds the repeated names.
+A result set returns the same column name more than once, which a join over tables that share a column name does. A row is keyed by column name, so one value would replace the other. Sustained raises this before it hydrates the first row, from `run()`, `to_dicts()`, `to_df()`, `to_arrow()`, and their async twins. The `columns` attribute lists the repeated names.
 
 ```
 This result set returns 'id' more than once, usually from a join over tables
@@ -56,7 +56,7 @@ See [Dialect support](/reference/dialects) for the full matrix.
 
 Migration validation found problems.
 
-The `problems` attribute holds a list of strings. The message is `Migration validation failed:` followed by one `- ` line per problem.
+The `problems` attribute is a list of strings. The message is `Migration validation failed:` followed by one `- ` line per problem.
 
 `Migrator.up()` and `Migrator.validate()` raise it. Call `validate(raise_on_problems=False)` to get the list back instead.
 
@@ -92,7 +92,7 @@ The CLI exits 4 on this error. `up(unrehearsed=True)` waives the check and recor
 
 A guard returned a blocking verdict on a statement the run would apply.
 
-`Migrator.up()` and `AsyncMigrator.up()` raise it before any statement runs. The `verdicts` attribute holds the blocking verdicts, in the order the guards returned them. The message names each rule and the statement it read:
+`Migrator.up()` and `AsyncMigrator.up()` raise it before any statement runs. The `verdicts` attribute lists the blocking verdicts, in the order the guards returned them. The message names each rule and the statement it read:
 
 ```
 A guard blocked this run:
@@ -104,7 +104,7 @@ No flag waives a guard. `sustained plan` and `sustained migrate` exit 3 when a g
 
 ## `PoolTimeout`
 
-`ConnectionPool` stayed exhausted past its timeout. The message names the timeout and the pool size. Raise `max_size`, shorten the work that holds the connections, or catch the timeout and shed load.
+`ConnectionPool` stayed exhausted past its timeout. The message names the timeout and the pool size. Raise `max_size`, shorten the work that keeps connections checked out, or catch the timeout and shed load.
 
 ## `ValueError`
 

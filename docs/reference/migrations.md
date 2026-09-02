@@ -25,7 +25,7 @@ A `Migration` is one schema change. A step is a SQL string, a list of statements
 | `repeatable` | `bool` | Re-runs whenever its checksum changes, instead of running once. |
 | `transactional` | `bool` | `False` runs the migration outside a transaction, for a statement the engine refuses inside one. |
 
-When `down` is not given and `up` is a list of reversible ddl steps, the down step derives itself: the inverses of the up steps, newest first. An up step that holds an irreversible ddl step then raises `ValueError`, naming the step; pass an explicit down step, or `down=None` to declare the migration irreversible. An up step with no ddl steps in it derives nothing, and `down` stays `None` as before. Repeatables never derive a down step.
+When `down` is not given and `up` is a list of reversible ddl steps, the down step derives itself: the inverses of the up steps, newest first. An up step that includes an irreversible ddl step then raises `ValueError`, naming the step; pass an explicit down step, or `down=None` to declare the migration irreversible. An up step with no ddl steps in it derives nothing, and `down` stays `None` as before. Repeatables never derive a down step.
 
 `transactional=False` covers the up step and the down step. The migrator turns the driver's own transaction control off for the migration, so a statement such as `CREATE INDEX CONCURRENTLY` on Postgres can run, and turns it back on after. The tracking row is written after the statements. Nothing rolls a failed one back: the statements that already ran stay applied, and the failure row makes validation stop the next `up()` until you clean up and run `repair()`. `AsyncMigrator` runs such a migration bare too, but an adapter over a driver with its own transaction control, such as `DbApiAsyncAdapter`, still opens a transaction; use `AsyncpgAdapter` there.
 
@@ -195,7 +195,7 @@ drift(models, renames=None, table_renames=None) -> list[str]
 ```
 {: .sig #drift}
 
-What the models still ask for, one readable line each. Empty when the database holds everything they declare.
+What the models still ask for, one readable line each. Empty when the database contains everything they declare.
 
 ```python
 sync(models, ...) -> list[str]
@@ -284,9 +284,9 @@ script(direction='up') -> str
 
 ## Result types
 
-`AppliedRecord(id, seq, checksum, success, generated)` holds one tracking row. `generated` marks a row that a model diff wrote.
+`AppliedRecord(id, seq, checksum, success, generated)` is one tracking row. `generated` marks a row that a model diff wrote.
 
-`RehearsalResult(id, up_ok, down_ok, error, landed, reversed)` holds what a rehearsal proved about one migration. `down_ok` is `None` when the rehearsal proved nothing, and `error` then says why: `no down step`, `no down step (repeatable)`, `down not reached: ...`, or `down not rehearsed: the run stopped`.
+`RehearsalResult(id, up_ok, down_ok, error, landed, reversed)` records what a rehearsal proved about one migration. `down_ok` is `None` when the rehearsal proved nothing, and `error` then says why: `no down step`, `no down step (repeatable)`, `down not reached: ...`, or `down not rehearsed: the run stopped`.
 
 `landed` and `reversed` are `None` when the check did not run, `[]` when the check passed, and a list of readable lines when the check failed. `landed` is filled for the generated migration only. `reversed` is filled for every migration whose down step ran.
 
@@ -302,7 +302,7 @@ script(direction='up') -> str
 
 ## The tracking table
 
-The tracking table is named `sustained_migrations` by default and holds these columns:
+The tracking table is named `sustained_migrations` by default and has these columns:
 
 | Column | Type | Holds |
 | --- | --- | --- |
@@ -315,11 +315,11 @@ The tracking table is named `sustained_migrations` by default and holds these co
 | `generated` | `BOOLEAN` | Whether a model diff wrote it. Such a row is never reported as an unregistered migration |
 | `steps` | `TEXT` | The up and down statements of a generated migration, as JSON. Null for every registered one, whose statements live in your code or your migrations directory |
 
-On Athena the same columns are all plain and nullable, because Athena enforces no constraints. A tracking table written by an earlier version, holding only `id` and `applied_at`, upgrades in place on first use. A generated row written before the `steps` column existed carries no statements, so `down()` cannot revert that row.
+On Athena the same columns are all plain and nullable, because Athena enforces no constraints. A tracking table written by an earlier version, with only `id` and `applied_at`, upgrades in place on first use. A generated row written before the `steps` column existed carries no statements, so `down()` cannot revert that row.
 
 ## The rehearsal table
 
-The rehearsal table is named `sustained_rehearsals` by default, is created on first use, and holds these columns:
+The rehearsal table is named `sustained_rehearsals` by default, is created on first use, and has these columns:
 
 | Column | Type | Holds |
 | --- | --- | --- |
@@ -418,7 +418,7 @@ no_lock_without_timeout() -> Guard
 
 Blocks a statement that alters or drops a table with no `SET lock_timeout` in force before it. A timeout later in the run does not cover it. Postgres only; silent elsewhere.
 
-A plain `SET lock_timeout`, with or without SESSION, covers the rest of the run. A `SET LOCAL lock_timeout` covers only the statements after it in its own migration, because the commit that ends the migration drops the setting. In a migration with `transactional=False` there is no transaction block to hold a LOCAL setting, so the rule counts it for nothing; use the plain form there.
+A plain `SET lock_timeout`, with or without SESSION, covers the rest of the run. A `SET LOCAL lock_timeout` covers only the statements after it in its own migration, because the commit that ends the migration drops the setting. In a migration with `transactional=False` there is no transaction block to carry a LOCAL setting, so the rule counts it for nothing; use the plain form there.
 
 ```python
 max_statements(limit) -> Guard
@@ -488,7 +488,7 @@ Both migrators compute the key the same way, so a row written by one migrator op
 
 `await migrator.script('up')` renders the same text `Migrator.script('up')` renders, and writes nothing, not even the tracking table. `read_applied_records()` and `read_applied()` read the rows the same way.
 
-`await migrator.plan(models)` and `await migrator.drift(models)` diff the models against the database and return what `Migrator.plan()` and `Migrator.drift()` return. Both read the schema through the adapter and write nothing. The schema read is the only statement `plan()` runs, so it cannot ask whether a table holds a row. A table it cannot read counts as one that holds rows, so a new NOT NULL column with no `default` and no `backfill` is refused here even on an empty table, where `Migrator.plan()` adds it.
+`await migrator.plan(models)` and `await migrator.drift(models)` diff the models against the database and return what `Migrator.plan()` and `Migrator.drift()` return. Both read the schema through the adapter and write nothing. The schema read is the only statement `plan()` runs, so it cannot ask whether a table contains rows. A table it cannot read counts as one that contains rows, so a new NOT NULL column with no `default` and no `backfill` is refused here even on an empty table, where `Migrator.plan()` adds it.
 
 `up(models=[...])` and `rehearse(models=[...])` take the same arguments the synchronous ones take, and behave the same way: the generated migration runs last of the versioned ones, its statements go on its tracking row rather than into the migrations directory, and it joins the registered list only after it applied.
 
@@ -503,7 +503,7 @@ load_migrations(directory, placeholders=None) -> list[Migration]
 ```
 {: .sig #load_migrations}
 
-`load_migrations` reads the `<id>.up.sql` files first, each one optionally paired with `<id>.down.sql`, sorted by id. Then it reads the `<id>.repeat.sql` repeatables, also sorted by id. Statements split at line-ending semicolons, with or without a `--` comment after the semicolon, so a semicolon inside a string literal survives the split. A body that holds its own statements, such as a trigger or a procedure, does not survive it.
+`load_migrations` reads the `<id>.up.sql` files first, each one optionally paired with `<id>.down.sql`, sorted by id. Then it reads the `<id>.repeat.sql` repeatables, also sorted by id. Statements split at line-ending semicolons, with or without a `--` comment after the semicolon, so a semicolon inside a string literal survives the split. A body with its own statements, such as a trigger or a procedure, does not survive it.
 
 A `-- sustained: no transaction` line of its own in an up file or a repeat file sets `transactional=False` on that migration. Case does not matter, and the two words may be joined by a space, a hyphen, or an underscore. `declares_no_transaction(text)` reports the same thing for one file's text. The marker is read from the up file and the repeat file only; the flag already covers the down step.
 
@@ -523,7 +523,7 @@ split_sql_statements(text) -> list[str]
 ```
 {: .sig #split_sql_statements}
 
-`split_sql_statements` splits on line-ending semicolons, including a semicolon with a `--` comment after it, and drops the pieces that hold only whitespace or only comments.
+`split_sql_statements` splits on line-ending semicolons, including a semicolon with a `--` comment after it, and drops the pieces that are only whitespace or comments.
 
 ## Autogeneration internals
 
@@ -541,7 +541,7 @@ autogenerate(connection, models, id, dialect=..., allow_drops=False, ignore_chan
 ```
 {: .sig #autogenerate}
 
-Builds the migration a diff asks for. Refuses to generate the lossy differences, and refuses to run at all while the database holds objects the models do not declare, unless you pass `allow_drops=True` or `ignore_undeclared=True`. The migrator passes `ignore_undeclared=True`. A CHECK constraint no model declares is the one object that never refuses: it comes back as a note on the diff, because engines rewrite check expressions and the comparison cannot carry a refusal.
+Builds the migration a diff asks for. Refuses to generate the lossy differences, and refuses to run at all while the database contains objects the models do not declare, unless you pass `allow_drops=True` or `ignore_undeclared=True`. The migrator passes `ignore_undeclared=True`. A CHECK constraint no model declares is the one object that never refuses: it comes back as a note on the diff, because engines rewrite check expressions and the comparison cannot carry a refusal.
 
 ```python
 introspect_schema(connection, dialect=Dialects.DEFAULT, schemas=()) -> dict[str, IntrospectedTable]
@@ -587,7 +587,7 @@ The canonical spelling of a reported column default, for comparison. Balanced ou
 | `new_checks`, `changed_checks`, `extra_checks` | CHECK constraint differences, by constraint name |
 | `constraint_notes` | Differences that are reported but never auto-migrated |
 
-`is_empty()` returns whether the diff holds any difference. `summary()` returns one readable line per difference, with the destructive ones marked, or `schema up to date` when there is no difference.
+`is_empty()` returns whether the diff found any difference. `summary()` returns one readable line per difference, with the destructive ones marked, or `schema up to date` when there is no difference.
 
 The enum buckets fill on the dialects with named types. Postgres compares against `pg_enum`, and DuckDB against `duckdb_types()`. A DuckDB too old for that view falls back to reading the values from the column's inline type spelling, and a type with no column left reads as absent there. Missing foreign keys and checks generate `ADD CONSTRAINT`; changed and extra ones are gated by `allow_drops`. Primary key set changes, column-level UNIQUE, and default differences always land in `constraint_notes`, and a Postgres check expression whose difference survives normalization lands there too. Generation never migrates a note for you.
 
@@ -600,7 +600,7 @@ The enum buckets fill on the dialects with named types. Postgres compares agains
 - Adding a NOT NULL column with no `backfill` or `default`.
 - Adding a primary key or autoincrement column, which ALTER TABLE cannot do.
 
-A migration that holds a drop has no down step, and neither does a migration that holds a SQLite table rebuild, because neither one reverses.
+A migration that includes a drop has no down step, and neither does one that includes a SQLite table rebuild, because neither one reverses.
 
 ## Analysis
 
@@ -611,7 +611,7 @@ destructive_statements(statements) -> list[str]
 ```
 {: .sig #destructive_statements}
 
-The statements that remove data or an object that holds it: `DROP TABLE`, `DROP COLUMN`, `DROP TYPE`, `DROP VIEW`, `DROP MATERIALIZED VIEW`, `DROP DATABASE`, `DROP SCHEMA ... CASCADE`, a constraint drop, `TRUNCATE`, and `DELETE FROM`. Comments removed, whitespace collapsed. Skips index and key drops, and a plain `DROP SCHEMA`, which refuses a schema that holds anything.
+The statements that remove data or an object that contains it: `DROP TABLE`, `DROP COLUMN`, `DROP TYPE`, `DROP VIEW`, `DROP MATERIALIZED VIEW`, `DROP DATABASE`, `DROP SCHEMA ... CASCADE`, a constraint drop, `TRUNCATE`, and `DELETE FROM`. Comments removed, whitespace collapsed. Skips index and key drops, and a plain `DROP SCHEMA`, which refuses a non-empty schema.
 
 ```python
 summarize(migration, state, compiler=None) -> PendingSummary
@@ -620,7 +620,7 @@ summarize(migration, state, compiler=None) -> PendingSummary
 
 One migration reduced to its id, state, repeatable flag, statement count, and destructive statements. Ddl steps render for the given compiler's dialect, or ANSI when none is given.
 
-`PendingSummary(id, state, repeatable, sql, destructive)` holds that summary. `sql` is `None` for a callable step, which has no SQL to count. Each statement in it is a `MigrationStatement`.
+`PendingSummary(id, state, repeatable, sql, destructive)` carries that summary. `sql` is `None` for a callable step, which has no SQL to count. Each statement in it is a `MigrationStatement`.
 
 ```python
 MigrationStatement(statement, migration_id=None, transactional=True)
