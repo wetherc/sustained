@@ -292,7 +292,7 @@ applied  001_create_venues
 applied  002_create_shows
 ```
 
-`sustained down --steps 1` reverts the newest migration. `sustained down --to 001_create_venues` reverts until that migration is the newest applied.
+`sustained down --steps 1` reverts the newest migration. `--steps` must be 1 or more. `sustained down --to 001_create_venues` reverts until that migration is the newest applied.
 
 A rehearsal proves the statements are valid and that the down steps reverse them. It does not indicate anything about how long they take to execute on a production-sized table.
 

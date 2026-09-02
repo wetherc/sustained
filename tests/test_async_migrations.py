@@ -59,6 +59,16 @@ class TestAsyncMigrator(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await migrator.down_to("a"), ["b"])
         self.assertEqual(await migrator.applied(), ["a"])
 
+    async def test_down_refuses_a_step_count_below_one(self):
+        migrator = AsyncMigrator(self.adapter, self.migrations())
+        await migrator.up()
+        for steps in (-1, 0):
+            with self.subTest(steps=steps):
+                with self.assertRaises(ValueError) as caught:
+                    await migrator.down(steps=steps)
+                self.assertIn("steps must be 1 or more", str(caught.exception))
+        self.assertEqual(await migrator.applied(), ["a", "b"])
+
     async def test_failed_step_rolls_back(self):
         migrations = [
             Migration(

@@ -364,6 +364,18 @@ def checked_unique_ids(migrations: Sequence[Migration]) -> None:
         raise ValueError(f"Duplicate migration ids: {duplicates}.")
 
 
+def _checked_steps(steps: int) -> int:
+    """
+    Raises when a revert count is below 1. A negative count would make
+    `applied[-steps:]` a slice from the front of the list, which reverts
+    almost every applied migration instead of the few the caller asked
+    for.
+    """
+    if steps < 1:
+        raise ValueError(f"steps must be 1 or more, got {steps}.")
+    return steps
+
+
 class Digest(Protocol):
     """The part of a hashlib hash the rehearsal keys use."""
 
@@ -2355,14 +2367,17 @@ class Migrator:
         tracking row, which holds the statements it ran, so a process that
         never saw the diff can still take it back. Every other migration
         must be registered with this migrator.
+
+        `steps` counts migrations and must be 1 or more.
         """
+        _checked_steps(steps)
         with self._lock_scope():
             self._ensure_tracking_table()
             applied = self._applied_versioned()
             by_id = {m.id: m for m in self._migrations}
             placeholder = self._compiler.placeholder()
             reverted: List[str] = []
-            for migration_id in reversed(applied[-steps:] if steps else []):
+            for migration_id in reversed(applied[-steps:]):
                 migration = by_id.get(migration_id) or self._generated_migration(
                     migration_id
                 )

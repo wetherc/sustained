@@ -104,6 +104,21 @@ class CliTestCase(CliBase):
         self.assertIn("reverted 002_flag", out)
         self.assertIn("users", self.table_names())
 
+    def test_down_refuses_a_step_count_below_one(self):
+        self.run_cli("migrate")
+        for steps in ("0", "-1"):
+            with self.subTest(steps=steps):
+                with self.assertRaises(SystemExit) as caught:
+                    self.run_cli("down", "--steps", steps)
+                self.assertEqual(caught.exception.code, 2)
+        self.assertIn("flags", self.table_names())
+        self.assertIn("users", self.table_names())
+
+    def test_down_refuses_a_step_count_that_is_not_a_number(self):
+        with self.assertRaises(SystemExit) as caught:
+            self.run_cli("down", "--steps", "two")
+        self.assertEqual(caught.exception.code, 2)
+
     def test_validate_reports_problems_and_exit_code(self):
         self.run_cli("migrate")
         code, out, _ = self.run_cli("validate")

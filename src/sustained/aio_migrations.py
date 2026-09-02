@@ -42,6 +42,7 @@ from sustained.migrations import (
     Rehearsal,
     RehearsalResult,
     _check_rehearsable,
+    _checked_steps,
     _destructive_in,
     _destructive_prefix_keys,
     _down_sweep,
@@ -962,14 +963,17 @@ class AsyncMigrator:
         A migration generated from the models is reverted from its own
         tracking row, which holds the statements it ran. Every other
         migration must be registered with this migrator.
+
+        `steps` counts migrations and must be 1 or more.
         """
+        _checked_steps(steps)
         async with self._lock_scope():
             await self._ensure_tracking_table()
             applied = await self._applied_versioned()
             by_id = {m.id: m for m in self._migrations}
             placeholder = self._compiler.placeholder()
             reverted: List[str] = []
-            for migration_id in reversed(applied[-steps:] if steps else []):
+            for migration_id in reversed(applied[-steps:]):
                 migration = by_id.get(migration_id) or await self._generated_migration(
                     migration_id
                 )

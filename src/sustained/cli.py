@@ -718,6 +718,21 @@ def _cmd_baseline(
     return 0
 
 
+def _step_count(value: str) -> int:
+    """
+    Reads a --steps value and refuses anything below 1. A count of 0 or
+    less asks the migrator to revert a number of migrations it cannot
+    revert, so the command stops at the command line instead.
+    """
+    try:
+        steps = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{value!r} is not a whole number.")
+    if steps < 1:
+        raise argparse.ArgumentTypeError("--steps must be 1 or more.")
+    return steps
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="sustained", description="Run sustained schema migrations."
@@ -778,7 +793,10 @@ def _build_parser() -> argparse.ArgumentParser:
     down = command("down", "Revert applied migrations, newest first.")
     group = down.add_mutually_exclusive_group()
     group.add_argument(
-        "--steps", type=int, default=1, help="How many migrations to revert."
+        "--steps",
+        type=_step_count,
+        default=1,
+        help="How many migrations to revert (1 or more).",
     )
     group.add_argument("--to", help="Revert until this id is the newest applied.")
 

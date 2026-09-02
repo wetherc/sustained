@@ -44,6 +44,8 @@ migrator.down(steps=2)         # revert the two newest
 migrator.down_to('auto_20260814...')  # revert until this id is newest
 ```
 
+`steps` counts migrations and must be 1 or more. A count below 1 raises `ValueError`, and `sustained down --steps 0` stops at the command line.
+
 A generated migration isn't materialized anywhere outside the actual execution, so its tracking row carries the statements it ran. A later process, on a later deploy, can revert it from that row without having the diff in hand. A rebuild, which has no down step, still cannot be reverted.
 
 Every applied migration is recorded in a tracking table, each runs inside a transaction, and a failing step rolls itself back and leaves earlier migrations applied.
@@ -437,7 +439,7 @@ $ sustained plan                    # what a run would do; exits 2 when work is 
 $ sustained status
 $ sustained rehearse                # run it all, forwards and back, then roll back
 $ sustained migrate                 # --target ID, --no-validate, --allow-out-of-order, --unrehearsed
-$ sustained down                    # --steps N or --to ID
+$ sustained down                    # --steps N (1 or more) or --to ID
 $ sustained validate                # exits 1 when problems exist
 $ sustained repair
 $ sustained script down             # print the SQL without running it
