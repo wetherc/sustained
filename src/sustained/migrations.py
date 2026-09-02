@@ -1550,6 +1550,11 @@ class Migrator:
         is what stops that. A driver with no `autocommit` attribute, or one
         already in autocommit, keeps the older behaviour: the block runs as
         it is and a commit follows it.
+
+        A driver that refuses to switch back leaves the connection in
+        autocommit for the rest of its life. That error is dropped, so
+        the error the block raised is the one the caller sees. Close the
+        connection and open a new one to get transaction control back.
         """
         connection = self._connection
         switchable = getattr(connection, "autocommit", None) is False
@@ -1561,9 +1566,23 @@ class Migrator:
             yield
         finally:
             if switchable:
-                setattr(connection, "autocommit", False)
+                self._restore_autocommit_quietly(connection)
             else:
                 self._commit_quietly()
+
+    @staticmethod
+    def _restore_autocommit_quietly(connection: Connection) -> None:
+        """
+        Turns the driver's own transaction control back on. A driver that
+        refuses the switch keeps the connection in autocommit, and the
+        refusal is dropped: it runs in the `finally` of a block that may
+        already be raising, and the migration's own error is the one
+        worth reporting.
+        """
+        try:
+            setattr(connection, "autocommit", False)
+        except Exception:
+            pass
 
     def _execute(
         self, cursor: "Cursor", sql: str, params: Tuple[SqlValue, ...]

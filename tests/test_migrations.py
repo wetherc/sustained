@@ -532,6 +532,16 @@ class SwitchingConnection:
         self._connection.rollback()
 
 
+class RefusingSwitchConnection(SwitchingConnection):
+    """A connection whose driver refuses to leave autocommit again."""
+
+    def __setattr__(self, name, value):
+        if name == "autocommit" and value is False and self.switches:
+            self.switches.append(value)
+            raise RuntimeError("cannot leave autocommit")
+        super().__setattr__(name, value)
+
+
 class TestNonTransactionalMigrations(MigrationTestCase):
     def test_migrations_are_transactional_by_default(self):
         self.assertTrue(Migration("m", up="SELECT 1").transactional)
@@ -610,6 +620,25 @@ class TestNonTransactionalMigrations(MigrationTestCase):
         with self.assertRaises(sqlite3.OperationalError):
             migrator.up()
         self.assertFalse(connection.autocommit)
+
+    def test_a_refused_switch_back_keeps_the_migration_error(self):
+        connection = RefusingSwitchConnection(self.conn)
+        migrator = Migrator(
+            connection, [Migration("nt", up="THIS IS NOT SQL", transactional=False)]
+        )
+        with self.assertRaises(sqlite3.OperationalError) as caught:
+            migrator.up()
+        self.assertEqual(getattr(caught.exception, "migration_id", None), "nt")
+        self.assertEqual(connection.switches, [True, False])
+
+    def test_a_refused_switch_back_after_a_clean_run_is_dropped(self):
+        connection = RefusingSwitchConnection(self.conn)
+        migrator = Migrator(
+            connection,
+            [Migration("nt", up="CREATE TABLE nt (x INTEGER)", transactional=False)],
+        )
+        self.assertEqual(migrator.up(), ["nt"])
+        self.assertEqual(connection.switches, [True, False])
 
     def test_a_rehearsal_still_runs_it_inside_the_rehearsal(self):
         migrator = Migrator(
