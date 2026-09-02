@@ -2,6 +2,7 @@
 Async migration runner tests using the DbApiAsyncAdapter over SQLite.
 """
 
+import json
 import re
 import sqlite3
 import unittest
@@ -871,3 +872,147 @@ class TestRecordedSchemaRead(unittest.TestCase):
         self.assertIsNone(connection.close())
         with self.assertRaises(ValueError):
             connection.cursor().executemany("SELECT 1", [(1,)])
+
+
+class TestAsyncModelRuns(unittest.IsolatedAsyncioTestCase):
+    """up(models=...) and rehearse(models=...) on the async migrator."""
+
+    def setUp(self):
+        self.conn = sqlite3.connect(":memory:", check_same_thread=False)
+        self.adapter = DbApiAsyncAdapter(self.conn)
+
+    def tearDown(self):
+        self.conn.close()
+
+    def models(self, columns=None):
+        from sustained.model import Model
+        from sustained.schema import Integer, Text
+
+        return [
+            type(
+                "AsyncRunUser",
+                (Model,),
+                {
+                    "tableName": "async_run_users",
+                    "tableColumns": columns
+                    or {"id": Integer(primary_key=True), "name": Text()},
+                },
+            )
+        ]
+
+    def migrations(self):
+        return [Migration("a", up="CREATE TABLE ta (id INTEGER)", down="DROP TABLE ta")]
+
+    def rows(self):
+        return self.conn.execute(
+            "SELECT id, generated, steps FROM sustained_migrations ORDER BY seq"
+        ).fetchall()
+
+    async def test_up_applies_the_generated_migration_last(self):
+        migrator = AsyncMigrator(self.adapter, self.migrations())
+        applied = await migrator.up(models=self.models())
+        self.assertEqual(applied[0], "a")
+        self.assertTrue(applied[1].startswith("auto_"))
+        self.assertIn("async_run_users", table_names(self.conn))
+        self.assertEqual(await migrator.drift(self.models()), [])
+
+    async def test_the_generated_statements_live_on_the_tracking_row(self):
+        migrator = AsyncMigrator(self.adapter, [])
+        await migrator.up(models=self.models(), migration_id="auto_run")
+        rows = self.rows()
+        self.assertEqual(rows[0][0], "auto_run")
+        self.assertEqual(rows[0][1], 1)
+        stored = json.loads(rows[0][2])
+        self.assertEqual(
+            stored["up"],
+            ["CREATE TABLE async_run_users (id INTEGER PRIMARY KEY, name TEXT)"],
+        )
+        self.assertEqual(stored["down"], ["DROP TABLE IF EXISTS async_run_users"])
+
+    async def test_a_generated_migration_reverts_from_its_row(self):
+        migrator = AsyncMigrator(self.adapter, [])
+        await migrator.up(models=self.models(), migration_id="auto_run")
+        self.assertEqual(await migrator.down(), ["auto_run"])
+        self.assertNotIn("async_run_users", table_names(self.conn))
+
+    async def test_a_registered_migration_stores_no_statements(self):
+        migrator = AsyncMigrator(self.adapter, self.migrations())
+        await migrator.up(models=self.models())
+        self.assertEqual(self.rows()[0], ("a", 0, None))
+
+    async def test_a_second_run_generates_nothing(self):
+        migrator = AsyncMigrator(self.adapter, [])
+        await migrator.up(models=self.models())
+        self.assertEqual(await migrator.up(models=self.models()), [])
+
+    async def test_models_and_a_target_are_refused(self):
+        migrator = AsyncMigrator(self.adapter, self.migrations())
+        with self.assertRaises(ValueError):
+            await migrator.up(target="a", models=self.models())
+
+    async def test_a_blocked_generated_migration_is_not_registered(self):
+        from sustained.exceptions import GuardBlocked
+        from sustained.guards import BLOCK, Verdict
+
+        def no_new_tables(statements, dialect):
+            return [
+                Verdict("no_new_tables", BLOCK, s)
+                for s in statements
+                if "async_run_users" in s
+            ]
+
+        migrator = AsyncMigrator(
+            self.adapter, self.migrations(), guards=[no_new_tables]
+        )
+        with self.assertRaises(GuardBlocked) as caught:
+            await migrator.up(models=self.models())
+        self.assertEqual(caught.exception.applied, ["a"])
+        self.assertNotIn("async_run_users", table_names(self.conn))
+        self.assertEqual([m.id for m in migrator._migrations], ["a"])
+
+    async def test_a_generated_drop_needs_a_rehearsal(self):
+        from sustained.schema import Integer
+
+        self.conn.execute("CREATE TABLE async_run_users (id INTEGER PRIMARY KEY)")
+        self.conn.execute("CREATE TABLE spare (id INTEGER)")
+        self.conn.commit()
+        migrator = AsyncMigrator(self.adapter, [])
+        models = self.models({"id": Integer(primary_key=True)})
+        with self.assertRaises(RehearsalRequired):
+            await migrator.up(models=models, allow_drops=True)
+        self.assertIn("spare", table_names(self.conn))
+        applied = await migrator.up(models=models, allow_drops=True, unrehearsed=True)
+        self.assertEqual(len(applied), 1)
+        self.assertNotIn("spare", table_names(self.conn))
+
+    async def test_rehearse_with_models_reports_the_generated_migration(self):
+        migrator = AsyncMigrator(self.adapter, self.migrations())
+        rehearsal = await migrator.rehearse(models=self.models())
+        self.assertEqual([r.id for r in rehearsal][0], "a")
+        generated = rehearsal[1]
+        self.assertTrue(generated.id.startswith("auto_"))
+        self.assertEqual(generated.landed, [])
+        self.assertTrue(rehearsal.ok)
+        self.assertTrue(rehearsal.recorded)
+        self.assertNotIn("async_run_users", table_names(self.conn))
+        self.assertNotIn("ta", table_names(self.conn))
+        self.assertEqual(await migrator.applied(), [])
+
+    async def test_a_rehearsal_with_models_covers_the_run_without_them(self):
+        migrator = AsyncMigrator(self.adapter, self.migrations())
+        rehearsal = await migrator.rehearse(models=self.models())
+        self.assertTrue(await migrator.rehearsed(rehearsal.key))
+        pending_only = await migrator.rehearse()
+        self.assertTrue(await migrator.rehearsed(pending_only.key))
+
+    async def test_rehearse_with_models_and_nothing_pending_still_diffs(self):
+        migrator = AsyncMigrator(self.adapter, [])
+        rehearsal = await migrator.rehearse(models=self.models())
+        self.assertEqual(len(rehearsal), 1)
+        self.assertEqual(rehearsal[0].landed, [])
+        self.assertNotIn("async_run_users", table_names(self.conn))
+
+    async def test_rehearse_without_models_reports_no_landing(self):
+        migrator = AsyncMigrator(self.adapter, self.migrations())
+        rehearsal = await migrator.rehearse()
+        self.assertIsNone(rehearsal[0].landed)

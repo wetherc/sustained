@@ -490,6 +490,8 @@ Both migrators compute the key the same way, so a row written by one migrator op
 
 `await migrator.plan(models)` and `await migrator.drift(models)` diff the models against the database and return what `Migrator.plan()` and `Migrator.drift()` return. Both read the schema through the adapter and write nothing.
 
+`up(models=[...])` and `rehearse(models=[...])` take the same arguments the synchronous ones take, and behave the same way: the generated migration runs last of the versioned ones, its statements go on its tracking row rather than into the migrations directory, and it joins the registered list only after it applied.
+
 A callable step receives the adapter rather than a connection, and its return value is awaited when it is awaitable.
 
 ## Migrations as SQL files

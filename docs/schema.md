@@ -675,7 +675,7 @@ migrator.record_rehearsal(rehearsal.key)       # write one by hand
 
 A failing rehearsal records its failure under the same key, so the refusal reads `The last rehearsal of these statements failed` rather than reporting no rehearsal at all.
 
-`AsyncMigrator` has the same methods, the same flag on `up()`, and the same key function, so a row written by either migrator opens the gate for the other on the same database. The async rehearsal covers registered migrations only, so its row never includes a generated migration.
+`AsyncMigrator` has the same methods, the same flag on `up()`, and the same key function, so a row written by either migrator opens the gate for the other on the same database. Both migrators cover a generated migration the same way, so a rehearsal run by one opens the gate for the other.
 
 ### Rehearsing on a scratch database
 
@@ -700,7 +700,7 @@ if rehearsal.ok:
     ))
 ```
 
-In Python, `migrator.rehearse()` returns a `Rehearsal`: a list of `RehearsalResult(id, up_ok, down_ok, error, landed, reversed)` with `key`, `recorded`, and `ok` on it. `down_ok` is `None` when nothing was proved, and `error` then says why. `landed` and `reversed` follow the same rule as the JSON output: `None` not checked, `[]` proved, a list of lines when it failed. Pass `rehearse(models=[User, Show])` to rehearse the model diff too, and `rehearse(scratch=True)` for a connection to a database you can throw away. `AsyncMigrator.rehearse()` is the same on an adapter, apart from `models`: diffing models against a database is a synchronous path, so the async rehearsal covers registered migrations only.
+In Python, `migrator.rehearse()` returns a `Rehearsal`: a list of `RehearsalResult(id, up_ok, down_ok, error, landed, reversed)` with `key`, `recorded`, and `ok` on it. `down_ok` is `None` when nothing was proved, and `error` then says why. `landed` and `reversed` follow the same rule as the JSON output: `None` not checked, `[]` proved, a list of lines when it failed. Pass `rehearse(models=[User, Show])` to rehearse the model diff too, and `rehearse(scratch=True)` for a connection to a database you can throw away. `AsyncMigrator.rehearse()` is the same on an adapter, `models` included.
 
 ## Guards
 

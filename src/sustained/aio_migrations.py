@@ -6,6 +6,11 @@ same tracking table, same ordering rules. String and list steps execute
 through the adapter; callable steps receive the adapter and are awaited
 when they return a coroutine. Each migration runs inside an
 async_transaction() block.
+
+The whole Migrator surface is here, model diffing included. script(),
+plan(), drift(), up(models=[...]) and rehearse(models=[...]) return what
+the synchronous ones return. The schema read runs through the adapter,
+and the diffing code reads the recording of that read.
 """
 
 from __future__ import annotations
@@ -23,6 +28,7 @@ from typing import (
     List,
     Optional,
     Sequence,
+    Set,
     Tuple,
     Type,
     cast,
@@ -61,6 +67,8 @@ from sustained.migrations import (
     _restore_migration,
     _reversal_provable,
     _step_elements,
+    _stored_steps,
+    _tag_applied,
     _tag_migration,
     _tracking_column_defs,
     _upgrade_column_def,
@@ -84,7 +92,7 @@ from sustained.types import RowValue, SqlValue
 if TYPE_CHECKING:
     from sustained.autogenerate import IntrospectedTable
     from sustained.compilers.base import Compiler
-    from sustained.guards import Guard
+    from sustained.guards import Guard, Verdict
     from sustained.introspect import Snapshot
     from sustained.model import Model
     from sustained.schema import TableOptions
@@ -637,7 +645,11 @@ class AsyncMigrator:
             return recorded
 
     async def _record_failure(
-        self, migration: Migration, seq: int, update: bool = False
+        self,
+        migration: Migration,
+        seq: int,
+        update: bool = False,
+        generated: bool = False,
     ) -> None:
         """
         Writes a failed-attempt row after a migration step raised on an
@@ -655,10 +667,19 @@ class AsyncMigrator:
         try:
             timestamp = datetime.now(timezone.utc).isoformat()
             checksum = migration_checksum(migration)
+            steps = _stored_steps(migration, generated, self._compiler)
             if update:
                 await self._execute(
                     self._update_sql(),
-                    (checksum, timestamp, None, False, False, None, migration.id),
+                    (
+                        checksum,
+                        timestamp,
+                        None,
+                        False,
+                        generated,
+                        steps,
+                        migration.id,
+                    ),
                 )
             else:
                 await self._execute(
@@ -670,8 +691,8 @@ class AsyncMigrator:
                         timestamp,
                         None,
                         False,
-                        False,
-                        None,
+                        generated,
+                        steps,
                     ),
                 )
             await self._adapter.commit()
@@ -683,6 +704,13 @@ class AsyncMigrator:
         target: Optional[str] = None,
         validate: bool = True,
         allow_out_of_order: bool = False,
+        models: Optional[List[Type["Model"]]] = None,
+        allow_drops: bool = False,
+        ignore_changed_columns: bool = False,
+        migration_id: Optional[str] = None,
+        renames: Optional[Dict[str, str]] = None,
+        table_renames: Optional[Dict[str, str]] = None,
+        type_casts: Optional[Dict[str, str]] = None,
         unrehearsed: bool = False,
     ) -> List[str]:
         """
@@ -701,6 +729,17 @@ class AsyncMigrator:
         and the next full up() runs it. The target must name a versioned
         migration.
 
+        With models, the run applies the versioned migrations first, then
+        diffs the models against the database and applies the generated
+        migration, then the repeatables. The diff is taken after the
+        pending migrations have run, so it sees the schema they left and
+        never regenerates a table one of them just created. Additive
+        changes generate reversible steps, so down() takes them back.
+        Drops need allow_drops=True and do not reverse. A generated
+        migration always runs last of the versioned ones, so it cannot be
+        combined with a target, and the remaining arguments are the diff
+        options plan() takes.
+
         A run that would remove data stops unless a passing rehearsal
         covers exactly these statements against exactly this applied
         history. Rehearse first, or pass unrehearsed=True to apply them
@@ -708,18 +747,30 @@ class AsyncMigrator:
 
         The migrator's guards read the statements before they run. A
         blocking verdict raises GuardBlocked and nothing is applied; a
-        warning prints on stderr. The migrator's callbacks fire around
-        the run, and each is awaited when it returns an awaitable.
-
-        There is no models argument here. Diffing models against a
-        database is a synchronous path, so this run covers the
-        registered migrations only.
+        warning prints on stderr. Both gates read the registered
+        migrations before anything runs, and read them again together
+        with the generated migration, whose statements exist only once
+        the registered ones have applied. A block or a missing row at
+        that second reading leaves the registered migrations applied, and
+        lists their ids on the exception's `applied` attribute. The
+        migrator's callbacks fire around the run, and each is awaited
+        when it returns an awaitable.
         """
         callbacks = self._callbacks
         await self._fire(callbacks.before_migrate, self._adapter)
         try:
             applied = await self._run_up(
-                target, validate, allow_out_of_order, unrehearsed
+                target=target,
+                validate=validate,
+                allow_out_of_order=allow_out_of_order,
+                models=models,
+                allow_drops=allow_drops,
+                ignore_changed_columns=ignore_changed_columns,
+                migration_id=migration_id,
+                renames=renames,
+                table_renames=table_renames,
+                type_casts=type_casts,
+                unrehearsed=unrehearsed,
             )
         except Exception as error:
             await self._fire_on_error(error)
@@ -759,28 +810,48 @@ class AsyncMigrator:
         target: Optional[str],
         validate: bool,
         allow_out_of_order: bool,
+        models: Optional[List[Type["Model"]]],
+        allow_drops: bool,
+        ignore_changed_columns: bool,
+        migration_id: Optional[str],
+        renames: Optional[Dict[str, str]],
+        table_renames: Optional[Dict[str, str]],
+        type_casts: Optional[Dict[str, str]],
         unrehearsed: bool,
     ) -> List[str]:
         """The run itself, without the callbacks up() wraps it in."""
         from sustained.exceptions import MigrationError
 
-        migrations = self._versioned()
-        if target is not None:
-            ids = [m.id for m in migrations]
-            if target not in ids:
-                if any(m.id == target for m in self._repeatables()):
-                    raise ValueError(
-                        f"Migration target {target!r} is repeatable; a "
-                        "target must name a versioned migration."
-                    )
-                raise ValueError(f"Unknown migration target: {target!r}.")
-            migrations = migrations[: ids.index(target) + 1]
+        if models is not None and target is not None:
+            raise ValueError(
+                "up() cannot take both models and a target: the generated "
+                "migration always runs last, so a target would leave it out."
+            )
+        require_registered = models is None
 
         async with self._lock_scope():
+            if models is not None:
+                await self._ensure_tracking_table()
+
+            migrations = self._versioned()
+            if target is not None:
+                ids = [m.id for m in migrations]
+                if target not in ids:
+                    if any(m.id == target for m in self._repeatables()):
+                        raise ValueError(
+                            f"Migration target {target!r} is repeatable; a "
+                            "target must name a versioned migration."
+                        )
+                    raise ValueError(f"Unknown migration target: {target!r}.")
+                migrations = migrations[: ids.index(target) + 1]
+
             records = await self.applied_records()
             if validate:
                 problems = _validation_problems(
-                    self._migrations, records, allow_out_of_order
+                    self._migrations,
+                    records,
+                    allow_out_of_order,
+                    require_registered=require_registered,
                 )
                 if problems:
                     raise MigrationError(problems)
@@ -794,34 +865,77 @@ class AsyncMigrator:
                 for m in (self._repeatables() if target is None else [])
                 if not _is_current(records_by_id.get(m.id), migration_checksum(m), True)
             ]
-            # The order matches pending(), so a rehearsal of the same set
+            # The registered set is checked before anything runs. The
+            # order matches pending(), so a rehearsal of the same set
             # produces the same key.
-            run = versioned_now + repeatables_now
-            check_guards(self._guards, run, self._dialect)
-            await self._require_rehearsal_row(records, run, unrehearsed, target)
+            registered_run = versioned_now + repeatables_now
+            warned: Set["Verdict"] = set()
+            check_guards(self._guards, registered_run, self._dialect, warned)
+            await self._require_rehearsal_row(
+                records, registered_run, unrehearsed, target
+            )
+            final_run = list(registered_run)
             for migration in versioned_now:
                 await self._apply(migration, next_seq, update=False)
                 next_seq += 1
                 applied_now.append(migration.id)
+            if models is not None:
+                generated = await self.plan(
+                    models,
+                    allow_drops=allow_drops,
+                    ignore_changed_columns=ignore_changed_columns,
+                    migration_id=migration_id,
+                    renames=renames,
+                    table_renames=table_renames,
+                    type_casts=type_casts,
+                )
+                if generated is not None:
+                    # The generated statements are known only now, after
+                    # the registered migrations left the schema they diff
+                    # against, so both gates run a second time before the
+                    # one migration they could not see. The registered
+                    # migrations are already applied and committed by
+                    # then, so a block here reports what it stopped after.
+                    final_run = registered_run + [generated]
+                    try:
+                        check_guards(self._guards, final_run, self._dialect, warned)
+                        await self._require_rehearsal_row(
+                            records, final_run, unrehearsed, target
+                        )
+                    except Exception as error:
+                        _tag_applied(error, applied_now)
+                        raise
+                    # The migration joins the registered list only after
+                    # it applied. A failed one left there would run again
+                    # on the next up() of a long-lived migrator, and would
+                    # run alongside a fresh diff of the same models.
+                    await self._apply(generated, next_seq, update=False, generated=True)
+                    self._migrations.append(generated)
+                    next_seq += 1
+                    applied_now.append(generated.id)
             for migration in repeatables_now:
                 record = records_by_id.get(migration.id)
                 await self._apply(migration, next_seq, update=record is not None)
                 if record is None:
                     next_seq += 1
                 applied_now.append(migration.id)
-            if unrehearsed and _destructive_in(run, self._compiler):
+            if unrehearsed and _destructive_in(final_run, self._compiler):
                 # The proof was waived, so the row says so. It never
                 # unlocks a later run: only 'passed' does that.
                 await self.record_rehearsal(
-                    rehearsal_key(records, run), REHEARSAL_OVERRIDE
+                    rehearsal_key(records, final_run), REHEARSAL_OVERRIDE
                 )
             return applied_now
 
-    async def _apply(self, migration: Migration, seq: int, update: bool) -> None:
+    async def _apply(
+        self, migration: Migration, seq: int, update: bool, generated: bool = False
+    ) -> None:
         """
         Runs one migration's up step and records it: an INSERT for a
         first run, an UPDATE in place when a repeatable re-runs, keeping
-        its original seq.
+        its original seq. `generated` marks a migration the diff against
+        the models produced, whose id nothing on disk carries. Its
+        statements go on the tracking row, so down() can take it back.
         """
         try:
             async with self._migration_scope(migration.transactional):
@@ -830,6 +944,7 @@ class AsyncMigrator:
                 elapsed_ms = int((time.perf_counter() - started) * 1000)
                 timestamp = datetime.now(timezone.utc).isoformat()
                 checksum = migration_checksum(migration)
+                steps = _stored_steps(migration, generated, self._compiler)
                 if update:
                     await self._execute(
                         self._update_sql(),
@@ -838,8 +953,8 @@ class AsyncMigrator:
                             timestamp,
                             elapsed_ms,
                             True,
-                            False,
-                            None,
+                            generated,
+                            steps,
                             migration.id,
                         ),
                     )
@@ -853,16 +968,28 @@ class AsyncMigrator:
                             timestamp,
                             elapsed_ms,
                             True,
-                            False,
-                            None,
+                            generated,
+                            steps,
                         ),
                     )
         except Exception as error:
-            await self._record_failure(migration, seq, update=update)
+            await self._record_failure(
+                migration, seq, update=update, generated=generated
+            )
             _tag_migration(error, migration.id)
             raise
 
-    async def rehearse(self, scratch: bool = False) -> Rehearsal:
+    async def rehearse(
+        self,
+        scratch: bool = False,
+        models: Optional[List[Type["Model"]]] = None,
+        allow_drops: bool = False,
+        ignore_changed_columns: bool = False,
+        migration_id: Optional[str] = None,
+        renames: Optional[Dict[str, str]] = None,
+        table_renames: Optional[Dict[str, str]] = None,
+        type_casts: Optional[Dict[str, str]] = None,
+    ) -> Rehearsal:
         """
         Runs every pending migration up, then back down, inside one
         transaction, and rolls that transaction back. Returns one result
@@ -870,13 +997,17 @@ class AsyncMigrator:
         Mirrors Migrator.rehearse(), including the dialect check and the
         scratch=True waiver for a database that can be thrown away.
 
+        With models, the run rehearses what up(models=[...]) would apply:
+        the generated migration joins the pending list for this run only,
+        and its result reports whether the schema then matched the models.
+        The remaining arguments are the diff options up() takes, and they
+        should match the ones the real run will use.
+
         The schema is read before the run and again after the down sweep,
         and a difference between the two means a down step ran without
         taking its change back. The comparison is only made when every
         step in the run reversed. Tables and columns are compared;
-        indexes, constraints, and defaults are not. There is no models
-        argument here: schema diffing against models is a synchronous
-        path, so the async rehearsal covers registered migrations only.
+        indexes, constraints, and defaults are not.
 
         A passing run leaves a rehearsal row behind, which up() reads before it
         applies anything that removes data. A scratch rehearsal records
@@ -907,11 +1038,15 @@ class AsyncMigrator:
             await self.validate()
             pending = await self.pending()
             record_list = await self.applied_records()
-            if not pending:
+            if not pending and models is None:
                 return Rehearsal([], rehearsal_key(record_list, []))
             records = {r.id: r for r in record_list}
             seq = _next_seq(record_list)
             before = await self._snapshot()
+            # What the row will cover: the pending set, plus the
+            # generated migration once the diff produces one.
+            attempted: List[Migration] = list(pending)
+            has_drift = False
             self._rehearsing = True
             try:
                 # Close whatever transaction the reads above opened, so the
@@ -922,16 +1057,59 @@ class AsyncMigrator:
                     await self._adapter.execute(begin, ())
                 ran: List[Migration] = []
                 up_error: Optional[Tuple[str, str]] = None
-                for migration in pending:
-                    try:
-                        await self._apply(
-                            migration, seq, update=migration.id in records
-                        )
-                    except Exception as error:
-                        up_error = (migration.id, str(error))
-                        break
-                    seq += 1
-                    ran.append(migration)
+
+                async def apply_each(group: List[Migration]) -> None:
+                    nonlocal seq, up_error
+                    for migration in group:
+                        try:
+                            await self._apply(
+                                migration, seq, update=migration.id in records
+                            )
+                        except Exception as error:
+                            up_error = (migration.id, str(error))
+                            return
+                        seq += 1
+                        ran.append(migration)
+
+                # The order matches up(): the versioned migrations, then
+                # the generated one, then the repeatables, which may read
+                # objects the generated migration creates.
+                await apply_each([m for m in pending if not m.repeatable])
+                landed: Dict[str, List[str]] = {}
+                if models is not None and up_error is None:
+                    # The diff is taken here, inside the rehearsal, so it
+                    # sees the schema the pending migrations just left. The
+                    # generated migration joins the run without being
+                    # registered: nothing outside the rehearsal should see a
+                    # migration the rollback is about to take back.
+                    drift = await self.plan(
+                        models,
+                        allow_drops=allow_drops,
+                        ignore_changed_columns=ignore_changed_columns,
+                        migration_id=migration_id,
+                        renames=renames,
+                        table_renames=table_renames,
+                        type_casts=type_casts,
+                    )
+                    if drift is not None:
+                        attempted.append(drift)
+                        has_drift = True
+                        try:
+                            await self._apply(drift, seq, update=False, generated=True)
+                        except Exception as error:
+                            up_error = (drift.id, str(error))
+                        else:
+                            seq += 1
+                            ran.append(drift)
+                            # The renames have already run, so the schema
+                            # holds the new names. Passing the hints again
+                            # would ask to rename objects that are gone.
+                            landed[drift.id] = await self.drift(
+                                models,
+                                ignore_changed_columns=ignore_changed_columns,
+                            )
+                if up_error is None:
+                    await apply_each([m for m in pending if m.repeatable])
                 outcomes = {} if up_error else await self._rehearse_down(ran)
                 reverted = None
                 if before is not None and _reversal_provable(ran, outcomes):
@@ -940,19 +1118,24 @@ class AsyncMigrator:
                     after = await self._snapshot()
                     if after is not None:
                         reverted = diff_snapshots(before, after)
-                results = _rehearsal_results(ran, up_error, outcomes, None, reverted)
+                results = _rehearsal_results(ran, up_error, outcomes, landed, reverted)
             finally:
                 self._rehearsing = False
                 await self._roll_back_rehearsal()
             # The rehearsal row is written after the rollback, in its own
             # committed transaction, and still inside the lock.
-            key = rehearsal_key(record_list, pending)
+            key = rehearsal_key(record_list, attempted)
             passed = not any(rehearsal_failed(r) for r in results)
             recorded = False
             if not scratch:
                 await self.record_rehearsal(
                     key, REHEARSAL_PASSED if passed else REHEARSAL_FAILED
                 )
+                if passed and has_drift:
+                    # A run without models applies the registered
+                    # migrations and stops there, which this rehearsal
+                    # also proved.
+                    await self.record_rehearsal(rehearsal_key(record_list, pending))
                 if passed:
                     for prefix_key in _destructive_prefix_keys(
                         record_list, pending, self._compiler
