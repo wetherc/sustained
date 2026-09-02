@@ -526,24 +526,9 @@ def _diff_columns(
                     (table_name, name, actual_comment, expected_comment)
                 )
         expected_rendered = compiler.compile_column_type(coldef)
-        if coldef.type_name == "ENUM" and compiler.enum_strategy() == "native":
-            # A native enum column matches on its type's name; value
-            # differences live on the type itself and are reported in
-            # changed_enum_types, not here.
-            type_changed = not _actual_column_is_enum(actual_col, coldef)
-        else:
-            type_changed = compiler.normalize_diff_type(
-                normalize_type(expected_rendered)
-            ) != compiler.normalize_diff_type(normalize_type(actual_col.raw_type))
-            if not type_changed:
-                expected_params = type_params(expected_rendered)
-                actual_params = type_params(actual_col.raw_type)
-                if (
-                    expected_params is not None
-                    and actual_params is not None
-                    and expected_params != actual_params
-                ):
-                    type_changed = True
+        type_changed = _column_type_changed(
+            compiler, coldef, expected_rendered, actual_col
+        )
         # SQLite reports INTEGER PRIMARY KEY as nullable, so nullability
         # is only compared on non-key columns.
         null_changed = (
@@ -565,10 +550,52 @@ def _diff_columns(
             diff.extra_columns.append((table_name, name))
 
 
+def _column_type_changed(
+    compiler: "Compiler",
+    coldef: "ColumnDef",
+    expected_rendered: str,
+    actual_col: IntrospectedColumn,
+) -> bool:
+    """
+    Whether a live column's type differs from the type the model
+    declares. The logical types are compared first. Length and precision
+    parameters only count when both sides carry them: an engine that
+    reports DATETIME for a column created as DATETIME(6) says nothing
+    about the precision, and treating that silence as a change would
+    rewrite the column and drop its default.
+
+    The diff and the step generator both call this, so a column can
+    never diff as changed and then generate a statement for a different
+    change.
+    """
+    if coldef.type_name == "ENUM" and compiler.enum_strategy() == "native":
+        # A native enum column matches on its type's name; value
+        # differences live on the type itself and are reported in
+        # changed_enum_types, not here.
+        return not _actual_column_is_enum(actual_col, coldef)
+    if compiler.normalize_diff_type(
+        normalize_type(expected_rendered)
+    ) != compiler.normalize_diff_type(normalize_type(actual_col.raw_type)):
+        return True
+    expected_params = type_params(expected_rendered)
+    actual_params = type_params(actual_col.raw_type)
+    return (
+        expected_params is not None
+        and actual_params is not None
+        and expected_params != actual_params
+    )
+
+
 def _diff_indexes(
     diff: SchemaDiff, model: Type["Model"], actual_table: IntrospectedTable
 ) -> None:
     declared_indexes = {i.name.lower(): i for i in model.indexes or []}
+    # The catalog reports column names lowercased, so the declaration is
+    # keyed the same way. A model that spells a column 'Email' still
+    # exempts the unique index behind it.
+    declared_columns = {
+        name.lower(): coldef for name, coldef in (model.tableColumns or {}).items()
+    }
     for name, index in declared_indexes.items():
         actual_index = actual_table.indexes.get(name)
         if actual_index is None:
@@ -590,7 +617,7 @@ def _diff_indexes(
         # primary key are not extras.
         if actual_index.unique and len(actual_index.columns) == 1:
             column = actual_index.columns[0]
-            coldef = (model.tableColumns or {}).get(column)
+            coldef = declared_columns.get(column)
             if coldef is not None and (coldef.unique or coldef.primary_key):
                 continue
         diff.extra_indexes.append((model.tableName or "", name, actual_index))
@@ -1070,19 +1097,7 @@ def autogenerate(
                 continue
             table_sql = model._qualified_table_sql()
             expected_type = compiler.compile_column_type(coldef)
-            if coldef.type_name == "ENUM" and compiler.enum_strategy() == "native":
-                type_changed = not _actual_column_is_enum(actual_col, coldef)
-            else:
-                type_changed = compiler.normalize_diff_type(
-                    normalize_type(expected_type)
-                ) != compiler.normalize_diff_type(
-                    normalize_type(actual_col.raw_type)
-                ) or (
-                    type_params(expected_type) or ""
-                ) != (
-                    type_params(actual_col.raw_type) or type_params(expected_type) or ""
-                )
-            if type_changed:
+            if _column_type_changed(compiler, coldef, expected_type, actual_col):
                 using = type_casts.get(f"{table}.{name}")
                 # A type change keeps the nullability the table has now.
                 # Tightening to NOT NULL is a separate step that runs

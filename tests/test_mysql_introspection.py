@@ -500,5 +500,65 @@ class TestMysqlDrift(unittest.TestCase):
         )
 
 
+class TestMariadbPrecisionDrift(unittest.TestCase):
+    """
+    MariaDB reports a datetime(6) column with its precision, and the
+    model's DATETIME carries none. The two must not read as a type
+    change: rewriting the column would truncate it to whole seconds.
+    """
+
+    def model(self, nullable):
+        return make_model(
+            "MariaEvent",
+            "events",
+            {
+                "id": Integer(primary_key=True, autoincrement=True),
+                "seen_at": Timestamp(nullable=nullable),
+            },
+        )
+
+    def catalog(self, nullable):
+        return FakeCursor(
+            columns=[
+                ("events", "id", "int", "NO", None),
+                ("events", "seen_at", "datetime(6)", "YES" if nullable else "NO", None),
+            ],
+            constraints=[("events", "PRIMARY KEY", "PRIMARY", "id")],
+        )
+
+    def test_precision_alone_is_not_drift(self):
+        diff = diff_schema(
+            FakeConnection(self.catalog(True)),
+            [self.model(True)],
+            dialect=Dialects.MYSQL,
+        )
+        self.assertEqual(diff.changed_columns, [])
+
+    def test_a_nullability_change_does_not_rewrite_the_type(self):
+        migration = autogenerate(
+            FakeConnection(self.catalog(False)),
+            [self.model(True)],
+            id="relax",
+            dialect=Dialects.MYSQL,
+        )
+        self.assertEqual(
+            migration.up, ["ALTER TABLE `events` MODIFY COLUMN `seen_at` DATETIME"]
+        )
+
+    def test_a_real_parameter_change_is_still_drift(self):
+        cursor = self.catalog(True)
+        cursor.columns[1] = ("events", "seen_at", "varchar(80)", "YES", None)
+        model = make_model(
+            "MariaEventText",
+            "events",
+            {
+                "id": Integer(primary_key=True, autoincrement=True),
+                "seen_at": String(120),
+            },
+        )
+        diff = diff_schema(FakeConnection(cursor), [model], dialect=Dialects.MYSQL)
+        self.assertEqual([c[1] for c in diff.changed_columns], ["seen_at"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -484,5 +484,58 @@ class TestPostgresDrift(unittest.TestCase):
         )
 
 
+class TestMixedCaseColumnNames(unittest.TestCase):
+    """
+    The catalog reports column names lowercased. A model that spells a
+    column with capitals must still match its own objects.
+    """
+
+    def model(self):
+        return make_model(
+            "PgMixed",
+            "members",
+            {
+                "id": Integer(primary_key=True, autoincrement=True),
+                "Email": String(120, unique=True),
+            },
+        )
+
+    def catalog(self):
+        return FakeCursor(
+            columns=[
+                column_row("members", "id", "integer", nullable="NO"),
+                column_row(
+                    "members",
+                    "email",
+                    "character varying",
+                    "varchar",
+                    char_length=120,
+                ),
+            ],
+            indexes=[
+                ("members", "members_pkey", True, True, "id"),
+                ("members", "members_email_key", True, False, "email"),
+            ],
+            foreign_keys=[],
+        )
+
+    def test_the_unique_index_behind_it_is_not_extra(self):
+        diff = diff_schema(
+            FakeConnection(self.catalog()), [self.model()], dialect=Dialects.POSTGRES
+        )
+        self.assertEqual(diff.extra_indexes, [])
+        self.assertEqual(diff.constraint_notes, [])
+
+    def test_no_drop_is_generated_under_allow_drops(self):
+        migration = autogenerate(
+            FakeConnection(self.catalog()),
+            [self.model()],
+            id="clean",
+            dialect=Dialects.POSTGRES,
+            allow_drops=True,
+        )
+        self.assertIsNone(migration)
+
+
 if __name__ == "__main__":
     unittest.main()
