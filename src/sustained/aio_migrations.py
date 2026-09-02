@@ -66,6 +66,7 @@ from sustained.migrations import (
     _render_elements,
     _restore_migration,
     _reversal_provable,
+    _skipped_results,
     _step_elements,
     _stored_steps,
     _tag_applied,
@@ -1018,6 +1019,12 @@ class AsyncMigrator:
         applies anything that removes data. A scratch rehearsal records
         nothing; the key comes back on the result for the caller to record
         on the database the next run will read.
+
+        A migration with transactional=False is left out of the run: its
+        statements refuse or ignore a transaction block, and the rehearsal
+        runs inside one. Its result reports up_ok as None with the reason,
+        the run can still pass, and the row a passing run records covers
+        it without proof.
         """
         from sustained.aio import in_async_transaction
 
@@ -1061,11 +1068,19 @@ class AsyncMigrator:
                 if begin is not None:
                     await self._adapter.execute(begin, ())
                 ran: List[Migration] = []
+                skipped: List[Migration] = []
                 up_error: Optional[Tuple[str, str]] = None
 
                 async def apply_each(group: List[Migration]) -> None:
                     nonlocal seq, up_error
                     for migration in group:
+                        if not migration.transactional:
+                            # The rehearsal runs inside one transaction,
+                            # which this migration's statements refuse or
+                            # ignore. It is reported as unproved rather
+                            # than run and failed.
+                            skipped.append(migration)
+                            continue
                         try:
                             await self._apply(
                                 migration, seq, update=migration.id in records
@@ -1099,20 +1114,28 @@ class AsyncMigrator:
                     if drift is not None:
                         attempted.append(drift)
                         has_drift = True
-                        try:
-                            await self._apply(drift, seq, update=False, generated=True)
-                        except Exception as error:
-                            up_error = (drift.id, str(error))
+                        if not drift.transactional:
+                            # A generated SQLite rebuild says
+                            # transactional=False, and its pragmas are
+                            # ignored inside the rehearsal transaction.
+                            skipped.append(drift)
                         else:
-                            seq += 1
-                            ran.append(drift)
-                            # The renames have already run, so the schema
-                            # holds the new names. Passing the hints again
-                            # would ask to rename objects that are gone.
-                            landed[drift.id] = await self.drift(
-                                models,
-                                ignore_changed_columns=ignore_changed_columns,
-                            )
+                            try:
+                                await self._apply(
+                                    drift, seq, update=False, generated=True
+                                )
+                            except Exception as error:
+                                up_error = (drift.id, str(error))
+                            else:
+                                seq += 1
+                                ran.append(drift)
+                                # The renames have already run, so the schema
+                                # holds the new names. Passing the hints again
+                                # would ask to rename objects that are gone.
+                                landed[drift.id] = await self.drift(
+                                    models,
+                                    ignore_changed_columns=ignore_changed_columns,
+                                )
                 if up_error is None:
                     await apply_each([m for m in pending if m.repeatable])
                 outcomes = {} if up_error else await self._rehearse_down(ran)
@@ -1123,7 +1146,9 @@ class AsyncMigrator:
                     after = await self._snapshot()
                     if after is not None:
                         reverted = diff_snapshots(before, after)
-                results = _rehearsal_results(ran, up_error, outcomes, landed, reverted)
+                results = _rehearsal_results(
+                    ran, up_error, outcomes, landed, reverted
+                ) + _skipped_results(skipped)
             finally:
                 self._rehearsing = False
                 await self._roll_back_rehearsal()
@@ -1166,27 +1191,19 @@ class AsyncMigrator:
         caller that replays a recording into it reads the same schemas
         here. A recording made with a different scope holds different
         statements, and the replay refuses it.
+
+        The read runs through async_introspect_schema(), so it takes the
+        same per-statement savepoints a guarded read takes: on Postgres
+        one failed catalog probe would otherwise stop every statement
+        after it in the same transaction.
         """
-        from sustained.introspect import Snapshot, _schema_plan
+        from sustained.introspect import async_introspect_schema
 
         read = SchemaRead()
-        plan = _schema_plan(self._dialect, tuple(schemas))
-        sql = next(plan)
-        while True:
-            try:
-                _, rows = await self._adapter.fetch(sql, ())
-            except Exception as error:
-                read.record(sql, [], error)
-                try:
-                    sql = plan.throw(error)
-                except StopIteration as stop:
-                    return cast(Snapshot, stop.value), read
-                continue
-            read.record(sql, list(rows))
-            try:
-                sql = plan.send(list(rows))
-            except StopIteration as stop:
-                return cast(Snapshot, stop.value), read
+        snapshot = await async_introspect_schema(
+            self._adapter, self._dialect, tuple(schemas), recorder=read
+        )
+        return snapshot, read
 
     async def plan(
         self,

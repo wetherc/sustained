@@ -287,11 +287,13 @@ class RehearsalResult(NamedTuple):
     """
     What a rehearsal proved about one migration.
 
-    `up_ok` reports whether the up step ran. `down_ok` reports whether the
-    down step ran, or None when nothing was proved, and `error` then says
-    why: the migration has no down step, the sweep never reached it, or it
-    is a repeatable, which has no down step to prove. When a step raised,
-    `error` holds the database error.
+    `up_ok` reports whether the up step ran, or None when the rehearsal
+    left the migration out: a migration with transactional=False runs
+    outside a transaction, and the rehearsal cannot roll such a run back.
+    `down_ok` reports whether the down step ran, or None when nothing was
+    proved, and `error` then says why: the migration has no down step, the
+    sweep never reached it, or it is a repeatable, which has no down step
+    to prove. When a step raised, `error` holds the database error.
 
     `landed` and `reversed` carry what the schema itself said. Each is
     None when it was not checked, an empty list when it was checked and
@@ -307,7 +309,7 @@ class RehearsalResult(NamedTuple):
     """
 
     id: str
-    up_ok: bool
+    up_ok: Optional[bool]
     down_ok: Optional[bool]
     error: Optional[str]
     landed: Optional[List[str]] = None
@@ -318,11 +320,12 @@ def rehearsal_failed(result: RehearsalResult) -> bool:
     """
     Whether one result stops a rehearsal from passing: a step that raised,
     a down step that failed, models that did not land, or a schema that
-    did not come back. A down step that could not be proved is not a
-    failure.
+    did not come back. A step that could not be proved, which includes a
+    migration the rehearsal left out for running outside a transaction, is
+    not a failure.
     """
     return (
-        not result.up_ok
+        result.up_ok is False
         or result.down_ok is False
         or bool(result.landed)
         or bool(result.reversed)
@@ -512,6 +515,12 @@ def _destructive_prefix_keys(
     """
     versioned = [m for m in pending if not m.repeatable]
     removes = [bool(_destructive_in([m], compiler)) for m in versioned]
+    # Checksums come out once per migration; the slice loops below would
+    # otherwise recompute each one per (start, end) pair.
+    tokens = [
+        (_rehearsal_token(migration_checksum(m), m.id) + "\n").encode("utf-8")
+        for m in versioned
+    ]
     history = _history_digest(applied)
     keys: List[str] = []
     seen: Set[str] = set()
@@ -522,7 +531,7 @@ def _destructive_prefix_keys(
         # the flag never goes back.
         destructive = False
         for index in range(start, len(versioned)):
-            _digest_migration(digest, versioned[index])
+            digest.update(tokens[index])
             destructive = destructive or removes[index]
             if destructive:
                 key = digest.copy().hexdigest()
@@ -531,7 +540,7 @@ def _destructive_prefix_keys(
                     keys.append(key)
         # The next start point begins where this one's first migration
         # has already applied.
-        _digest_migration(history, versioned[start])
+        history.update(tokens[start])
     return keys
 
 
@@ -1288,6 +1297,23 @@ def _rehearsal_results(
     if up_error is not None:
         results.append(RehearsalResult(up_error[0], False, None, up_error[1]))
     return results
+
+
+NOT_REHEARSABLE = (
+    "not rehearsed: the migration runs outside a transaction, and a "
+    "rehearsal cannot roll such a run back"
+)
+
+
+def _skipped_results(skipped: List[Migration]) -> List[RehearsalResult]:
+    """
+    One unproved result per migration the rehearsal left out. A migration
+    with transactional=False carries statements the engine refuses inside
+    a transaction block, and the rehearsal runs inside one, so running it
+    would fail a migration a real up() applies. Leaving it out keeps the
+    rest of the run provable; the result says nothing was proved for it.
+    """
+    return [RehearsalResult(m.id, None, None, NOT_REHEARSABLE) for m in skipped]
 
 
 def _tag_migration(error: BaseException, migration_id: str) -> None:
@@ -2439,6 +2465,13 @@ class Migrator:
         scratch=True when the connection points at a database that can be
         thrown away: the dialect check is then skipped, and the changes may
         survive the rollback.
+
+        A migration with transactional=False is left out of the run: its
+        statements refuse or ignore a transaction block, and the rehearsal
+        runs inside one. Its result reports up_ok as None with the reason,
+        the run can still pass, and the row a passing run records covers
+        it without proof. What such a migration does can only be seen by
+        running it.
         """
         from sustained.execution import in_transaction
 
@@ -2484,11 +2517,19 @@ class Migrator:
             with pinned_transaction(self._connection, self._dialect):
                 try:
                     ran: List[Migration] = []
+                    skipped: List[Migration] = []
                     up_error: Optional[Tuple[str, str]] = None
 
                     def apply_each(group: List[Migration]) -> None:
                         nonlocal seq, up_error
                         for migration in group:
+                            if not migration.transactional:
+                                # The rehearsal runs inside one transaction,
+                                # which this migration's statements refuse or
+                                # ignore. It is reported as unproved rather
+                                # than run and failed.
+                                skipped.append(migration)
+                                continue
                             try:
                                 self._apply(
                                     migration, seq, update=migration.id in records
@@ -2522,20 +2563,29 @@ class Migrator:
                         if drift is not None:
                             attempted.append(drift)
                             has_drift = True
-                            try:
-                                self._apply(drift, seq, update=False, generated=True)
-                            except Exception as error:
-                                up_error = (drift.id, str(error))
+                            if not drift.transactional:
+                                # A generated SQLite rebuild says
+                                # transactional=False, and its pragmas are
+                                # ignored inside the rehearsal transaction.
+                                skipped.append(drift)
                             else:
-                                seq += 1
-                                ran.append(drift)
-                                # The renames have already run, so the schema
-                                # holds the new names. Passing the hints again
-                                # would ask to rename objects that are gone.
-                                landed[drift.id] = self.drift(
-                                    models,
-                                    ignore_changed_columns=ignore_changed_columns,
-                                )
+                                try:
+                                    self._apply(
+                                        drift, seq, update=False, generated=True
+                                    )
+                                except Exception as error:
+                                    up_error = (drift.id, str(error))
+                                else:
+                                    seq += 1
+                                    ran.append(drift)
+                                    # The renames have already run, so the
+                                    # schema holds the new names. Passing the
+                                    # hints again would ask to rename objects
+                                    # that are gone.
+                                    landed[drift.id] = self.drift(
+                                        models,
+                                        ignore_changed_columns=ignore_changed_columns,
+                                    )
                     if up_error is None:
                         apply_each([m for m in pending if m.repeatable])
                     outcomes = {} if up_error else self._rehearse_down(ran)
@@ -2548,7 +2598,7 @@ class Migrator:
                             reverted = diff_snapshots(before, after)
                     results = _rehearsal_results(
                         ran, up_error, outcomes, landed, reverted
-                    )
+                    ) + _skipped_results(skipped)
                 finally:
                     self._rehearsing = False
                     self._roll_back_rehearsal()

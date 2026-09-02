@@ -1306,6 +1306,26 @@ def autogenerate(
 
     # Changed columns: ALTER in place where the dialect can, otherwise
     # mark the table for a rebuild.
+    def preserving_state(
+        coldef: "ColumnDef",
+        actual_col: IntrospectedColumn,
+        type_sql: str,
+        nullable: bool,
+    ) -> ColumnState:
+        # MySQL and SQL Server restate the whole column definition, so a
+        # statement aimed at the type or the nullability must carry the
+        # default and the comment the table has today, not the model's.
+        # A default or comment drift stays a note on the diff; folding it
+        # into this statement would change it silently, and the down step
+        # would write the model's value over the one the column held.
+        state = ColumnState.from_column(
+            compiler, coldef, type_sql=type_sql, nullable=nullable
+        )
+        return state._replace(
+            default_sql=actual_col.default,
+            comment=(actual_col.comment if compiler.stores_column_comments() else None),
+        )
+
     if not ignore_changed_columns:
         for table, name, actual_desc, expected_desc in diff.changed_columns:
             model = models_by_table[table.lower()]
@@ -1327,11 +1347,8 @@ def autogenerate(
                     compiler.compile_alter_column_type(
                         table_sql,
                         name,
-                        ColumnState.from_column(
-                            compiler,
-                            coldef,
-                            type_sql=expected_type,
-                            nullable=actual_col.nullable,
+                        preserving_state(
+                            coldef, actual_col, expected_type, actual_col.nullable
                         ),
                         using,
                     )
@@ -1340,11 +1357,11 @@ def autogenerate(
                     compiler.compile_alter_column_type(
                         table_sql,
                         name,
-                        ColumnState.from_column(
-                            compiler,
+                        preserving_state(
                             coldef,
-                            type_sql=actual_col.raw_type,
-                            nullable=actual_col.nullable,
+                            actual_col,
+                            actual_col.raw_type,
+                            actual_col.nullable,
                         ),
                     )
                 ):
@@ -1373,8 +1390,8 @@ def autogenerate(
                     compiler.compile_alter_column_nullability(
                         table_sql,
                         name,
-                        ColumnState.from_column(
-                            compiler, coldef, type_sql=expected_type
+                        preserving_state(
+                            coldef, actual_col, expected_type, coldef.nullable
                         ),
                     )
                 )
@@ -1382,11 +1399,8 @@ def autogenerate(
                     compiler.compile_alter_column_nullability(
                         table_sql,
                         name,
-                        ColumnState.from_column(
-                            compiler,
-                            coldef,
-                            type_sql=expected_type,
-                            nullable=actual_col.nullable,
+                        preserving_state(
+                            coldef, actual_col, expected_type, actual_col.nullable
                         ),
                     )
                 ):

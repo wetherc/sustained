@@ -502,6 +502,42 @@ class TestAsyncIntrospection(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(adapter.failures, 1)
         self.assertEqual(adapter.stack, [])
 
+    async def test_the_migrator_read_is_guarded_and_records_only_the_plan(self):
+        # AsyncMigrator._read_schema() reads through the shared guarded
+        # loop, so on Postgres one failed catalog probe does not poison
+        # the transaction for every later statement. The savepoints the
+        # guard takes stay out of the recording: a replay takes its own.
+        from sustained.aio_migrations import AsyncMigrator
+        from sustained.dialects import Dialects
+
+        class Adapter:
+            def __init__(self):
+                self.log = []
+
+            async def execute(self, sql, params):
+                self.log.append(sql)
+                return 0
+
+            async def fetch(self, sql, params):
+                self.log.append(sql)
+                if "pg_catalog.pg_index" in sql:
+                    raise RuntimeError("no pg_index here")
+                return [], []
+
+        adapter = Adapter()
+        migrator = AsyncMigrator(adapter, [], dialect=Dialects.POSTGRES)
+        _, read = await migrator._read_schema()
+        self.assertIn("ROLLBACK TO SAVEPOINT sustained_read", adapter.log)
+        self.assertIn("RELEASE SAVEPOINT sustained_read", adapter.log)
+        recorded = [step.sql for step in read._steps]
+        self.assertTrue(recorded)
+        self.assertFalse(
+            [s for s in recorded if "SAVEPOINT" in s],
+            "the guard's savepoints must not be recorded",
+        )
+        failed = [step for step in read._steps if step.error is not None]
+        self.assertTrue(any("pg_index" in step.sql for step in failed))
+
     async def test_a_refused_release_keeps_the_rows(self):
         # A driver may take a savepoint and refuse to release it. The
         # rows are already read, so the read keeps them.
@@ -636,6 +672,26 @@ class TestAsyncRehearse(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(table_names(self.conn), SUSTAINED_TABLES)
         self.assertEqual(await migrator.applied_records(), [])
+
+    async def test_a_non_transactional_migration_is_left_out(self):
+        migrations = self.migrations()
+        migrations.insert(
+            1,
+            Migration(
+                "001_nt",
+                up="CREATE TABLE rnt (id INTEGER)",
+                down="DROP TABLE rnt",
+                transactional=False,
+            ),
+        )
+        migrator = AsyncMigrator(self.adapter, migrations)
+        results = await migrator.rehearse()
+        self.assertTrue(results.ok)
+        by_id = {r.id: r for r in results}
+        self.assertIsNone(by_id["001_nt"].up_ok)
+        self.assertIn("outside a transaction", by_id["001_nt"].error)
+        self.assertTrue(by_id["001_a"].up_ok)
+        self.assertEqual(table_names(self.conn), SUSTAINED_TABLES)
 
     async def test_a_clean_sweep_proves_the_schema_came_back(self):
         migrator = AsyncMigrator(self.adapter, self.migrations())

@@ -25,6 +25,7 @@ from typing import (
     Mapping,
     NamedTuple,
     Optional,
+    Protocol,
     Sequence,
     Tuple,
     cast,
@@ -36,6 +37,22 @@ from sustained.types import Connection, RowValue
 
 if TYPE_CHECKING:
     from sustained.aio import AsyncAdapter
+
+
+class SchemaRecorder(Protocol):
+    """
+    What async_introspect_schema() needs from a recorder: one call per
+    plan statement, with the rows it returned or the error it raised.
+    SchemaRead in sustained.migrations is the implementation the async
+    migrator hands in.
+    """
+
+    def record(
+        self,
+        sql: str,
+        rows: List[Sequence[RowValue]],
+        error: Optional[Exception] = None,
+    ) -> None: ...
 
 
 class IntrospectedColumn(NamedTuple):
@@ -444,11 +461,17 @@ async def async_introspect_schema(
     adapter: "AsyncAdapter",
     dialect: Dialects = Dialects.DEFAULT,
     schemas: Sequence[str] = (),
+    recorder: Optional["SchemaRecorder"] = None,
 ) -> Snapshot:
     """
     Reads the schema through an async adapter, returning what
     introspect_schema() returns. Both run the same reading code, so a
     dialect behaves the same on either path.
+
+    `recorder` is given every plan statement and the rows it returned, or
+    the error it raised. The savepoints a guarded read takes around each
+    statement are not recorded: they are this read's own bookkeeping, and
+    a replay takes its own.
     """
     plan = _schema_plan(dialect, tuple(schemas))
     guarded = _dooms_transaction(dialect)
@@ -491,11 +514,15 @@ async def async_introspect_schema(
         try:
             rows = await run(sql)
         except Exception as error:
+            if recorder is not None:
+                recorder.record(sql, [], error)
             try:
                 sql = plan.throw(error)
             except StopIteration as stop:
                 return _finished(stop)
             continue
+        if recorder is not None:
+            recorder.record(sql, list(rows))
         try:
             sql = plan.send(rows)
         except StopIteration as stop:

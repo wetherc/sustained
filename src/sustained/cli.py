@@ -497,6 +497,8 @@ def _rehearsal_line(result: RehearsalResult, width: int) -> str:
     are what the rehearsal proved, in the order it proved them: the up
     step ran, the models landed, the down step ran, the schema came back.
     """
+    if result.up_ok is None:
+        return f"skipped   {result.id:<{width}}  {result.error}"
     if not result.up_ok:
         return f"failed    {result.id:<{width}}  up: {result.error}"
     proofs = ["up ok"]
@@ -595,7 +597,10 @@ def _record_scratch_rehearsal_row(
     pending = migrator.pending()
     if not pending:
         return None, None
-    proved = {r.id for r in results if r.up_ok}
+    # A skipped migration (up_ok is None) runs outside a transaction and
+    # cannot be rehearsed; it counts as covered here the same way a real
+    # rehearsal's row covers it.
+    proved = {r.id for r in results if r.up_ok is not False}
     if any(m.id not in proved for m in pending):
         return None, (
             "rehearsal row not recorded: the scratch run did not cover every "

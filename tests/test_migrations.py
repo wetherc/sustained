@@ -697,21 +697,36 @@ class TestNonTransactionalMigrations(MigrationTestCase):
         self.assertEqual(migrator.up(), ["nt"])
         self.assertEqual(connection.switches, [True, False])
 
-    def test_a_rehearsal_still_runs_it_inside_the_rehearsal(self):
+    def test_a_rehearsal_leaves_it_out_and_reports_it_unproved(self):
+        # The rehearsal runs inside one transaction, which the statements
+        # of a transactional=False migration refuse or ignore. Running it
+        # there would fail a migration a real up() applies, so it is left
+        # out and its result says nothing was proved.
         migrator = Migrator(
             self.conn,
             [
+                Migration(
+                    "first",
+                    up="CREATE TABLE nt_first (x INTEGER)",
+                    down="DROP TABLE nt_first",
+                ),
                 Migration(
                     "nt",
                     up="CREATE TABLE nt (x INTEGER)",
                     down="DROP TABLE nt",
                     transactional=False,
-                )
+                ),
             ],
         )
         rehearsal = migrator.rehearse()
         self.assertTrue(rehearsal.ok)
+        by_id = {r.id: r for r in rehearsal}
+        self.assertTrue(by_id["first"].up_ok)
+        self.assertIsNone(by_id["nt"].up_ok)
+        self.assertIsNone(by_id["nt"].down_ok)
+        self.assertIn("outside a transaction", by_id["nt"].error)
         self.assertNotIn("nt", table_names(self.conn))
+        self.assertNotIn("nt_first", table_names(self.conn))
 
 
 class RebuiltParent(Model):
@@ -1749,6 +1764,21 @@ class TestDestructivePrefixKeys(unittest.TestCase):
         # whether the migrations after it remove data, so the scan cannot
         # stop at the first drop.
         self.assertEqual(renders, ["one", "two", "three", "four", "five"])
+
+    def test_each_checksum_is_computed_once(self):
+        computed = []
+        real = migrations_module.migration_checksum
+
+        def counted(migration):
+            computed.append(migration.id)
+            return real(migration)
+
+        migrations_module.migration_checksum = counted
+        self.addCleanup(setattr, migrations_module, "migration_checksum", real)
+        _destructive_prefix_keys(self.history, self.pending)
+        # The slice loops walk every (start, end) pair, so an uncached
+        # checksum would be recomputed hundreds of times on a long run.
+        self.assertEqual(computed, ["one", "two", "three", "four", "five"])
 
 
 class TestDuplicateMigrationIds(unittest.TestCase):

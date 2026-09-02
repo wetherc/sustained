@@ -457,6 +457,8 @@ Nothing rolls a failed one back. The statements that already ran stay in the dat
 
 `AsyncMigrator` reads the same flag and runs the migration bare, with one limit: an adapter over a driver that opens its own transaction, such as `DbApiAsyncAdapter` over psycopg2, still opens one, and a statement that refuses a transaction block still fails there. Run it on `AsyncpgAdapter`, which executes every statement bare.
 
+A rehearsal leaves such a migration out. The rehearsal runs every step inside one transaction and rolls it back, which is exactly what these statements refuse or ignore, and running one outside that transaction would apply it for real. Its result reports `up_ok` as `None` with the reason, the rest of the run is still proved, and the run can still pass. What the migration does can only be seen by running it.
+
 ## Command line
 
 The `sustained` console script (also `python -m sustained`) runs migrations from the shell. It imports a config module, `sustained_config` by default or `--config mymodule`, from the current directory:
@@ -703,7 +705,7 @@ if rehearsal.ok:
     ))
 ```
 
-In Python, `migrator.rehearse()` returns a `Rehearsal`: a list of `RehearsalResult(id, up_ok, down_ok, error, landed, reversed)` with `key`, `recorded`, and `ok` on it. `down_ok` is `None` when nothing was proved, and `error` then says why. `landed` and `reversed` follow the same rule as the JSON output: `None` not checked, `[]` proved, a list of lines when it failed. Pass `rehearse(models=[User, Show])` to rehearse the model diff too, and `rehearse(scratch=True)` for a connection to a database you can throw away. `AsyncMigrator.rehearse()` is the same on an adapter, `models` included.
+In Python, `migrator.rehearse()` returns a `Rehearsal`: a list of `RehearsalResult(id, up_ok, down_ok, error, landed, reversed)` with `key`, `recorded`, and `ok` on it. `up_ok` is `None` for a migration with `transactional=False`, which the rehearsal leaves out. `down_ok` is `None` when nothing was proved, and `error` then says why. `landed` and `reversed` follow the same rule as the JSON output: `None` not checked, `[]` proved, a list of lines when it failed. Pass `rehearse(models=[User, Show])` to rehearse the model diff too, and `rehearse(scratch=True)` for a connection to a database you can throw away. `AsyncMigrator.rehearse()` is the same on an adapter, `models` included.
 
 ## Guards
 

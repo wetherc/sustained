@@ -608,9 +608,12 @@ class TestMysqlDrift(unittest.TestCase):
         cursor = self.catalog()
         cursor.columns = [
             ("users", "id", "int", "NO", None),
-            ("users", "rank", "int", "NO", None),
+            ("users", "rank", "int", "NO", "1"),
         ]
-        cursor.comments = [("users", "rank", "seat order")]
+        cursor.commented_columns = [
+            ("users", "id", "int", "NO", None, None),
+            ("users", "rank", "int", "NO", "1", "seat order"),
+        ]
         model = make_model(
             "MysqlRanked",
             "users",
@@ -635,6 +638,35 @@ class TestMysqlDrift(unittest.TestCase):
                 "ALTER TABLE `users` MODIFY COLUMN `rank` int NOT NULL "
                 "DEFAULT 1 COMMENT 'seat order'"
             ],
+        )
+
+    def test_a_type_change_restates_the_column_as_the_table_has_it(self):
+        # The table's default differs from the model's. A type change must
+        # not fold that drift in: the drift stays a note, and the down
+        # step restates the default the column held, not the model's.
+        cursor = self.catalog()
+        cursor.columns = [
+            ("users", "id", "int", "NO", None),
+            ("users", "rank", "int", "NO", "5"),
+        ]
+        model = make_model(
+            "MysqlReranked",
+            "users",
+            {
+                "id": Integer(primary_key=True),
+                "rank": BigInteger(nullable=False, default=1),
+            },
+        )
+        migration = autogenerate(
+            FakeConnection(cursor), [model], id="widen", dialect=Dialects.MYSQL
+        )
+        self.assertEqual(
+            migration.up,
+            ["ALTER TABLE `users` MODIFY COLUMN `rank` BIGINT NOT NULL DEFAULT 5"],
+        )
+        self.assertEqual(
+            migration.down,
+            ["ALTER TABLE `users` MODIFY COLUMN `rank` int NOT NULL DEFAULT 5"],
         )
 
 

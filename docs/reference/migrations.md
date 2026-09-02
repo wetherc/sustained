@@ -286,7 +286,7 @@ script(direction='up') -> str
 
 `AppliedRecord(id, seq, checksum, success, generated)` is one tracking row. `generated` marks a row that a model diff wrote.
 
-`RehearsalResult(id, up_ok, down_ok, error, landed, reversed)` records what a rehearsal proved about one migration. `down_ok` is `None` when the rehearsal proved nothing, and `error` then says why: `no down step`, `no down step (repeatable)`, `down not reached: ...`, or `down not rehearsed: the run stopped`.
+`RehearsalResult(id, up_ok, down_ok, error, landed, reversed)` records what a rehearsal proved about one migration. `up_ok` is `None` for a migration the rehearsal left out: one with `transactional=False` runs outside a transaction, and the rehearsal cannot roll such a run back. `down_ok` is `None` when the rehearsal proved nothing, and `error` then says why: `no down step`, `no down step (repeatable)`, `down not reached: ...`, or `down not rehearsed: the run stopped`.
 
 `landed` and `reversed` are `None` when the check did not run, `[]` when the check passed, and a list of readable lines when the check failed. `landed` is filled for the generated migration only. `reversed` is filled for every migration whose down step ran.
 
