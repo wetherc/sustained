@@ -820,6 +820,27 @@ def _catalog_filter(catalog: Catalog, column: str, schemas: Tuple[str, ...]) -> 
     return _scoped_filter(column, catalog.current_schema_sql, schemas)
 
 
+def _one_schema_per_table(seen: Dict[str, str], table: str, schema: str) -> None:
+    """
+    Records the schema a table came from, and refuses a second one.
+
+    A snapshot keys on the bare table name. A read covers the schema the
+    connection is on plus every schema the models declare, so it can
+    return two tables of one name. Their columns would merge into one
+    entry, and the merged table matches no model: the diff would report
+    columns to add and to drop that are not there. Reading one schema at
+    a time is the way out.
+    """
+    first = seen.setdefault(table, schema)
+    if first.lower() != schema.lower():
+        raise ValueError(
+            f"The schemas '{first}' and '{schema}' both hold a table named "
+            f"'{table}'. A schema read keys on the bare table name, so the "
+            "two cannot be told apart. Read one schema at a time, or take "
+            "the declared tableSchema off the models."
+        )
+
+
 def _information_schema_plan(
     catalog: Catalog = ANSI_CATALOG, schemas: Tuple[str, ...] = ()
 ) -> SchemaPlan:
@@ -843,7 +864,7 @@ def _information_schema_plan(
         comment = f", c.{catalog.comment_column}" if with_comment else ""
         return (
             f"SELECT c.table_name, c.column_name, c.{catalog.type_column}, "
-            f"c.is_nullable, c.column_default{comment} "
+            f"c.is_nullable, c.column_default{comment}, c.table_schema "
             "FROM information_schema.columns c "
             "JOIN information_schema.tables t "
             "ON t.table_schema = c.table_schema AND t.table_name = c.table_name "
@@ -865,11 +886,19 @@ def _information_schema_plan(
     else:
         column_rows = yield columns_query(False)
 
+    # The schema each table came from, so two tables of one name in two
+    # schemas are caught instead of merged.
+    schema_of_table: Dict[str, str] = {}
+    schema_index = 6 if comments_read else 5
     for row in column_rows:
         table, name, data_type, is_nullable, default = row[:5]
         # MySQL reports an uncommented column as '', not NULL.
-        raw_comment = row[5] if len(row) > 5 else None
+        raw_comment = row[5] if comments_read and len(row) > 5 else None
         comment = str(raw_comment) if raw_comment not in (None, "") else None
+        if len(row) > schema_index and row[schema_index] is not None:
+            _one_schema_per_table(
+                schema_of_table, str(table).lower(), str(row[schema_index])
+            )
         columns_by_table.setdefault(str(table).lower(), {})[str(name).lower()] = (
             IntrospectedColumn(
                 raw_type=str(data_type) if data_type else "",

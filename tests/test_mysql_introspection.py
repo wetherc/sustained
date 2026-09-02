@@ -738,5 +738,65 @@ class TestMysqlSchemaScope(unittest.TestCase):
         self.assertIn("constraint_schema IN ('reporting')", recovery[0])
 
 
+class TestTwoSchemasOneTableName(unittest.TestCase):
+    """
+    A snapshot keys on the bare table name. A declared tableSchema widens
+    the read to two schemas, and an undeclared table of the same name in
+    the other schema would merge its columns into the declared one.
+    """
+
+    def read(self, columns, commented=None, schemas=("app",)):
+        cursor = FakeCursor(
+            columns=columns,
+            commented_columns=commented,
+            constraints=[],
+            checks=[],
+            table_checks=[],
+        )
+        return introspect_schema(FakeConnection(cursor), Dialects.MYSQL, schemas)
+
+    def test_one_table_name_in_two_schemas_is_refused(self):
+        with self.assertRaises(ValueError) as caught:
+            self.read(
+                [
+                    ("users", "id", "int", "NO", None, None, "app"),
+                    ("users", "email", "varchar(120)", "YES", None, None, "public"),
+                ],
+                commented=[
+                    ("users", "id", "int", "NO", None, None, "app"),
+                    ("users", "email", "varchar(120)", "YES", None, None, "public"),
+                ],
+            )
+        message = str(caught.exception)
+        self.assertIn("app", message)
+        self.assertIn("public", message)
+        self.assertIn("users", message)
+
+    def test_one_schema_reads_the_table(self):
+        schema = self.read(
+            [
+                ("users", "id", "int", "NO", None, "hello", "app"),
+                ("users", "email", "varchar(120)", "YES", None, None, "app"),
+            ],
+            commented=[
+                ("users", "id", "int", "NO", None, "hello", "app"),
+                ("users", "email", "varchar(120)", "YES", None, None, "app"),
+            ],
+        )
+        self.assertEqual(sorted(schema["users"].columns), ["email", "id"])
+        self.assertEqual(schema["users"].columns["id"].comment, "hello")
+
+    def test_a_read_without_the_comment_column_reads_the_schema(self):
+        # The comment read failed, so the schema name arrives one column
+        # earlier and must still be read as a schema name.
+        with self.assertRaises(ValueError):
+            self.read(
+                [
+                    ("users", "id", "int", "NO", None, "app"),
+                    ("users", "email", "varchar(120)", "YES", None, "public"),
+                ]
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

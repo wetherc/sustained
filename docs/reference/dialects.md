@@ -117,7 +117,7 @@ MySQL introspection differs from the rest. It reads `column_type` rather than `d
 
 A snapshot keys its tables on the bare table name, so a read that covered two schemas would merge `app.users` into `public.users` and the diff would never converge. Every read is scoped instead.
 
-Postgres reads `current_schema()`, MSSQL reads `SCHEMA_NAME()`, DuckDB reads `current_schema()`, MySQL reads `DATABASE()`, and Athena reads `current_schema`. A model that sets `tableSchema` widens the read to that schema as well, so a model outside the connection's own schema still diffs. Two models that declare the same table name in different schemas are refused: the read cannot tell the two tables apart. Diff them in separate calls.
+Postgres reads `current_schema()`, MSSQL reads `SCHEMA_NAME()`, DuckDB reads `current_schema()`, MySQL reads `DATABASE()`, and Athena reads `current_schema`. A model that sets `tableSchema` widens the read to that schema as well, so a model outside the connection's own schema still diffs. Two models that declare the same table name in different schemas are refused: the read cannot tell the two tables apart. Diff them in separate calls. The database can hold such a pair as well, where one of the two tables is undeclared. The information_schema read reads the schema name with every column and raises `ValueError` when one table name arrives from two schemas, rather than merging the columns of both into one table.
 
 Presto and Trino have no expression for the schema the connection is on. Their read covers every schema but the system ones, and a declared `tableSchema` leaves it that wide: narrowing the read to the declared schema would drop the tables the connection's own schema holds.
 
