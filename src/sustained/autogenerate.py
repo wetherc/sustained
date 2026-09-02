@@ -1041,29 +1041,43 @@ def _ordered_missing_tables(
     state: Dict[str, bool] = {}
     reported: Set[str] = set()
 
-    def visit(key: str, path: List[str]) -> None:
-        finished = state.get(key)
-        if finished:
+    def report(cycle: str) -> None:
+        if cycle in reported:
             return
-        if finished is False:
-            names = path[path.index(key) :] + [key]
-            cycle = " -> ".join(names)
-            if cycle not in reported:
-                reported.add(cycle)
-                notes.append(
-                    "tables reference each other in a cycle and cannot be "
-                    f"created in dependency order: {cycle}"
-                )
-            return
-        state[key] = False
-        for target in _foreign_key_targets(by_key[key]):
-            if target in by_key and target != key:
-                visit(target, path + [key])
-        state[key] = True
-        ordered.append(by_key[key])
+        reported.add(cycle)
+        notes.append(
+            "tables reference each other in a cycle and cannot be "
+            f"created in dependency order: {cycle}"
+        )
 
-    for key in by_key:
-        visit(key, [])
+    # The walk carries its own stack. A chain of a thousand tables, each
+    # pointing at the next, is a thousand frames deep on the recursion
+    # Python allows, and the diff would end in RecursionError.
+    for start in by_key:
+        # Each entry is (table, the path that reached it, whether the
+        # tables it points at are done). The second visit places it.
+        stack: List[Tuple[str, List[str], bool]] = [(start, [], False)]
+        while stack:
+            key, path, placing = stack.pop()
+            if placing:
+                state[key] = True
+                ordered.append(by_key[key])
+                continue
+            finished = state.get(key)
+            if finished:
+                continue
+            if finished is False:
+                report(" -> ".join(path[path.index(key) :] + [key]))
+                continue
+            state[key] = False
+            stack.append((key, path, True))
+            targets = [
+                target
+                for target in _foreign_key_targets(by_key[key])
+                if target in by_key and target != key
+            ]
+            for target in reversed(targets):
+                stack.append((target, path + [key], False))
     return ordered
 
 
@@ -1231,6 +1245,7 @@ def autogenerate(
     up_steps: List[str] = []
     down_steps: List[str] = []
     reversible = True
+    transactional = True
     rebuild_tables: Dict[str, Type["Model"]] = {}
 
     # Renames first, so later steps address the new names.
@@ -1389,7 +1404,8 @@ def autogenerate(
     # New columns. A NOT NULL column with no value for the rows already
     # there fails the same way on both paths, so the check runs before a
     # table headed for a rebuild is skipped. The rebuild would otherwise
-    # copy NULL into the column and fail with a bare constraint error.
+    # copy NULL into the column and fail with a bare constraint error. An
+    # empty table has no such rows and takes the column.
     for model, name, coldef in diff.new_columns:
         table_key = (model.tableName or "").lower()
         rebuilding = table_key in rebuild_tables
@@ -1398,6 +1414,7 @@ def autogenerate(
             and coldef.default is None
             and coldef.backfill is None
             and not coldef.primary_key
+            and _table_has_rows(connection, compiler, model._qualified_table_sql())
         ):
             raise ValueError(
                 f"Cannot add NOT NULL column '{model.tableName}.{name}' "
@@ -1511,12 +1528,19 @@ def autogenerate(
     # enforcement off and on again, since dropping the old table would
     # otherwise fail while rows in another table still point at it.
     if rebuild_tables:
-        up_steps.extend(compiler.rebuild_setup_sql())
+        # The pragma statements only land outside a transaction, so a
+        # migration that carries them runs bare. A rebuild nothing points
+        # at needs no pragma and keeps its transaction.
+        guarded = _rebuild_drops_a_referenced_table(actual, rebuild_tables)
+        if guarded:
+            up_steps.extend(compiler.rebuild_setup_sql())
         for table_key, model in rebuild_tables.items():
             up_steps.extend(
                 _sqlite_rebuild_steps(compiler, model, actual[table_key], allow_drops)
             )
-        up_steps.extend(compiler.rebuild_finish_sql())
+        if guarded:
+            up_steps.extend(compiler.rebuild_finish_sql())
+            transactional = False
         reversible = False
 
     # Index changes.
@@ -1623,8 +1647,60 @@ def autogenerate(
     if not up_steps:
         return None
     return Migration(
-        id=id, up=up_steps, down=down_steps if reversible and down_steps else None
+        id=id,
+        up=up_steps,
+        down=down_steps if reversible and down_steps else None,
+        transactional=transactional,
     )
+
+
+def _rebuild_drops_a_referenced_table(
+    snapshot: "Snapshot", rebuild_tables: Dict[str, Type["Model"]]
+) -> bool:
+    """
+    Whether a rebuild has to turn foreign key enforcement off.
+
+    A rebuild drops the old table, and SQLite refuses that while rows in
+    another table point at it. Enforcement goes off for the drop when
+    some foreign key targets a table being rebuilt, and the migration
+    then runs outside a transaction, since SQLite ignores the pragma
+    inside one. A rebuild nothing points at takes no pragma, so a failure
+    cannot leave enforcement off. A key whose target the catalog did not
+    name counts as a reference.
+    """
+    for table in snapshot.values():
+        for fk in table.foreign_keys.values():
+            target = fk.target_table.lower()
+            if target == "?" or target in rebuild_tables:
+                return True
+    return False
+
+
+def _table_has_rows(
+    connection: Connection, compiler: "Compiler", table_sql: str
+) -> bool:
+    """
+    Whether the table holds a row. A NOT NULL column with no default and
+    no backfill has no value for the rows already there, but an empty
+    table has no such rows and takes the column.
+
+    A read that fails answers True, so the refusal stands whenever the
+    table cannot be read.
+    """
+    from sustained.execution import cursor_scope
+
+    try:
+        top = f"{compiler.compile_top(1)} "
+        limit = ""
+    except DialectError:
+        top = ""
+        limit = f" {compiler.compile_limit_offset(1, None)}"
+    try:
+        with cursor_scope(connection) as cursor:
+            cursor.execute(f"SELECT {top}1 FROM {table_sql}{limit}")
+            return bool(cursor.fetchall())
+    except Exception:
+        return True
 
 
 def _declared_fk_sql(compiler: "Compiler", table_sql: str, fk: ForeignKey) -> str:

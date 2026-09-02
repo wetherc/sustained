@@ -159,9 +159,21 @@ class TestAutogenerate(AutogenTestCase):
 
     def test_not_null_add_without_default_rejected(self):
         self.User.create_table(self.conn)
+        self.conn.execute("INSERT INTO ag_users (id, email) VALUES (1, 'a')")
         self.User.tableColumns["req"] = String(10, nullable=False)
         with self.assertRaises(ValueError):
             autogenerate(self.conn, [self.User], id="m5")
+
+    def test_not_null_add_on_an_empty_table_is_allowed(self):
+        # An empty table has no rows without a value for the column, so
+        # the rebuild that adds it succeeds.
+        self.User.create_table(self.conn)
+        self.User.tableColumns["req"] = String(10, nullable=False)
+        migration = autogenerate(self.conn, [self.User], id="m5b")
+        self.assertIsNotNone(migration)
+        Migrator(self.conn, [migration]).up(unrehearsed=True)
+        column = introspect_schema(self.conn)["ag_users"].columns["req"]
+        self.assertFalse(column.nullable)
 
     def test_primary_key_add_rejected(self):
         self.User.create_table(self.conn)
@@ -886,6 +898,28 @@ class TestMissingTableOrder(unittest.TestCase):
             ["DROP TABLE IF EXISTS ord_tickets", "DROP TABLE IF EXISTS ord_shows"],
         )
 
+    def test_a_long_chain_of_tables_orders_without_recursion(self):
+        # One frame per foreign key edge ran out of stack at about a
+        # thousand tables, and a diff ended in RecursionError.
+        models = [make_model("Chain0", "chain_0", {"id": Integer(primary_key=True)})]
+        for index in range(1, 1500):
+            models.append(
+                make_model(
+                    f"Chain{index}",
+                    f"chain_{index}",
+                    {
+                        "id": Integer(primary_key=True),
+                        "prev_id": Integer(references=f"chain_{index - 1}.id"),
+                    },
+                )
+            )
+        diff = diff_schema(self.conn, list(reversed(models)))
+        self.assertEqual(diff.constraint_notes, [])
+        self.assertEqual(
+            [m.tableName for m in diff.missing_tables],
+            [m.tableName for m in models],
+        )
+
     def test_a_cycle_is_reported_as_a_note(self):
         left = make_model(
             "CycLeft",
@@ -1053,6 +1087,32 @@ class TestSqliteRebuildSafety(unittest.TestCase):
         self.run_steps(migration.up)
         rows = self.conn.execute("SELECT id, name FROM rb_shows").fetchall()
         self.assertEqual(rows, [(1, "a")])
+        self.assertEqual(self.conn.execute("PRAGMA foreign_keys").fetchone()[0], 1)
+
+    def test_the_rebuild_runs_through_the_migrator(self):
+        # The pragma statements only land outside a transaction, so the
+        # migration says it is not transactional. Run inside one, SQLite
+        # ignores them and the DROP TABLE fails on the ticket that points
+        # at the show.
+        migration = autogenerate(self.conn, self.models(), id="rebuild")
+        self.assertFalse(migration.transactional)
+        Migrator(self.conn, [migration]).up(unrehearsed=True)
+        rows = self.conn.execute("SELECT id, name FROM rb_shows").fetchall()
+        self.assertEqual(rows, [(1, "a")])
+        self.assertEqual(self.conn.execute("PRAGMA foreign_keys").fetchone()[0], 1)
+
+    def test_a_rebuild_nothing_points_at_takes_no_pragma(self):
+        # Foreign key enforcement goes off only to drop a table another
+        # table points at. Without the pragma there is none to leave off
+        # when a step fails, and the migration keeps its transaction.
+        self.conn.execute("CREATE TABLE rb_notes (id INTEGER PRIMARY KEY, body TEXT)")
+        note = make_model(
+            "RbNote", "rb_notes", {"id": Integer(primary_key=True), "body": Integer()}
+        )
+        migration = autogenerate(self.conn, [note], id="alone", ignore_undeclared=True)
+        self.assertTrue(migration.transactional)
+        self.assertNotIn("PRAGMA foreign_keys = OFF", migration.up)
+        Migrator(self.conn, [migration]).up(unrehearsed=True)
         self.assertEqual(self.conn.execute("PRAGMA foreign_keys").fetchone()[0], 1)
 
     def test_a_new_not_null_column_on_a_rebuilt_table_is_refused(self):
