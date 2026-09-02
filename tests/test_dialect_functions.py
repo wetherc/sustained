@@ -182,7 +182,118 @@ class TestOldCompilerOverrides(unittest.TestCase):
         from sustained.compilers.base import _context_mode
 
         # math.hypot has no signature the inspect module can read.
-        self.assertEqual(_context_mode(math.hypot), "positional")
+        self.assertEqual(_context_mode(math.hypot, 1), "positional")
+
+    def test_a_static_override_keeps_its_call_shape(self):
+        from sustained.compilers.base import Compiler
+        from sustained.expressions import WindowExpression
+
+        class StaticStyle(Compiler):
+            @staticmethod
+            def compile_window(window):
+                return f"STATIC_WINDOW({window.function_name})"
+
+        window = WindowExpression("row_number", "r")
+        compiler = StaticStyle(Dialects.DEFAULT)
+        self.assertEqual(
+            compiler.compile_window(window, None), "STATIC_WINDOW(row_number)"
+        )
+        self.assertEqual(
+            StaticStyle.compile_window(window), "STATIC_WINDOW(row_number)"
+        )
+
+    def test_a_static_override_that_takes_the_context_is_left_alone(self):
+        from sustained.compilers.base import Compiler
+        from sustained.expressions import WindowExpression
+
+        class StaticContext(Compiler):
+            @staticmethod
+            def compile_window(window, ctx=None):
+                return f"STATIC_CTX({ctx is not None})"
+
+        window = WindowExpression("row_number", "r")
+        compiler = StaticContext(Dialects.DEFAULT)
+        self.assertEqual(compiler.compile_window(window, object()), "STATIC_CTX(True)")
+        self.assertEqual(StaticContext.compile_window(window), "STATIC_CTX(False)")
+
+    def test_a_static_override_that_names_the_context(self):
+        from sustained.compilers.base import Compiler
+        from sustained.expressions import WindowExpression
+
+        class StaticKeyword(Compiler):
+            @staticmethod
+            def compile_window(window, *, ctx=None):
+                return f"STATIC_KEYWORD({ctx is not None})"
+
+        window = WindowExpression("row_number", "r")
+        compiler = StaticKeyword(Dialects.DEFAULT)
+        self.assertEqual(
+            compiler.compile_window(window, object()), "STATIC_KEYWORD(True)"
+        )
+        self.assertEqual(StaticKeyword.compile_window(window), "STATIC_KEYWORD(False)")
+
+    def test_a_class_override_keeps_its_call_shape(self):
+        from sustained.compilers.base import Compiler
+        from sustained.expressions import WindowExpression
+
+        class ClassStyle(Compiler):
+            @classmethod
+            def compile_window(cls, window):
+                return f"CLASS_WINDOW({cls.__name__}, {window.function_name})"
+
+        window = WindowExpression("row_number", "r")
+        compiler = ClassStyle(Dialects.DEFAULT)
+        self.assertEqual(
+            compiler.compile_window(window, None),
+            "CLASS_WINDOW(ClassStyle, row_number)",
+        )
+        self.assertEqual(
+            ClassStyle.compile_window(window), "CLASS_WINDOW(ClassStyle, row_number)"
+        )
+
+    def test_a_subclass_of_a_subclass_overrides_again(self):
+        from sustained.compilers.base import Compiler
+        from sustained.expressions import Func
+
+        class Parent(Compiler):
+            def compile_function(self, func):
+                return f"PARENT({func.function_name})"
+
+        class Child(Parent):
+            def compile_function(self, func):
+                return f"CHILD({func.function_name})"
+
+        func = Func("upper", ["name"])
+        self.assertEqual(
+            Parent(Dialects.DEFAULT).compile_function(func, None), "PARENT(upper)"
+        )
+        self.assertEqual(
+            Child(Dialects.DEFAULT).compile_function(func, None), "CHILD(upper)"
+        )
+
+    def test_a_subclass_that_does_not_override_keeps_the_parent(self):
+        from sustained.compilers.base import Compiler
+        from sustained.expressions import Func
+
+        class Parent(Compiler):
+            def compile_function(self, func):
+                return f"PARENT({func.function_name})"
+
+        class Child(Parent):
+            pass
+
+        self.assertEqual(
+            Child(Dialects.DEFAULT).compile_function(Func("upper", ["name"]), None),
+            "PARENT(upper)",
+        )
+
+    def test_an_attribute_that_is_not_a_function_is_left_alone(self):
+        from sustained.compilers.base import Compiler
+
+        class NotAMethod(Compiler):
+            compile_window = "not a method"
+
+        self.assertEqual(NotAMethod.compile_window, "not a method")
 
     def test_an_old_override_renders_a_select_list(self):
         from sustained.builders.select_clause_builder import SelectClauseBuilder

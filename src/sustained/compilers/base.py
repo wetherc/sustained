@@ -1,7 +1,16 @@
 import inspect
 import re
 from functools import wraps
-from typing import TYPE_CHECKING, Callable, Mapping, Optional, Sequence, Union
+from typing import (
+    TYPE_CHECKING,
+    Callable,
+    Mapping,
+    Optional,
+    Sequence,
+    Tuple,
+    Union,
+    cast,
+)
 
 from sustained.expressions import (
     AggregateExpression,
@@ -59,22 +68,55 @@ _CONTEXT_METHODS = (
 )
 
 
-def _context_mode(method: Callable[..., str]) -> str:
+def _context_mode(method: Callable[..., str], leading: int) -> str:
     """
     How an override takes the render context: "positional" when it can
-    take it as a second argument, "keyword" when it takes it by name
+    take it after the expression, "keyword" when it takes it by name
     only, and "none" when it takes the expression alone.
+
+    `leading` is how many arguments come before the expression: one for
+    a normal method or a classmethod, none for a staticmethod.
     """
     try:
         signature = inspect.signature(method)
     except (TypeError, ValueError):
         # A callable the inspect module cannot read is left alone.
         return "positional"
-    if _binds(signature, (None, None, None), {}):
+    head: Tuple[object, ...] = (None,) * leading
+    if _binds(signature, head + (None, None), {}):
         return "positional"
-    if _binds(signature, (None, None), {"ctx": None}):
+    if _binds(signature, head + (None,), {"ctx": None}):
         return "keyword"
     return "none"
+
+
+def _override_parts(override: object) -> Tuple[Optional[Callable[..., str]], int, str]:
+    """
+    The plain function inside an override, how many arguments come before
+    the expression, and which descriptor the adapted function goes back
+    into.
+
+    A staticmethod and a classmethod are unwrapped here. A staticmethod
+    object is callable on Python 3.10 and later, so calling it without
+    unwrapping would read its signature as a method's and pass it the
+    compiler as its first argument.
+    """
+    if isinstance(override, staticmethod):
+        return override.__func__, 0, "static"
+    if isinstance(override, classmethod):
+        return override.__func__, 1, "class"
+    if callable(override):
+        return cast(Callable[..., str], override), 1, "plain"
+    return None, 0, "plain"
+
+
+def _rewrapped(method: Callable[..., str], kind: str) -> object:
+    """The adapted function, back in the descriptor it came out of."""
+    if kind == "static":
+        return staticmethod(method)
+    if kind == "class":
+        return classmethod(method)
+    return method
 
 
 def _binds(
@@ -90,22 +132,29 @@ def _binds(
     return True
 
 
-def _dropping_context(method: Callable[..., str]) -> Callable[..., str]:
-    """The override, called without the context it does not take."""
+def _dropping_context(method: Callable[..., str], leading: int) -> Callable[..., str]:
+    """
+    The override, called without the context it does not take. The
+    context arrives after the expression, either way the caller sends it.
+    """
 
     @wraps(method)
-    def call(self: "Compiler", expression: object, ctx: object = None) -> str:
-        return method(self, expression)
+    def call(*args: object, ctx: object = None) -> str:
+        return method(*args[: leading + 1])
 
     return call
 
 
-def _naming_context(method: Callable[..., str]) -> Callable[..., str]:
+def _naming_context(method: Callable[..., str], leading: int) -> Callable[..., str]:
     """The override, given the context under the name it takes it by."""
 
     @wraps(method)
-    def call(self: "Compiler", expression: object, ctx: object = None) -> str:
-        return method(self, expression, ctx=ctx)
+    def call(*args: object, ctx: object = None) -> str:
+        head = args[: leading + 1]
+        rest = args[leading + 1 :]
+        if rest:
+            ctx = rest[0]
+        return method(*head, ctx=ctx)
 
     return call
 
@@ -128,17 +177,21 @@ class Compiler:
         subquery argument's values instead of parameterizing them. An
         override that takes the context by name only is wrapped to be
         given it by name, so it keeps the context it asked for.
+
+        A staticmethod or classmethod override is unwrapped first and put
+        back in the same descriptor, so it keeps the call shape it was
+        written with.
         """
         super().__init_subclass__(**kwargs)
         for name in _CONTEXT_METHODS:
-            override = cls.__dict__.get(name)
-            if not callable(override):
+            method, leading, kind = _override_parts(cls.__dict__.get(name))
+            if method is None:
                 continue
-            mode = _context_mode(override)
+            mode = _context_mode(method, leading)
             if mode == "keyword":
-                setattr(cls, name, _naming_context(override))
+                setattr(cls, name, _rewrapped(_naming_context(method, leading), kind))
             elif mode == "none":
-                setattr(cls, name, _dropping_context(override))
+                setattr(cls, name, _rewrapped(_dropping_context(method, leading), kind))
 
     def dialect_name(self) -> str:
         """The dialect's name, for error messages."""
