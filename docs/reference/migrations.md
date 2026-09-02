@@ -541,7 +541,7 @@ autogenerate(connection, models, id, dialect=..., allow_drops=False, ignore_chan
 ```
 {: .sig #autogenerate}
 
-Builds the migration a diff asks for. Refuses to generate the lossy differences, and refuses to run at all while the database holds objects the models do not declare, unless you pass `allow_drops=True` or `ignore_undeclared=True`. The migrator passes `ignore_undeclared=True`.
+Builds the migration a diff asks for. Refuses to generate the lossy differences, and refuses to run at all while the database holds objects the models do not declare, unless you pass `allow_drops=True` or `ignore_undeclared=True`. The migrator passes `ignore_undeclared=True`. A CHECK constraint no model declares is the one object that never refuses: it comes back as a note on the diff, because engines rewrite check expressions and the comparison cannot carry a refusal.
 
 ```python
 introspect_schema(connection, dialect=Dialects.DEFAULT, schemas=()) -> dict[str, IntrospectedTable]

@@ -107,6 +107,8 @@ The default dialect reads SQLite's PRAGMA tables. Every other dialect reads `inf
 
 Postgres has a dedicated read. It takes `udt_name`, varchar lengths, and numeric precision from `information_schema.columns`, every index from `pg_index`, foreign key names, columns, targets, and referential actions from `pg_constraint`, CHECK expressions from `check_constraints`, and enum values from `pg_enum` in sort order. Expression indexes are skipped, as on SQLite.
 
+A check expression is compared after the engine's own rewriting comes off: identifier quoting, the spacing around operators, and parentheses around a single word. MySQL and MariaDB report `` `price` > 0 `` for `price > 0`, and MSSQL reports `([price]>(0))`, and all three compare equal to the expression the model declares. String literals keep their spelling. Engines rewrite further than this repairs, so a difference that remains is reported as a note and never as a drop.
+
 SQLite reports constraints only inside the stored `CREATE TABLE` text, so introspection recovers named foreign keys, and the CHECK constraints Sustained itself generates (names starting `ck_`), from `sqlite_master`. Any other CHECK stays a note. MySQL recovers an enum column's values from its inline `enum('a','b')` type spelling.
 
 MySQL introspection differs from the rest. It reads `column_type` rather than `data_type`, so a column arrives as `varchar(120)` and compares against the compiler's own spelling. It scopes every query to `DATABASE()`, because a MySQL schema is a database. The column read, the index read from `information_schema.statistics`, and the MariaDB `json_valid` recovery read all carry the same scope, so a snapshot never takes its tables from one schema and its indexes from another.

@@ -342,6 +342,43 @@ class TestMysqlChecks(unittest.TestCase):
         self.assertTrue(diff.is_empty())
 
 
+class TestMysqlCheckExpressions(unittest.TestCase):
+    """
+    MySQL and MariaDB report the clause the engine rewrote, with the
+    identifiers quoted. The model declares the bare expression, and a
+    difference between the two would stand as a note no migration could
+    close.
+    """
+
+    def diff(self):
+        cursor = FakeCursor(
+            columns=[
+                ("priced", "id", "int", "NO", None),
+                ("priced", "price", "int", "NO", None),
+            ],
+            constraints=[("priced", "PRIMARY KEY", "PRIMARY", "id")],
+            checks=[],
+            table_checks=[("priced", "price_positive", "(`price` > 0)")],
+        )
+        model = make_model(
+            "MysqlPriced",
+            "priced",
+            {
+                "id": Integer(primary_key=True, autoincrement=True),
+                "price": Integer(nullable=False),
+            },
+        )
+        model.tableConstraints = [Check("price_positive", "price > 0")]
+        return diff_schema(FakeConnection(cursor), [model], dialect=Dialects.MYSQL)
+
+    def test_a_quoted_clause_matches_the_declared_expression(self):
+        diff = self.diff()
+        self.assertEqual(diff.constraint_notes, [])
+        self.assertEqual(diff.new_checks, [])
+        self.assertEqual(diff.changed_checks, [])
+        self.assertTrue(diff.is_empty())
+
+
 class TestMysqlNormalization(unittest.TestCase):
     def test_sized_text_types_reduce_to_text(self):
         for spelling in ("tinytext", "mediumtext", "longtext"):

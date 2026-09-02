@@ -247,8 +247,6 @@ class SchemaDiff:
             lines.append(f"change check {check.name} on {model.tableName}")
         for table, name, _ in self.extra_foreign_keys:
             lines.append(f"drop foreign key {name} on {table} (destructive)")
-        for table, name, _ in self.extra_checks:
-            lines.append(f"drop check {name} on {table} (destructive)")
         for table, name, actual, expected in self.changed_columns:
             lines.append(
                 f"change column {table}.{name}: database has {actual}, "
@@ -753,7 +751,16 @@ def _diff_declared_constraints(
         for name, expression in actual_table.checks.items():
             if name in declared_checks or name in implied_checks:
                 continue
+            # An undeclared check is a note, not a drop. Engines rewrite
+            # a check expression on the way in, so a check the models do
+            # write can still read as one they do not, and generation
+            # must not refuse a whole diff over that doubt. allow_drops
+            # still drops it.
             diff.extra_checks.append((table_name, name, expression))
+            diff.constraint_notes.append(
+                f"{table_name} has check '{name}' that no model declares: "
+                f"{expression!r}. Pass allow_drops=True to drop it."
+            )
 
 
 def _diff_constraints(
@@ -1176,7 +1183,10 @@ def autogenerate(
         ignore_undeclared: Leave objects the models do not declare alone
             instead of refusing to generate. A database managed partly by
             hand-written migrations holds tables no model declares, and
-            those are not a reason to stop.
+            those are not a reason to stop. A CHECK constraint no model
+            declares never refuses: engines rewrite a check expression on
+            the way in, so a check the models do write can read as one
+            they do not. It comes back as a note on the diff instead.
     """
     compiler = Dialects.get_compiler(dialect)
     renames = renames or {}
@@ -1202,7 +1212,6 @@ def autogenerate(
             or diff.extra_columns
             or diff.extra_indexes
             or diff.extra_foreign_keys
-            or diff.extra_checks
         )
         and not allow_drops
         and not ignore_undeclared
@@ -1212,7 +1221,6 @@ def autogenerate(
             + [f"{t}.{c}" for t, c in diff.extra_columns]
             + [f"index {n}" for _, n, _ in diff.extra_indexes]
             + [f"foreign key {n}" for _, n, _ in diff.extra_foreign_keys]
-            + [f"check {n}" for _, n, _ in diff.extra_checks]
         )
         raise ValueError(
             "The database has objects the models do not declare: "

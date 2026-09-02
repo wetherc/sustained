@@ -18,6 +18,7 @@ import re
 from types import MappingProxyType
 from typing import (
     TYPE_CHECKING,
+    Callable,
     Dict,
     Generator,
     List,
@@ -212,14 +213,53 @@ def type_params(raw: str) -> Optional[str]:
     return re.sub(r"\s+", "", match.group(1)).upper()
 
 
+# The parts of an expression a normalization must not touch: a string
+# literal keeps its spaces and its quoting characters.
+_SQL_LITERAL_RE = re.compile(r"('(?:[^']|'')*')")
+# An identifier the engine quoted on the way in: "col", `col`, [col].
+_QUOTED_IDENTIFIER_RE = re.compile(r'"([^"]*)"|`([^`]*)`|\[([^\]]*)\]')
+# The spacing an engine puts around an operator, which it rewrites to
+# its own taste: MSSQL reports [price]>(0) for price > 0.
+_OPERATOR_SPACING_RE = re.compile(r"\s*([<>=!+\-*/%,])\s*")
+# Parentheses around one word, which MSSQL writes around every literal.
+_LONE_PARENS_RE = re.compile(r"\((\w+)\)")
+
+
+def _outside_literals(value: str, change: Callable[[str], str]) -> str:
+    """`change` applied to every part of `value` outside a string literal."""
+    parts = _SQL_LITERAL_RE.split(value)
+    return "".join(
+        part if index % 2 else change(part) for index, part in enumerate(parts)
+    )
+
+
+def _unquote_identifiers(text: str) -> str:
+    """The text with the quoting characters off its identifiers."""
+    return _QUOTED_IDENTIFIER_RE.sub(
+        lambda match: next(group for group in match.groups() if group is not None),
+        text,
+    )
+
+
 def normalize_check(expression: str) -> str:
     """
     Reduces a check expression to a comparable form: whitespace collapsed,
-    balanced outer parentheses stripped, and casefolded. Engines rewrite
+    identifier quoting removed, operator spacing and parentheses around a
+    single word taken off, balanced outer parentheses stripped, and
+    casefolded. String literals keep their spelling.
+
+    The rewriting is what an engine does to a check on the way in. MySQL
+    and MariaDB report `price` > 0 for the expression price > 0, and
+    MSSQL reports ([price]>(0)). A model declares the bare expression, so
+    without this the two would never compare equal and the difference
+    would stand as a note no migration can close. Engines rewrite
     expressions further than this repairs, so two spellings that compare
     equal are the same check, while a mismatch is only a doubt.
     """
     value = re.sub(r"\s+", " ", expression).strip()
+    value = _outside_literals(value, _unquote_identifiers)
+    value = _outside_literals(value, lambda part: _OPERATOR_SPACING_RE.sub(r"\1", part))
+    value = _outside_literals(value, lambda part: _LONE_PARENS_RE.sub(r"\1", part))
     while (
         value.startswith("(")
         and value.endswith(")")

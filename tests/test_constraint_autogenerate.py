@@ -33,7 +33,27 @@ class TestNormalizeCheck(unittest.TestCase):
     def test_unbalanced_outer_parens_kept(self):
         # '(a) OR (b)' starts and ends with parens that are not one pair.
         self.assertEqual(
-            normalize_check("(price > 0) OR (price < 9)"), "(price > 0) or (price < 9)"
+            normalize_check("(price > 0) OR (price < 9)"), "(price>0) or (price<9)"
+        )
+
+    def test_engine_quoting_and_spacing_come_off(self):
+        # MySQL and MariaDB quote the identifiers and keep the spacing;
+        # MSSQL quotes with brackets, drops the spacing, and puts every
+        # literal in parentheses of its own. The model declares the bare
+        # expression, and all three have to compare equal to it.
+        declared = normalize_check("price > 0")
+        self.assertEqual(normalize_check("(`price` > 0)"), declared)
+        self.assertEqual(normalize_check("([price]>(0))"), declared)
+        self.assertEqual(normalize_check('("price" > 0)'), declared)
+
+    def test_a_string_literal_keeps_its_spelling(self):
+        # The spacing rules stop at a literal: a space beside a comma
+        # inside quotes is part of the value.
+        self.assertNotEqual(
+            normalize_check("name <> 'a, b'"), normalize_check("name <> 'a,b'")
+        )
+        self.assertEqual(
+            normalize_check("name <> 'a, b'"), normalize_check("name<>'a, b'")
         )
 
     def test_literal_case_folds_together(self):
@@ -210,8 +230,9 @@ class TestSqliteRebuildCarriesConstraints(SqliteConstraintTestCase):
     def test_undeclared_constraints_refuse_by_default(self):
         with self.assertRaises(ValueError) as caught:
             autogenerate(self.conn, [self.owner, self.model], id="m1")
-        self.assertIn("ck_carry", str(caught.exception))
         self.assertIn("fk_carry_owner", str(caught.exception))
+        # A check the models do not declare is a note, not a refusal.
+        self.assertNotIn("ck_carry", str(caught.exception))
 
 
 class TestSqliteEnumCheckNotExtra(SqliteConstraintTestCase):
@@ -267,16 +288,24 @@ class TestChecksWithoutTheCkPrefix(SqliteConstraintTestCase):
         snapshot = introspect_schema(self.conn)
         self.assertIn("price_positive", snapshot["np_items"].checks)
 
-    def test_an_undeclared_named_check_refuses_by_default(self):
+    def test_an_undeclared_named_check_does_not_refuse(self):
+        # Check expressions are rewritten by the engine, so a check the
+        # models do declare can read as one they do not. Generation
+        # reports it and carries on.
         self.conn.execute(
             "CREATE TABLE np_items (id INTEGER PRIMARY KEY, price INT, "
             "CONSTRAINT price_positive CHECK (price > 0))"
         )
         model = self._model([])
         model.tableColumns["note"] = String(40, nullable=False, backfill="")
-        with self.assertRaises(ValueError) as caught:
-            autogenerate(self.conn, [model], id="m1")
-        self.assertIn("price_positive", str(caught.exception))
+        migration = autogenerate(self.conn, [model], id="m1")
+        self.assertIsNotNone(migration)
+        diff = diff_schema(self.conn, [model])
+        self.assertTrue(
+            any("price_positive" in note for note in diff.constraint_notes),
+            diff.constraint_notes,
+        )
+        self.assertIn("price_positive", diff.summary())
 
 
 class TestRenameRewritesChecks(SqliteConstraintTestCase):
@@ -607,7 +636,7 @@ class TestPostgresConstraintGeneration(unittest.TestCase):
                 dialect=Dialects.POSTGRES,
             )
         self.assertIn("fk_hand_made", str(caught.exception))
-        self.assertIn("ck_hand_made", str(caught.exception))
+        self.assertNotIn("ck_hand_made", str(caught.exception))
         self.assertIsNone(
             autogenerate(
                 pg_connection(fk_rows=fk_rows, check_rows=check_rows),
