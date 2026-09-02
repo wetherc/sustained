@@ -155,6 +155,8 @@ Ticket.query().delete().where('sold_at', 'IS', None).run()
 
 A write commits when it finishes, unless it is inside a transaction, and returns the affected row count.
 
+The count is `-1` when the driver reports none. asyncpg does this for a batched multi-row insert, and for any statement whose status string ends without a number. Add `returning()` when you need an exact count: the write gives back one row per row it wrote, so `len()` of that list is the count.
+
 A multi-row insert takes a list. Every row must have the same columns, so that the statement has one template:
 
 ```python

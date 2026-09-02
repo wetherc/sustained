@@ -155,14 +155,16 @@ These live in `sustained.aio`. Every adapter has the same methods, so a query do
 | Method | Returns |
 | --- | --- |
 | `await fetch(sql, params)` | `(column_names, rows)` |
-| `await execute(sql, params)` | affected row count |
-| `await executemany(sql, seq_of_params)` | affected row count |
+| `await execute(sql, params)` | affected row count, or `-1` |
+| `await executemany(sql, seq_of_params)` | affected row count, or `-1` |
 | `await commit()` | `None` |
 | `await rollback()` | `None` |
 | `await close()` | `None` |
 | `async with scope()` | the adapter one call runs on |
 | `driver_transaction_control()` | whether the driver opens the transaction |
 | `await begin_where_ddl_autocommits()` | the `BEGIN` such a driver still needs |
+
+A row count of `-1` means the driver reported none. Add `returning()` to the write when you need an exact count.
 
 `driver_transaction_control()` tells `async_transaction()` how to open and close a block. It returns `False` on the base class and on `AsyncpgAdapter`, so the block runs `BEGIN`, `COMMIT`, and `ROLLBACK` as statements. `DbApiAsyncAdapter` returns `True`, because a DB-API 2.0 driver opens the transaction itself; the block then ends with `commit()` or `rollback()`. `begin_where_ddl_autocommits()` covers the one gap in that promise: sqlite3 in legacy transaction control leaves schema statements outside its implicit transaction, so `DbApiAsyncAdapter` sends a `BEGIN` there.
 
@@ -187,7 +189,7 @@ AsyncpgAdapter(connection)
 ```
 {: .sig #asyncpgadapter}
 
-Wraps asyncpg. Converts `%s` placeholders to `$1..$n`. asyncpg is autocommit, so `commit()` and `rollback()` do nothing, `driver_transaction_control()` is `False`, and `executemany()` returns `-1`.
+Wraps asyncpg. Converts `%s` placeholders to `$1..$n`. asyncpg is autocommit, so `commit()` and `rollback()` do nothing, `driver_transaction_control()` is `False`, and `executemany()` returns `-1`. `execute()` reads its count out of the status string and returns `-1` when the status holds none.
 
 `AsyncAdapter` is the abstract base class. Subclass it for a driver that has no adapter here. `close()` does nothing on the base, for an adapter that borrows a connection it does not own.
 

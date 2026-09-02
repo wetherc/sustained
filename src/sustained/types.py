@@ -145,7 +145,14 @@ QueryResolvable = Union[Callable[..., "AnyQuery"], str, "AnyQuery"]
 """A subquery in argument position: a builder, a callable returning one, or SQL."""
 
 WriteResult = Union[int, List[Dict[str, RowValue]]]
-"""What a write returns: the affected row count, or the RETURNING rows."""
+"""
+What a write returns: the affected row count, or the RETURNING rows.
+
+The count is -1 when the driver does not report one. asyncpg does this for
+a batched multi-row insert, and for any statement whose status string holds
+no number. Add returning() when you need an exact count: the write then
+gives back one row per row it wrote, and len() of that list is the count.
+"""
 
 
 class RelationType(Enum):

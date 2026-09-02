@@ -137,13 +137,19 @@ class AsyncAdapter:
         raise NotImplementedError
 
     async def execute(self, sql: str, params: Tuple[SqlValue, ...]) -> int:
-        """Runs a statement and returns the affected row count."""
+        """
+        Runs a statement and returns the affected row count, or -1 when the
+        driver does not report one.
+        """
         raise NotImplementedError
 
     async def executemany(
         self, sql: str, seq_of_params: List[Tuple[SqlValue, ...]]
     ) -> int:
-        """Runs a statement for every parameter tuple."""
+        """
+        Runs a statement for every parameter tuple and returns the total
+        affected row count, or -1 when the driver does not report one.
+        """
         raise NotImplementedError
 
     async def commit(self) -> None:
@@ -315,6 +321,8 @@ class AsyncpgAdapter(AsyncAdapter):
             convert_format_to_numbered(sql), *params
         )
         # asyncpg returns a status string such as 'INSERT 0 3' or 'DELETE 2'.
+        # A status with no number at the end gives -1, the unknown count.
+        # Add returning() to the write when you need an exact count.
         try:
             return int(status.rsplit(" ", 1)[-1])
         except (ValueError, AttributeError):
@@ -326,7 +334,9 @@ class AsyncpgAdapter(AsyncAdapter):
         await self._connection.executemany(
             convert_format_to_numbered(sql), seq_of_params
         )
-        # asyncpg's executemany reports no row count.
+        # asyncpg's executemany reports no row count, so the count is
+        # unknown. Add returning() to the insert when you need an exact
+        # one; the query then runs one statement and returns its rows.
         return -1
 
     async def commit(self) -> None:
