@@ -109,15 +109,21 @@ Postgres has a dedicated read. It takes `udt_name`, varchar lengths, and numeric
 
 SQLite reports constraints only inside the stored `CREATE TABLE` text, so introspection recovers named foreign keys, and the CHECK constraints Sustained itself generates (names starting `ck_`), from `sqlite_master`. Any other CHECK stays a note. MySQL recovers an enum column's values from its inline `enum('a','b')` type spelling.
 
-MySQL introspection differs from the rest. It reads `column_type` rather than `data_type`, so a column arrives as `varchar(120)` and compares against the compiler's own spelling. It scopes every query to `DATABASE()`, because a MySQL schema is a database.
+MySQL introspection differs from the rest. It reads `column_type` rather than `data_type`, so a column arrives as `varchar(120)` and compares against the compiler's own spelling. It scopes every query to `DATABASE()`, because a MySQL schema is a database. The column read, the index read from `information_schema.statistics`, and the MariaDB `json_valid` recovery read all carry the same scope, so a snapshot never takes its tables from one schema and its indexes from another.
 
 ### Schema scope
 
 A snapshot keys its tables on the bare table name, so a read that covered two schemas would merge `app.users` into `public.users` and the diff would never converge. Every read is scoped instead.
 
-Postgres reads `current_schema()`, MSSQL reads `SCHEMA_NAME()`, DuckDB reads `current_schema()`, MySQL reads `DATABASE()`, and Athena reads `current_schema`. A model that sets `tableSchema` widens the read to that schema as well, so a model outside the connection's own schema still diffs. Two models that declare the same table name in different schemas are refused: the read cannot tell the two tables apart. Diff them in separate calls. Presto and Trino stay unscoped.
+Postgres reads `current_schema()`, MSSQL reads `SCHEMA_NAME()`, DuckDB reads `current_schema()`, MySQL reads `DATABASE()`, and Athena reads `current_schema`. A model that sets `tableSchema` widens the read to that schema as well, so a model outside the connection's own schema still diffs. Two models that declare the same table name in different schemas are refused: the read cannot tell the two tables apart. Diff them in separate calls.
 
-The constraint join matches schema names as well as constraint names, because a constraint name is only unique within its schema. An engine whose `key_column_usage` has no `table_schema` column falls back to the plain join.
+Presto and Trino have no expression for the schema the connection is on. Their read covers every schema but the system ones, and a declared `tableSchema` leaves it that wide: narrowing the read to the declared schema would drop the tables the connection's own schema holds.
+
+The declared schemas make their own `IN` list, and the current-schema expression is compared beside it with `OR`. Postgres returns NULL from `current_schema()` when the first `search_path` entry names a schema that does not exist, and a NULL inside the `IN` list would make the whole list match nothing.
+
+The constraint join matches schema names as well as constraint names, because a constraint name is only unique within its schema. An engine whose `key_column_usage` has no `table_schema` column falls back to the plain join, but only on a read that covers one schema. The plain join cannot keep two schemas apart, so on a wider read the constraints stay unread instead.
+
+Postgres refuses every later statement in a transaction once one has failed. A read tries a catalog and falls back when it is not there, so on Postgres each query runs inside the savepoint `sustained_read` and a failure rolls back to it. A connection with no transaction open takes no savepoint.
 
 Athena scopes every introspection query to the schema the connection was opened on. Its catalog spans every Glue database in the account, so an unscoped read would be slow and would fail outright when any other database holds a table with broken metadata. Models on an Athena connection must live in that schema for a diff to see them.
 

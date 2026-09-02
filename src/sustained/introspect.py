@@ -293,6 +293,21 @@ def _finished(stop: StopIteration) -> Snapshot:
     return cast(Snapshot, stop.value)
 
 
+# The savepoint a guarded read takes before each statement.
+_READ_SAVEPOINT = "sustained_read"
+
+
+def _dooms_transaction(dialect: Dialects) -> bool:
+    """
+    Whether one failed statement stops every later statement in the same
+    transaction. A plan tries a view and falls back when it is not there,
+    so on such an engine the failure of one query would carry away the
+    whole read. Postgres works this way. Each statement runs inside a
+    savepoint there, and a failure rolls back to it.
+    """
+    return dialect == Dialects.POSTGRES
+
+
 def introspect_schema(
     connection: Connection,
     dialect: Dialects = Dialects.DEFAULT,
@@ -318,6 +333,7 @@ def introspect_schema(
     views are unavailable. Names are keyed lowercase.
     """
     plan = _schema_plan(dialect, tuple(schemas))
+    guarded = [_dooms_transaction(dialect)]
     # An open transaction reads on its own cursor: a rehearsal introspects
     # a schema its uncommitted statements just changed, and on DuckDB a
     # fresh cursor is a separate session that cannot see it. One cursor
@@ -327,8 +343,28 @@ def introspect_schema(
     with cursor_scope(connection) as cursor:
 
         def run(sql: str) -> List[Sequence[RowValue]]:
-            cursor.execute(sql)
-            return list(cursor.fetchall())
+            if not guarded[0]:
+                cursor.execute(sql)
+                return list(cursor.fetchall())
+            try:
+                cursor.execute(f"SAVEPOINT {_READ_SAVEPOINT}")
+            except Exception:
+                # A connection in autocommit has no transaction to take a
+                # savepoint in, and no transaction to lose either.
+                guarded[0] = False
+                cursor.execute(sql)
+                return list(cursor.fetchall())
+            try:
+                cursor.execute(sql)
+                rows = list(cursor.fetchall())
+            except Exception:
+                try:
+                    cursor.execute(f"ROLLBACK TO SAVEPOINT {_READ_SAVEPOINT}")
+                except Exception:
+                    pass
+                raise
+            cursor.execute(f"RELEASE SAVEPOINT {_READ_SAVEPOINT}")
+            return rows
 
         sql = next(plan)
         while True:
@@ -357,10 +393,32 @@ async def async_introspect_schema(
     dialect behaves the same on either path.
     """
     plan = _schema_plan(dialect, tuple(schemas))
+    guarded = _dooms_transaction(dialect)
+
+    async def run(sql: str) -> List[Sequence[RowValue]]:
+        if not guarded:
+            _, rows = await adapter.fetch(sql, ())
+            return list(rows)
+        try:
+            await adapter.execute(f"SAVEPOINT {_READ_SAVEPOINT}", ())
+        except Exception:
+            # No transaction to take a savepoint in, and none to lose.
+            return list((await adapter.fetch(sql, ()))[1])
+        try:
+            _, rows = await adapter.fetch(sql, ())
+        except Exception:
+            try:
+                await adapter.execute(f"ROLLBACK TO SAVEPOINT {_READ_SAVEPOINT}", ())
+            except Exception:
+                pass
+            raise
+        await adapter.execute(f"RELEASE SAVEPOINT {_READ_SAVEPOINT}", ())
+        return list(rows)
+
     sql = next(plan)
     while True:
         try:
-            _, rows = await adapter.fetch(sql, ())
+            rows = await run(sql)
         except Exception as error:
             try:
                 sql = plan.throw(error)
@@ -368,7 +426,7 @@ async def async_introspect_schema(
                 return _finished(stop)
             continue
         try:
-            sql = plan.send(list(rows))
+            sql = plan.send(rows)
         except StopIteration as stop:
             return _finished(stop)
 
@@ -394,23 +452,47 @@ def _schema_literal(name: str) -> str:
     return "'{}'".format(name.replace("'", "''"))
 
 
-def _schema_scope(current_sql: Optional[str], schemas: Tuple[str, ...]) -> str:
+def _schema_predicate(
+    column: str, current_sql: Optional[str], schemas: Tuple[str, ...]
+) -> Optional[str]:
     """
-    The IN list of schemas a read covers: the connection's own schema
-    when the engine can name it, plus every schema the models declare.
-    Empty when the engine has no expression for the current schema and
-    the caller named none, which leaves the read unscoped.
+    The WHERE fragment that holds `column` to the schemas a read covers:
+    the connection's own schema when the engine can name it, plus every
+    schema the models declare. None when the engine has no expression for
+    the current schema and the caller named none, which leaves the read
+    unscoped.
+
+    The declared schemas make their own IN list and the current schema
+    is compared beside it. An engine expression inlined into the IN list
+    would take every declared schema down with it when the expression
+    returns NULL, which Postgres does when the first search_path entry
+    names a schema that does not exist.
     """
     parts: List[str] = []
+    if schemas:
+        literals: List[str] = []
+        for name in schemas:
+            literal = _schema_literal(name)
+            if literal not in literals:
+                literals.append(literal)
+        parts.append("{} IN ({})".format(column, ", ".join(literals)))
     if current_sql is not None:
-        parts.append(current_sql)
-    seen = {current_sql}
-    for name in schemas:
-        literal = _schema_literal(name)
-        if literal not in seen:
-            seen.add(literal)
-            parts.append(literal)
-    return ", ".join(parts)
+        parts.append(f"{column} = {current_sql}")
+    if not parts:
+        return None
+    if len(parts) == 1:
+        return parts[0]
+    return "({})".format(" OR ".join(parts))
+
+
+def _scoped_filter(column: str, current_sql: str, schemas: Tuple[str, ...]) -> str:
+    """
+    _schema_predicate() for an engine that can name the schema the
+    connection is on, where the predicate is never empty.
+    """
+    predicate = _schema_predicate(column, current_sql, schemas)
+    assert predicate is not None
+    return predicate
 
 
 def _strip_identifier(name: str) -> str:
@@ -591,11 +673,15 @@ class Catalog(NamedTuple):
     How one engine's information_schema differs from the shared read.
 
     Attributes:
-        schema_filter: The WHERE fragment that picks the schemas to read.
+        schema_filter: The WHERE fragment that picks the schemas to
+            read on an engine with no current-schema expression. It takes
+            the column reference as {column}.
         type_column: The column holding the type spelling to compare on.
         current_schema_sql: The expression that names the schema the
             connection is on, or None on engines with no such expression.
             A read is scoped to it, plus every schema the models declare.
+            An engine that leaves it None keeps schema_filter whatever
+            the models declare, so its read stays as wide as it was.
         comment_column: The information_schema.columns column holding the
             column comment, or None on engines that store none there.
         reads_checks: Whether the engine fills
@@ -612,14 +698,16 @@ class Catalog(NamedTuple):
 
 
 ANSI_CATALOG = Catalog(
-    schema_filter=f"table_schema NOT IN ({', '.join(_SYSTEM_SCHEMAS)})",
+    schema_filter="{column} NOT IN (" + ", ".join(_SYSTEM_SCHEMAS) + ")",
     type_column="data_type",
 )
 
-MYSQL_CATALOG = Catalog(
+MYSQL_CATALOG = ANSI_CATALOG._replace(
     # A MySQL schema is a database, and every other database on the server
     # belongs to someone else. DATABASE() is the one the connection is on.
-    schema_filter="table_schema = DATABASE()",
+    # Without it here, a model that declares tableSchema would take the
+    # connection's own database out of the read.
+    current_schema_sql="DATABASE()",
     # data_type reports 'varchar' and keeps the length in a column of its
     # own. column_type reports 'varchar(120)', which is what the compiler
     # emits, so a column never drifts against its own DDL.
@@ -646,11 +734,31 @@ MSSQL_CATALOG = ANSI_CATALOG._replace(current_schema_sql="SCHEMA_NAME()")
 DUCKDB_CATALOG = ANSI_CATALOG._replace(current_schema_sql="current_schema()")
 
 
+def _catalog_filter(catalog: Catalog, column: str, schemas: Tuple[str, ...]) -> str:
+    """
+    The WHERE fragment one catalog's read puts on a schema column.
+
+    An engine that can name the schema the connection is on reads that
+    schema plus every schema the models declare. An engine that cannot
+    keeps its own filter: Presto and Trino read every schema but the
+    system ones, and a declared schema must not narrow that read to less
+    than it covered before.
+    """
+    if catalog.current_schema_sql is None:
+        return catalog.schema_filter.format(column=column)
+    return _scoped_filter(column, catalog.current_schema_sql, schemas)
+
+
 def _information_schema_plan(
     catalog: Catalog = ANSI_CATALOG, schemas: Tuple[str, ...] = ()
 ) -> SchemaPlan:
-    scope = _schema_scope(catalog.current_schema_sql, schemas)
-    schema_filter = f"table_schema IN ({scope})" if scope else catalog.schema_filter
+    column_filter = _catalog_filter(catalog, "c.table_schema", schemas)
+    constraint_filter = _catalog_filter(catalog, "tc.table_schema", schemas)
+    # Two schemas in one read can each hold a constraint with one name.
+    # The join below matches schema names to keep them apart, and the
+    # plain-join fallback cannot, so it only runs on a read that covers
+    # one schema.
+    single_schema = catalog.current_schema_sql is not None and not schemas
 
     columns_by_table: Dict[str, Dict[str, IntrospectedColumn]] = {}
 
@@ -666,7 +774,7 @@ def _information_schema_plan(
             "FROM information_schema.columns c "
             "JOIN information_schema.tables t "
             "ON t.table_schema = c.table_schema AND t.table_name = c.table_name "
-            f"WHERE c.{schema_filter} AND t.table_type = 'BASE TABLE' "
+            f"WHERE {column_filter} AND t.table_type = 'BASE TABLE' "
             "ORDER BY c.table_name, c.ordinal_position"
         )
 
@@ -708,7 +816,10 @@ def _information_schema_plan(
     # holding a constraint with one name cross-multiply into a garbled
     # column list. An engine whose key_column_usage has no table_schema
     # column takes the plain join instead.
-    for schema_join in ("AND tc.table_schema = kcu.table_schema ", ""):
+    joins = ["AND tc.table_schema = kcu.table_schema "]
+    if single_schema:
+        joins.append("")
+    for schema_join in joins:
         try:
             constraint_rows = yield (
                 "SELECT tc.table_name, tc.constraint_type, tc.constraint_name, "
@@ -718,7 +829,7 @@ def _information_schema_plan(
                 "ON tc.constraint_name = kcu.constraint_name "
                 "AND tc.table_name = kcu.table_name "
                 f"{schema_join}"
-                f"WHERE tc.{schema_filter} "
+                f"WHERE {constraint_filter} "
                 "ORDER BY kcu.ordinal_position"
             )
         except Exception:
@@ -755,7 +866,7 @@ def _information_schema_plan(
                 "ON cc.constraint_schema = tc.constraint_schema "
                 "AND cc.constraint_name = tc.constraint_name "
                 "WHERE tc.constraint_type = 'CHECK' "
-                f"AND tc.{schema_filter}"
+                f"AND {constraint_filter}"
             )
             for table, cname, clause in check_rows:
                 name = str(cname).lower()
@@ -809,7 +920,7 @@ def _mssql_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
     missing on every plan, and the second run fails creating it again.
     """
     schema = yield from _information_schema_plan(MSSQL_CATALOG, schemas)
-    scope = _schema_scope(MSSQL_CATALOG.current_schema_sql, schemas)
+    index_filter = _catalog_filter(MSSQL_CATALOG, "SCHEMA_NAME(t.schema_id)", schemas)
     try:
         index_rows = yield (
             "SELECT t.name, i.name, i.is_unique, c.name "
@@ -821,7 +932,7 @@ def _mssql_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
             "AND c.column_id = ic.column_id "
             "WHERE i.is_primary_key = 0 AND i.is_unique_constraint = 0 "
             "AND i.name IS NOT NULL AND ic.is_included_column = 0 "
-            f"AND SCHEMA_NAME(t.schema_id) IN ({scope}) "
+            f"AND {index_filter} "
             "ORDER BY t.name, i.name, ic.key_ordinal"
         )
         parts: Dict[Tuple[str, str, bool], List[str]] = {}
@@ -866,12 +977,12 @@ def _duckdb_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
     again.
     """
     schema = yield from _information_schema_plan(DUCKDB_CATALOG, schemas)
-    scope = _schema_scope(DUCKDB_CATALOG.current_schema_sql, schemas)
+    schema_filter = _catalog_filter(DUCKDB_CATALOG, "schema_name", schemas)
     try:
         index_rows = yield (
             "SELECT table_name, index_name, is_unique, expressions "
             f"FROM duckdb_indexes() WHERE NOT is_primary "
-            f"AND schema_name IN ({scope})"
+            f"AND {schema_filter}"
         )
         plain: Dict[str, Dict[str, IntrospectedIndex]] = {}
         for table, name, is_unique, expressions in index_rows:
@@ -888,7 +999,7 @@ def _duckdb_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
     try:
         comment_rows = yield (
             "SELECT table_name, column_name, comment FROM duckdb_columns() "
-            f"WHERE comment IS NOT NULL AND schema_name IN ({scope})"
+            f"WHERE comment IS NOT NULL AND {schema_filter}"
         )
         for table, name, comment in comment_rows:
             existing = schema.get(str(table).lower())
@@ -906,7 +1017,7 @@ def _duckdb_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
         type_rows = yield (
             "SELECT type_name, labels FROM duckdb_types() "
             "WHERE labels IS NOT NULL AND NOT internal "
-            f"AND schema_name IN ({scope})"
+            f"AND {schema_filter}"
         )
         for name, labels in type_rows:
             if not labels:
@@ -967,7 +1078,12 @@ def _postgres_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
     # merges app.users into public.users and the diff never converges.
     # The read covers the schema the connection is on, plus every schema
     # the models declare.
-    scope = _schema_scope("current_schema()", schemas)
+    # current_schema() returns NULL when the first search_path entry
+    # names a schema that does not exist, so it is compared beside the
+    # declared schemas instead of standing in an IN list with them.
+    table_filter = _scoped_filter("c.table_schema", "current_schema()", schemas)
+    constraint_filter = _scoped_filter("tc.table_schema", "current_schema()", schemas)
+    namespace_filter = _scoped_filter("n.nspname", "current_schema()", schemas)
     columns_by_table: Dict[str, Dict[str, IntrospectedColumn]] = {}
     column_rows = yield (
         "SELECT c.table_name, c.column_name, c.data_type, c.udt_name, "
@@ -976,7 +1092,7 @@ def _postgres_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
         "FROM information_schema.columns c "
         "JOIN information_schema.tables t "
         "ON t.table_schema = c.table_schema AND t.table_name = c.table_name "
-        f"WHERE c.table_schema IN ({scope}) "
+        f"WHERE {table_filter} "
         "AND t.table_type = 'BASE TABLE' "
         "ORDER BY c.table_name, c.ordinal_position"
     )
@@ -1008,7 +1124,7 @@ def _postgres_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
             "LEFT JOIN pg_catalog.pg_attribute a "
             "ON a.attrelid = t.oid AND a.attnum = k.attnum "
             "WHERE t.relkind IN ('r', 'p') "
-            f"AND n.nspname IN ({scope}) "
+            f"AND {namespace_filter} "
             "ORDER BY t.relname, i.relname, k.ord"
         )
         index_columns: Dict[Tuple[str, str, bool, bool], List[Optional[str]]] = {}
@@ -1056,7 +1172,7 @@ def _postgres_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
             "JOIN pg_catalog.pg_attribute ta "
             "ON ta.attrelid = con.confrelid AND ta.attnum = k.refattnum "
             "WHERE con.contype = 'f' "
-            f"AND n.nspname IN ({scope}) "
+            f"AND {namespace_filter} "
             "ORDER BY src.relname, con.conname, k.ord"
         )
         fk_parts: Dict[Tuple[str, str], List[Sequence[RowValue]]] = {}
@@ -1087,7 +1203,7 @@ def _postgres_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
             "ON cc.constraint_schema = tc.constraint_schema "
             "AND cc.constraint_name = tc.constraint_name "
             "WHERE tc.constraint_type = 'CHECK' "
-            f"AND tc.table_schema IN ({scope})"
+            f"AND {constraint_filter}"
         )
         for table, cname, clause in check_rows:
             name = str(cname).lower()
@@ -1111,7 +1227,7 @@ def _postgres_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
             "ON a.attrelid = d.objoid AND a.attnum = d.objsubid "
             "JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "
             "WHERE d.objsubid > 0 "
-            f"AND n.nspname IN ({scope})"
+            f"AND {namespace_filter}"
         )
         for table, name, description in comment_rows:
             comments.setdefault(str(table).lower(), {})[str(name).lower()] = str(
@@ -1130,7 +1246,7 @@ def _postgres_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
             "FROM pg_catalog.pg_type t "
             "JOIN pg_catalog.pg_enum e ON e.enumtypid = t.oid "
             "JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace "
-            f"WHERE n.nspname IN ({scope}) "
+            f"WHERE {namespace_filter} "
             "ORDER BY t.typname, e.enumsortorder"
         )
         values_by_type: Dict[str, List[str]] = {}
@@ -1200,13 +1316,20 @@ def parse_inline_enum(raw_type: str) -> Tuple[str, ...]:
 
 
 def _mysql_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
+    # Every query in the plan covers the same schemas. A read that took
+    # its columns from one schema and its indexes from another would
+    # attach an index to a table of the same name in the wrong schema.
+    current = MYSQL_CATALOG.current_schema_sql
+    assert current is not None
+    table_filter = _scoped_filter("table_schema", current, schemas)
+    constraint_filter = _scoped_filter("constraint_schema", current, schemas)
     schema = yield from _information_schema_plan(MYSQL_CATALOG, schemas)
-    yield from _recover_mariadb_json(schema)
+    yield from _recover_mariadb_json(schema, constraint_filter)
     try:
         index_rows = yield (
             "SELECT table_name, index_name, non_unique, column_name "
             "FROM information_schema.statistics "
-            "WHERE table_schema = DATABASE() "
+            f"WHERE {table_filter} "
             "ORDER BY table_name, index_name, seq_in_index"
         )
         parts: Dict[Tuple[str, str, bool], List[Optional[str]]] = {}
@@ -1242,6 +1365,7 @@ def _mysql_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
 
 def _recover_mariadb_json(
     schema: Dict[str, IntrospectedTable],
+    constraint_filter: str,
 ) -> Generator[str, List[Sequence[RowValue]], None]:
     """
     Restores the JSON type to columns MariaDB reports as longtext.
@@ -1256,7 +1380,7 @@ def _recover_mariadb_json(
         rows = yield (
             "SELECT table_name, check_clause "
             "FROM information_schema.check_constraints "
-            "WHERE constraint_schema = DATABASE()"
+            f"WHERE {constraint_filter}"
         )
     except Exception:
         # MySQL's own check_constraints view has no table_name column, and

@@ -744,7 +744,7 @@ class TestSharedPlanScoping(unittest.TestCase):
     def test_the_read_scopes_to_the_connection_schema(self):
         seen = self.statements([mssql_model()])
         self.assertTrue(
-            all("IN (SCHEMA_NAME())" in sql for sql in seen),
+            all("= SCHEMA_NAME()" in sql for sql in seen),
             seen,
         )
 
@@ -753,7 +753,7 @@ class TestSharedPlanScoping(unittest.TestCase):
         model.tableSchema = "app"
         seen = self.statements([model])
         self.assertTrue(
-            all("IN (SCHEMA_NAME(), 'app')" in sql for sql in seen),
+            all("IN ('app')" in sql and "= SCHEMA_NAME()" in sql for sql in seen),
             seen,
         )
 
@@ -762,6 +762,20 @@ class TestSharedPlanScoping(unittest.TestCase):
         joins = [sql for sql in seen if "key_column_usage" in sql]
         self.assertEqual(len(joins), 1)
         self.assertIn("tc.table_schema = kcu.table_schema", joins[0])
+
+    def test_the_join_does_not_fall_back_on_a_multi_schema_read(self):
+        # The plain join cannot keep two schemas apart: one constraint
+        # name in each schema would cross-multiply into a garbled column
+        # list. A read that covers more than one schema keeps the
+        # constraint read it lost rather than reading it wrong.
+        model = mssql_model()
+        model.tableSchema = "app"
+        seen = self.statements(
+            [model],
+            {"tc.table_schema = kcu.table_schema": RuntimeError("no such column")},
+        )
+        joins = [sql for sql in seen if "key_column_usage" in sql]
+        self.assertEqual(len(joins), 1)
 
     def test_the_join_falls_back_without_a_schema_column(self):
         seen = self.statements(

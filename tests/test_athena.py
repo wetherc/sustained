@@ -510,7 +510,7 @@ class TestAthenaMigrator(unittest.TestCase):
         reads = [s for s in conn.log if "information_schema" in s]
         self.assertTrue(reads)
         for sql in reads:
-            self.assertIn("table_schema IN (current_schema)", sql)
+            self.assertIn("table_schema = current_schema", sql)
 
         presto_conn = FakeAthenaConnection()
         introspect_schema(presto_conn, Dialects.PRESTO)
@@ -518,6 +518,33 @@ class TestAthenaMigrator(unittest.TestCase):
         self.assertTrue(presto_reads)
         for sql in presto_reads:
             self.assertIn("table_schema NOT IN", sql)
+
+    def test_a_declared_schema_does_not_narrow_the_presto_read(self):
+        # Presto and Trino have no expression for the schema the
+        # connection is on. A declared schema must widen a read, and
+        # there is nothing here to widen: replacing the exclusion with
+        # the declared schema would drop every table the connection's own
+        # schema holds.
+        from sustained.introspect import introspect_schema
+
+        conn = FakeAthenaConnection()
+        introspect_schema(conn, Dialects.PRESTO, ("reporting",))
+        reads = [s for s in conn.log if "information_schema" in s]
+        self.assertTrue(reads)
+        for sql in reads:
+            self.assertIn("table_schema NOT IN", sql)
+            self.assertNotIn("'reporting'", sql)
+
+    def test_a_declared_schema_widens_the_athena_read(self):
+        from sustained.introspect import introspect_schema
+
+        conn = FakeAthenaConnection()
+        introspect_schema(conn, Dialects.ATHENA, ("reporting",))
+        reads = [s for s in conn.log if "information_schema" in s]
+        self.assertTrue(reads)
+        for sql in reads:
+            self.assertIn("= current_schema", sql)
+            self.assertIn("IN ('reporting')", sql)
 
     def test_sync_generates_add_columns(self):
         model = athena_model(

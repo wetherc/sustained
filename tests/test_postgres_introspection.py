@@ -41,7 +41,11 @@ class FakeCursor:
         self._current = []
 
     def execute(self, sql, params=()):
-        self.statements.append(" ".join(sql.split()))
+        statement = " ".join(sql.split())
+        # A guarded read takes a savepoint around every query. The tests
+        # look at the queries themselves.
+        if not statement.split()[0].upper() in ("SAVEPOINT", "RELEASE", "ROLLBACK"):
+            self.statements.append(statement)
         if "information_schema.columns" in sql:
             self._current = self.columns
         elif "pg_catalog.pg_index" in sql:
@@ -744,15 +748,29 @@ class TestPostgresSchemaScope(unittest.TestCase):
 
     def test_the_read_covers_the_connection_schema(self):
         for sql in self.statements([self.model("PgScopeA")]):
-            self.assertIn("IN (current_schema())", sql)
+            self.assertIn("= current_schema()", sql)
 
     def test_a_declared_schema_widens_the_read(self):
+        # The declared schema is its own IN list, with the current schema
+        # compared beside it. current_schema() returns NULL when the
+        # first search_path entry does not exist, and a NULL inside the
+        # IN list would match nothing at all.
         for sql in self.statements([self.model("PgScopeB", "app")]):
-            self.assertIn("IN (current_schema(), 'app')", sql)
+            self.assertIn("IN ('app')", sql)
+            self.assertIn("OR", sql)
+            self.assertIn("= current_schema()", sql)
 
     def test_a_quote_in_a_schema_name_is_escaped(self):
         for sql in self.statements([self.model("PgScopeC", "o'brien")]):
-            self.assertIn("IN (current_schema(), 'o''brien')", sql)
+            self.assertIn("IN ('o''brien')", sql)
+
+    def test_the_current_schema_never_stands_in_an_in_list(self):
+        # current_schema() returns NULL when the first search_path entry
+        # names a schema that does not exist. Inside an IN list beside a
+        # declared schema, that NULL would match nothing and the read
+        # would come back empty, so every model would look missing.
+        for sql in self.statements([self.model("PgScopeF", "app")]):
+            self.assertNotIn("IN (current_schema()", sql)
 
     def test_two_models_on_one_table_name_are_refused(self):
         models = [self.model("PgScopeD", "app"), self.model("PgScopeE", "public")]
@@ -761,6 +779,90 @@ class TestPostgresSchemaScope(unittest.TestCase):
         message = str(caught.exception)
         self.assertIn("schema app", message)
         self.assertIn("schema public", message)
+
+
+class SavepointCursor:
+    """A cursor that records every statement and fails one named query."""
+
+    def __init__(self, failing="pg_catalog.pg_index", savepoints=True):
+        self.failing = failing
+        self.savepoints = savepoints
+        self.statements = []
+        self.doomed = False
+        self._current = []
+
+    def execute(self, sql, params=()):
+        statement = " ".join(sql.split())
+        self.statements.append(statement)
+        word = statement.split()[0].upper()
+        if word == "SAVEPOINT":
+            if not self.savepoints:
+                raise RuntimeError("no transaction is active")
+            return
+        if word == "ROLLBACK":
+            self.doomed = False
+            return
+        if word == "RELEASE":
+            return
+        if self.doomed:
+            raise RuntimeError("current transaction is aborted")
+        if self.failing in sql:
+            self.doomed = True
+            raise RuntimeError("no such catalog")
+        self._current = []
+
+    def fetchall(self):
+        return self._current
+
+    def close(self):
+        pass
+
+
+class TestGuardedRead(unittest.TestCase):
+    """
+    A Postgres read tries a catalog and falls back when it is not there.
+    Postgres refuses every later statement in a transaction once one has
+    failed, so each query runs inside a savepoint.
+    """
+
+    def test_a_failed_query_rolls_back_to_the_savepoint(self):
+        cursor = SavepointCursor()
+        introspect_schema(FakeConnection(cursor), Dialects.POSTGRES)
+        self.assertIn("ROLLBACK TO SAVEPOINT sustained_read", cursor.statements)
+        self.assertFalse(cursor.doomed)
+        # The read kept going after the failure.
+        self.assertTrue(
+            any("pg_catalog.pg_constraint" in s for s in cursor.statements),
+            cursor.statements,
+        )
+
+    def test_a_read_without_savepoints_still_finishes(self):
+        cursor = SavepointCursor(savepoints=False)
+        introspect_schema(FakeConnection(cursor), Dialects.POSTGRES)
+        self.assertEqual([s for s in cursor.statements if s.startswith("RELEASE")], [])
+        self.assertTrue(
+            any("information_schema.columns" in s for s in cursor.statements)
+        )
+
+    def test_a_rollback_that_fails_keeps_the_first_error(self):
+        class NoRollback(SavepointCursor):
+            def execute(self, sql, params=()):
+                if sql.startswith("ROLLBACK"):
+                    self.statements.append(sql)
+                    raise RuntimeError("no savepoint to roll back to")
+                super().execute(sql, params)
+
+        cursor = NoRollback()
+        # The plan degrades on the error rather than raising it.
+        introspect_schema(FakeConnection(cursor), Dialects.POSTGRES)
+        self.assertIn("ROLLBACK TO SAVEPOINT sustained_read", cursor.statements)
+
+    def test_a_dialect_that_keeps_its_transaction_takes_no_savepoint(self):
+        cursor = SavepointCursor(failing="never")
+        introspect_schema(FakeConnection(cursor), Dialects.MYSQL)
+        self.assertEqual(
+            [s for s in cursor.statements if s.startswith("SAVEPOINT")], []
+        )
 
 
 if __name__ == "__main__":

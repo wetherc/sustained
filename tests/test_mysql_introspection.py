@@ -661,5 +661,45 @@ class TestMariadbPrecisionDrift(unittest.TestCase):
         self.assertEqual([c[1] for c in diff.changed_columns], ["seen_at"])
 
 
+class TestMysqlSchemaScope(unittest.TestCase):
+    """
+    Every MySQL query covers the same schemas. A read that took its
+    columns from one schema and its indexes from another would attach an
+    index to a table of the same name in another database.
+    """
+
+    def reads(self, schemas=()):
+        cursor = FakeCursor(
+            columns=[("events", "id", "int", "NO", None)],
+            constraints=[],
+            checks=[],
+            table_checks=[],
+        )
+        introspect_schema(FakeConnection(cursor), Dialects.MYSQL, schemas)
+        return [s for s in cursor.statements if "information_schema" in s]
+
+    def test_every_read_covers_the_connection_database(self):
+        reads = self.reads()
+        self.assertTrue(reads)
+        for sql in reads:
+            self.assertIn("= DATABASE()", sql)
+
+    def test_a_declared_schema_does_not_drop_the_connection_database(self):
+        reads = self.reads(("reporting",))
+        self.assertTrue(reads)
+        for sql in reads:
+            self.assertIn("= DATABASE()", sql)
+            self.assertIn("IN ('reporting')", sql)
+
+    def test_the_index_and_check_reads_carry_the_declared_schema(self):
+        reads = self.reads(("reporting",))
+        statistics = [s for s in reads if "statistics" in s]
+        recovery = [s for s in reads if s.startswith("SELECT table_name, check_clause")]
+        self.assertEqual(len(statistics), 1)
+        self.assertEqual(len(recovery), 1)
+        self.assertIn("table_schema IN ('reporting')", statistics[0])
+        self.assertIn("constraint_schema IN ('reporting')", recovery[0])
+
+
 if __name__ == "__main__":
     unittest.main()
