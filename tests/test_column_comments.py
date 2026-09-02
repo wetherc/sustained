@@ -388,6 +388,74 @@ class TestPrestoCommentRead(unittest.TestCase):
         self.assertFalse(any("comment" in s.lower() for s in cursor.statements))
 
 
+class TestAthenaCommentDrift(unittest.TestCase):
+    """
+    Athena reports column comments but cannot change one in place. The
+    drift becomes a note rather than stopping generation.
+    """
+
+    COLUMNS = "c.column_default, c.comment"
+
+    def model(self, comment):
+        return type(
+            "AthenaCommented",
+            (Model,),
+            {
+                "tableName": "users",
+                "tableColumns": {"email": String(120, comment=comment)},
+                "_dialect": Dialects.ATHENA,
+            },
+        )
+
+    def connection(self):
+        return FakeConnection(
+            FakeCursor(
+                {
+                    self.COLUMNS: [
+                        ("users", "email", "varchar(120)", "YES", None, "Old words")
+                    ]
+                }
+            )
+        )
+
+    def test_the_drift_is_read(self):
+        diff = diff_schema(
+            self.connection(), [self.model("New words")], dialect=Dialects.ATHENA
+        )
+        self.assertEqual(
+            diff.changed_comments, [("users", "email", "Old words", "New words")]
+        )
+
+    def test_generation_makes_a_note_instead_of_raising(self):
+        migration = autogenerate(
+            self.connection(),
+            [self.model("New words")],
+            id="m1",
+            dialect=Dialects.ATHENA,
+        )
+        self.assertIsNone(migration)
+
+    def test_other_changes_still_generate(self):
+        model = type(
+            "AthenaCommentedPlus",
+            (Model,),
+            {
+                "tableName": "users",
+                "tableColumns": {
+                    "email": String(120, comment="New words"),
+                    "handle": String(40),
+                },
+                "_dialect": Dialects.ATHENA,
+            },
+        )
+        migration = autogenerate(
+            self.connection(), [model], id="m2", dialect=Dialects.ATHENA
+        )
+        self.assertEqual(
+            migration.up, ["ALTER TABLE `users` ADD COLUMNS (`handle` STRING)"]
+        )
+
+
 class TestDuckdbCommentRead(unittest.TestCase):
     def setUp(self):
         try:

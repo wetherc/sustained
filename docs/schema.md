@@ -214,7 +214,7 @@ Where the comment lands follows the dialect. MySQL, MariaDB, Presto, Trino, and 
 
 Introspection reads the comments back on every dialect that stores them, and generation keeps them in sync. A comment changed or removed out of band shows up in `plan` and `diff`, and the generated migration writes the declared text back, with a down step that restores what the database had. A dialect that stores no comments never reports comment drift, and neither does a catalog read that could not see them, so absence is never mistaken for removal.
 
-Two edges are deliberate. The comment is not part of a step's identity when it is absent, so adding `comment` support changed no existing migration checksums. And Athena stores a comment at `CREATE TABLE` but cannot change one in place, so a drifted comment there refuses with `DialectError` instead of generating; recreate the table or write the `CHANGE COLUMN` statement by hand.
+Two edges are deliberate. The comment is not part of a step's identity when it is absent, so adding `comment` support changed no existing migration checksums. And Athena stores a comment at `CREATE TABLE` but cannot change one in place, so a drifted comment there becomes a constraint note and the rest of the migration still generates; recreate the table or write the `CHANGE COLUMN` statement by hand. A hand-written `set_column_comment` step still raises `DialectError` on Athena.
 
 Hand-written migrations set or clear a comment with the [`set_column_comment` step](./reference/migrations#typed-ddl-steps).
 

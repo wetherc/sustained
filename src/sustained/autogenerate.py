@@ -43,6 +43,7 @@ import re
 from typing import TYPE_CHECKING, Dict, List, Optional, Set, Tuple, Type
 
 from sustained.dialects import Dialects
+from sustained.exceptions import DialectError
 from sustained.introspect import (
     IntrospectedColumn,
     IntrospectedForeignKey,
@@ -1112,8 +1113,6 @@ def _rebuild_needed(compiler: "Compiler", change: str) -> bool:
     if strategy == "alter":
         return False
     if strategy == "unsupported":
-        from sustained.exceptions import DialectError
-
         raise DialectError(
             f"{compiler.dialect_name().title()} cannot {change} in place, "
             "and it cannot rebuild a table either. Write the migration by "
@@ -1429,14 +1428,24 @@ def autogenerate(
         assert model.tableColumns is not None
         coldef = model.tableColumns[name]
         table_sql = model._qualified_table_sql()
-        up_steps.extend(
-            compiler.compile_set_column_comment(
+        try:
+            set_new = compiler.compile_set_column_comment(
                 table_sql, name, expected_comment, coldef
             )
-        )
-        for statement in reversed(
-            compiler.compile_set_column_comment(table_sql, name, actual_comment, coldef)
-        ):
+            set_old = compiler.compile_set_column_comment(
+                table_sql, name, actual_comment, coldef
+            )
+        except DialectError as error:
+            # Athena reports comments but cannot change one in place.
+            # The drift is real and worth saying, but it must not stop
+            # the rest of the migration from being generated.
+            diff.constraint_notes.append(
+                f"{table}.{name} comment is {actual_comment or 'none'}, "
+                f"model declares {expected_comment or 'none'}: {error}"
+            )
+            continue
+        up_steps.extend(set_new)
+        for statement in reversed(set_old):
             down_steps.insert(0, statement)
 
     # A dialect that cannot alter a table in place takes its constraint
