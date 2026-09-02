@@ -560,7 +560,7 @@ normalize_default(raw) -> str | None
 ```
 {: .sig #normalize_default}
 
-The canonical spelling of a reported column default, for comparison.
+The canonical spelling of a reported column default, for comparison. Balanced outer parentheses, a Postgres `::type` cast with its length, quotes, and an empty argument list all come off. A `nextval(...)` default returns `None`: it is what Postgres reports for a serial column, and no model declaration can equal it, so the diff reports nothing for it.
 
 ### `SchemaDiff`
 

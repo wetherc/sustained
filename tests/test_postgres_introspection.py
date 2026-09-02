@@ -10,7 +10,11 @@ import unittest
 
 from sustained.autogenerate import autogenerate, diff_schema
 from sustained.dialects import Dialects
-from sustained.introspect import introspect_schema
+from sustained.introspect import (
+    introspect_schema,
+    is_sequence_default,
+    normalize_default,
+)
 from sustained.model import Model
 from sustained.schema import Index, Integer, Numeric, String, Text
 
@@ -657,6 +661,60 @@ class TestNewTableForeignKeys(unittest.TestCase):
             [step.split(" ")[0] for step in migration.up],
             ["CREATE", "CREATE", "ALTER", "ALTER"],
         )
+
+
+class TestNormalizeDefault(unittest.TestCase):
+    def test_a_sequence_default_has_nothing_to_compare(self):
+        self.assertTrue(is_sequence_default("nextval('users_id_seq'::regclass)"))
+        self.assertIsNone(normalize_default("nextval('users_id_seq'::regclass)"))
+        self.assertFalse(is_sequence_default(None))
+        self.assertFalse(is_sequence_default("5"))
+
+    def test_unbalanced_parentheses_stay(self):
+        self.assertEqual(normalize_default("(1)+(2)"), "(1)+(2)")
+
+    def test_balanced_parentheses_come_off(self):
+        self.assertEqual(normalize_default("((5))"), "5")
+
+    def test_a_cast_comes_off_before_the_quotes(self):
+        self.assertEqual(normalize_default("'x'::character varying(255)"), "X")
+        self.assertEqual(normalize_default("'a'::text[]"), "A")
+        self.assertEqual(normalize_default("'{}'::jsonb"), "{}")
+
+    def test_an_empty_argument_list_comes_off(self):
+        self.assertEqual(
+            normalize_default("current_timestamp()"),
+            normalize_default("CURRENT_TIMESTAMP"),
+        )
+
+
+class TestSerialColumnDrift(unittest.TestCase):
+    """
+    A legacy serial column reports nextval() as its default. The model
+    declares no default, and the two can never be made equal, so the
+    diff must not report it forever.
+    """
+
+    def test_a_serial_default_reports_no_note(self):
+        cursor = FakeCursor(
+            columns=[
+                column_row(
+                    "legacy",
+                    "id",
+                    "integer",
+                    nullable="NO",
+                    default="nextval('legacy_id_seq'::regclass)",
+                )
+            ],
+            indexes=[("legacy", "legacy_pkey", True, True, "id")],
+            foreign_keys=[],
+        )
+        model = make_model(
+            "PgLegacy", "legacy", {"id": Integer(primary_key=True, autoincrement=True)}
+        )
+        diff = diff_schema(FakeConnection(cursor), [model], dialect=Dialects.POSTGRES)
+        self.assertEqual(diff.constraint_notes, [])
+        self.assertTrue(diff.is_empty())
 
 
 if __name__ == "__main__":

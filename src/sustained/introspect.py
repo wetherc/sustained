@@ -229,19 +229,52 @@ def normalize_check(expression: str) -> str:
     return value.casefold()
 
 
+# A Postgres ::type cast, with the length or precision it may carry and
+# any array brackets, so 'x'::character varying(255) reduces to 'x'.
+_CAST_RE = re.compile(
+    r"::\s*[a-zA-Z_][a-zA-Z_0-9 ]*(?:\s*\(\s*[\d,\s]*\))?(?:\s*\[\s*\])*"
+)
+
+_SEQUENCE_DEFAULT_RE = re.compile(r"^\s*nextval\s*\(", re.IGNORECASE)
+
+
+def is_sequence_default(raw: Optional[str]) -> bool:
+    """
+    Whether a reported default is a call to a sequence, which is how
+    Postgres spells a serial column's default. A model has no way to
+    declare one, so there is nothing to compare it against.
+    """
+    return raw is not None and bool(_SEQUENCE_DEFAULT_RE.match(str(raw)))
+
+
 def normalize_default(raw: Optional[str]) -> Optional[str]:
     """
     Reduces a reported column default to a comparable form: strips
-    parentheses, Postgres ::type casts, quotes, and an empty argument
-    list, and uppercases. The argument list is why MariaDB's
-    current_timestamp() and MySQL's CURRENT_TIMESTAMP compare equal.
+    balanced outer parentheses, Postgres ::type casts, quotes, and an
+    empty argument list, and uppercases. The argument list is why
+    MariaDB's current_timestamp() and MySQL's CURRENT_TIMESTAMP compare
+    equal.
+
+    A sequence call reduces to None. It is what Postgres reports for a
+    serial column, and no model declaration can ever equal it.
+
+    Parentheses come off only when they balance, so an expression such
+    as (1)+(2) keeps its shape. The cast comes off before the quotes,
+    since the cast may carry a length that the quote strip would leave
+    behind.
     """
     if raw is None:
         return None
+    if is_sequence_default(raw):
+        return None
     value = str(raw).strip()
-    while value.startswith("(") and value.endswith(")"):
+    while (
+        value.startswith("(")
+        and value.endswith(")")
+        and _balanced_paren_body(value, 0) == value[1:-1]
+    ):
         value = value[1:-1].strip()
-    value = re.sub(r"::[a-zA-Z_ ]+", "", value)
+    value = _CAST_RE.sub("", value)
     value = value.strip("'\"")
     value = re.sub(r"\(\s*\)$", "", value.strip())
     return value.upper()

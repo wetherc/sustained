@@ -53,6 +53,7 @@ from sustained.introspect import (
     async_introspect_schema,
     diff_snapshots,
     introspect_schema,
+    is_sequence_default,
     normalize_check,
     normalize_default,
     normalize_type,
@@ -783,6 +784,10 @@ def _diff_constraints(
                     f"{table_name}.{name} declares UNIQUE but the database "
                     "has no unique index on it"
                 )
+        if is_sequence_default(actual_col.default):
+            # A serial column's default names a sequence, which no model
+            # declaration can equal. There is nothing to compare.
+            continue
         expected_default = (
             None if coldef.default is None else normalize_default(str(coldef.default))
         )
