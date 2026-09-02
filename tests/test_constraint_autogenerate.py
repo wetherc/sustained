@@ -371,9 +371,11 @@ class RoutingCursor:
     def __init__(self, routes):
         self._routes = routes
         self._current = []
+        self.seen = []
 
     def execute(self, sql, params=()):
         self._current = []
+        self.seen.append(" ".join(sql.split()))
         for marker, rows in self._routes.items():
             if marker in sql:
                 if isinstance(rows, Exception):
@@ -722,6 +724,53 @@ class TestSharedPlanChecks(unittest.TestCase):
         )
         diff = diff_schema(conn, [mssql_model()], dialect=Dialects.MSSQL)
         self.assertEqual(diff.extra_checks, [])
+
+
+class TestSharedPlanScoping(unittest.TestCase):
+    """
+    The shared information_schema read keys on the bare table name, so
+    it covers one schema: the connection's own, plus every schema the
+    models name. Its constraint join matches schemas too, since a
+    constraint name is only unique within one.
+    """
+
+    def statements(self, models, routes=None, dialect=Dialects.MSSQL):
+        conn = RoutingConnection(
+            {"information_schema.columns": MSSQL_COLUMNS, **(routes or {})}
+        )
+        diff_schema(conn, models, dialect=dialect)
+        return conn._cursor.seen
+
+    def test_the_read_scopes_to_the_connection_schema(self):
+        seen = self.statements([mssql_model()])
+        self.assertTrue(
+            all("IN (SCHEMA_NAME())" in sql for sql in seen),
+            seen,
+        )
+
+    def test_a_declared_schema_widens_the_read(self):
+        model = mssql_model()
+        model.tableSchema = "app"
+        seen = self.statements([model])
+        self.assertTrue(
+            all("IN (SCHEMA_NAME(), 'app')" in sql for sql in seen),
+            seen,
+        )
+
+    def test_the_constraint_join_matches_schemas(self):
+        seen = self.statements([mssql_model()])
+        joins = [sql for sql in seen if "key_column_usage" in sql]
+        self.assertEqual(len(joins), 1)
+        self.assertIn("tc.table_schema = kcu.table_schema", joins[0])
+
+    def test_the_join_falls_back_without_a_schema_column(self):
+        seen = self.statements(
+            [mssql_model()],
+            {"tc.table_schema = kcu.table_schema": RuntimeError("no such column")},
+        )
+        joins = [sql for sql in seen if "key_column_usage" in sql]
+        self.assertEqual(len(joins), 2)
+        self.assertNotIn("tc.table_schema = kcu.table_schema", joins[1])
 
 
 class TestDegradedReadDiffsNothing(unittest.TestCase):

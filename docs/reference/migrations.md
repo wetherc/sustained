@@ -535,11 +535,11 @@ autogenerate(connection, models, id, dialect=..., allow_drops=False, ignore_chan
 Builds the migration a diff asks for. Refuses to generate the lossy differences, and refuses to run at all while the database holds objects the models do not declare, unless you pass `allow_drops=True` or `ignore_undeclared=True`. The migrator passes `ignore_undeclared=True`.
 
 ```python
-introspect_schema(connection, dialect=Dialects.DEFAULT) -> dict[str, IntrospectedTable]
+introspect_schema(connection, dialect=Dialects.DEFAULT, schemas=()) -> dict[str, IntrospectedTable]
 ```
 {: .sig #introspect_schema}
 
-Reads the live schema. `await async_introspect_schema(adapter, dialect=Dialects.DEFAULT)` is the same read on an adapter.
+Reads the live schema. `await async_introspect_schema(adapter, dialect=Dialects.DEFAULT, schemas=())` is the same read on an adapter. The read covers the schema the connection is on, plus every name in `schemas`; `diff_schema()` fills that from the models' `tableSchema`. See [Schema scope](/dialects#schema-scope).
 
 ```python
 diff_snapshots(before, after) -> list[str]

@@ -294,7 +294,9 @@ def _finished(stop: StopIteration) -> Snapshot:
 
 
 def introspect_schema(
-    connection: Connection, dialect: Dialects = Dialects.DEFAULT
+    connection: Connection,
+    dialect: Dialects = Dialects.DEFAULT,
+    schemas: Sequence[str] = (),
 ) -> Snapshot:
     """
     Reads tables, columns, primary keys, unique constraints, foreign keys,
@@ -315,7 +317,7 @@ def introspect_schema(
     information_schema and degrade to column-only data when constraint
     views are unavailable. Names are keyed lowercase.
     """
-    plan = _schema_plan(dialect)
+    plan = _schema_plan(dialect, tuple(schemas))
     # An open transaction reads on its own cursor: a rehearsal introspects
     # a schema its uncommitted statements just changed, and on DuckDB a
     # fresh cursor is a separate session that cannot see it. One cursor
@@ -345,14 +347,16 @@ def introspect_schema(
 
 
 async def async_introspect_schema(
-    adapter: "AsyncAdapter", dialect: Dialects = Dialects.DEFAULT
+    adapter: "AsyncAdapter",
+    dialect: Dialects = Dialects.DEFAULT,
+    schemas: Sequence[str] = (),
 ) -> Snapshot:
     """
     Reads the schema through an async adapter, returning what
     introspect_schema() returns. Both run the same reading code, so a
     dialect behaves the same on either path.
     """
-    plan = _schema_plan(dialect)
+    plan = _schema_plan(dialect, tuple(schemas))
     sql = next(plan)
     while True:
         try:
@@ -369,20 +373,44 @@ async def async_introspect_schema(
             return _finished(stop)
 
 
-def _schema_plan(dialect: Dialects) -> SchemaPlan:
+def _schema_plan(dialect: Dialects, schemas: Tuple[str, ...] = ()) -> SchemaPlan:
     if dialect == Dialects.DEFAULT:
         return _sqlite_plan()
     if dialect == Dialects.MYSQL:
-        return _mysql_plan()
+        return _mysql_plan(schemas)
     if dialect == Dialects.POSTGRES:
-        return _postgres_plan()
+        return _postgres_plan(schemas)
     if dialect == Dialects.MSSQL:
-        return _mssql_plan()
+        return _mssql_plan(schemas)
     if dialect == Dialects.DUCKDB:
-        return _duckdb_plan()
+        return _duckdb_plan(schemas)
     if dialect == Dialects.ATHENA:
-        return _information_schema_plan(ATHENA_CATALOG)
-    return _information_schema_plan(PRESTO_CATALOG)
+        return _information_schema_plan(ATHENA_CATALOG, schemas)
+    return _information_schema_plan(PRESTO_CATALOG, schemas)
+
+
+def _schema_literal(name: str) -> str:
+    """One schema name as a SQL string literal."""
+    return "'{}'".format(name.replace("'", "''"))
+
+
+def _schema_scope(current_sql: Optional[str], schemas: Tuple[str, ...]) -> str:
+    """
+    The IN list of schemas a read covers: the connection's own schema
+    when the engine can name it, plus every schema the models declare.
+    Empty when the engine has no expression for the current schema and
+    the caller named none, which leaves the read unscoped.
+    """
+    parts: List[str] = []
+    if current_sql is not None:
+        parts.append(current_sql)
+    seen = {current_sql}
+    for name in schemas:
+        literal = _schema_literal(name)
+        if literal not in seen:
+            seen.add(literal)
+            parts.append(literal)
+    return ", ".join(parts)
 
 
 def _strip_identifier(name: str) -> str:
@@ -565,9 +593,9 @@ class Catalog(NamedTuple):
     Attributes:
         schema_filter: The WHERE fragment that picks the schemas to read.
         type_column: The column holding the type spelling to compare on.
-        join_on_schema: Whether the constraint join must match schemas as
-            well as names, on engines where a constraint name is only
-            unique within its schema.
+        current_schema_sql: The expression that names the schema the
+            connection is on, or None on engines with no such expression.
+            A read is scoped to it, plus every schema the models declare.
         comment_column: The information_schema.columns column holding the
             column comment, or None on engines that store none there.
         reads_checks: Whether the engine fills
@@ -578,7 +606,7 @@ class Catalog(NamedTuple):
 
     schema_filter: str
     type_column: str
-    join_on_schema: bool
+    current_schema_sql: Optional[str] = None
     comment_column: Optional[str] = None
     reads_checks: bool = True
 
@@ -586,7 +614,6 @@ class Catalog(NamedTuple):
 ANSI_CATALOG = Catalog(
     schema_filter=f"table_schema NOT IN ({', '.join(_SYSTEM_SCHEMAS)})",
     type_column="data_type",
-    join_on_schema=False,
 )
 
 MYSQL_CATALOG = Catalog(
@@ -597,7 +624,6 @@ MYSQL_CATALOG = Catalog(
     # own. column_type reports 'varchar(120)', which is what the compiler
     # emits, so a column never drifts against its own DDL.
     type_column="column_type",
-    join_on_schema=True,
     comment_column="column_comment",
 )
 
@@ -608,11 +634,23 @@ PRESTO_CATALOG = ANSI_CATALOG._replace(comment_column="comment", reads_checks=Fa
 # Athena reads only the connection's schema. Its catalog spans every Glue
 # database in the account, so an unscoped read is slow and fails outright
 # when any other database holds a table with broken metadata.
-ATHENA_CATALOG = PRESTO_CATALOG._replace(schema_filter="table_schema = current_schema")
+ATHENA_CATALOG = PRESTO_CATALOG._replace(current_schema_sql="current_schema")
+
+# MSSQL keys everything on the bare table name, so two schemas holding a
+# table with one name would merge. The read covers the connection's own
+# schema, plus every schema the models declare.
+MSSQL_CATALOG = ANSI_CATALOG._replace(current_schema_sql="SCHEMA_NAME()")
+
+# DuckDB keys on the bare table name the same way, and its own catalog
+# functions carry a schema_name column to filter on.
+DUCKDB_CATALOG = ANSI_CATALOG._replace(current_schema_sql="current_schema()")
 
 
-def _information_schema_plan(catalog: Catalog = ANSI_CATALOG) -> SchemaPlan:
-    schema_filter = catalog.schema_filter
+def _information_schema_plan(
+    catalog: Catalog = ANSI_CATALOG, schemas: Tuple[str, ...] = ()
+) -> SchemaPlan:
+    scope = _schema_scope(catalog.current_schema_sql, schemas)
+    schema_filter = f"table_schema IN ({scope})" if scope else catalog.schema_filter
 
     columns_by_table: Dict[str, Dict[str, IntrospectedColumn]] = {}
 
@@ -664,22 +702,28 @@ def _information_schema_plan(catalog: Catalog = ANSI_CATALOG) -> SchemaPlan:
     primary_keys: Dict[str, List[str]] = {}
     unique_indexes: Dict[str, Dict[str, IntrospectedIndex]] = {}
     foreign_keys: Dict[str, Dict[str, IntrospectedForeignKey]] = {}
-    schema_join = (
-        "AND tc.table_schema = kcu.table_schema " if catalog.join_on_schema else ""
-    )
     constraints_read = False
-    try:
-        constraint_rows = yield (
-            "SELECT tc.table_name, tc.constraint_type, tc.constraint_name, "
-            "kcu.column_name "
-            "FROM information_schema.table_constraints tc "
-            "JOIN information_schema.key_column_usage kcu "
-            "ON tc.constraint_name = kcu.constraint_name "
-            "AND tc.table_name = kcu.table_name "
-            f"{schema_join}"
-            f"WHERE tc.{schema_filter} "
-            "ORDER BY kcu.ordinal_position"
-        )
+    # A constraint name is only unique within its schema, so the join
+    # matches schemas as well as names. Without that, two schemas each
+    # holding a constraint with one name cross-multiply into a garbled
+    # column list. An engine whose key_column_usage has no table_schema
+    # column takes the plain join instead.
+    for schema_join in ("AND tc.table_schema = kcu.table_schema ", ""):
+        try:
+            constraint_rows = yield (
+                "SELECT tc.table_name, tc.constraint_type, tc.constraint_name, "
+                "kcu.column_name "
+                "FROM information_schema.table_constraints tc "
+                "JOIN information_schema.key_column_usage kcu "
+                "ON tc.constraint_name = kcu.constraint_name "
+                "AND tc.table_name = kcu.table_name "
+                f"{schema_join}"
+                f"WHERE tc.{schema_filter} "
+                "ORDER BY kcu.ordinal_position"
+            )
+        except Exception:
+            # No constraint views, or no table_schema on this one.
+            continue
         constraint_columns: Dict[Tuple[str, str, str], List[str]] = {}
         for table, ctype, cname, column in constraint_rows:
             key = (table.lower(), ctype.upper(), cname.lower())
@@ -698,9 +742,7 @@ def _information_schema_plan(catalog: Catalog = ANSI_CATALOG) -> SchemaPlan:
                     columns=tuple(cols), target_table="?"
                 )
         constraints_read = True
-    except Exception:
-        # The engine does not expose constraint views; degrade to columns.
-        pass
+        break
 
     checks: Dict[str, Dict[str, str]] = {}
     checks_read = False
@@ -759,14 +801,15 @@ def _merge_plain_indexes(
         schema[table] = existing._replace(indexes=merged)
 
 
-def _mssql_plan() -> SchemaPlan:
+def _mssql_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
     """
     information_schema plus sys.indexes. The shared read sees unique
     constraints only; plain indexes and CREATE UNIQUE INDEX indexes live
     in sys.indexes. Without them, a model's declared index reads as
     missing on every plan, and the second run fails creating it again.
     """
-    schema = yield from _information_schema_plan()
+    schema = yield from _information_schema_plan(MSSQL_CATALOG, schemas)
+    scope = _schema_scope(MSSQL_CATALOG.current_schema_sql, schemas)
     try:
         index_rows = yield (
             "SELECT t.name, i.name, i.is_unique, c.name "
@@ -778,6 +821,7 @@ def _mssql_plan() -> SchemaPlan:
             "AND c.column_id = ic.column_id "
             "WHERE i.is_primary_key = 0 AND i.is_unique_constraint = 0 "
             "AND i.name IS NOT NULL AND ic.is_included_column = 0 "
+            f"AND SCHEMA_NAME(t.schema_id) IN ({scope}) "
             "ORDER BY t.name, i.name, ic.key_ordinal"
         )
         parts: Dict[Tuple[str, str, bool], List[str]] = {}
@@ -814,18 +858,20 @@ def _duckdb_index_columns(expressions: str) -> Optional[Tuple[str, ...]]:
     return tuple(part.lower() for part in parts)
 
 
-def _duckdb_plan() -> SchemaPlan:
+def _duckdb_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
     """
     information_schema plus duckdb_indexes(). DuckDB's shared read sees
     unique constraints only, so a model's declared index would read as
     missing on every plan, and the second run would fail creating it
     again.
     """
-    schema = yield from _information_schema_plan()
+    schema = yield from _information_schema_plan(DUCKDB_CATALOG, schemas)
+    scope = _schema_scope(DUCKDB_CATALOG.current_schema_sql, schemas)
     try:
         index_rows = yield (
             "SELECT table_name, index_name, is_unique, expressions "
-            "FROM duckdb_indexes() WHERE NOT is_primary"
+            f"FROM duckdb_indexes() WHERE NOT is_primary "
+            f"AND schema_name IN ({scope})"
         )
         plain: Dict[str, Dict[str, IntrospectedIndex]] = {}
         for table, name, is_unique, expressions in index_rows:
@@ -842,7 +888,7 @@ def _duckdb_plan() -> SchemaPlan:
     try:
         comment_rows = yield (
             "SELECT table_name, column_name, comment FROM duckdb_columns() "
-            "WHERE comment IS NOT NULL"
+            f"WHERE comment IS NOT NULL AND schema_name IN ({scope})"
         )
         for table, name, comment in comment_rows:
             existing = schema.get(str(table).lower())
@@ -859,7 +905,8 @@ def _duckdb_plan() -> SchemaPlan:
     try:
         type_rows = yield (
             "SELECT type_name, labels FROM duckdb_types() "
-            "WHERE labels IS NOT NULL AND NOT internal"
+            "WHERE labels IS NOT NULL AND NOT internal "
+            f"AND schema_name IN ({scope})"
         )
         for name, labels in type_rows:
             if not labels:
@@ -915,7 +962,12 @@ def _pg_fk_action(code: Optional[RowValue]) -> Optional[str]:
     return _PG_FK_ACTIONS.get(str(code), str(code).upper())
 
 
-def _postgres_plan() -> SchemaPlan:
+def _postgres_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
+    # Everything below keys on the bare table name, so an unscoped read
+    # merges app.users into public.users and the diff never converges.
+    # The read covers the schema the connection is on, plus every schema
+    # the models declare.
+    scope = _schema_scope("current_schema()", schemas)
     columns_by_table: Dict[str, Dict[str, IntrospectedColumn]] = {}
     column_rows = yield (
         "SELECT c.table_name, c.column_name, c.data_type, c.udt_name, "
@@ -924,7 +976,7 @@ def _postgres_plan() -> SchemaPlan:
         "FROM information_schema.columns c "
         "JOIN information_schema.tables t "
         "ON t.table_schema = c.table_schema AND t.table_name = c.table_name "
-        "WHERE c.table_schema NOT IN ('information_schema', 'pg_catalog') "
+        f"WHERE c.table_schema IN ({scope}) "
         "AND t.table_type = 'BASE TABLE' "
         "ORDER BY c.table_name, c.ordinal_position"
     )
@@ -956,7 +1008,7 @@ def _postgres_plan() -> SchemaPlan:
             "LEFT JOIN pg_catalog.pg_attribute a "
             "ON a.attrelid = t.oid AND a.attnum = k.attnum "
             "WHERE t.relkind IN ('r', 'p') "
-            "AND n.nspname NOT IN ('information_schema', 'pg_catalog') "
+            f"AND n.nspname IN ({scope}) "
             "ORDER BY t.relname, i.relname, k.ord"
         )
         index_columns: Dict[Tuple[str, str, bool, bool], List[Optional[str]]] = {}
@@ -1004,7 +1056,7 @@ def _postgres_plan() -> SchemaPlan:
             "JOIN pg_catalog.pg_attribute ta "
             "ON ta.attrelid = con.confrelid AND ta.attnum = k.refattnum "
             "WHERE con.contype = 'f' "
-            "AND n.nspname NOT IN ('information_schema', 'pg_catalog') "
+            f"AND n.nspname IN ({scope}) "
             "ORDER BY src.relname, con.conname, k.ord"
         )
         fk_parts: Dict[Tuple[str, str], List[Sequence[RowValue]]] = {}
@@ -1035,7 +1087,7 @@ def _postgres_plan() -> SchemaPlan:
             "ON cc.constraint_schema = tc.constraint_schema "
             "AND cc.constraint_name = tc.constraint_name "
             "WHERE tc.constraint_type = 'CHECK' "
-            "AND tc.table_schema NOT IN ('information_schema', 'pg_catalog')"
+            f"AND tc.table_schema IN ({scope})"
         )
         for table, cname, clause in check_rows:
             name = str(cname).lower()
@@ -1059,7 +1111,7 @@ def _postgres_plan() -> SchemaPlan:
             "ON a.attrelid = d.objoid AND a.attnum = d.objsubid "
             "JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "
             "WHERE d.objsubid > 0 "
-            "AND n.nspname NOT IN ('information_schema', 'pg_catalog')"
+            f"AND n.nspname IN ({scope})"
         )
         for table, name, description in comment_rows:
             comments.setdefault(str(table).lower(), {})[str(name).lower()] = str(
@@ -1078,7 +1130,7 @@ def _postgres_plan() -> SchemaPlan:
             "FROM pg_catalog.pg_type t "
             "JOIN pg_catalog.pg_enum e ON e.enumtypid = t.oid "
             "JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace "
-            "WHERE n.nspname NOT IN ('information_schema', 'pg_catalog') "
+            f"WHERE n.nspname IN ({scope}) "
             "ORDER BY t.typname, e.enumsortorder"
         )
         values_by_type: Dict[str, List[str]] = {}
@@ -1147,8 +1199,8 @@ def parse_inline_enum(raw_type: str) -> Tuple[str, ...]:
     )
 
 
-def _mysql_plan() -> SchemaPlan:
-    schema = yield from _information_schema_plan(MYSQL_CATALOG)
+def _mysql_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
+    schema = yield from _information_schema_plan(MYSQL_CATALOG, schemas)
     yield from _recover_mariadb_json(schema)
     try:
         index_rows = yield (

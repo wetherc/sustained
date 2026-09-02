@@ -809,7 +809,7 @@ class TestSchemaReadOnce(AutogenTestCase):
         self.reads = []
         self.real = autogenerate_module.introspect_schema
 
-        def counted(connection, dialect):
+        def counted(connection, dialect, schemas=()):
             snapshot = self.real(connection, dialect)
             self.reads.append(dialect)
             return snapshot

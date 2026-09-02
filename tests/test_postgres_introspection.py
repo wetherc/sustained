@@ -717,5 +717,51 @@ class TestSerialColumnDrift(unittest.TestCase):
         self.assertTrue(diff.is_empty())
 
 
+class TestPostgresSchemaScope(unittest.TestCase):
+    """
+    Every read keys on the bare table name, so an unscoped read merges
+    app.users into public.users and the diff never converges. The read
+    covers the schema the connection is on, plus the schemas the models
+    name.
+    """
+
+    def statements(self, models):
+        cursor = FakeCursor(
+            columns=[column_row("users", "id", "integer", nullable="NO")],
+            indexes=[],
+            foreign_keys=[],
+            checks=[],
+            enums=[],
+            comments=[],
+        )
+        diff_schema(FakeConnection(cursor), models, dialect=Dialects.POSTGRES)
+        return cursor.statements
+
+    def model(self, name, schema=None):
+        model = make_model(name, "users", {"id": Integer(primary_key=True)})
+        model.tableSchema = schema
+        return model
+
+    def test_the_read_covers_the_connection_schema(self):
+        for sql in self.statements([self.model("PgScopeA")]):
+            self.assertIn("IN (current_schema())", sql)
+
+    def test_a_declared_schema_widens_the_read(self):
+        for sql in self.statements([self.model("PgScopeB", "app")]):
+            self.assertIn("IN (current_schema(), 'app')", sql)
+
+    def test_a_quote_in_a_schema_name_is_escaped(self):
+        for sql in self.statements([self.model("PgScopeC", "o'brien")]):
+            self.assertIn("IN (current_schema(), 'o''brien')", sql)
+
+    def test_two_models_on_one_table_name_are_refused(self):
+        models = [self.model("PgScopeD", "app"), self.model("PgScopeE", "public")]
+        with self.assertRaises(ValueError) as caught:
+            diff_schema(FakeConnection(FakeCursor()), models, dialect=Dialects.POSTGRES)
+        message = str(caught.exception)
+        self.assertIn("schema app", message)
+        self.assertIn("schema public", message)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -510,7 +510,7 @@ class TestAthenaMigrator(unittest.TestCase):
         reads = [s for s in conn.log if "information_schema" in s]
         self.assertTrue(reads)
         for sql in reads:
-            self.assertIn("table_schema = current_schema", sql)
+            self.assertIn("table_schema IN (current_schema)", sql)
 
         presto_conn = FakeAthenaConnection()
         introspect_schema(presto_conn, Dialects.PRESTO)

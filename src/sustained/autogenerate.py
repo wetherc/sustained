@@ -438,6 +438,15 @@ def _apply_renames(
         )
 
 
+def declared_schemas(models: List[Type["Model"]]) -> Tuple[str, ...]:
+    """
+    The schemas the models name in tableSchema, sorted and without
+    repeats. A read covers these on top of the schema the connection is
+    on, so a model outside the connection's own schema still diffs.
+    """
+    return tuple(sorted({m.tableSchema for m in models if m.tableSchema}))
+
+
 def diff_schema(
     connection: Connection,
     models: List[Type["Model"]],
@@ -471,12 +480,24 @@ def diff_schema(
             )
         key = model.tableName.lower()
         if key in declared:
-            raise ValueError(f"Two models declare the table '{model.tableName}'.")
+            first = declared[key]
+            raise ValueError(
+                f"Two models declare the table '{model.tableName}': "
+                f"'{first.__name__}' in schema {first.tableSchema or 'the '
+                'connection default'} and '{model.__name__}' in schema "
+                f"{model.tableSchema or 'the connection default'}. A schema "
+                "read keys on the bare table name, so the two cannot be "
+                "told apart. Diff them in separate calls."
+            )
         checked_constraint_names(model.tableName, model.tableConstraints)
         declared[key] = model
 
     excluded = {t.lower() for t in exclude_tables}
-    actual = introspect_schema(connection, dialect) if snapshot is None else snapshot
+    actual = (
+        introspect_schema(connection, dialect, declared_schemas(models))
+        if snapshot is None
+        else snapshot
+    )
     _apply_renames(actual, renames or {}, table_renames or {})
 
     declared_types = _declared_enum_types(models)
@@ -1163,7 +1184,7 @@ def autogenerate(
     type_casts = type_casts or {}
     # One read of the live schema for both the diff and the steps below.
     # diff_schema() applies the rename hints to it in place.
-    actual = introspect_schema(connection, dialect)
+    actual = introspect_schema(connection, dialect, declared_schemas(models))
     diff = diff_schema(
         connection,
         models,

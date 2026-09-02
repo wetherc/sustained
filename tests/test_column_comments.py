@@ -513,7 +513,9 @@ class TestCommentDrift(unittest.TestCase):
 
     def stub_snapshot(self, snapshot):
         original = autogenerate_module.introspect_schema
-        autogenerate_module.introspect_schema = lambda connection, dialect: snapshot
+        autogenerate_module.introspect_schema = (
+            lambda connection, dialect, schemas=(): snapshot
+        )
         self.addCleanup(setattr, autogenerate_module, "introspect_schema", original)
 
     def snapshot(self, model, dialect, email_comment, comments_read=True):

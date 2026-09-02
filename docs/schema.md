@@ -262,6 +262,8 @@ User.drop_table(conn)     # DROP TABLE IF EXISTS
 
 `create_table()` and `drop_table()` commit when they finish, the same way `run()` does, so the DDL survives the connection closing. Inside a `transaction()` block they leave the commit to the block.
 
+Introspection reads one schema: the one the connection is on, plus any schema a model names in `tableSchema`. A snapshot keys its tables on the bare name, so two models declaring the same table name in different schemas are refused; diff them in separate calls. See [Schema scope](./reference/dialects#schema-scope).
+
 Types map per dialect: `BIT`, `NVARCHAR`, and `DATETIME2` on MSSQL; `JSONB` and identity columns on Postgres; plain `INTEGER PRIMARY KEY` rowid behavior on the default dialect. Schema introspection reads SQLite's PRAGMA tables on the default dialect, and `information_schema.columns` elsewhere.
 
 ## Athena
