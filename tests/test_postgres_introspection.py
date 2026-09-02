@@ -44,9 +44,9 @@ class FakeCursor:
             if self.indexes is None:
                 raise RuntimeError("no pg_index here")
             self._current = self.indexes
-        elif "referential_constraints" in sql:
+        elif "pg_catalog.pg_constraint" in sql:
             if self.foreign_keys is None:
-                raise RuntimeError("no referential views here")
+                raise RuntimeError("no pg_constraint here")
             self._current = self.foreign_keys
         elif "check_constraints" in sql:
             if self.checks is None:
@@ -102,6 +102,16 @@ def column_row(
     )
 
 
+# pg_constraint spells the referential actions as single characters.
+_ACTION_CODES = {
+    "NO ACTION": "a",
+    "RESTRICT": "r",
+    "CASCADE": "c",
+    "SET NULL": "n",
+    "SET DEFAULT": "d",
+}
+
+
 def fk_row(
     cname,
     table,
@@ -111,7 +121,15 @@ def fk_row(
     delete_rule="NO ACTION",
     update_rule="NO ACTION",
 ):
-    return (cname, table, column, ref_table, ref_column, delete_rule, update_rule)
+    return (
+        table,
+        cname,
+        column,
+        ref_table,
+        ref_column,
+        _ACTION_CODES[delete_rule],
+        _ACTION_CODES[update_rule],
+    )
 
 
 def make_model(name, table, columns, indexes=None):
@@ -279,6 +297,39 @@ class TestPostgresCatalogQueries(unittest.TestCase):
             schema["seats"].foreign_key_targets,
             {"show_id": "shows.id", "venue_id": "shows.venue_id"},
         )
+
+    def test_same_named_keys_on_two_tables_stay_apart(self):
+        # A constraint name is unique per table, not per schema. Two
+        # tables can each hold a key called fk_owner.
+        cursor = FakeCursor(
+            columns=[
+                column_row("shows", "owner_id", "integer"),
+                column_row("venues", "owner_id", "integer"),
+            ],
+            foreign_keys=[
+                fk_row("fk_owner", "shows", "owner_id", "people", "id"),
+                fk_row("fk_owner", "venues", "owner_id", "firms", "id"),
+            ],
+        )
+        schema = self.read(cursor)
+        shows = schema["shows"].foreign_keys["fk_owner"]
+        venues = schema["venues"].foreign_keys["fk_owner"]
+        self.assertEqual(shows.columns, ("owner_id",))
+        self.assertEqual(shows.target_table, "people")
+        self.assertEqual(venues.columns, ("owner_id",))
+        self.assertEqual(venues.target_table, "firms")
+
+    def test_an_unknown_action_character_passes_through(self):
+        cursor = FakeCursor(
+            columns=[column_row("shows", "venue_id", "integer")],
+            foreign_keys=[
+                ("shows", "fk_shows_venue", "venue_id", "venues", "id", "x", None)
+            ],
+        )
+        schema = self.read(cursor)
+        fk = schema["shows"].foreign_keys["fk_shows_venue"]
+        self.assertEqual(fk.on_delete, "X")
+        self.assertIsNone(fk.on_update)
 
     def test_check_constraints_are_read(self):
         cursor = FakeCursor(

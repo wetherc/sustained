@@ -272,7 +272,7 @@ def introspect_schema(
     snapshots leave comments_read False. The
     default dialect reads SQLite's PRAGMA tables and the table SQL in
     sqlite_master. Postgres reads information_schema together with
-    pg_index, pg_enum, and the constraint views, so every index is
+    pg_index, pg_constraint, pg_enum, and the check view, so every index is
     visible, varchar lengths and numeric precision survive, enum columns
     report their type's name and values, foreign keys resolve with their
     names and actions, and the snapshot carries the database's enum
@@ -803,6 +803,24 @@ def _postgres_column_type(
     return data_type
 
 
+# How pg_constraint spells a referential action, mapped to the words
+# the information_schema views and the model declarations use.
+_PG_FK_ACTIONS = {
+    "a": "NO ACTION",
+    "r": "RESTRICT",
+    "c": "CASCADE",
+    "n": "SET NULL",
+    "d": "SET DEFAULT",
+}
+
+
+def _pg_fk_action(code: Optional[RowValue]) -> Optional[str]:
+    """The action a pg_constraint action character stands for."""
+    if code is None:
+        return None
+    return _PG_FK_ACTIONS.get(str(code), str(code).upper())
+
+
 def _postgres_plan() -> SchemaPlan:
     columns_by_table: Dict[str, Dict[str, IntrospectedColumn]] = {}
     column_rows = yield (
@@ -873,23 +891,31 @@ def _postgres_plan() -> SchemaPlan:
     foreign_keys: Dict[str, Dict[str, IntrospectedForeignKey]] = {}
     constraints_read = False
     try:
+        # pg_constraint is read instead of the referential_constraints
+        # view because a constraint name is unique per table, not per
+        # schema. The view joins on the name alone, so two tables in one
+        # schema with a same-named key cross-multiply into garbled
+        # column lists. conrelid tells the two apart for free.
         fk_rows = yield (
-            "SELECT rc.constraint_name, src.table_name, src.column_name, "
-            "tgt.table_name, tgt.column_name, rc.delete_rule, rc.update_rule "
-            "FROM information_schema.referential_constraints rc "
-            "JOIN information_schema.key_column_usage src "
-            "ON src.constraint_schema = rc.constraint_schema "
-            "AND src.constraint_name = rc.constraint_name "
-            "JOIN information_schema.key_column_usage tgt "
-            "ON tgt.constraint_schema = rc.unique_constraint_schema "
-            "AND tgt.constraint_name = rc.unique_constraint_name "
-            "AND tgt.ordinal_position = src.position_in_unique_constraint "
-            "WHERE rc.constraint_schema NOT IN ('information_schema', 'pg_catalog') "
-            "ORDER BY rc.constraint_name, src.ordinal_position"
+            "SELECT src.relname, con.conname, sa.attname, tgt.relname, "
+            "ta.attname, con.confdeltype, con.confupdtype "
+            "FROM pg_catalog.pg_constraint con "
+            "JOIN pg_catalog.pg_class src ON src.oid = con.conrelid "
+            "JOIN pg_catalog.pg_namespace n ON n.oid = src.relnamespace "
+            "JOIN pg_catalog.pg_class tgt ON tgt.oid = con.confrelid "
+            "CROSS JOIN LATERAL unnest(con.conkey, con.confkey) "
+            "WITH ORDINALITY AS k(attnum, refattnum, ord) "
+            "JOIN pg_catalog.pg_attribute sa "
+            "ON sa.attrelid = con.conrelid AND sa.attnum = k.attnum "
+            "JOIN pg_catalog.pg_attribute ta "
+            "ON ta.attrelid = con.confrelid AND ta.attnum = k.refattnum "
+            "WHERE con.contype = 'f' "
+            "AND n.nspname NOT IN ('information_schema', 'pg_catalog') "
+            "ORDER BY src.relname, con.conname, k.ord"
         )
         fk_parts: Dict[Tuple[str, str], List[Sequence[RowValue]]] = {}
         for row in fk_rows:
-            part_key = (str(row[1]).lower(), str(row[0]).lower())
+            part_key = (str(row[0]).lower(), str(row[1]).lower())
             fk_parts.setdefault(part_key, []).append(row)
         for (table, cname), rows in fk_parts.items():
             first = rows[0]
@@ -897,12 +923,12 @@ def _postgres_plan() -> SchemaPlan:
                 columns=tuple(str(r[2]).lower() for r in rows),
                 target_table=str(first[3]).lower(),
                 target_columns=tuple(str(r[4]).lower() for r in rows),
-                on_delete=None if first[5] is None else str(first[5]),
-                on_update=None if first[6] is None else str(first[6]),
+                on_delete=_pg_fk_action(first[5]),
+                on_update=_pg_fk_action(first[6]),
             )
         constraints_read = True
     except Exception:
-        # No referential views to read; degrade to no foreign keys.
+        # No pg_constraint to read; degrade to no foreign keys.
         pass
 
     checks: Dict[str, Dict[str, str]] = {}

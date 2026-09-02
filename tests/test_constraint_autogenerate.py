@@ -394,6 +394,37 @@ class RoutingConnection:
         return self._cursor
 
 
+# pg_constraint reports the source table first and spells the referential
+# actions as single characters.
+_ACTION_CODES = {
+    "NO ACTION": "a",
+    "RESTRICT": "r",
+    "CASCADE": "c",
+    "SET NULL": "n",
+    "SET DEFAULT": "d",
+}
+
+
+def pg_fk_row(
+    cname,
+    table,
+    column,
+    ref_table,
+    ref_column,
+    delete_rule="NO ACTION",
+    update_rule="NO ACTION",
+):
+    return (
+        table,
+        cname,
+        column,
+        ref_table,
+        ref_column,
+        _ACTION_CODES[delete_rule],
+        _ACTION_CODES[update_rule],
+    )
+
+
 def pg_connection(fk_rows=(), check_rows=()):
     columns = [
         ("pg_items", "id", "integer", "int4", None, None, None, "NO", None),
@@ -405,7 +436,7 @@ def pg_connection(fk_rows=(), check_rows=()):
         {
             "information_schema.columns": columns,
             "pg_catalog.pg_index": [],
-            "referential_constraints": list(fk_rows),
+            "pg_catalog.pg_constraint": list(fk_rows),
             "check_constraints": list(check_rows),
             "pg_catalog.pg_enum": [],
         }
@@ -483,15 +514,7 @@ class TestPostgresConstraintGeneration(unittest.TestCase):
         )
         conn = pg_connection(
             fk_rows=[
-                (
-                    "fk_items_owner",
-                    "pg_items",
-                    "owner_id",
-                    "pg_owners",
-                    "id",
-                    "NO ACTION",
-                    "NO ACTION",
-                )
+                pg_fk_row("fk_items_owner", "pg_items", "owner_id", "pg_owners", "id")
             ],
             check_rows=[("pg_items", "ck_items_price", "(price > 0)")],
         )
@@ -525,15 +548,7 @@ class TestPostgresConstraintGeneration(unittest.TestCase):
             ]
         )
         fk_rows = [
-            (
-                "fk_items_owner",
-                "pg_items",
-                "owner_id",
-                "pg_owners",
-                "id",
-                "NO ACTION",
-                "NO ACTION",
-            )
+            pg_fk_row("fk_items_owner", "pg_items", "owner_id", "pg_owners", "id")
         ]
         conn = pg_connection(fk_rows=fk_rows)
         diff = diff_schema(conn, [owner, item], dialect=Dialects.POSTGRES)
@@ -570,14 +585,13 @@ class TestPostgresConstraintGeneration(unittest.TestCase):
     def test_extra_constraints_refuse_then_drop(self):
         owner, item = pg_models([])
         fk_rows = [
-            (
+            pg_fk_row(
                 "fk_hand_made",
                 "pg_items",
                 "owner_id",
                 "pg_owners",
                 "id",
-                "CASCADE",
-                "NO ACTION",
+                delete_rule="CASCADE",
             )
         ]
         check_rows = [("pg_items", "ck_hand_made", "(price < 100)")]

@@ -105,7 +105,7 @@ SQLite and DuckDB have no advisory lock, because they serialize writers themselv
 
 The default dialect reads SQLite's PRAGMA tables. Every other dialect reads `information_schema`. When the constraint views are unavailable, introspection falls back to the column data alone rather than failing.
 
-Postgres has a dedicated read. It takes `udt_name`, varchar lengths, and numeric precision from `information_schema.columns`, every index from `pg_index`, foreign key names, columns, targets, and referential actions from the constraint views, CHECK expressions from `check_constraints`, and enum values from `pg_enum` in sort order. Expression indexes are skipped, as on SQLite.
+Postgres has a dedicated read. It takes `udt_name`, varchar lengths, and numeric precision from `information_schema.columns`, every index from `pg_index`, foreign key names, columns, targets, and referential actions from `pg_constraint`, CHECK expressions from `check_constraints`, and enum values from `pg_enum` in sort order. Expression indexes are skipped, as on SQLite.
 
 SQLite reports constraints only inside the stored `CREATE TABLE` text, so introspection recovers named foreign keys, and the CHECK constraints Sustained itself generates (names starting `ck_`), from `sqlite_master`. Any other CHECK stays a note. MySQL recovers an enum column's values from its inline `enum('a','b')` type spelling.
 
