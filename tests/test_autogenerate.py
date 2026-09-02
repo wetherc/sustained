@@ -1039,6 +1039,59 @@ class TestRebuildStrategy(unittest.TestCase):
             autogenerate(conn, [model], id="m2", dialect=Dialects.PRESTO)
 
 
+class TestTableHasRows(unittest.TestCase):
+    """
+    The refusal of a NOT NULL column asks whether the table holds a row.
+    MSSQL takes TOP, every other dialect takes LIMIT, and a read that
+    fails counts as rows so that the refusal stands.
+    """
+
+    class Cursor:
+        def __init__(self, rows=(), error=None):
+            self.rows = list(rows)
+            self.error = error
+            self.statements = []
+
+        def execute(self, sql, params=()):
+            self.statements.append(sql)
+            if self.error is not None:
+                raise self.error
+
+        def fetchall(self):
+            return self.rows
+
+        def close(self):
+            pass
+
+    class Connection:
+        def __init__(self, cursor):
+            self._cursor = cursor
+
+        def cursor(self):
+            return self._cursor
+
+    def has_rows(self, cursor, dialect=Dialects.DEFAULT):
+        return autogenerate_module._table_has_rows(
+            self.Connection(cursor), Dialects.get_compiler(dialect), "t"
+        )
+
+    def test_an_empty_table_has_no_rows(self):
+        cursor = self.Cursor()
+        self.assertFalse(self.has_rows(cursor))
+        self.assertEqual(cursor.statements, ["SELECT 1 FROM t LIMIT 1"])
+
+    def test_a_row_is_reported(self):
+        self.assertTrue(self.has_rows(self.Cursor(rows=[(1,)])))
+
+    def test_mssql_asks_for_the_top_row(self):
+        cursor = self.Cursor()
+        self.assertFalse(self.has_rows(cursor, Dialects.MSSQL))
+        self.assertEqual(cursor.statements, ["SELECT TOP 1 1 FROM t"])
+
+    def test_a_read_that_fails_counts_as_rows(self):
+        self.assertTrue(self.has_rows(self.Cursor(error=RuntimeError("no table"))))
+
+
 class TestSqliteRebuildSafety(unittest.TestCase):
     """
     A SQLite rebuild drops the old table, which fails while another

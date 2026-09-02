@@ -413,6 +413,64 @@ class TestAsyncIntrospection(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(list(schema), ["shows"])
         self.assertEqual(schema["shows"].primary_key, ())
 
+    async def test_a_guarded_read_takes_a_savepoint(self):
+        # Postgres refuses every later statement in a transaction once
+        # one has failed, so each query of the read runs inside a
+        # savepoint and a failure rolls back to it.
+        from sustained.autogenerate import async_introspect_schema
+        from sustained.dialects import Dialects
+
+        class Adapter:
+            def __init__(self, savepoints=True):
+                self.savepoints = savepoints
+                self.log = []
+
+            async def execute(self, sql, params):
+                self.log.append(sql)
+                if sql.startswith("SAVEPOINT") and not self.savepoints:
+                    raise RuntimeError("no transaction is active")
+                return 0
+
+            async def fetch(self, sql, params):
+                self.log.append(sql)
+                if "pg_catalog.pg_index" in sql:
+                    raise RuntimeError("no pg_index here")
+                return [], []
+
+        adapter = Adapter()
+        await async_introspect_schema(adapter, Dialects.POSTGRES)
+        self.assertIn("ROLLBACK TO SAVEPOINT sustained_read", adapter.log)
+        self.assertIn("RELEASE SAVEPOINT sustained_read", adapter.log)
+
+        bare = Adapter(savepoints=False)
+        await async_introspect_schema(bare, Dialects.POSTGRES)
+        self.assertEqual([s for s in bare.log if s.startswith("RELEASE")], [])
+        self.assertTrue(any("information_schema.columns" in s for s in bare.log))
+
+    async def test_a_guarded_read_keeps_the_first_error(self):
+        from sustained.autogenerate import async_introspect_schema
+        from sustained.dialects import Dialects
+
+        class Adapter:
+            def __init__(self):
+                self.log = []
+
+            async def execute(self, sql, params):
+                self.log.append(sql)
+                if sql.startswith("ROLLBACK"):
+                    raise RuntimeError("no savepoint to roll back to")
+                return 0
+
+            async def fetch(self, sql, params):
+                self.log.append(sql)
+                if "pg_catalog.pg_index" in sql:
+                    raise RuntimeError("no pg_index here")
+                return [], []
+
+        adapter = Adapter()
+        await async_introspect_schema(adapter, Dialects.POSTGRES)
+        self.assertIn("ROLLBACK TO SAVEPOINT sustained_read", adapter.log)
+
     async def test_a_failing_read_raises(self):
         from sustained.autogenerate import async_introspect_schema
         from sustained.dialects import Dialects
