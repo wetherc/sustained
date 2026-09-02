@@ -151,6 +151,7 @@ class CliTestCase(CliBase):
         self.assertEqual(code, 0)
         self.assertIn("CREATE TABLE users", out)
         self.assertNotIn("users", self.table_names())
+        self.assertNotIn("sustained_migrations", self.table_names())
         code, out, _ = self.run_cli("script", "down")
         self.assertEqual(code, 0)
 

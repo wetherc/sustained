@@ -1395,9 +1395,8 @@ class Migrator:
                 )
         self._commit_quietly()
 
-    def applied_records(self) -> List[AppliedRecord]:
-        """Returns every tracking table row in application order."""
-        self._ensure_tracking_table()
+    def _read_records(self) -> List[AppliedRecord]:
+        """Reads the tracking table rows, assuming the table is there."""
         with closing(self._connection.cursor()) as cursor:
             cursor.execute(records_select(self._compiler, self._table_sql()))
             return [
@@ -1405,9 +1404,42 @@ class Migrator:
                 for row in cursor.fetchall()
             ]
 
+    def applied_records(self) -> List[AppliedRecord]:
+        """
+        Returns every tracking table row in application order, creating
+        the tracking table when it is missing.
+        """
+        self._ensure_tracking_table()
+        return self._read_records()
+
+    def read_applied_records(self) -> List[AppliedRecord]:
+        """
+        Returns every tracking table row without writing anything.
+
+        An empty list means the run has no history to read: either the
+        tracking table does not exist yet, or it still has the shape an
+        earlier version wrote and the read of its columns failed. The
+        paths that only report on a run, such as script() and pending(),
+        read the rows through this, since creating the table would change
+        a database they say they leave alone.
+        """
+        if self._tracking_ready:
+            return self._read_records()
+        try:
+            return self._read_records()
+        except Exception:
+            # A failed read can poison an open transaction, so clear the
+            # slate before the next statement.
+            self._rollback_quietly()
+            return []
+
     def applied(self) -> List[str]:
         """Returns the applied migration ids in application order."""
         return [r.id for r in self.applied_records() if r.success]
+
+    def read_applied(self) -> List[str]:
+        """The applied migration ids, without creating the table."""
+        return [r.id for r in self.read_applied_records() if r.success]
 
     def _versioned(self) -> List[Migration]:
         return [m for m in self._migrations if not m.repeatable]
@@ -1421,7 +1453,7 @@ class Migrator:
         versioned migrations without a successful row, then repeatables
         without one or whose checksum changed since the last run.
         """
-        records = {r.id: r for r in self.applied_records()}
+        records = {r.id: r for r in self.read_applied_records()}
         result = [
             m
             for m in self._versioned()
@@ -1436,7 +1468,7 @@ class Migrator:
 
     def status(self) -> List[tuple[str, bool]]:
         """Returns (id, applied) pairs for every registered migration."""
-        applied = set(self.applied())
+        applied = set(self.read_applied())
         return [(m.id, m.id in applied) for m in self._migrations]
 
     def statuses(self) -> List[tuple[str, str]]:
@@ -1445,7 +1477,7 @@ class Migrator:
         state is 'applied', 'pending', or, for a repeatable whose
         contents changed since its last run, 'changed'.
         """
-        records = {r.id: r for r in self.applied_records()}
+        records = {r.id: r for r in self.read_applied_records()}
         return [
             (m.id, _migration_state(records.get(m.id), m)) for m in self._migrations
         ]
@@ -1467,7 +1499,7 @@ class Migrator:
         """
         from sustained.exceptions import MigrationError
 
-        problems = _validation_problems(self._migrations, self.applied_records())
+        problems = _validation_problems(self._migrations, self.read_applied_records())
         if problems and raise_on_problems:
             raise MigrationError(problems)
         return problems
@@ -2271,6 +2303,9 @@ class Migrator:
         for review or DBA handoff. 'up' renders every pending migration;
         'down' renders the applied migrations newest-first. Tracking table
         bookkeeping statements are included.
+
+        Nothing is written, not even the tracking table: a database
+        without one reads as a database with no migrations applied.
         """
         placeholder_free_ts = datetime.now(timezone.utc).isoformat()
         format_value = self._compiler.format_value
@@ -2285,8 +2320,8 @@ class Migrator:
             "success",
         )
         lines: List[str] = []
+        records = self.read_applied_records()
         if direction == "up":
-            records = self.applied_records()
             records_by_id = {r.id: r for r in records}
             applied = {r.id for r in records if r.success}
             next_seq = _next_seq(records)
@@ -2338,7 +2373,8 @@ class Migrator:
                     )
         elif direction == "down":
             by_id = {m.id: m for m in self._migrations}
-            for migration_id in reversed(self._applied_versioned()):
+            applied_ids = [r.id for r in records if r.success]
+            for migration_id in reversed(self._applied_versioned(applied_ids)):
                 registered = by_id.get(migration_id)
                 if registered is None or registered.down is None:
                     lines.append(
@@ -2357,10 +2393,15 @@ class Migrator:
             raise ValueError("direction must be 'up' or 'down'.")
         return "\n".join(lines)
 
-    def _applied_versioned(self) -> List[str]:
-        """Applied ids with the repeatables left out; down() skips them."""
+    def _applied_versioned(self, ids: Optional[List[str]] = None) -> List[str]:
+        """
+        Applied ids with the repeatables left out; down() skips them. The
+        ids are read from the tracking table unless the caller passes a
+        list it has already read.
+        """
         repeatable_ids = {m.id for m in self._repeatables()}
-        return [i for i in self.applied() if i not in repeatable_ids]
+        source = self.applied() if ids is None else ids
+        return [i for i in source if i not in repeatable_ids]
 
     def down_to(self, target: str) -> List[str]:
         """

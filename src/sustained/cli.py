@@ -270,7 +270,7 @@ def _rehearsal_row_covers(migrator: Migrator, config: ModuleType) -> bool:
     pending = migrator.pending()
     if not pending:
         return False
-    records = migrator.applied_records()
+    records = migrator.read_applied_records()
     if migrator.rehearsed(rehearsal_key(records, pending)):
         return True
     models = getattr(config, "models", None)

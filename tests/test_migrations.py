@@ -674,6 +674,59 @@ class TestRepeatableMigrations(MigrationTestCase):
         self.assertEqual(len(broken.applied_records()), 2)
 
 
+class TestReadOnlyPaths(MigrationTestCase):
+    """
+    The paths that only report on a run leave the database alone, so a
+    review on a production connection writes nothing.
+    """
+
+    def migrations(self):
+        return [
+            Migration(
+                "001_t", up="CREATE TABLE ro_t (id INTEGER)", down="DROP TABLE ro_t"
+            )
+        ]
+
+    def test_script_creates_no_tracking_table(self):
+        migrator = Migrator(self.conn, self.migrations())
+        for direction in ("up", "down"):
+            with self.subTest(direction=direction):
+                migrator.script(direction)
+                self.assertNotIn("sustained_migrations", table_names(self.conn))
+
+    def test_plan_style_reads_create_no_tracking_table(self):
+        migrator = Migrator(self.conn, self.migrations())
+        self.assertEqual([m.id for m in migrator.pending()], ["001_t"])
+        self.assertEqual(migrator.status(), [("001_t", False)])
+        self.assertEqual(migrator.statuses(), [("001_t", "pending")])
+        self.assertEqual(migrator.validate(), [])
+        self.assertEqual(migrator.read_applied_records(), [])
+        self.assertEqual(migrator.read_applied(), [])
+        self.assertNotIn("sustained_migrations", table_names(self.conn))
+
+    def test_a_read_reports_the_rows_once_the_table_is_there(self):
+        migrator = Migrator(self.conn, self.migrations())
+        migrator.up()
+        self.assertEqual(migrator.read_applied(), ["001_t"])
+        self.assertIn("-- down: 001_t", migrator.script("down"))
+        # A fresh migrator has not created the table itself, so the read
+        # goes through the probe rather than the ready flag.
+        later = Migrator(self.conn, self.migrations())
+        self.assertEqual([r.id for r in later.read_applied_records()], ["001_t"])
+
+    def test_a_tracking_table_of_the_old_shape_reads_as_empty(self):
+        self.conn.execute("CREATE TABLE sustained_migrations (id TEXT)")
+        self.conn.execute("INSERT INTO sustained_migrations VALUES ('001_t')")
+        migrator = Migrator(self.conn, self.migrations())
+        self.assertEqual(migrator.read_applied_records(), [])
+
+    def test_up_still_creates_the_tracking_table(self):
+        migrator = Migrator(self.conn, self.migrations())
+        migrator.up()
+        self.assertIn("sustained_migrations", table_names(self.conn))
+        self.assertEqual([r.id for r in migrator.applied_records()], ["001_t"])
+
+
 class TestRehearse(MigrationTestCase):
     """Rehearsals run everything and leave the database as they found it."""
 
