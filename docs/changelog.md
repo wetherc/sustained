@@ -151,12 +151,17 @@ Version numbers follow semantic versioning. A major version marks a change that 
 
 - `DROP TYPE` and `DROP CONSTRAINT` (with `DROP CHECK` and `DROP FOREIGN KEY`) count as destructive: `plan` labels them, `no_drops()` blocks them, and the rehearsal gate covers them. Index and key drops still pass.
 - `supports_constraints()` is `False` on Presto, which enforces none. Declared table constraints raise `DialectError` there and on Athena, and the tracking table renders without constraints on both.
-- The row a rehearsal writes is a "rehearsal row" throughout, in place of "receipt": `rehearsal_key()` and the `REHEARSAL_*` constants. Stored tables, columns, and keys are untouched, so old rows still open the gate.
-- `sustained rehearse` prints `rehearsal row recorded` where it said `receipt`; a script matching that text needs updating.
+
+## 2.20.0
+
+### Changed
+
+- The row a rehearsal writes is called a rehearsal row throughout the documentation and the code, in place of the earlier word "receipt". `rehearsal_key()` replaces `receipt_key()` in `sustained.migrations`, and the outcome constants are `REHEARSAL_PASSED`, `REHEARSAL_FAILED`, and `REHEARSAL_OVERRIDE`. The stored table, its column names, and every key a database already holds are untouched, so a rehearsal recorded by an earlier version still opens the gate.
+- `sustained rehearse` prints `rehearsal row recorded`, and a scratch run that covered too little prints `rehearsal row not recorded`, where both lines said `receipt` before. A script matching that text needs updating.
 
 ### Deprecated
 
-- `receipt_key()`, `RECEIPT_PASSED`, `RECEIPT_FAILED`, and `RECEIPT_OVERRIDE` raise `DeprecationWarning` naming their replacements and go away in 3.0.
+- `receipt_key()`, `RECEIPT_PASSED`, `RECEIPT_FAILED`, and `RECEIPT_OVERRIDE` in `sustained.migrations`. Each still imports and raises a `DeprecationWarning` naming its replacement, and goes away in 3.0.
 
 ## 2.19.0
 
