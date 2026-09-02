@@ -1144,7 +1144,9 @@ class AsyncMigrator:
                 recorded = True
             return Rehearsal(results, key, recorded)
 
-    async def _read_schema(self) -> Tuple["Snapshot", SchemaRead]:
+    async def _read_schema(
+        self, schemas: Sequence[str] = ()
+    ) -> Tuple["Snapshot", SchemaRead]:
         """
         Reads the live schema through the adapter and records the read.
 
@@ -1152,11 +1154,18 @@ class AsyncMigrator:
         statement and the rows it returned, so plan() can hand the
         recording to autogenerate(), which reads a schema through a
         blocking connection.
+
+        `schemas` covers the schemas the models name on top of the one
+        the connection is on, and must be what the replaying code reads
+        with. autogenerate() reads with declared_schemas(models), so a
+        caller that replays a recording into it reads the same schemas
+        here. A recording made with a different scope holds different
+        statements, and the replay refuses it.
         """
         from sustained.introspect import Snapshot, _schema_plan
 
         read = SchemaRead()
-        plan = _schema_plan(self._dialect)
+        plan = _schema_plan(self._dialect, tuple(schemas))
         sql = next(plan)
         while True:
             try:
@@ -1198,7 +1207,9 @@ class AsyncMigrator:
         Pass allow_drops=True to generate the drops instead, or
         ignore_undeclared=False to refuse to generate while they exist.
         """
-        _, read = await self._read_schema()
+        from sustained.autogenerate import declared_schemas
+
+        _, read = await self._read_schema(declared_schemas(models))
         return plan_migration(
             read.connection(),
             models,
@@ -1234,7 +1245,9 @@ class AsyncMigrator:
         changes out, matching a run that generates its migration the same
         way.
         """
-        snapshot, read = await self._read_schema()
+        from sustained.autogenerate import declared_schemas
+
+        snapshot, read = await self._read_schema(declared_schemas(models))
         return drift_lines(
             read.connection(),
             models,

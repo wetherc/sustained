@@ -6,9 +6,11 @@ import json
 import re
 import sqlite3
 import unittest
+from unittest import mock
 
-from sustained.aio import DbApiAsyncAdapter
+from sustained.aio import AsyncAdapter, DbApiAsyncAdapter
 from sustained.aio_migrations import AsyncMigrator
+from sustained.dialects import Dialects
 from sustained.exceptions import MigrationError, RehearsalRequired
 from sustained.migrations import (
     REHEARSAL_FAILED,
@@ -16,6 +18,7 @@ from sustained.migrations import (
     Migration,
     Migrator,
     SchemaRead,
+    _ReplayCursor,
 )
 
 # What a rehearsal leaves behind: the tracking table and the row it
@@ -865,6 +868,17 @@ class TestRecordedSchemaRead(unittest.TestCase):
         with self.assertRaises(ValueError):
             cursor.execute("SELECT 1")
 
+    def test_a_different_statement_at_this_position_raises(self):
+        read = SchemaRead()
+        read.record("SELECT 1 WHERE schema IN (current_schema())", [(1,)])
+        cursor = read.connection().cursor()
+        with self.assertRaises(ValueError) as caught:
+            cursor.execute("SELECT 1 WHERE schema IN (current_schema(), 'app')")
+        message = str(caught.exception)
+        self.assertIn("position 0", message)
+        self.assertIn("current_schema()", message)
+        self.assertEqual(cursor.fetchall(), [])
+
     def test_the_connection_runs_nothing_of_its_own(self):
         connection = SchemaRead().connection()
         self.assertIsNone(connection.commit())
@@ -1016,3 +1030,63 @@ class TestAsyncModelRuns(unittest.IsolatedAsyncioTestCase):
         migrator = AsyncMigrator(self.adapter, self.migrations())
         rehearsal = await migrator.rehearse()
         self.assertIsNone(rehearsal[0].landed)
+
+
+class RecordingAdapter(AsyncAdapter):
+    """An adapter that answers every read with no rows and keeps the SQL."""
+
+    def __init__(self):
+        self.statements = []
+
+    async def fetch(self, sql, params):
+        self.statements.append(sql)
+        return [], []
+
+
+class TestReplayedSchemaScope(unittest.IsolatedAsyncioTestCase):
+    """plan() replays exactly the read it recorded."""
+
+    def models(self):
+        from sustained.model import Model
+        from sustained.schema import Integer
+
+        return [
+            type(
+                "ScopedWidget",
+                (Model,),
+                {
+                    "tableName": "widgets",
+                    "tableSchema": "app",
+                    "tableColumns": {"id": Integer(primary_key=True)},
+                },
+            )
+        ]
+
+    async def test_the_replay_asks_the_recorded_statements(self):
+        adapter = RecordingAdapter()
+        migrator = AsyncMigrator(adapter, [], dialect=Dialects.POSTGRES)
+        asked = []
+        recorded_execute = _ReplayCursor.execute
+
+        def spy(self, operation, parameters=()):
+            asked.append(operation)
+            return recorded_execute(self, operation, parameters)
+
+        with mock.patch.object(_ReplayCursor, "execute", spy):
+            await migrator.plan(self.models())
+        self.assertTrue(adapter.statements)
+        self.assertEqual(asked, adapter.statements)
+
+    async def test_the_read_covers_the_schemas_the_models_name(self):
+        adapter = RecordingAdapter()
+        migrator = AsyncMigrator(adapter, [], dialect=Dialects.POSTGRES)
+        await migrator.plan(self.models())
+        scoped = [s for s in adapter.statements if "'app'" in s]
+        self.assertTrue(scoped)
+
+    async def test_drift_reads_the_schemas_the_models_name(self):
+        adapter = RecordingAdapter()
+        migrator = AsyncMigrator(adapter, [], dialect=Dialects.POSTGRES)
+        await migrator.drift(self.models())
+        scoped = [s for s in adapter.statements if "'app'" in s]
+        self.assertTrue(scoped)

@@ -880,6 +880,12 @@ class _ReplayCursor:
                 f"{operation}"
             )
         step = self._steps[self._position]
+        if step.sql != operation:
+            raise ValueError(
+                "The recorded schema read holds a different statement at "
+                f"position {self._position}. Recorded: {step.sql} Asked: "
+                f"{operation}"
+            )
         self._position += 1
         if step.error is not None:
             raise step.error
@@ -923,7 +929,10 @@ class SchemaRead:
     reads the same answers. A statement that raised raises again.
 
     Nothing here executes anything. A connection that is asked for a
-    statement the recording does not hold raises ValueError.
+    statement the recording does not hold, or for a statement that
+    differs from the one recorded at that position, raises ValueError. A
+    replay that reads a differently scoped schema is a wrong answer, not
+    a slower one, so it stops instead.
     """
 
     def __init__(self) -> None:
