@@ -713,6 +713,67 @@ class TestNonTransactionalMigrations(MigrationTestCase):
         self.assertNotIn("nt", table_names(self.conn))
 
 
+class RebuiltParent(Model):
+    """A table whose column type change forces a SQLite rebuild."""
+
+    tableName = "reb_parent"
+    tableColumns = {"id": Integer(primary_key=True), "code": Integer()}
+
+
+class TestSqliteRebuildPragmas(MigrationTestCase):
+    """
+    A generated rebuild turns foreign key enforcement off and on again.
+    SQLite ignores both pragmas inside a transaction, so the migration
+    runs bare, and a stock sqlite3 connection needs its own implicit
+    transaction turned off for that.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.conn.execute("PRAGMA foreign_keys = ON")
+        self.conn.execute("CREATE TABLE reb_parent (id INTEGER PRIMARY KEY, code TEXT)")
+        self.conn.execute(
+            "CREATE TABLE reb_child (id INTEGER PRIMARY KEY, "
+            "parent_id INTEGER REFERENCES reb_parent(id))"
+        )
+        self.conn.execute("INSERT INTO reb_parent (id, code) VALUES (1, '7')")
+        self.conn.commit()
+
+    def run_rebuild(self):
+        return Migrator(self.conn, []).up(models=[RebuiltParent], unrehearsed=True)
+
+    def test_the_rebuild_runs_and_keeps_the_rows(self):
+        self.assertEqual(len(self.run_rebuild()), 1)
+        rows = self.conn.execute("SELECT id, code FROM reb_parent").fetchall()
+        self.assertEqual(rows, [(1, 7)])
+
+    def test_enforcement_is_on_again_afterwards(self):
+        self.run_rebuild()
+        self.assertEqual(self.conn.execute("PRAGMA foreign_keys").fetchone()[0], 1)
+
+    def test_an_orphan_row_is_refused_afterwards(self):
+        self.run_rebuild()
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.conn.execute("INSERT INTO reb_child (id, parent_id) VALUES (1, 999)")
+
+    def test_the_implicit_transaction_comes_back(self):
+        before = self.conn.isolation_level
+        self.run_rebuild()
+        self.assertEqual(self.conn.isolation_level, before)
+
+
+class RefusingIsolationConnection:
+    """A connection whose driver refuses to take its switch back."""
+
+    def __setattr__(self, name, value):
+        raise RuntimeError("cannot set isolation_level")
+
+
+class TestIsolationRestore(unittest.TestCase):
+    def test_a_refused_restore_is_dropped(self):
+        Migrator._restore_isolation_quietly(RefusingIsolationConnection(), "")
+
+
 class TestBaseline(MigrationTestCase):
     def migrations(self):
         return [

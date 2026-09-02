@@ -638,8 +638,10 @@ class Compiler:
 
         SQLite ignores PRAGMA foreign_keys inside an open transaction, so
         the statement only bites when the rebuild runs outside one, and
-        rebuild_finish_sql() is ignored the same way. Run a rebuild on a
-        connection in autocommit and both statements land.
+        rebuild_finish_sql() is ignored the same way. A migration that
+        carries these statements is generated with transactional=False,
+        and the migrator turns the driver's own transaction control off
+        for it, so both statements land.
         PRAGMA defer_foreign_keys does not help here: a dropped table
         leaves its children dangling, and the deferred check fails at
         COMMIT instead. Dialects that never rebuild never send this.
