@@ -1,7 +1,7 @@
 import inspect
 import re
 from functools import wraps
-from typing import TYPE_CHECKING, Callable, Optional, Sequence, Union
+from typing import TYPE_CHECKING, Callable, Mapping, Optional, Sequence, Union
 
 from sustained.expressions import (
     AggregateExpression,
@@ -59,30 +59,53 @@ _CONTEXT_METHODS = (
 )
 
 
-def _takes_context(method: Callable[..., str]) -> bool:
-    """Whether an override accepts the render context as well."""
+def _context_mode(method: Callable[..., str]) -> str:
+    """
+    How an override takes the render context: "positional" when it can
+    take it as a second argument, "keyword" when it takes it by name
+    only, and "none" when it takes the expression alone.
+    """
     try:
-        parameters = list(inspect.signature(method).parameters.values())
+        signature = inspect.signature(method)
     except (TypeError, ValueError):
         # A callable the inspect module cannot read is left alone.
-        return True
-    for parameter in parameters[2:]:
-        if parameter.kind in (
-            inspect.Parameter.POSITIONAL_ONLY,
-            inspect.Parameter.POSITIONAL_OR_KEYWORD,
-            inspect.Parameter.VAR_POSITIONAL,
-            inspect.Parameter.VAR_KEYWORD,
-        ):
-            return True
-    return len(parameters) > 2
+        return "positional"
+    if _binds(signature, (None, None, None), {}):
+        return "positional"
+    if _binds(signature, (None, None), {"ctx": None}):
+        return "keyword"
+    return "none"
+
+
+def _binds(
+    signature: inspect.Signature,
+    args: Sequence[object],
+    kwargs: Mapping[str, object],
+) -> bool:
+    """Whether a call with these arguments fits the signature."""
+    try:
+        signature.bind(*args, **kwargs)
+    except TypeError:
+        return False
+    return True
 
 
 def _dropping_context(method: Callable[..., str]) -> Callable[..., str]:
-    """The override, called without the context it does not accept."""
+    """The override, called without the context it does not take."""
 
     @wraps(method)
     def call(self: "Compiler", expression: object, ctx: object = None) -> str:
         return method(self, expression)
+
+    return call
+
+
+def _naming_context(method: Callable[..., str]) -> Callable[..., str]:
+    """The override, given the context under the name it takes it by."""
+
+    @wraps(method)
+    def call(self: "Compiler", expression: object, ctx: object = None) -> str:
+        return method(self, expression, ctx=ctx)
 
     return call
 
@@ -102,14 +125,20 @@ class Compiler:
         that takes the expression only, so the call would raise
         TypeError. Such an override is wrapped here to accept the context
         and drop it. It renders what it always rendered, which inlines a
-        subquery argument's values instead of parameterizing them.
+        subquery argument's values instead of parameterizing them. An
+        override that takes the context by name only is wrapped to be
+        given it by name, so it keeps the context it asked for.
         """
         super().__init_subclass__(**kwargs)
         for name in _CONTEXT_METHODS:
             override = cls.__dict__.get(name)
-            if not callable(override) or _takes_context(override):
+            if not callable(override):
                 continue
-            setattr(cls, name, _dropping_context(override))
+            mode = _context_mode(override)
+            if mode == "keyword":
+                setattr(cls, name, _naming_context(override))
+            elif mode == "none":
+                setattr(cls, name, _dropping_context(override))
 
     def dialect_name(self) -> str:
         """The dialect's name, for error messages."""

@@ -134,8 +134,8 @@ class TestOldCompilerOverrides(unittest.TestCase):
                 return f"NEW_FUNCTION({ctx is not None})"
 
         class KeywordStyle(Compiler):
-            def compile_function(self, func, **options):
-                return f"KEYWORD_FUNCTION({func.function_name})"
+            def compile_function(self, func, *, ctx=None):
+                return f"KEYWORD_FUNCTION({ctx is not None})"
 
         return OldStyle, NewStyle, KeywordStyle
 
@@ -165,15 +165,24 @@ class TestOldCompilerOverrides(unittest.TestCase):
             "NEW_FUNCTION(True)",
         )
 
-    def test_an_override_that_takes_keywords_is_left_alone(self):
+    def test_an_override_that_names_the_context_is_given_it_by_name(self):
         from sustained.expressions import Func
 
         _, _, keyword_style = self.compilers()
         compiler = keyword_style(Dialects.DEFAULT)
+        func = Func("upper", ["name"])
         self.assertEqual(
-            compiler.compile_function(Func("upper", ["name"])),
-            "KEYWORD_FUNCTION(upper)",
+            compiler.compile_function(func, object()), "KEYWORD_FUNCTION(True)"
         )
+        self.assertEqual(compiler.compile_function(func), "KEYWORD_FUNCTION(False)")
+
+    def test_a_method_the_inspect_module_cannot_read_is_left_alone(self):
+        import math
+
+        from sustained.compilers.base import _context_mode
+
+        # math.hypot has no signature the inspect module can read.
+        self.assertEqual(_context_mode(math.hypot), "positional")
 
     def test_an_old_override_renders_a_select_list(self):
         from sustained.builders.select_clause_builder import SelectClauseBuilder
