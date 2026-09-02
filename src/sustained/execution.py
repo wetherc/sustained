@@ -185,23 +185,32 @@ def connection_scope(
         yield binding
 
 
-def _begin_where_ddl_autocommits(connection: Connection, cursor: Cursor) -> None:
+def needs_explicit_begin(connection: Connection) -> bool:
     """
-    Opens the transaction explicitly on a sqlite3 connection in legacy
-    transaction control. That driver starts its implicit transaction
-    before data statements only; a schema statement runs outside it and
-    commits at once, so a rollback would keep the change. An explicit
-    BEGIN puts every statement of the block under the commit or rollback
-    that closes it. Connections in the new autocommit=False control open
-    their transaction before every statement already and are left alone.
+    Reports whether a transaction() block must open the transaction with
+    its own BEGIN, although the driver controls transactions.
+
+    This is true for a sqlite3 connection in legacy transaction control.
+    That driver starts its implicit transaction before data statements
+    only; a schema statement runs outside it and commits at once, so a
+    rollback would keep the change. An explicit BEGIN puts every statement
+    of the block under the commit or rollback that closes it. Connections
+    in the new autocommit=False control open their transaction before
+    every statement already and are left alone.
     """
     if type(connection).__module__.partition(".")[0] != "sqlite3":
-        return
+        return False
     if getattr(connection, "autocommit", -1) != -1:
-        return
+        return False
     if getattr(connection, "in_transaction", False):
-        return
-    cursor.execute("BEGIN")
+        return False
+    return True
+
+
+def _begin_where_ddl_autocommits(connection: Connection, cursor: Cursor) -> None:
+    """Runs the BEGIN that needs_explicit_begin() asks for, if any."""
+    if needs_explicit_begin(connection):
+        cursor.execute("BEGIN")
 
 
 def in_transaction(connection: Connection) -> bool:

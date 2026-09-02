@@ -7,6 +7,8 @@ import unittest
 
 from sustained import Model, RelationType
 from sustained.aio import (
+    AsyncAdapter,
+    AsyncpgAdapter,
     DbApiAsyncAdapter,
     async_transaction,
     convert_format_to_numbered,
@@ -218,6 +220,8 @@ class TestAsyncTransactions(AsyncTestCase):
             async with async_transaction(spy):
                 async with async_transaction(spy):
                     pass
+        # sqlite3 in legacy transaction control needs the BEGIN. The block
+        # ends with the driver's commit(), which sends no statement.
         self.assertEqual(
             spy.statements,
             [
@@ -226,7 +230,6 @@ class TestAsyncTransactions(AsyncTestCase):
                 "SAVEPOINT sustained_sp_2",
                 "RELEASE SAVEPOINT sustained_sp_2",
                 "RELEASE SAVEPOINT sustained_sp_1",
-                "COMMIT",
             ],
         )
 
@@ -248,8 +251,12 @@ class TestAsyncTransactions(AsyncTestCase):
         self.assertEqual(len(owners), 1)
 
 
-class FakeAdapter(DbApiAsyncAdapter):
-    """Records statements without running them, for dialect spelling tests."""
+class FakeAdapter(AsyncAdapter):
+    """
+    Records statements without running them, for dialect spelling tests.
+    It has no transaction control of its own, so a block on it is opened
+    and closed with statements.
+    """
 
     def __init__(self):
         self.statements = []
@@ -398,3 +405,305 @@ class TestPlaceholderConversion(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AutocommitAdapter(AsyncAdapter):
+    """
+    An adapter with no transaction control of its own, over a real sqlite3
+    connection. It stands for asyncpg, which needs BEGIN and COMMIT as
+    statements.
+    """
+
+    def __init__(self, connection):
+        self._connection = connection
+        self.statements = []
+
+    async def fetch(self, sql, params):
+        cursor = self._connection.cursor()
+        cursor.execute(sql, params)
+        columns = [d[0] for d in cursor.description] if cursor.description else []
+        rows = list(cursor.fetchall())
+        cursor.close()
+        return columns, rows
+
+    async def execute(self, sql, params):
+        self.statements.append(sql)
+        cursor = self._connection.cursor()
+        cursor.execute(sql, params)
+        count = cursor.rowcount
+        cursor.close()
+        return count
+
+    async def commit(self):
+        raise AssertionError("an autocommit adapter must not be committed")
+
+    async def rollback(self):
+        raise AssertionError("an autocommit adapter must not be rolled back")
+
+
+class ImplicitBeginAdapter(DbApiAsyncAdapter):
+    """
+    A DB-API adapter whose driver opens the transaction itself, the way
+    psycopg2 does. A second BEGIN raises.
+    """
+
+    def __init__(self, connection):
+        super().__init__(connection)
+        self.statements = []
+        self.commits = 0
+        self.rollbacks = 0
+
+    async def execute(self, sql, params):
+        if sql.startswith("BEGIN"):
+            raise RuntimeError("there is already a transaction in progress")
+        self.statements.append(sql)
+        return await super().execute(sql, params)
+
+    async def begin_where_ddl_autocommits(self):
+        return None
+
+    async def commit(self):
+        self.commits += 1
+        await super().commit()
+
+    async def rollback(self):
+        self.rollbacks += 1
+        await super().rollback()
+
+
+class TestAsyncTransactionControl(AsyncTestCase):
+    async def test_driver_with_its_own_begin_gets_no_begin_statement(self):
+        adapter = ImplicitBeginAdapter(self.conn)
+        async with async_transaction(adapter):
+            await AioOwner.query().insert({"id": 1, "name": "Ada"}).arun(adapter)
+        self.assertEqual(adapter.commits, 1)
+        self.assertEqual(adapter.rollbacks, 0)
+        self.assertNotIn("COMMIT", adapter.statements)
+        owners = await AioOwner.query().arun()
+        self.assertEqual(len(owners), 1)
+
+    async def test_driver_with_its_own_begin_rolls_back_through_the_driver(self):
+        adapter = ImplicitBeginAdapter(self.conn)
+        with self.assertRaises(RuntimeError):
+            async with async_transaction(adapter):
+                await AioOwner.query().insert({"id": 1, "name": "Ada"}).arun(adapter)
+                raise RuntimeError("boom")
+        self.assertEqual(adapter.rollbacks, 1)
+        self.assertEqual(adapter.commits, 0)
+        self.assertNotIn("ROLLBACK", adapter.statements)
+        owners = await AioOwner.query().arun()
+        self.assertEqual(owners, [])
+
+    async def test_autocommit_adapter_still_gets_begin_and_commit(self):
+        adapter = AutocommitAdapter(self.conn)
+        async with async_transaction(adapter):
+            await AioOwner.query().insert({"id": 1, "name": "Ada"}).arun(adapter)
+        self.assertEqual(adapter.statements[0], "BEGIN")
+        self.assertEqual(adapter.statements[-1], "COMMIT")
+
+    async def test_autocommit_adapter_rolls_back_with_a_statement(self):
+        adapter = AutocommitAdapter(self.conn)
+        with self.assertRaises(RuntimeError):
+            async with async_transaction(adapter):
+                await AioOwner.query().insert({"id": 1, "name": "Ada"}).arun(adapter)
+                raise RuntimeError("boom")
+        self.assertEqual(adapter.statements[-1], "ROLLBACK")
+
+    async def test_duckdb_dialect_drives_the_block_with_statements(self):
+        adapter = ImplicitBeginAdapter(self.conn)
+        # DuckDB autocommits every statement, so the dialect asks for SQL
+        # control even though the adapter has its own. The BEGIN raises in
+        # this stand-in, which proves the statement was sent.
+        with self.assertRaises(RuntimeError):
+            async with async_transaction(adapter, Dialects.DUCKDB):
+                pass
+        self.assertEqual(adapter.commits, 0)
+
+    async def test_base_adapter_reports_no_transaction_control(self):
+        self.assertFalse(AsyncAdapter().driver_transaction_control())
+        await AsyncAdapter().begin_where_ddl_autocommits()
+
+    async def test_dbapi_adapter_reports_transaction_control(self):
+        self.assertTrue(self.adapter.driver_transaction_control())
+
+
+class TestAsyncSavepointRelease(AsyncTestCase):
+    async def test_inner_failure_releases_the_savepoint_it_rolled_back(self):
+        spy = RecordingAdapter(self.conn)
+        async with async_transaction(spy):
+            with self.assertRaises(RuntimeError):
+                async with async_transaction(spy):
+                    raise RuntimeError("boom")
+        self.assertEqual(
+            spy.statements,
+            [
+                "BEGIN",
+                "SAVEPOINT sustained_sp_1",
+                "ROLLBACK TO SAVEPOINT sustained_sp_1",
+                "RELEASE SAVEPOINT sustained_sp_1",
+            ],
+        )
+
+    async def test_the_same_savepoint_name_can_be_used_again(self):
+        async with AioOwner.async_transaction():
+            for name in ("Ada", "Grace"):
+                with self.assertRaises(RuntimeError):
+                    async with AioOwner.async_transaction():
+                        await AioOwner.query().insert({"id": 1, "name": name}).arun()
+                        raise RuntimeError("boom")
+            await AioOwner.query().insert({"id": 3, "name": "Hedy"}).arun()
+        owners = await AioOwner.query().arun()
+        self.assertEqual([o.name for o in owners], ["Hedy"])
+
+    async def test_a_failing_rollback_keeps_the_original_error(self):
+        class BrokenRollback(FakeAdapter):
+            async def execute(self, sql, params):
+                if sql.startswith("ROLLBACK TO"):
+                    raise RuntimeError("connection lost")
+                return await super().execute(sql, params)
+
+        adapter = BrokenRollback()
+        async with async_transaction(adapter):
+            with self.assertRaises(ValueError) as caught:
+                async with async_transaction(adapter):
+                    raise ValueError("boom")
+        self.assertEqual(str(caught.exception), "boom")
+        self.assertIsInstance(caught.exception.__cause__, RuntimeError)
+        self.assertEqual(str(caught.exception.__cause__), "connection lost")
+
+    async def test_a_failing_release_keeps_the_original_error(self):
+        class BrokenRelease(FakeAdapter):
+            async def execute(self, sql, params):
+                if sql.startswith("RELEASE"):
+                    raise RuntimeError("connection lost")
+                return await super().execute(sql, params)
+
+        adapter = BrokenRelease()
+        async with async_transaction(adapter):
+            with self.assertRaises(ValueError) as caught:
+                async with async_transaction(adapter):
+                    raise ValueError("boom")
+        self.assertIsInstance(caught.exception.__cause__, RuntimeError)
+
+    async def test_a_dialect_without_a_release_sends_only_the_rollback(self):
+        adapter = FakeAdapter()
+        async with async_transaction(adapter, Dialects.MSSQL):
+            with self.assertRaises(RuntimeError):
+                async with async_transaction(adapter, Dialects.MSSQL):
+                    raise RuntimeError("boom")
+        self.assertEqual(
+            adapter.statements,
+            [
+                "BEGIN TRANSACTION",
+                "SAVE TRANSACTION sustained_sp_1",
+                "ROLLBACK TRANSACTION sustained_sp_1",
+                "COMMIT",
+            ],
+        )
+
+
+class TestAsyncBatchInsertColumns(AsyncTestCase):
+    async def test_an_extra_column_in_a_later_row_raises(self):
+        with self.assertRaises(ValueError) as caught:
+            AioOwner.query().insert(
+                [{"id": 1, "name": "Ada"}, {"id": 2, "name": "Grace", "extra": 1}]
+            )
+        self.assertIn("same columns", str(caught.exception))
+
+    async def test_a_missing_column_in_a_later_row_raises(self):
+        with self.assertRaises(ValueError):
+            AioOwner.query().insert([{"id": 1, "name": "Ada"}, {"id": 2}])
+
+    async def test_matching_rows_still_insert(self):
+        count = await (
+            AioOwner.query()
+            .insert([{"id": 1, "name": "Ada"}, {"id": 2, "name": "Grace"}])
+            .arun()
+        )
+        self.assertEqual(count, 2)
+
+
+class FakeAsyncpgRecord:
+    """A stand-in for an asyncpg record."""
+
+    def __init__(self, mapping):
+        self._mapping = mapping
+
+    def keys(self):
+        return list(self._mapping.keys())
+
+    def __iter__(self):
+        return iter(self._mapping.values())
+
+
+class FakeAsyncpgConnection:
+    """A stand-in for an asyncpg connection, with a scripted status string."""
+
+    def __init__(self, status="INSERT 0 3", records=()):
+        self.status = status
+        self.records = list(records)
+        self.calls = []
+        self.closed = False
+
+    async def fetch(self, sql, *args):
+        self.calls.append((sql, args))
+        return self.records
+
+    async def execute(self, sql, *args):
+        self.calls.append((sql, args))
+        return self.status
+
+    async def executemany(self, sql, args):
+        self.calls.append((sql, args))
+        return None
+
+    async def close(self):
+        self.closed = True
+
+
+class TestAsyncpgAdapter(unittest.IsolatedAsyncioTestCase):
+    async def test_execute_reads_the_count_out_of_the_status(self):
+        adapter = AsyncpgAdapter(FakeAsyncpgConnection("INSERT 0 3"))
+        self.assertEqual(await adapter.execute("INSERT INTO t VALUES (%s)", (1,)), 3)
+
+    async def test_a_status_without_a_count_is_unknown(self):
+        adapter = AsyncpgAdapter(FakeAsyncpgConnection("CREATE TABLE"))
+        self.assertEqual(await adapter.execute("CREATE TABLE t (a int)", ()), -1)
+
+    async def test_a_status_that_is_not_text_is_unknown(self):
+        adapter = AsyncpgAdapter(FakeAsyncpgConnection(None))
+        self.assertEqual(await adapter.execute("SELECT 1", ()), -1)
+
+    async def test_executemany_is_unknown(self):
+        connection = FakeAsyncpgConnection()
+        adapter = AsyncpgAdapter(connection)
+        count = await adapter.executemany("INSERT INTO t VALUES (%s)", [(1,), (2,)])
+        self.assertEqual(count, -1)
+        self.assertEqual(connection.calls[0][0], "INSERT INTO t VALUES ($1)")
+
+    async def test_fetch_returns_columns_and_rows(self):
+        records = [FakeAsyncpgRecord({"id": 1, "name": "Ada"})]
+        adapter = AsyncpgAdapter(FakeAsyncpgConnection(records=records))
+        columns, rows = await adapter.fetch("SELECT * FROM t WHERE a = %s", (1,))
+        self.assertEqual(columns, ["id", "name"])
+        self.assertEqual(rows, [(1, "Ada")])
+
+    async def test_fetch_with_no_rows(self):
+        adapter = AsyncpgAdapter(FakeAsyncpgConnection())
+        self.assertEqual(await adapter.fetch("SELECT 1", ()), ([], []))
+
+    async def test_commit_and_rollback_do_nothing(self):
+        adapter = AsyncpgAdapter(FakeAsyncpgConnection())
+        self.assertIsNone(await adapter.commit())
+        self.assertIsNone(await adapter.rollback())
+
+    async def test_close_closes_the_connection(self):
+        connection = FakeAsyncpgConnection()
+        await AsyncpgAdapter(connection).close()
+        self.assertTrue(connection.closed)
+
+    async def test_it_has_no_transaction_control_of_its_own(self):
+        # asyncpg runs in autocommit, so a block on it needs BEGIN and
+        # COMMIT as statements.
+        adapter = AsyncpgAdapter(FakeAsyncpgConnection())
+        self.assertFalse(adapter.driver_transaction_control())

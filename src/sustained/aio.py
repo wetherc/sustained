@@ -49,6 +49,7 @@ from sustained.types import (
 )
 
 if TYPE_CHECKING:
+    from sustained.compilers.base import Compiler
     from sustained.dialects import Dialects
     from sustained.model import Model
     from sustained.types import AnyQuery
@@ -151,6 +152,30 @@ class AsyncAdapter:
     async def rollback(self) -> None:
         raise NotImplementedError
 
+    def driver_transaction_control(self) -> bool:
+        """
+        Reports whether the driver opens a transaction on its own and ends
+        it through commit() and rollback().
+
+        The base returns False, because an adapter such as AsyncpgAdapter
+        runs every statement in autocommit and reads commit() as a no-op.
+        async_transaction() then drives the block with BEGIN, COMMIT and
+        ROLLBACK statements instead. An adapter over a driver that follows
+        DB-API 2.0 returns True, so the block does not send a BEGIN the
+        driver already sent.
+        """
+        return False
+
+    async def begin_where_ddl_autocommits(self) -> None:
+        """
+        Sends the BEGIN a driver with transaction control still needs.
+
+        sqlite3 in legacy transaction control opens its implicit
+        transaction before data statements only, so a schema statement
+        would commit at once. The base does nothing.
+        """
+        return None
+
 
 class DbApiAsyncAdapter(AsyncAdapter):
     """
@@ -210,6 +235,17 @@ class DbApiAsyncAdapter(AsyncAdapter):
     async def close(self) -> None:
         async with self._lock:
             await asyncio.to_thread(self._connection.close)
+
+    def driver_transaction_control(self) -> bool:
+        # A DB-API 2.0 connection opens its transaction itself and ends it
+        # through commit() and rollback().
+        return True
+
+    async def begin_where_ddl_autocommits(self) -> None:
+        from sustained.execution import needs_explicit_begin
+
+        if needs_explicit_begin(self._connection):
+            await self.execute("BEGIN", ())
 
 
 class AiosqliteAdapter(AsyncAdapter):
@@ -360,10 +396,44 @@ async def async_transaction(
     block on one adapter at the same time share one transaction, and the
     second one is read as nested. Give each concurrent task its own adapter,
     as a connection carries one transaction at a time in any case.
+
+    The block is opened and closed the way the driver wants it. An adapter
+    over a DB-API 2.0 driver opens its transaction itself, so the block
+    ends with commit() or rollback() and sends no BEGIN. An adapter in
+    autocommit mode, such as AsyncpgAdapter, gets BEGIN, COMMIT and
+    ROLLBACK statements instead, as does any adapter on a dialect whose
+    driver has no transaction control, such as DuckDB.
     """
     async with adapter.scope() as pooled:
         async with _transaction_on(pooled, dialect) as active:
             yield active
+
+
+async def _undo_savepoint_async(
+    compiler: "Compiler",
+    adapter: AsyncAdapter,
+    savepoint: str,
+    error: BaseException,
+) -> None:
+    """
+    Rolls a nested block back to its savepoint and drops the savepoint.
+
+    A savepoint rolled back is still set, so every later block of the same
+    name would stack on the connection. The block failed for a reason the
+    caller cares about, so a failure here does not replace it: the original
+    error keeps propagating with the rollback failure as its cause.
+    """
+    statements = [
+        compiler.rollback_savepoint_sql(savepoint),
+        compiler.release_savepoint_sql(savepoint),
+    ]
+    for statement in statements:
+        if statement is None:
+            continue
+        try:
+            await adapter.execute(statement, ())
+        except Exception as rollback_error:
+            raise error from rollback_error
 
 
 @asynccontextmanager
@@ -397,10 +467,8 @@ async def _transaction_on(
             await adapter.execute(set_sql, ())
             try:
                 yield adapter
-            except BaseException:
-                rollback_sql = compiler.rollback_savepoint_sql(savepoint)
-                if rollback_sql is not None:
-                    await adapter.execute(rollback_sql, ())
+            except BaseException as error:
+                await _undo_savepoint_async(compiler, adapter, savepoint, error)
                 raise
             release_sql = compiler.release_savepoint_sql(savepoint)
             if release_sql is not None:
@@ -412,22 +480,38 @@ async def _transaction_on(
 
     _active_async_transactions[key] = (adapter, 0)
     token = _pinned_adapter.set(adapter)
+    # The block is driven by the driver's own calls only when both the
+    # dialect and the adapter have transaction control. DuckDB autocommits
+    # every statement, and an adapter in autocommit mode (asyncpg) reads
+    # commit() as a no-op, so those blocks run BEGIN, COMMIT and ROLLBACK
+    # as statements. A DB-API driver opens its transaction itself, so a
+    # BEGIN on top of it would report a transaction already in progress.
+    driver_control = (
+        compiler.driver_transaction_control() and adapter.driver_transaction_control()
+    )
     try:
-        # Explicit statements rather than adapter.commit(), because drivers
-        # in autocommit mode (asyncpg) treat commit() as a no-op.
-        begin_sql = compiler.begin_transaction_sql()
-        if begin_sql is not None:
-            await adapter.execute(begin_sql, ())
+        if driver_control:
+            await adapter.begin_where_ddl_autocommits()
+        else:
+            begin_sql = compiler.begin_transaction_sql()
+            if begin_sql is not None:
+                await adapter.execute(begin_sql, ())
         try:
             yield adapter
         except BaseException:
-            rollback_sql = compiler.rollback_transaction_sql()
-            if rollback_sql is not None:
-                await adapter.execute(rollback_sql, ())
+            if driver_control:
+                await adapter.rollback()
+            else:
+                rollback_sql = compiler.rollback_transaction_sql()
+                if rollback_sql is not None:
+                    await adapter.execute(rollback_sql, ())
             raise
-        commit_sql = compiler.commit_transaction_sql()
-        if commit_sql is not None:
-            await adapter.execute(commit_sql, ())
+        if driver_control:
+            await adapter.commit()
+        else:
+            commit_sql = compiler.commit_transaction_sql()
+            if commit_sql is not None:
+                await adapter.execute(commit_sql, ())
     finally:
         _pinned_adapter.reset(token)
         del _active_async_transactions[key]

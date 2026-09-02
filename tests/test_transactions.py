@@ -12,6 +12,7 @@ from sustained.exceptions import DialectError
 from sustained.execution import (
     cursor_scope,
     in_transaction,
+    needs_explicit_begin,
     open_cursor,
     pinned_transaction,
     set_statement_listener,
@@ -350,6 +351,43 @@ class TestBulkInsertPath(TransactionTestCase):
         rows = [{"id": 1, "name": "a"}, {"id": 2, "name": "b"}]
         result = TxUser.query().insert(rows).returning("id").run()
         self.assertEqual(result, [{"id": 1}, {"id": 2}])
+
+
+class TestNeedsExplicitBegin(unittest.TestCase):
+    """
+    A driver with transaction control still needs a BEGIN when it leaves
+    some statements outside the transaction it opens.
+    """
+
+    def test_a_legacy_sqlite3_connection_needs_one(self):
+        conn = sqlite3.connect(":memory:")
+        try:
+            self.assertTrue(needs_explicit_begin(conn))
+        finally:
+            conn.close()
+
+    def test_a_sqlite3_connection_in_a_transaction_does_not(self):
+        conn = sqlite3.connect(":memory:")
+        try:
+            conn.execute("CREATE TABLE t (a INTEGER)")
+            conn.execute("INSERT INTO t VALUES (1)")
+            self.assertTrue(conn.in_transaction)
+            self.assertFalse(needs_explicit_begin(conn))
+        finally:
+            conn.close()
+
+    def test_a_sqlite3_connection_in_the_new_control_does_not(self):
+        conn = sqlite3.connect(":memory:", autocommit=False)
+        try:
+            self.assertFalse(needs_explicit_begin(conn))
+        finally:
+            conn.close()
+
+    def test_another_driver_does_not(self):
+        class OtherConnection:
+            pass
+
+        self.assertFalse(needs_explicit_begin(OtherConnection()))
 
 
 if __name__ == "__main__":

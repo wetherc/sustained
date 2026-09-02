@@ -161,6 +161,10 @@ These live in `sustained.aio`. Every adapter has the same methods, so a query do
 | `await rollback()` | `None` |
 | `await close()` | `None` |
 | `async with scope()` | the adapter one call runs on |
+| `driver_transaction_control()` | whether the driver opens the transaction |
+| `await begin_where_ddl_autocommits()` | the `BEGIN` such a driver still needs |
+
+`driver_transaction_control()` tells `async_transaction()` how to open and close a block. It returns `False` on the base class and on `AsyncpgAdapter`, so the block runs `BEGIN`, `COMMIT`, and `ROLLBACK` as statements. `DbApiAsyncAdapter` returns `True`, because a DB-API 2.0 driver opens the transaction itself; the block then ends with `commit()` or `rollback()`. `begin_where_ddl_autocommits()` covers the one gap in that promise: sqlite3 in legacy transaction control leaves schema statements outside its implicit transaction, so `DbApiAsyncAdapter` sends a `BEGIN` there.
 
 `scope()` is what every call opens before it runs. A plain adapter yields itself; a pool yields one of the adapters it holds and takes it back at the end, so a statement and its commit stay on one connection.
 
@@ -183,7 +187,7 @@ AsyncpgAdapter(connection)
 ```
 {: .sig #asyncpgadapter}
 
-Wraps asyncpg. Converts `%s` placeholders to `$1..$n`. asyncpg is autocommit, so `commit()` and `rollback()` do nothing, and `executemany()` returns `-1`.
+Wraps asyncpg. Converts `%s` placeholders to `$1..$n`. asyncpg is autocommit, so `commit()` and `rollback()` do nothing, `driver_transaction_control()` is `False`, and `executemany()` returns `-1`.
 
 `AsyncAdapter` is the abstract base class. Subclass it for a driver that has no adapter here. `close()` does nothing on the base, for an adapter that borrows a connection it does not own.
 
@@ -254,7 +258,7 @@ async_transaction(adapter, dialect=None)
 ```
 {: .sig #async_transaction}
 
-An async context manager that opens, commits, and rolls back the transaction with the dialect's own statements; the default dialect issues `BEGIN`, `COMMIT`, and `ROLLBACK`. Nested blocks on one adapter use savepoints named `sustained_sp_<depth>`, spelled per dialect; a dialect with no savepoints raises `DialectError` on nesting. `Model.async_transaction()` passes the model's dialect. Sustained tracks the nesting per adapter, so give each concurrent task its own adapter.
+An async context manager that opens, commits, and rolls back the transaction. An adapter whose driver has no transaction control gets the dialect's own statements; the default dialect issues `BEGIN`, `COMMIT`, and `ROLLBACK`. An adapter over a DB-API 2.0 driver ends the block with `commit()` or `rollback()` instead, because that driver opened the transaction itself. Nested blocks on one adapter use savepoints named `sustained_sp_<depth>`, spelled per dialect; a dialect with no savepoints raises `DialectError` on nesting. A failed inner block rolls back to its savepoint and then releases it, so a later block can take the same name. If the rollback itself fails, the block's own error still propagates, with the rollback failure as its cause. `Model.async_transaction()` passes the model's dialect. Sustained tracks the nesting per adapter, so give each concurrent task its own adapter.
 
 ```python
 in_async_transaction(adapter) -> bool
