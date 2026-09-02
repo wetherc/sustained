@@ -144,7 +144,9 @@ class ConditionalClauseBuilder(ABC):
         quoted_col = self._quote_column(col)
 
         def render(ctx: RenderContext) -> str:
-            return f"{quoted_col} {actual_op} {ctx.value(val1)} AND {ctx.value(val2)}"
+            low = ctx.compiler.format_operand(val1, ctx)
+            high = ctx.compiler.format_operand(val2, ctx)
+            return f"{quoted_col} {actual_op} {low} AND {high}"
 
         self._clauses.append((conjunction, render))
 
@@ -309,13 +311,14 @@ class ConditionalClauseBuilder(ABC):
 
                 def render(ctx: RenderContext) -> str:
                     return ctx.compiler.compile_like(
-                        quoted_col, ctx.value(val), operator
+                        quoted_col, ctx.compiler.format_operand(val, ctx), operator
                     )
 
             else:
 
                 def render(ctx: RenderContext) -> str:
-                    return f"{quoted_col} {operator} {ctx.value(val)}"
+                    operand = ctx.compiler.format_operand(val, ctx)
+                    return f"{quoted_col} {operator} {operand}"
 
             self._clauses.append((conjunction, render))
 
@@ -340,7 +343,9 @@ class ConditionalClauseBuilder(ABC):
             value_list = list(vals)
 
             def render(ctx: RenderContext) -> str:
-                values_str = ", ".join(ctx.value(v) for v in value_list)
+                values_str = ", ".join(
+                    ctx.compiler.format_operand(v, ctx) for v in value_list
+                )
                 return f"{quoted_col} {actual_op} ({values_str})"
 
             self._clauses.append((conjunction, render))

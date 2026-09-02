@@ -85,11 +85,11 @@ class SelectClauseBuilder:
             elif isinstance(c, ColumnExpr):
                 formatted_columns.append(compiler.quote_column_reference(c.name))
             elif isinstance(c, Func):
-                formatted_columns.append(compiler.compile_function(c))
+                formatted_columns.append(compiler.compile_function(c, ctx))
             elif isinstance(c, AggregateExpression):
                 formatted_columns.append(compiler.compile_aggregate(c))
             elif isinstance(c, WindowExpression):
-                formatted_columns.append(compiler.compile_window(c))
+                formatted_columns.append(compiler.compile_window(c, ctx))
             elif isinstance(c, CaseExpression):
                 formatted_columns.append(compiler.compile_case(c))
             elif isinstance(c, Subquery):

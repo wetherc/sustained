@@ -6,7 +6,14 @@ import unittest
 
 from sustained import DialectError, create_model
 from sustained.dialects import Dialects
-from sustained.expressions import Subquery
+from sustained.expressions import (
+    AggregateExpression,
+    Column,
+    Func,
+    Literal,
+    Subquery,
+    col,
+)
 
 User = create_model("ParamUser", "users")
 
@@ -121,6 +128,169 @@ class TestToSql(unittest.TestCase):
         sql, params = Pg.query().where("a", "=", 1).to_sql()
         self.assertIn("%s", sql)
         self.assertNotIn("?", sql)
+
+
+class TestFunctionArgumentParameters(unittest.TestCase):
+    """A subquery inside a function call parameterizes with the statement."""
+
+    def test_select_list_function_subquery_params(self):
+        sub = User.query().select("id").where("a", "=", 1)
+        query = User.query().select_func(
+            "COALESCE", Subquery(sub, "s"), Literal(0), alias="c"
+        )
+        sql, params = query.to_sql()
+        self.assertEqual(
+            sql,
+            "SELECT COALESCE((SELECT id FROM users WHERE a = ?), 0) AS c FROM users",
+        )
+        self.assertEqual(params, (1,))
+
+    def test_select_list_function_params_sit_between_the_other_bindings(self):
+        cte = User.query().select("id").where("k", "=", 9)
+        sub = User.query().select("id").where("a", "=", 1)
+        query = (
+            User.query()
+            .with_("c", cte)
+            .select_func("COALESCE", Subquery(sub, "s"), Literal(0))
+            .where("b", "=", 2)
+        )
+        sql, params = query.to_sql()
+        self.assertEqual(params, (9, 1, 2))
+        self.assertLess(sql.index("COALESCE"), sql.index("WHERE b"))
+
+    def test_where_clause_function_subquery_params(self):
+        sub = User.query().select("id").where("a", "=", 1)
+        query = User.query().where(
+            col("total") > Func("COALESCE", Subquery(sub, "s"), Literal(0))
+        )
+        sql, params = query.to_sql()
+        self.assertEqual(
+            sql,
+            "SELECT * FROM users WHERE total > "
+            "COALESCE((SELECT id FROM users WHERE a = ?), 0)",
+        )
+        self.assertEqual(params, (1,))
+
+    def test_where_clause_function_params_sit_between_the_other_bindings(self):
+        sub = User.query().select("id").where("a", "=", 2)
+        query = (
+            User.query()
+            .where("x", "=", 1)
+            .andWhere(col("total") > Func("COALESCE", Subquery(sub, "s"), Literal(0)))
+            .andWhere("y", "=", 3)
+        )
+        sql, params = query.to_sql()
+        self.assertEqual(params, (1, 2, 3))
+        self.assertLess(sql.index("COALESCE"), sql.index("y ="))
+
+    def test_nested_function_subquery_params(self):
+        inner = User.query().select("id").where("deep", "=", 1)
+        query = User.query().select_func(
+            "UPPER", Func("COALESCE", Subquery(inner, "s"), Literal("x"))
+        )
+        _, params = query.to_sql()
+        self.assertEqual(params, (1,))
+
+    def test_window_argument_subquery_params(self):
+        sub = User.query().select("id").where("a", "=", 5)
+        query = User.query().select_window(
+            "SUM", "total", partition_by=["dept"], args=[Subquery(sub, "s")]
+        )
+        sql, params = query.to_sql()
+        self.assertIn("SUM((SELECT id FROM users WHERE a = ?))", sql)
+        self.assertEqual(params, (5,))
+
+    def test_str_still_inlines_a_function_subquery(self):
+        sub = User.query().select("id").where("a", "=", 1)
+        query = User.query().select_func("COALESCE", Subquery(sub, "s"), Literal(0))
+        self.assertEqual(
+            str(query),
+            "SELECT COALESCE((SELECT id FROM users WHERE a = 1), 0) FROM users",
+        )
+
+    def test_union_members_keep_function_params_in_order(self):
+        first = User.query().select_func(
+            "COALESCE", Subquery(User.query().where("z", "=", 3), "t"), Literal(0)
+        )
+        second = User.query().select_func(
+            "COALESCE", Subquery(User.query().where("a", "=", 1), "s"), Literal(0)
+        )
+        _, params = first.union(second).to_sql()
+        self.assertEqual(params, (3, 1))
+
+    def test_having_clause_function_subquery_params(self):
+        sub = User.query().select("id").where("a", "=", 7)
+        query = (
+            User.query()
+            .where("x", "=", 1)
+            .groupBy("dept")
+            .having(col("n") > Func("COALESCE", Subquery(sub, "s"), Literal(0)))
+        )
+        _, params = query.to_sql()
+        self.assertEqual(params, (1, 7))
+
+
+class TestExpressionOperands(unittest.TestCase):
+    """An expression on the value side of a comparison renders as SQL."""
+
+    def test_column_operand_renders_as_sql(self):
+        query = User.query().where("show_id", "=", Column("shows.id"))
+        sql, params = query.to_sql()
+        self.assertEqual(sql, "SELECT * FROM users WHERE show_id = shows.id")
+        self.assertEqual(params, ())
+
+    def test_literal_operand_binds_its_value(self):
+        sql, params = User.query().where("name", "=", Literal("ann")).to_sql()
+        self.assertEqual(sql, "SELECT * FROM users WHERE name = ?")
+        self.assertEqual(params, ("ann",))
+
+    def test_aggregate_operand_renders_as_sql(self):
+        query = User.query().where("n", "=", AggregateExpression("COUNT", "id"))
+        self.assertEqual(str(query), "SELECT * FROM users WHERE n = COUNT(id)")
+
+    def test_between_operands_render_as_sql(self):
+        query = User.query().whereBetween("n", Column("low"), 10)
+        sql, params = query.to_sql()
+        self.assertEqual(sql, "SELECT * FROM users WHERE n BETWEEN low AND ?")
+        self.assertEqual(params, (10,))
+
+    def test_in_list_operand_renders_as_sql(self):
+        query = User.query().whereIn("n", [Column("a"), 2])
+        sql, params = query.to_sql()
+        self.assertEqual(sql, "SELECT * FROM users WHERE n IN (a, ?)")
+        self.assertEqual(params, (2,))
+
+    def test_predicate_in_list_operand_renders_as_sql(self):
+        query = User.query().where(col("n").in_([Column("a"), 2]))
+        sql, params = query.to_sql()
+        self.assertEqual(sql, "SELECT * FROM users WHERE n IN (a, ?)")
+        self.assertEqual(params, (2,))
+
+    def test_predicate_between_operands_render_as_sql(self):
+        query = User.query().where(col("n").between(Column("low"), 10))
+        sql, params = query.to_sql()
+        self.assertEqual(sql, "SELECT * FROM users WHERE n BETWEEN low AND ?")
+        self.assertEqual(params, (10,))
+
+    def test_predicate_not_between_operands_render_as_sql(self):
+        query = User.query().where(col("n").not_between(1, Column("high")))
+        sql, params = query.to_sql()
+        self.assertEqual(sql, "SELECT * FROM users WHERE n NOT BETWEEN ? AND high")
+        self.assertEqual(params, (1,))
+
+    def test_subquery_operand_renders_without_its_alias(self):
+        sub = User.query().select("id").where("a", "=", 4)
+        query = User.query().where("n", "=", Subquery(sub, "s"))
+        sql, params = query.to_sql()
+        self.assertEqual(
+            sql,
+            "SELECT * FROM users WHERE n = (SELECT id FROM users WHERE a = ?)",
+        )
+        self.assertEqual(params, (4,))
+
+    def test_like_operand_renders_as_sql(self):
+        query = User.query().where("name", "LIKE", Column("pattern"))
+        self.assertEqual(str(query), "SELECT * FROM users WHERE name LIKE pattern")
 
 
 class TestOperatorValidation(unittest.TestCase):

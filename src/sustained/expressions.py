@@ -82,7 +82,10 @@ class ColumnExpr:
         def render(ctx: "RenderContext") -> str:
             if isinstance(value, ColumnExpr):
                 return f"{self._quoted(ctx)} {operator} {value._quoted(ctx)}"
-            return f"{self._quoted(ctx)} {operator} {ctx.value(value)}"
+            return (
+                f"{self._quoted(ctx)} {operator} "
+                f"{ctx.compiler.format_operand(value, ctx)}"
+            )
 
         return Predicate(render)
 
@@ -149,7 +152,7 @@ class ColumnExpr:
         items = list(values)
 
         def render(ctx: "RenderContext") -> str:
-            rendered = ", ".join(ctx.value(v) for v in items)
+            rendered = ", ".join(ctx.compiler.format_operand(v, ctx) for v in items)
             return f"{self._quoted(ctx)} {operator} ({rendered})"
 
         return Predicate(render)
@@ -157,7 +160,9 @@ class ColumnExpr:
     def between(self, low: SqlValue, high: SqlValue) -> Predicate:
         return Predicate(
             lambda ctx: (
-                f"{self._quoted(ctx)} BETWEEN {ctx.value(low)} AND {ctx.value(high)}"
+                f"{self._quoted(ctx)} BETWEEN "
+                f"{ctx.compiler.format_operand(low, ctx)} AND "
+                f"{ctx.compiler.format_operand(high, ctx)}"
             )
         )
 
@@ -165,7 +170,8 @@ class ColumnExpr:
         return Predicate(
             lambda ctx: (
                 f"{self._quoted(ctx)} NOT BETWEEN "
-                f"{ctx.value(low)} AND {ctx.value(high)}"
+                f"{ctx.compiler.format_operand(low, ctx)} AND "
+                f"{ctx.compiler.format_operand(high, ctx)}"
             )
         )
 
@@ -252,7 +258,20 @@ class Subquery:
         and join the outer parameter list in the order they appear in the
         SQL text.
         """
-        return f"({self.query._render_sql(ctx)}) AS {self.alias}"
+        return f"{self.render_operand(ctx)} AS {self.alias}"
+
+    def render_operand(self, ctx: "Optional[RenderContext]") -> str:
+        """
+        Renders the subquery with no alias, for a place where it stands as
+        a value: a function argument, or one side of a comparison. An alias
+        is not valid SQL there.
+
+        Values render through the given context. With no context they
+        inline as literals.
+        """
+        if ctx is None:
+            return f"({self.query})"
+        return f"({self.query._render_sql(ctx)})"
 
     def __str__(self) -> str:
         """

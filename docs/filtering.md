@@ -46,6 +46,23 @@ Show.query().where('starts_at', '=', None)
 
 `None` with any other operator raises `ValueError`.
 
+The value side does not have to be data. `Column` and `QueryBuilder.raw()` render as SQL text, and a `Func` or a `Subquery` renders as the function call or the parenthesized SELECT. A subquery there renders through the statement, so its own values become placeholders and join the parameter tuple in the order they appear in the SQL:
+
+```python
+from sustained.expressions import Column, Func, Literal, Subquery
+
+Ticket.query().where('show_id', '=', Column('shows.id'))
+# SELECT * FROM tickets WHERE show_id = shows.id
+
+quota = Venue.query().select('capacity').where('id', '=', 3)
+
+Show.query().where(col('sold') > Func('COALESCE', Subquery(quota, 'q'), Literal(0)))
+# SELECT * FROM shows
+# WHERE sold > COALESCE((SELECT capacity FROM venues WHERE id = ?), 0)
+```
+
+A `Subquery` keeps its alias in a select list and drops it here, because a comparison and a function argument take a bare SELECT.
+
 ## Typed predicates
 
 `Model.c` gives every column a reference that builds a `Predicate` from a Python comparison. `col()` does the same for a dotted path when no model is in scope:

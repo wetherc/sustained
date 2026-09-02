@@ -138,6 +138,8 @@ Show.query().select('title', Subquery(ticket_count, 'tickets_sold'))
 
 `render(ctx)` renders the subquery with the outer statement's render context, so its values parameterize with the rest of the statement. `str()` inlines them as literals, for reading and logging.
 
+`render_operand(ctx)` renders it with no alias, for the places where the subquery stands as a value: a function argument, or one side of a comparison. The compiler calls it there. Passing `None` for the context inlines the values.
+
 ## Function registry
 
 `select_func()` and the fluent function methods check the name against `FunctionRegistry` in `sustained.functions`. A registered function that the active dialect cannot spell raises `DialectError` while the query builds. An unregistered name passes through unchecked, so you can call a function the registry does not list.

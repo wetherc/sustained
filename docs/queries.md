@@ -126,6 +126,17 @@ Venue.query().select_func('COALESCE', 'not a column', alias='x')
 
 That rule exists because without it, a forgotten `Literal` turns a value into a column reference and the query silently returns the wrong rows rather than failing.
 
+An argument can be another expression: a nested `Func`, an aggregate, a window call, or a `Subquery`. A subquery argument renders through the statement, so under `to_sql()` its values become placeholders and join the outer parameter tuple in the order they appear in the SQL. It renders without its alias, because a function argument takes a bare SELECT:
+
+```python
+from sustained.expressions import Subquery
+
+quota = Venue.query().select('capacity').where('id', '=', 3)
+
+Show.query().select_func('COALESCE', Subquery(quota, 'q'), Literal(0), alias='cap')
+# SELECT COALESCE((SELECT capacity FROM venues WHERE id = ?), 0) AS cap FROM shows
+```
+
 Every registered function also has a named method equivalent, so these build the same query:
 
 ```python

@@ -14,6 +14,7 @@ from sustained.types import Expression, SqlValue
 
 if TYPE_CHECKING:
     from sustained.dialects import Dialects
+    from sustained.rendering import RenderContext
     from sustained.schema import ColumnDef, ColumnState, TableOptions
     from sustained.types import CaseResult
 
@@ -832,17 +833,23 @@ class Compiler:
         """
         return f"LIMIT -1 OFFSET {offset}"
 
-    def compile_function(self, func: Func) -> str:
+    def compile_function(
+        self, func: Func, ctx: 'Optional["RenderContext"]' = None
+    ) -> str:
         """
         Renders a Func expression as a SQL string, translating the function
         name to the dialect's spelling when the registry defines one.
+
+        With a render context, an argument that holds values renders through
+        it, so a subquery argument parameterizes with the rest of the
+        statement. With no context the values inline as literals.
         """
         # Imported here because the dialects module imports the compilers
         # at module load time.
         from sustained.functions import FunctionRegistry
 
         function_name = FunctionRegistry.resolve_name(func.function_name, self._dialect)
-        formatted_args = ", ".join(self._format_arg(arg) for arg in func.args)
+        formatted_args = ", ".join(self._format_arg(arg, ctx) for arg in func.args)
         sql = f"{function_name}({formatted_args})"
         if func.alias:
             sql += f" AS {self.quote_alias(func.alias)}"
@@ -859,15 +866,19 @@ class Compiler:
             sql += f" AS {self.quote_alias(agg.alias)}"
         return sql
 
-    def compile_window(self, window: WindowExpression) -> str:
+    def compile_window(
+        self, window: WindowExpression, ctx: 'Optional["RenderContext"]' = None
+    ) -> str:
         """
         Renders a window expression with dialect quoting for partition and
         order columns and the alias.
         """
         alias_sql = self.quote_alias(window.alias)
-        return f"{self.compile_window_call(window)} AS {alias_sql}"
+        return f"{self.compile_window_call(window, ctx)} AS {alias_sql}"
 
-    def compile_window_call(self, window: WindowExpression) -> str:
+    def compile_window_call(
+        self, window: WindowExpression, ctx: 'Optional["RenderContext"]' = None
+    ) -> str:
         """
         Renders the window function call and its OVER clause, without the
         alias. Use this where the window sits inside another expression,
@@ -885,7 +896,7 @@ class Compiler:
         if window.frame:
             over_clauses.append(window.frame)
         over_sql = " ".join(over_clauses)
-        args_sql = ", ".join(self._format_arg(arg) for arg in window.args)
+        args_sql = ", ".join(self._format_arg(arg, ctx) for arg in window.args)
         return f"{window.function_name}({args_sql}) OVER ({over_sql})"
 
     def _quote_order_entry(self, entry: str) -> str:
@@ -912,16 +923,38 @@ class Compiler:
             return str(result)
         return self.format_value(result)
 
-    def _format_arg(self, arg: SqlValue) -> str:
+    def format_operand(self, value: SqlValue, ctx: "RenderContext") -> str:
+        """
+        Formats a value that stands on one side of a comparison.
+
+        An expression object renders as SQL text through the given context,
+        so a subquery inside it parameterizes with the rest of the
+        statement. Every other value goes to the context, which binds it or
+        inlines it as a literal.
+        """
+        if isinstance(value, Literal):
+            return ctx.value(value.value)
+        if isinstance(
+            value,
+            (Func, AggregateExpression, WindowExpression, Subquery, Column),
+        ):
+            return self._format_arg(value, ctx)
+        return ctx.value(value)
+
+    def _format_arg(
+        self, arg: SqlValue, ctx: 'Optional["RenderContext"]' = None
+    ) -> str:
         """
         Formats a function argument for inclusion in the SQL string.
 
         Strings are treated as column references and quoted per dialect.
         Literal values must be wrapped in Literal(). Numbers, booleans, and
-        None render as literals directly.
+        None render as literals directly. A subquery argument renders
+        through the given context, so its values become placeholders and
+        join the statement's parameter list. With no context they inline.
         """
         if isinstance(arg, Func):
-            return self.compile_function(arg)
+            return self.compile_function(arg, ctx)
         if isinstance(arg, Literal):
             return self.format_value(arg.value)
         if isinstance(arg, AggregateExpression):
@@ -929,14 +962,15 @@ class Compiler:
         if isinstance(arg, WindowExpression):
             # A nested window keeps this dialect's quoting and drops the
             # alias, which belongs to the select list.
-            return self.compile_window_call(arg)
+            return self.compile_window_call(arg, ctx)
+        if isinstance(arg, Subquery):
+            return arg.render_operand(ctx)
         if isinstance(
             arg,
             (
                 Column,
                 Expression,
                 CaseExpression,
-                Subquery,
             ),
         ):
             return str(arg)
