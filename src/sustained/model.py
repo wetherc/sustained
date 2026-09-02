@@ -77,6 +77,13 @@ def _register_model(name: str, model_class: Type["Model"]) -> None:
         return
     if existing is model_class:
         return
+    if _describe_model_class(existing) == _describe_model_class(model_class):
+        # The same module.qualname built a new class object: a module
+        # reload, or a factory run twice. The newest class is the one the
+        # module now exports, so it replaces the old one rather than
+        # marking the name ambiguous.
+        _MODEL_REGISTRY[name] = model_class
+        return
     del _MODEL_REGISTRY[name]
     _AMBIGUOUS_MODEL_NAMES[name] = [existing, model_class]
 

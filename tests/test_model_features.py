@@ -173,6 +173,17 @@ class TestAmbiguousModelNames(unittest.TestCase):
         _register_model("SoloTwin", Solo)
         self.assertIs(get_registered_model("SoloTwin"), Solo)
 
+    def test_a_reloaded_class_replaces_its_old_entry(self):
+        # importlib.reload builds a new class object with the same
+        # module.qualname. That is the module's current class, not a
+        # second definition, so it takes the entry over instead of
+        # poisoning the name.
+        first = _make_twin("reload_twins")
+        _register_model("ReloadTwin", first)
+        second = _make_twin("reload_twins")
+        _register_model("ReloadTwin", second)
+        self.assertIs(get_registered_model("ReloadTwin"), second)
+
 
 class TestRelationValidation(unittest.TestCase):
     def test_missing_join_keys_raise(self):
