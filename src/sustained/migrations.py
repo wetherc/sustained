@@ -856,6 +856,15 @@ def _run_step(
             cursor.execute(statement)
 
 
+def _is_read_savepoint(operation: str) -> bool:
+    """Whether a statement is one of the savepoints a guarded read takes."""
+    from sustained.introspect import _READ_SAVEPOINT
+
+    return operation.strip().rstrip(";").upper().endswith(
+        _READ_SAVEPOINT.upper()
+    ) and operation.strip().upper().startswith(("SAVEPOINT", "RELEASE", "ROLLBACK TO"))
+
+
 class _ReplayCursor:
     """The cursor a SchemaRead hands out: it answers from the recording."""
 
@@ -874,6 +883,12 @@ class _ReplayCursor:
 
     def execute(self, operation: str, parameters: Sequence[object] = (), /) -> object:
         self._rows = []
+        if _is_read_savepoint(operation):
+            # A guarded read takes a savepoint around each statement, to
+            # keep one failed query from carrying away the transaction.
+            # A replay runs no transaction and re-raises a recorded error
+            # on its own, so the savepoint has nothing to protect.
+            return None
         if self._position >= len(self._steps):
             raise ValueError(
                 "The recorded schema read has no answer for this statement: "

@@ -18,6 +18,7 @@ from sustained.migrations import (
     Migration,
     Migrator,
     SchemaRead,
+    _is_read_savepoint,
     _ReplayCursor,
 )
 
@@ -1159,7 +1160,24 @@ class TestReplayedSchemaScope(unittest.IsolatedAsyncioTestCase):
         with mock.patch.object(_ReplayCursor, "execute", spy):
             await migrator.plan(self.models())
         self.assertTrue(adapter.statements)
-        self.assertEqual(asked, adapter.statements)
+        queries = [sql for sql in asked if not _is_read_savepoint(sql)]
+        self.assertEqual(queries, adapter.statements)
+
+    async def test_the_replay_takes_the_savepoints_a_guarded_read_takes(self):
+        adapter = RecordingAdapter()
+        migrator = AsyncMigrator(adapter, [], dialect=Dialects.POSTGRES)
+        asked = []
+        recorded_execute = _ReplayCursor.execute
+
+        def spy(self, operation, parameters=()):
+            asked.append(operation)
+            return recorded_execute(self, operation, parameters)
+
+        with mock.patch.object(_ReplayCursor, "execute", spy):
+            await migrator.plan(self.models())
+        savepoints = [sql for sql in asked if _is_read_savepoint(sql)]
+        self.assertTrue(savepoints)
+        self.assertNotIn(savepoints[0], adapter.statements)
 
     async def test_the_read_covers_the_schemas_the_models_name(self):
         adapter = RecordingAdapter()
