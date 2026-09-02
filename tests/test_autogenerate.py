@@ -1005,5 +1005,70 @@ class TestRebuildStrategy(unittest.TestCase):
             autogenerate(conn, [model], id="m2", dialect=Dialects.PRESTO)
 
 
+class TestSqliteRebuildSafety(unittest.TestCase):
+    """
+    A SQLite rebuild drops the old table, which fails while another
+    table's rows point at it, and it copies rows into every declared
+    column, which fails when a new NOT NULL column has no value.
+    """
+
+    def setUp(self):
+        # SQLite ignores PRAGMA foreign_keys inside an open transaction,
+        # so the steps run on a connection in autocommit.
+        self.conn = sqlite3.connect(":memory:", isolation_level=None)
+        self.conn.execute("PRAGMA foreign_keys = ON")
+        self.conn.execute("CREATE TABLE rb_shows (id INTEGER PRIMARY KEY, name TEXT)")
+        self.conn.execute(
+            "CREATE TABLE rb_tickets (id INTEGER PRIMARY KEY, "
+            "show_id INTEGER REFERENCES rb_shows (id))"
+        )
+        self.conn.execute("INSERT INTO rb_shows VALUES (1, 'a')")
+        self.conn.execute("INSERT INTO rb_tickets VALUES (1, 1)")
+
+    def tearDown(self):
+        self.conn.close()
+
+    def run_steps(self, statements):
+        for statement in statements:
+            self.conn.execute(statement)
+
+    def models(self, extra=None):
+        columns = {"id": Integer(primary_key=True), "name": Integer()}
+        columns.update(extra or {})
+        show = make_model("RbShow", "rb_shows", columns)
+        ticket = make_model(
+            "RbTicket",
+            "rb_tickets",
+            {
+                "id": Integer(primary_key=True),
+                "show_id": Integer(references="rb_shows.id"),
+            },
+        )
+        return [show, ticket]
+
+    def test_the_rebuild_holds_foreign_keys_back(self):
+        migration = autogenerate(self.conn, self.models(), id="rebuild")
+        self.assertEqual(migration.up[0], "PRAGMA foreign_keys = OFF")
+        self.assertEqual(migration.up[-1], "PRAGMA foreign_keys = ON")
+        self.run_steps(migration.up)
+        rows = self.conn.execute("SELECT id, name FROM rb_shows").fetchall()
+        self.assertEqual(rows, [(1, "a")])
+        self.assertEqual(self.conn.execute("PRAGMA foreign_keys").fetchone()[0], 1)
+
+    def test_a_new_not_null_column_on_a_rebuilt_table_is_refused(self):
+        models = self.models({"seats": Integer(nullable=False)})
+        with self.assertRaises(ValueError) as caught:
+            autogenerate(self.conn, models, id="rebuild")
+        self.assertIn("without a default or backfill", str(caught.exception))
+
+    def test_a_new_not_null_column_with_a_backfill_is_allowed(self):
+        models = self.models({"seats": Integer(nullable=False, backfill=0)})
+        migration = autogenerate(self.conn, models, id="rebuild")
+        self.run_steps(migration.up)
+        self.assertEqual(
+            self.conn.execute("SELECT seats FROM rb_shows").fetchall(), [(0,)]
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

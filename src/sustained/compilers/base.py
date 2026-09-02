@@ -537,6 +537,30 @@ class Compiler:
         """
         return "alter" if self.supports_alter_column() else "rebuild"
 
+    def rebuild_setup_sql(self) -> "list[str]":
+        """
+        Statements that open a table rebuild. SQLite checks foreign keys
+        while it drops a table, so dropping the old table fails whenever
+        rows in another table still point at it. Turning enforcement off
+        for the rebuild is SQLite's own recipe for this.
+
+        SQLite ignores PRAGMA foreign_keys inside an open transaction, so
+        the statement only bites when the rebuild runs outside one, and
+        rebuild_finish_sql() is ignored the same way. Run a rebuild on a
+        connection in autocommit and both statements land.
+        PRAGMA defer_foreign_keys does not help here: a dropped table
+        leaves its children dangling, and the deferred check fails at
+        COMMIT instead. Dialects that never rebuild never send this.
+        """
+        return ["PRAGMA foreign_keys = OFF"]
+
+    def rebuild_finish_sql(self) -> "list[str]":
+        """
+        Statements that close a table rebuild, putting foreign key
+        enforcement back where rebuild_setup_sql() took it away.
+        """
+        return ["PRAGMA foreign_keys = ON"]
+
     def supports_add_constraint(self) -> bool:
         """
         Reports whether the dialect can add a named constraint to a table

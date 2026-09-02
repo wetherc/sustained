@@ -1352,10 +1352,25 @@ def autogenerate(
             if coldef.type_name == "ENUM":
                 rebuild_tables[(model.tableName or "").lower()] = model
 
-    # New columns on tables that are not being rebuilt.
+    # New columns. A NOT NULL column with no value for the rows already
+    # there fails the same way on both paths, so the check runs before a
+    # table headed for a rebuild is skipped. The rebuild would otherwise
+    # copy NULL into the column and fail with a bare constraint error.
     for model, name, coldef in diff.new_columns:
         table_key = (model.tableName or "").lower()
-        if table_key in rebuild_tables:
+        rebuilding = table_key in rebuild_tables
+        if (
+            not coldef.nullable
+            and coldef.default is None
+            and coldef.backfill is None
+            and not coldef.primary_key
+        ):
+            raise ValueError(
+                f"Cannot add NOT NULL column '{model.tableName}.{name}' "
+                "without a default or backfill; existing rows would "
+                "have no value."
+            )
+        if rebuilding:
             continue
         if coldef.primary_key or coldef.autoincrement:
             raise ValueError(
@@ -1365,12 +1380,6 @@ def autogenerate(
             )
         table_sql = model._qualified_table_sql()
         if not coldef.nullable and coldef.default is None:
-            if coldef.backfill is None:
-                raise ValueError(
-                    f"Cannot add NOT NULL column '{model.tableName}.{name}' "
-                    "without a default or backfill; existing rows would "
-                    "have no value."
-                )
             if _rebuild_needed(compiler, "add a NOT NULL column"):
                 rebuild_tables[table_key] = model
                 continue
@@ -1453,11 +1462,17 @@ def autogenerate(
             if _rebuild_needed(compiler, "change a constraint"):
                 rebuild_tables[(model.tableName or "").lower()] = model
 
-    # Table rebuilds for SQLite consume every remaining change on the table.
-    for table_key, model in rebuild_tables.items():
-        up_steps.extend(
-            _sqlite_rebuild_steps(compiler, model, actual[table_key], allow_drops)
-        )
+    # Table rebuilds for SQLite consume every remaining change on the
+    # table. They run between the statements that turn foreign key
+    # enforcement off and on again, since dropping the old table would
+    # otherwise fail while rows in another table still point at it.
+    if rebuild_tables:
+        up_steps.extend(compiler.rebuild_setup_sql())
+        for table_key, model in rebuild_tables.items():
+            up_steps.extend(
+                _sqlite_rebuild_steps(compiler, model, actual[table_key], allow_drops)
+            )
+        up_steps.extend(compiler.rebuild_finish_sql())
         reversible = False
 
     # Index changes.
