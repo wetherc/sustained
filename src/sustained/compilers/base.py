@@ -5,6 +5,7 @@ from sustained.expressions import (
     AggregateExpression,
     CaseExpression,
     Column,
+    ColumnExpr,
     Func,
     Literal,
     Subquery,
@@ -837,12 +838,25 @@ class Compiler:
         self, func: Func, ctx: 'Optional["RenderContext"]' = None
     ) -> str:
         """
-        Renders a Func expression as a SQL string, translating the function
-        name to the dialect's spelling when the registry defines one.
+        Renders a Func expression with its alias, for the select list.
 
         With a render context, an argument that holds values renders through
         it, so a subquery argument parameterizes with the rest of the
         statement. With no context the values inline as literals.
+        """
+        sql = self.compile_function_call(func, ctx)
+        if func.alias:
+            sql += f" AS {self.quote_alias(func.alias)}"
+        return sql
+
+    def compile_function_call(
+        self, func: Func, ctx: 'Optional["RenderContext"]' = None
+    ) -> str:
+        """
+        Renders the function call without the alias, translating the
+        function name to the dialect's spelling when the registry defines
+        one. Use this where the call sits inside another expression, because
+        an alias is only valid at the top of a select list.
         """
         # Imported here because the dialects module imports the compilers
         # at module load time.
@@ -850,21 +864,26 @@ class Compiler:
 
         function_name = FunctionRegistry.resolve_name(func.function_name, self._dialect)
         formatted_args = ", ".join(self._format_arg(arg, ctx) for arg in func.args)
-        sql = f"{function_name}({formatted_args})"
-        if func.alias:
-            sql += f" AS {self.quote_alias(func.alias)}"
-        return sql
+        return f"{function_name}({formatted_args})"
 
     def compile_aggregate(self, agg: AggregateExpression) -> str:
         """
-        Renders an aggregate expression with dialect quoting for the column
-        and the alias.
+        Renders an aggregate expression with its alias, for the select list.
+        The column is quoted for the dialect.
         """
-        column = self.quote_column_reference(agg.column)
-        sql = f"{agg.function_name}({column})"
+        sql = self.compile_aggregate_call(agg)
         if agg.alias:
             sql += f" AS {self.quote_alias(agg.alias)}"
         return sql
+
+    def compile_aggregate_call(self, agg: AggregateExpression) -> str:
+        """
+        Renders the aggregate call without the alias. Use this where the
+        aggregate sits inside another expression, because an alias is only
+        valid at the top of a select list.
+        """
+        column = self.quote_column_reference(agg.column)
+        return f"{agg.function_name}({column})"
 
     def compile_window(
         self, window: WindowExpression, ctx: 'Optional["RenderContext"]' = None
@@ -908,14 +927,23 @@ class Compiler:
 
     def compile_case(self, case: CaseExpression) -> str:
         """
-        Renders a CASE expression. Results go through the dialect's value
-        formatting, so booleans and NULL render correctly per dialect.
+        Renders a CASE expression with its alias, for the select list.
+        Results go through the dialect's value formatting, so booleans and
+        NULL render correctly per dialect.
+        """
+        return f"{self.compile_case_expr(case)} AS {self.quote_alias(case.alias)}"
+
+    def compile_case_expr(self, case: CaseExpression) -> str:
+        """
+        Renders the CASE expression without the alias. Use this where the
+        CASE sits inside another expression, because an alias is only valid
+        at the top of a select list.
         """
         sql = "CASE"
         for condition, result in case.whens:
             sql += f" WHEN {condition} THEN {self._format_case_result(result)}"
         sql += f" ELSE {self._format_case_result(case.else_result)}"
-        sql += f" END AS {self.quote_alias(case.alias)}"
+        sql += " END"
         return sql
 
     def _format_case_result(self, result: "CaseResult") -> str:
@@ -936,7 +964,15 @@ class Compiler:
             return ctx.value(value.value)
         if isinstance(
             value,
-            (Func, AggregateExpression, WindowExpression, Subquery, Column),
+            (
+                Func,
+                AggregateExpression,
+                WindowExpression,
+                CaseExpression,
+                Subquery,
+                Column,
+                ColumnExpr,
+            ),
         ):
             return self._format_arg(value, ctx)
         return ctx.value(value)
@@ -947,33 +983,34 @@ class Compiler:
         """
         Formats a function argument for inclusion in the SQL string.
 
-        Strings are treated as column references and quoted per dialect.
-        Literal values must be wrapped in Literal(). Numbers, booleans, and
+        Strings and ColumnExpr objects are treated as column references and
+        quoted per dialect. Literal values must be wrapped in Literal(). Numbers, booleans, and
         None render as literals directly. A subquery argument renders
         through the given context, so its values become placeholders and
         join the statement's parameter list. With no context they inline.
         """
         if isinstance(arg, Func):
-            return self.compile_function(arg, ctx)
+            # A nested call keeps this dialect's spelling and drops the
+            # alias, which belongs to the select list.
+            return self.compile_function_call(arg, ctx)
         if isinstance(arg, Literal):
             return self.format_value(arg.value)
         if isinstance(arg, AggregateExpression):
-            return self.compile_aggregate(arg)
+            return self.compile_aggregate_call(arg)
         if isinstance(arg, WindowExpression):
             # A nested window keeps this dialect's quoting and drops the
             # alias, which belongs to the select list.
             return self.compile_window_call(arg, ctx)
         if isinstance(arg, Subquery):
             return arg.render_operand(ctx)
-        if isinstance(
-            arg,
-            (
-                Column,
-                Expression,
-                CaseExpression,
-            ),
-        ):
+        if isinstance(arg, CaseExpression):
+            # A nested CASE keeps this dialect's quoting and drops the
+            # alias, which belongs to the select list.
+            return self.compile_case_expr(arg)
+        if isinstance(arg, (Column, Expression)):
             return str(arg)
+        if isinstance(arg, ColumnExpr):
+            return self.quote_column_reference(arg.name)
         if isinstance(arg, str):
             if arg == "*" or _IDENTIFIER_PATH_RE.match(arg):
                 return self.quote_column_reference(arg)

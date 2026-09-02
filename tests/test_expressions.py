@@ -14,6 +14,7 @@ from sustained.expressions import (
     Literal,
     Subquery,
     WindowExpression,
+    col,
 )
 from sustained.model import Model
 
@@ -46,6 +47,58 @@ class TestAggregateExpression(unittest.TestCase):
         """
         agg = AggregateExpression("COUNT", "DISTINCT user_id", "unique_users")
         self.assertEqual(str(agg), "COUNT(DISTINCT user_id) AS unique_users")
+
+    def test_aggregate_in_a_function_argument_drops_the_alias(self) -> None:
+        """
+        An aliased aggregate nested in a function call renders with no
+        alias. An alias is not valid SQL in argument position.
+        """
+        agg = AggregateExpression("SUM", "amount", "total")
+        compiler = Dialects.get_compiler(Dialects.POSTGRES)
+        self.assertEqual(
+            compiler.compile_function(Func("ROUND", agg, Literal(2))),
+            'ROUND(SUM("amount"), 2)',
+        )
+
+
+class TestFuncExpression(unittest.TestCase):
+    def test_nested_function_drops_the_alias(self) -> None:
+        """
+        An aliased function nested in another call renders with no alias.
+        An alias is not valid SQL in argument position.
+        """
+        inner = Func("LOWER", "name", alias="lowered")
+        compiler = Dialects.get_compiler(Dialects.POSTGRES)
+        self.assertEqual(
+            compiler.compile_function(Func("TRIM", inner, alias="trimmed")),
+            'TRIM(LOWER("name")) AS "trimmed"',
+        )
+
+
+class TestColumnExprOperand(unittest.TestCase):
+    def test_column_expr_in_a_function_argument(self) -> None:
+        """
+        A col() reference passed to a function renders as a quoted column
+        reference for the active dialect.
+        """
+        compiler = Dialects.get_compiler(Dialects.POSTGRES)
+        self.assertEqual(
+            compiler.compile_function(Func("UPPER", col("users.name"))),
+            'UPPER("users"."name")',
+        )
+
+    def test_column_expr_on_the_value_side_of_a_comparison(self) -> None:
+        """
+        A col() reference compared against a column renders as SQL text and
+        binds no parameters.
+        """
+        from sustained.rendering import RenderContext
+
+        ctx = RenderContext(Dialects.get_compiler(Dialects.POSTGRES), parameterize=True)
+        self.assertEqual(
+            ctx.compiler.format_operand(col("users.name"), ctx), '"users"."name"'
+        )
+        self.assertEqual(ctx.params, [])
 
 
 class TestWindowExpression(unittest.TestCase):
@@ -220,6 +273,61 @@ class TestCaseExpression(unittest.TestCase):
         case = CaseExpression("owner", "O'Brien").when("id = 1", "D'Arcy")
         compiler = Dialects.get_compiler(Dialects.DEFAULT)
         self.assertIn("'O''Brien'", compiler.compile_function(Func("UPPER", case)))
+
+    def test_case_in_a_function_argument_drops_the_alias(self) -> None:
+        """
+        A CASE inside a function call renders with no alias. An alias is
+        not valid SQL in argument position.
+        """
+        case = CaseExpression("status_desc", "Unknown").when("status = 1", "Active")
+        compiler = Dialects.get_compiler(Dialects.DEFAULT)
+        self.assertEqual(
+            compiler.compile_function(Func("UPPER", case)),
+            "UPPER(CASE WHEN status = 1 THEN 'Active' ELSE 'Unknown' END)",
+        )
+
+    def test_case_in_a_function_argument_uses_the_active_dialect(self) -> None:
+        """
+        A CASE inside a function call renders through the compiler that
+        builds the statement, so boolean results follow that dialect.
+        MS SQL Server has no boolean literals and uses 1 and 0.
+        """
+        case = CaseExpression("is_active", False).when("status = 1", True)
+        compiler = Dialects.get_compiler(Dialects.MSSQL)
+        self.assertEqual(
+            compiler.compile_function(Func("COALESCE", case, Literal(0))),
+            "COALESCE(CASE WHEN status = 1 THEN 1 ELSE 0 END, 0)",
+        )
+
+    def test_case_on_the_value_side_of_a_comparison(self) -> None:
+        """
+        A CASE compared against a column renders as SQL text with no alias
+        and binds no parameters.
+        """
+        from sustained.rendering import RenderContext
+
+        case = CaseExpression("target", 0).when("status = 1", 10)
+        ctx = RenderContext(Dialects.get_compiler(Dialects.DEFAULT), parameterize=True)
+        self.assertEqual(
+            ctx.compiler.format_operand(case, ctx),
+            "CASE WHEN status = 1 THEN 10 ELSE 0 END",
+        )
+        self.assertEqual(ctx.params, [])
+
+    def test_case_operand_uses_the_active_dialect(self) -> None:
+        """
+        A CASE on the value side of a comparison renders through the
+        statement's compiler, so boolean results follow that dialect.
+        """
+        from sustained.rendering import RenderContext
+
+        case = CaseExpression("target", False).when("status = 1", True)
+        ctx = RenderContext(Dialects.get_compiler(Dialects.MSSQL), parameterize=True)
+        self.assertEqual(
+            ctx.compiler.format_operand(case, ctx),
+            "CASE WHEN status = 1 THEN 1 ELSE 0 END",
+        )
+        self.assertEqual(ctx.params, [])
 
     def test_case_expression_refuses_a_non_identifier_alias(self) -> None:
         """
