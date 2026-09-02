@@ -1378,8 +1378,17 @@ class TestDestructivePrefixKeys(unittest.TestCase):
     """
     The keys a targeted run looks for. They are built one migration at a
     time, so the incremental build has to agree with a key computed for
-    each prefix on its own.
+    each slice on its own.
     """
+
+    def key_for(self, start, stop):
+        """The key of pending[start:stop] run after pending[:start]."""
+        history = list(self.history)
+        for seq, migration in enumerate(self.pending[:start], len(history) + 1):
+            history.append(
+                AppliedRecord(migration.id, seq, migration_checksum(migration), True)
+            )
+        return rehearsal_key(history, self.pending[start:stop])
 
     def setUp(self):
         self.history = [AppliedRecord("older", 1, "abc", True)]
@@ -1391,12 +1400,31 @@ class TestDestructivePrefixKeys(unittest.TestCase):
             Migration("five", up="DROP TABLE j"),
         ]
 
-    def test_only_prefixes_that_remove_data_get_a_key(self):
+    def test_only_slices_that_remove_data_get_a_key(self):
         keys = _destructive_prefix_keys(self.history, self.pending)
+        # 'three' and 'five' are the drops, so a slice earns a key once it
+        # reaches one of them.
         expected = [
-            rehearsal_key(self.history, self.pending[:size]) for size in (3, 4, 5)
+            self.key_for(start, stop)
+            for start, stop in (
+                (0, 3),
+                (0, 4),
+                (0, 5),
+                (1, 3),
+                (1, 4),
+                (1, 5),
+                (2, 3),
+                (2, 4),
+                (2, 5),
+                (3, 5),
+                (4, 5),
+            )
         ]
         self.assertEqual(keys, expected)
+
+    def test_a_key_is_recorded_once(self):
+        keys = _destructive_prefix_keys(self.history, self.pending)
+        self.assertEqual(len(keys), len(set(keys)))
 
     def test_a_run_that_removes_nothing_keys_nothing(self):
         keeping = [m for m in self.pending if "DROP" not in str(m.up)]
@@ -1421,9 +1449,10 @@ class TestDestructivePrefixKeys(unittest.TestCase):
         migrations_module.migration_sql = counted
         self.addCleanup(setattr, migrations_module, "migration_sql", real)
         _destructive_prefix_keys(self.history, self.pending)
-        # The scan stops rendering once a prefix removes data, so nothing
-        # after the first destructive migration is read at all.
-        self.assertEqual(renders, ["one", "two", "three"])
+        # Every migration is read once. A later start point needs to know
+        # whether the migrations after it remove data, so the scan cannot
+        # stop at the first drop.
+        self.assertEqual(renders, ["one", "two", "three", "four", "five"])
 
 
 class TestDuplicateMigrationIds(unittest.TestCase):
@@ -1667,6 +1696,17 @@ class TestDestructiveGate(MigrationTestCase):
         self.assertEqual(edited.up(target="001_add"), ["001_add"])
         with self.assertRaises(RehearsalRequired):
             edited.up(target="002_trim")
+
+    def test_two_targeted_runs_in_a_row_use_one_rehearsal(self):
+        second = Migration("002_trim", up="DROP TABLE gate_second")
+        self.conn.execute("CREATE TABLE gate_second (id INTEGER)")
+        migrator = Migrator(self.conn, [self.drop, second])
+        self.assertTrue(migrator.rehearse().ok)
+        # The second target starts from a history the first target wrote,
+        # and the rehearsal passed through that state on its way up.
+        self.assertEqual(migrator.up(target="001_drop"), ["001_drop"])
+        self.assertEqual(migrator.up(target="002_trim"), ["002_trim"])
+        self.assertNotIn("gate_second", table_names(self.conn))
 
     def test_a_rehearsal_with_models_also_covers_the_registered_set(self):
         migrator = Migrator(self.conn, [self.drop])

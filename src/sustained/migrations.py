@@ -396,10 +396,11 @@ class Digest(Protocol):
     def copy(self) -> "Digest": ...
 
 
-def _applied_digest(applied: Sequence[AppliedRecord]) -> Digest:
+def _history_digest(applied: Sequence[AppliedRecord]) -> Digest:
     """
-    A digest holding the applied history and ready for a run's migrations.
-    Prefix keys copy it instead of hashing the history again per prefix.
+    A digest holding the applied history alone. A key adds the marker that
+    separates the history from the run, so a digest that stops here can
+    still take more history first.
     """
     digest = hashlib.sha256()
     digest.update(b"applied\n")
@@ -408,6 +409,15 @@ def _applied_digest(applied: Sequence[AppliedRecord]) -> Digest:
             continue
         digest.update(_rehearsal_token(record.checksum, record.id).encode("utf-8"))
         digest.update(b"\n")
+    return digest
+
+
+def _applied_digest(applied: Sequence[AppliedRecord]) -> Digest:
+    """
+    A digest holding the applied history and ready for a run's migrations.
+    Prefix keys copy it instead of hashing the history again per prefix.
+    """
+    digest = _history_digest(applied)
     digest.update(b"run\n")
     return digest
 
@@ -469,29 +479,46 @@ def _destructive_prefix_keys(
     The keys a targeted run would look for.
 
     up(target=...) applies the versioned migrations up to the target and
-    skips the repeatables, so its run set is a prefix of the versioned
-    pending list. A rehearsal applied every one of those prefixes on its
-    way up and took them all back on the way down, so it proved them too.
+    skips the repeatables, so its run set is a slice of the versioned
+    pending list. A rehearsal applied every one of those slices on its way
+    up and took them all back on the way down, so it proved them all.
 
-    Only prefixes that remove data get a key: nothing else ever reads the
-    rehearsal table, and a row per prefix on every rehearsal would be waste.
+    A key names the applied history a run starts from as well as the
+    statements it runs, so one targeted run changes the key the next one
+    looks for. The keys therefore cover every start point too: the
+    history the rehearsal began with, then that history with the first
+    migration applied, and so on. Without them, up(target=A) followed by
+    up(target=B) asked for a key nothing had recorded, and the second run
+    demanded a rehearsal it had already passed.
 
-    The keys are built one migration at a time. Rendering each prefix's
-    SQL and hashing the whole history again per prefix cost the square of
-    the pending count; copying a running digest and carrying a running
-    destructive flag costs one render and one hash per migration.
+    Only slices that remove data get a key: nothing else ever reads the
+    rehearsal table, and a row per slice on every rehearsal would be
+    waste. Each migration's statements render once, and the digests are
+    copied rather than rebuilt, so the cost is one render per migration
+    and one hash per key.
     """
     versioned = [m for m in pending if not m.repeatable]
-    digest = _applied_digest(applied)
-    keys = []
-    destructive = False
-    for migration in versioned:
-        _digest_migration(digest, migration)
-        # A prefix removes data as soon as one of its migrations does, so
-        # the flag never goes back and the rest need no rendering.
-        destructive = destructive or bool(_destructive_in([migration], compiler))
-        if destructive:
-            keys.append(digest.copy().hexdigest())
+    removes = [bool(_destructive_in([m], compiler)) for m in versioned]
+    history = _history_digest(applied)
+    keys: List[str] = []
+    seen: Set[str] = set()
+    for start in range(len(versioned)):
+        digest = history.copy()
+        digest.update(b"run\n")
+        # A slice removes data as soon as one of its migrations does, so
+        # the flag never goes back.
+        destructive = False
+        for index in range(start, len(versioned)):
+            _digest_migration(digest, versioned[index])
+            destructive = destructive or removes[index]
+            if destructive:
+                key = digest.copy().hexdigest()
+                if key not in seen:
+                    seen.add(key)
+                    keys.append(key)
+        # The next start point begins where this one's first migration
+        # has already applied.
+        _digest_migration(history, versioned[start])
     return keys
 
 
