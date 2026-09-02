@@ -14,6 +14,7 @@ from sustained.migrations import (
     REHEARSAL_PASSED,
     Migration,
     Migrator,
+    SchemaRead,
 )
 
 # What a rehearsal leaves behind: the tracking table and the row it
@@ -746,3 +747,127 @@ class TestAsyncScript(unittest.IsolatedAsyncioTestCase):
         migrator = AsyncMigrator(self.adapter, self.migrations())
         with self.assertRaises(ValueError):
             await migrator.script("sideways")
+
+
+class TestAsyncPlanAndDrift(unittest.IsolatedAsyncioTestCase):
+    """plan() and drift() report what the sync migrator reports."""
+
+    def setUp(self):
+        self.conn = sqlite3.connect(":memory:", check_same_thread=False)
+        self.adapter = DbApiAsyncAdapter(self.conn)
+
+    def tearDown(self):
+        self.conn.close()
+
+    def models(self):
+        from sustained.model import Model
+        from sustained.schema import Integer, Text
+
+        return [
+            type(
+                "AsyncPlanUser",
+                (Model,),
+                {
+                    "tableName": "async_plan_users",
+                    "tableColumns": {
+                        "id": Integer(primary_key=True),
+                        "name": Text(),
+                    },
+                },
+            )
+        ]
+
+    async def test_plan_matches_the_sync_migrator(self):
+        migrator = AsyncMigrator(self.adapter, [])
+        generated = await migrator.plan(self.models(), migration_id="auto_test")
+        expected = Migrator(self.conn, []).plan(self.models(), migration_id="auto_test")
+        self.assertEqual(generated.id, "auto_test")
+        self.assertEqual(generated.up, expected.up)
+        self.assertEqual(generated.down, expected.down)
+
+    async def test_plan_writes_nothing(self):
+        migrator = AsyncMigrator(self.adapter, [])
+        await migrator.plan(self.models())
+        self.assertEqual(table_names(self.conn), set())
+        await migrator.drift(self.models())
+        self.assertEqual(table_names(self.conn), set())
+
+    async def test_plan_generates_its_own_id(self):
+        migrator = AsyncMigrator(self.adapter, [])
+        generated = await migrator.plan(self.models())
+        self.assertTrue(generated.id.startswith("auto_"))
+
+    async def test_plan_returns_none_when_the_schema_matches(self):
+        migrator = AsyncMigrator(self.adapter, [])
+        self.conn.execute(
+            "CREATE TABLE async_plan_users (id INTEGER PRIMARY KEY, name TEXT)"
+        )
+        self.assertIsNone(await migrator.plan(self.models()))
+        self.assertEqual(await migrator.drift(self.models()), [])
+
+    async def test_drift_matches_the_sync_migrator(self):
+        migrator = AsyncMigrator(self.adapter, [])
+        self.assertEqual(
+            await migrator.drift(self.models()),
+            Migrator(self.conn, []).drift(self.models()),
+        )
+        self.conn.execute("CREATE TABLE async_plan_users (id INTEGER PRIMARY KEY)")
+        self.assertEqual(
+            await migrator.drift(self.models()),
+            ["column 'async_plan_users.name' was not added"],
+        )
+
+    async def test_drift_ignores_changed_columns_on_request(self):
+        migrator = AsyncMigrator(self.adapter, [])
+        self.conn.execute(
+            "CREATE TABLE async_plan_users (id INTEGER PRIMARY KEY, name INTEGER)"
+        )
+        self.assertTrue(await migrator.drift(self.models()))
+        self.assertEqual(
+            await migrator.drift(self.models(), ignore_changed_columns=True), []
+        )
+
+    async def test_the_tracking_table_is_left_out_of_the_diff(self):
+        migrator = AsyncMigrator(self.adapter, [])
+        await migrator.up()
+        self.conn.execute(
+            "CREATE TABLE async_plan_users (id INTEGER PRIMARY KEY, name TEXT)"
+        )
+        self.assertEqual(await migrator.drift(self.models()), [])
+        self.assertIsNone(await migrator.plan(self.models(), allow_drops=True))
+
+
+class TestRecordedSchemaRead(unittest.TestCase):
+    """The recording a SchemaRead replays for the sync diffing code."""
+
+    def test_a_replay_answers_the_recorded_rows(self):
+        read = SchemaRead()
+        read.record("SELECT 1", [(1,)])
+        cursor = read.connection().cursor()
+        cursor.execute("SELECT 1")
+        self.assertEqual(cursor.rowcount, 1)
+        self.assertEqual(cursor.fetchone(), (1,))
+        self.assertEqual(cursor.fetchall(), [(1,)])
+        self.assertIsNone(cursor.description)
+        cursor.close()
+
+    def test_a_recorded_failure_raises_again(self):
+        read = SchemaRead()
+        read.record("SELECT bad", [], ValueError("no such table"))
+        cursor = read.connection().cursor()
+        with self.assertRaises(ValueError):
+            cursor.execute("SELECT bad")
+        self.assertIsNone(cursor.fetchone())
+
+    def test_a_statement_the_recording_does_not_hold_raises(self):
+        cursor = SchemaRead().connection().cursor()
+        with self.assertRaises(ValueError):
+            cursor.execute("SELECT 1")
+
+    def test_the_connection_runs_nothing_of_its_own(self):
+        connection = SchemaRead().connection()
+        self.assertIsNone(connection.commit())
+        self.assertIsNone(connection.rollback())
+        self.assertIsNone(connection.close())
+        with self.assertRaises(ValueError):
+            connection.cursor().executemany("SELECT 1", [(1,)])

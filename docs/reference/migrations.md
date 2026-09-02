@@ -481,12 +481,14 @@ Every method is a coroutine:
 - `rehearsal_outcome`
 - `rehearsed`
 - `script`
+- `plan`
+- `drift`
 
 Both migrators compute the key the same way, so a row written by one migrator opens the gate for the other on the same database.
 
 `await migrator.script('up')` renders the same text `Migrator.script('up')` renders, and writes nothing, not even the tracking table. `read_applied_records()` and `read_applied()` read the rows the same way.
 
-`AsyncMigrator` has no `plan()` or `drift()`. Sustained has no async autogeneration, so `rehearse()` takes no `models` argument here either. Generate the migration against a synchronous connection, then run the result through `AsyncMigrator`.
+`await migrator.plan(models)` and `await migrator.drift(models)` diff the models against the database and return what `Migrator.plan()` and `Migrator.drift()` return. Both read the schema through the adapter and write nothing.
 
 A callable step receives the adapter rather than a connection, and its return value is awaited when it is awaitable.
 

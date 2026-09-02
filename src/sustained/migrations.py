@@ -62,6 +62,7 @@ if TYPE_CHECKING:
     from sustained.autogenerate import IntrospectedTable
     from sustained.compilers.base import Compiler
     from sustained.guards import Guard, Verdict
+    from sustained.introspect import Snapshot
     from sustained.model import Model
     from sustained.schema import ColumnDef, TableOptions
 
@@ -853,6 +854,181 @@ def _run_step(
     with cursor_scope(connection) as cursor:
         for statement in _render_elements(elements, compiler):
             cursor.execute(statement)
+
+
+class _ReplayCursor:
+    """The cursor a SchemaRead hands out: it answers from the recording."""
+
+    def __init__(self, steps: Sequence["_ReadStep"]) -> None:
+        self._steps = steps
+        self._position = 0
+        self._rows: List[Sequence[RowValue]] = []
+
+    @property
+    def description(self) -> Optional[Sequence[object]]:
+        return None
+
+    @property
+    def rowcount(self) -> int:
+        return len(self._rows)
+
+    def execute(self, operation: str, parameters: Sequence[object] = (), /) -> object:
+        self._rows = []
+        if self._position >= len(self._steps):
+            raise ValueError(
+                "The recorded schema read has no answer for this statement: "
+                f"{operation}"
+            )
+        step = self._steps[self._position]
+        self._position += 1
+        if step.error is not None:
+            raise step.error
+        self._rows = step.rows
+        return None
+
+    def executemany(
+        self, operation: str, seq_of_parameters: Sequence[Sequence[object]], /
+    ) -> object:
+        raise ValueError("A recorded schema read runs one statement at a time.")
+
+    def fetchone(self) -> Optional[Sequence[RowValue]]:
+        return self._rows[0] if self._rows else None
+
+    def fetchall(self) -> Sequence[Sequence[RowValue]]:
+        return self._rows
+
+    def close(self) -> None:
+        return None
+
+
+class _ReadStep(NamedTuple):
+    """One statement of a recorded schema read and what it answered."""
+
+    sql: str
+    rows: List[Sequence[RowValue]]
+    error: Optional[Exception]
+
+
+class SchemaRead:
+    """
+    One recorded read of a database's schema, and a stand-in connection
+    that answers it a second time.
+
+    autogenerate() and diff_schema() read the schema through a blocking
+    connection. The async migrator holds an adapter instead, so it reads
+    the schema through the adapter, records every statement and the rows
+    that came back, and hands those functions this connection. The
+    reading code asks its next statement from the rows the last one
+    returned, so a replay asks the same statements in the same order and
+    reads the same answers. A statement that raised raises again.
+
+    Nothing here executes anything. A connection that is asked for a
+    statement the recording does not hold raises ValueError.
+    """
+
+    def __init__(self) -> None:
+        self._steps: List[_ReadStep] = []
+
+    def record(
+        self,
+        sql: str,
+        rows: List[Sequence[RowValue]],
+        error: Optional[Exception] = None,
+    ) -> None:
+        """Adds one statement of the read and what the database said."""
+        self._steps.append(_ReadStep(sql, rows, error))
+
+    def connection(self) -> Connection:
+        """A connection stand-in that answers the recorded read."""
+        return cast(Connection, _ReplayConnection(self._steps))
+
+
+class _ReplayConnection:
+    """The connection stand-in SchemaRead.connection() returns."""
+
+    def __init__(self, steps: Sequence[_ReadStep]) -> None:
+        self._steps = steps
+
+    def cursor(self) -> Cursor:
+        return cast(Cursor, _ReplayCursor(self._steps))
+
+    def commit(self) -> None:
+        return None
+
+    def rollback(self) -> None:
+        return None
+
+    def close(self) -> None:
+        return None
+
+
+def generated_id(migration_id: Optional[str] = None) -> str:
+    """The id a migration generated from the models carries."""
+    return migration_id or datetime.now(timezone.utc).strftime("auto_%Y%m%d%H%M%S_%f")
+
+
+def plan_migration(
+    connection: Connection,
+    models: List[Type["Model"]],
+    dialect: Dialects,
+    exclude_tables: Tuple[str, ...],
+    allow_drops: bool = False,
+    ignore_changed_columns: bool = False,
+    migration_id: Optional[str] = None,
+    renames: Optional[Dict[str, str]] = None,
+    table_renames: Optional[Dict[str, str]] = None,
+    type_casts: Optional[Dict[str, str]] = None,
+    ignore_undeclared: bool = True,
+) -> Optional[Migration]:
+    """
+    The migration a diff of the models against the database produces, or
+    None when the schema already holds everything the models declare.
+    Both migrators plan through this.
+    """
+    from sustained.autogenerate import autogenerate
+
+    return autogenerate(
+        connection,
+        models,
+        id=generated_id(migration_id),
+        dialect=dialect,
+        allow_drops=allow_drops,
+        ignore_changed_columns=ignore_changed_columns,
+        exclude_tables=exclude_tables,
+        renames=renames,
+        table_renames=table_renames,
+        type_casts=type_casts,
+        ignore_undeclared=ignore_undeclared,
+    )
+
+
+def drift_lines(
+    connection: Connection,
+    models: List[Type["Model"]],
+    dialect: Dialects,
+    exclude_tables: Tuple[str, ...],
+    renames: Optional[Dict[str, str]] = None,
+    table_renames: Optional[Dict[str, str]] = None,
+    ignore_changed_columns: bool = False,
+    snapshot: Optional["Snapshot"] = None,
+) -> List[str]:
+    """
+    What the models still ask for, one readable line each. Both migrators
+    report drift through this. A snapshot already read is used instead of
+    reading the database again.
+    """
+    from sustained.autogenerate import diff_schema
+
+    diff = diff_schema(
+        connection,
+        models,
+        dialect=dialect,
+        exclude_tables=exclude_tables,
+        renames=renames,
+        table_renames=table_renames,
+        snapshot=snapshot,
+    )
+    return diff.outstanding(ignore_changed_columns=ignore_changed_columns)
 
 
 def records_from_rows(rows: Iterable[Sequence[RowValue]]) -> List[AppliedRecord]:
@@ -2338,17 +2514,15 @@ class Migrator:
         changes out, matching a run that generates its migration the same
         way.
         """
-        from sustained.autogenerate import diff_schema
-
-        diff = diff_schema(
+        return drift_lines(
             self._connection,
             models,
-            dialect=self._dialect,
-            exclude_tables=self._own_tables(),
+            self._dialect,
+            self._own_tables(),
             renames=renames,
             table_renames=table_renames,
+            ignore_changed_columns=ignore_changed_columns,
         )
-        return diff.outstanding(ignore_changed_columns=ignore_changed_columns)
 
     def _roll_back_rehearsal(self) -> None:
         """
@@ -2477,19 +2651,14 @@ class Migrator:
         Pass allow_drops=True to generate the drops instead, or
         ignore_undeclared=False to refuse to generate while they exist.
         """
-        from sustained.autogenerate import autogenerate
-
-        generated_id = migration_id or datetime.now(timezone.utc).strftime(
-            "auto_%Y%m%d%H%M%S_%f"
-        )
-        return autogenerate(
+        return plan_migration(
             self._connection,
             models,
-            id=generated_id,
-            dialect=self._dialect,
+            self._dialect,
+            self._own_tables(),
             allow_drops=allow_drops,
             ignore_changed_columns=ignore_changed_columns,
-            exclude_tables=self._own_tables(),
+            migration_id=migration_id,
             renames=renames,
             table_renames=table_renames,
             type_casts=type_casts,

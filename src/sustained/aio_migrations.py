@@ -24,6 +24,7 @@ from typing import (
     Optional,
     Sequence,
     Tuple,
+    Type,
     cast,
 )
 
@@ -41,6 +42,7 @@ from sustained.migrations import (
     MigrationStep,
     Rehearsal,
     RehearsalResult,
+    SchemaRead,
     _changed_down_message,
     _changed_since_applied,
     _check_rehearsable,
@@ -65,8 +67,10 @@ from sustained.migrations import (
     _validation_problems,
     check_guards,
     checked_unique_ids,
+    drift_lines,
     insert_sql,
     migration_checksum,
+    plan_migration,
     quoted_columns,
     records_from_rows,
     records_select,
@@ -81,6 +85,8 @@ if TYPE_CHECKING:
     from sustained.autogenerate import IntrospectedTable
     from sustained.compilers.base import Compiler
     from sustained.guards import Guard
+    from sustained.introspect import Snapshot
+    from sustained.model import Model
     from sustained.schema import TableOptions
 
 
@@ -955,15 +961,115 @@ class AsyncMigrator:
                 recorded = True
             return Rehearsal(results, key, recorded)
 
+    async def _read_schema(self) -> Tuple["Snapshot", SchemaRead]:
+        """
+        Reads the live schema through the adapter and records the read.
+
+        async_introspect_schema() reads the same way. This one keeps every
+        statement and the rows it returned, so plan() can hand the
+        recording to autogenerate(), which reads a schema through a
+        blocking connection.
+        """
+        from sustained.introspect import Snapshot, _schema_plan
+
+        read = SchemaRead()
+        plan = _schema_plan(self._dialect)
+        sql = next(plan)
+        while True:
+            try:
+                _, rows = await self._adapter.fetch(sql, ())
+            except Exception as error:
+                read.record(sql, [], error)
+                try:
+                    sql = plan.throw(error)
+                except StopIteration as stop:
+                    return cast(Snapshot, stop.value), read
+                continue
+            read.record(sql, list(rows))
+            try:
+                sql = plan.send(list(rows))
+            except StopIteration as stop:
+                return cast(Snapshot, stop.value), read
+
+    async def plan(
+        self,
+        models: List[Type["Model"]],
+        allow_drops: bool = False,
+        ignore_changed_columns: bool = False,
+        migration_id: Optional[str] = None,
+        renames: Optional[Dict[str, str]] = None,
+        table_renames: Optional[Dict[str, str]] = None,
+        type_casts: Optional[Dict[str, str]] = None,
+        ignore_undeclared: bool = True,
+    ) -> Optional[Migration]:
+        """
+        Diffs the database against the models and returns the migration
+        up(models=[...]) would generate, without registering or applying
+        it. Returns None when the schema is already up to date. The
+        tracking table is excluded from the diff. Mirrors
+        Migrator.plan(), and writes nothing: the schema read is the only
+        statement it runs.
+
+        Objects the models do not declare are left alone, since a
+        database may hold tables that hand-written migrations created.
+        Pass allow_drops=True to generate the drops instead, or
+        ignore_undeclared=False to refuse to generate while they exist.
+        """
+        _, read = await self._read_schema()
+        return plan_migration(
+            read.connection(),
+            models,
+            self._dialect,
+            self._own_tables(),
+            allow_drops=allow_drops,
+            ignore_changed_columns=ignore_changed_columns,
+            migration_id=migration_id,
+            renames=renames,
+            table_renames=table_renames,
+            type_casts=type_casts,
+            ignore_undeclared=ignore_undeclared,
+        )
+
+    async def drift(
+        self,
+        models: List[Type["Model"]],
+        renames: Optional[Dict[str, str]] = None,
+        table_renames: Optional[Dict[str, str]] = None,
+        ignore_changed_columns: bool = False,
+    ) -> List[str]:
+        """
+        What the models still ask for, one readable line each, empty when
+        the database holds everything they declare. Mirrors
+        Migrator.drift(), including the lines it returns.
+
+        Objects the database holds and the models do not are left out. A
+        generated migration leaves those alone unless drops are allowed,
+        so a schema built partly by hand does not read as drift here. Use
+        plan() for the full comparison, drops included.
+
+        Pass ignore_changed_columns=True to leave type and nullability
+        changes out, matching a run that generates its migration the same
+        way.
+        """
+        snapshot, read = await self._read_schema()
+        return drift_lines(
+            read.connection(),
+            models,
+            self._dialect,
+            self._own_tables(),
+            renames=renames,
+            table_renames=table_renames,
+            ignore_changed_columns=ignore_changed_columns,
+            snapshot=snapshot,
+        )
+
     async def _snapshot(self) -> Optional[Dict[str, "IntrospectedTable"]]:
         """
         The live schema, without the tracking table, or None when the
         database will not report it. Mirrors Migrator._snapshot().
         """
-        from sustained.autogenerate import async_introspect_schema
-
         try:
-            schema = await async_introspect_schema(self._adapter, self._dialect)
+            schema, _ = await self._read_schema()
         except Exception:
             return None
         for name in self._own_tables():
