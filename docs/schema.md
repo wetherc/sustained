@@ -78,7 +78,7 @@ migrator.repair()
 #  "updated the stored checksum of 'create_users'"]
 ```
 
-Checksums are computed on the exact SQL text, so reformatting a migration counts as an edit; run `repair()` to accept it. Callable steps have no SQL to hash and record a null checksum, which validation skips. Pass `Migration(..., checksum='...')` to pin one yourself.
+Checksums are computed on the exact SQL text, so reformatting a migration counts as an edit; run `repair()` to accept it. Callable steps have no SQL to hash and record a null checksum, which validation skips. Pass `Migration(..., checksum='...')` to pin one yourself. That argument is for callable steps only: on a step made of SQL it would replace the hash of the statements and hide every later edit, so it raises `ValueError`.
 
 On engines without transactions, a failing step writes a row with the success flag off, so the interrupted run is visible. Validation then blocks `up()` until you clean up and run `repair()`.
 

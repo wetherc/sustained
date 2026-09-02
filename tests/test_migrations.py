@@ -15,6 +15,7 @@ except ImportError:
 
 import sustained.migrations as migrations_module
 from sustained import Model
+from sustained.ddl import drop_table
 from sustained.dialects import Dialects
 from sustained.exceptions import MigrationError, RehearsalRequired
 from sustained.migrations import (
@@ -222,6 +223,18 @@ class TestChecksums(unittest.TestCase):
     def test_explicit_checksum_wins(self):
         migration = Migration("m", up=lambda c: None, checksum="abc123")
         self.assertEqual(migration_checksum(migration), "abc123")
+
+    def test_a_checksum_on_a_sql_step_is_refused(self):
+        steps = [
+            "CREATE TABLE t (id INTEGER)",
+            ["CREATE TABLE t (id INTEGER)"],
+            [drop_table("t")],
+        ]
+        for up in steps:
+            with self.subTest(up=up):
+                with self.assertRaises(ValueError) as caught:
+                    Migration("m", up=up, down=None, checksum="abc123")
+                self.assertIn("checksum on a step made of SQL", str(caught.exception))
 
 
 class TestTrackingTable(MigrationTestCase):

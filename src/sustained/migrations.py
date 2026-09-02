@@ -180,7 +180,9 @@ class Migration:
     One schema change with an id, an up step, and an optional down step.
 
     A checksum may be supplied for callable steps, whose SQL cannot be
-    hashed; validation then compares it like a computed one.
+    hashed; validation then compares it like a computed one. A checksum on
+    a step made of SQL raises ValueError: the statements hash themselves,
+    and a stored checksum would hide an edit to them.
 
     A repeatable migration re-runs whenever its checksum changes, for
     views, functions, and seed data. Repeatables have no down step and
@@ -210,6 +212,14 @@ class Migration:
             raise ValueError(
                 f"Repeatable migration '{id}' cannot have a down step; "
                 "repeatables re-run instead of reverting."
+            )
+        if checksum is not None and _step_elements(up) is not None:
+            raise ValueError(
+                f"Migration '{id}' sets a checksum on a step made of SQL. "
+                "An explicit checksum stands in for statements that cannot "
+                "be hashed, which is a callable step. On SQL it replaces "
+                "the hash of the statements and hides every later edit "
+                "from validation. Drop the checksum."
             )
         if repeatable and callable(up) and checksum is None:
             raise ValueError(
