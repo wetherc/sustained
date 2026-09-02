@@ -1190,7 +1190,7 @@ def _postgres_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
     column_rows = yield (
         "SELECT c.table_name, c.column_name, c.data_type, c.udt_name, "
         "c.character_maximum_length, c.numeric_precision, c.numeric_scale, "
-        "c.is_nullable, c.column_default "
+        "c.is_nullable, c.column_default, c.table_schema "
         "FROM information_schema.columns c "
         "JOIN information_schema.tables t "
         "ON t.table_schema = c.table_schema AND t.table_name = c.table_name "
@@ -1198,9 +1198,12 @@ def _postgres_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
         "AND t.table_type = 'BASE TABLE' "
         "ORDER BY c.table_name, c.ordinal_position"
     )
+    schema_of_table: Dict[str, str] = {}
     for row in column_rows:
         table, name, data_type, udt_name = (str(v) for v in row[:4])
         char_length, precision, scale, is_nullable, default = row[4:9]
+        if len(row) > 9 and row[9] is not None:
+            _one_schema_per_table(schema_of_table, table.lower(), str(row[9]))
         columns_by_table.setdefault(table.lower(), {})[name.lower()] = (
             IntrospectedColumn(
                 raw_type=_postgres_column_type(

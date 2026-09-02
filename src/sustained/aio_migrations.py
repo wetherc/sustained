@@ -1205,7 +1205,11 @@ class AsyncMigrator:
         it. Returns None when the schema is already up to date. The
         tracking table is excluded from the diff. Mirrors
         Migrator.plan(), and writes nothing: the schema read is the only
-        statement it runs.
+        statement it runs. Because of that it cannot ask whether a table
+        holds a row, and a table it cannot read counts as one that holds
+        rows. A new NOT NULL column with no default and no backfill is
+        refused here even on an empty table, where Migrator.plan() adds
+        it.
 
         Objects the models do not declare are left alone, since a
         database may hold tables that hand-written migrations created.

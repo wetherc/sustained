@@ -96,8 +96,9 @@ def column_row(
     scale=None,
     nullable="YES",
     default=None,
+    schema=None,
 ):
-    return (
+    row = (
         table,
         name,
         data_type,
@@ -108,6 +109,9 @@ def column_row(
         nullable,
         default,
     )
+    # A driver that answered before the read asked for the schema returns
+    # the shorter row, and the read takes it as it comes.
+    return row if schema is None else row + (schema,)
 
 
 # pg_constraint spells the referential actions as single characters.
@@ -942,3 +946,41 @@ class TestSavepointStack(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestPostgresTwoSchemasOneTableName(unittest.TestCase):
+    """
+    A snapshot keys on the bare table name. A declared tableSchema widens
+    the read past the schema the connection is on, so a table of the same
+    name in another schema would merge its columns into the declared one.
+    """
+
+    def read(self, columns, schemas=("app",)):
+        cursor = FakeCursor(columns=columns)
+        return introspect_schema(FakeConnection(cursor), Dialects.POSTGRES, schemas)
+
+    def test_one_table_name_in_two_schemas_is_refused(self):
+        with self.assertRaises(ValueError) as caught:
+            self.read(
+                [
+                    column_row("users", "id", "integer", schema="app"),
+                    column_row("users", "email", "text", schema="public"),
+                ]
+            )
+        message = str(caught.exception)
+        self.assertIn("app", message)
+        self.assertIn("public", message)
+        self.assertIn("users", message)
+
+    def test_one_schema_reads_the_table(self):
+        schema = self.read(
+            [
+                column_row("users", "id", "integer", schema="app"),
+                column_row("users", "email", "text", schema="app"),
+            ]
+        )
+        self.assertEqual(sorted(schema["users"].columns), ["email", "id"])
+
+    def test_a_row_without_the_schema_column_still_reads(self):
+        schema = self.read([column_row("users", "id", "integer")])
+        self.assertEqual(sorted(schema["users"].columns), ["id"])
