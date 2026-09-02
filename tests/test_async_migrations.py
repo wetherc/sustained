@@ -7,7 +7,7 @@ import unittest
 
 from sustained.aio import DbApiAsyncAdapter
 from sustained.aio_migrations import AsyncMigrator
-from sustained.exceptions import RehearsalRequired
+from sustained.exceptions import MigrationError, RehearsalRequired
 from sustained.migrations import REHEARSAL_FAILED, REHEARSAL_PASSED, Migration
 
 # What a rehearsal leaves behind: the tracking table and the row it
@@ -68,6 +68,33 @@ class TestAsyncMigrator(unittest.IsolatedAsyncioTestCase):
                     await migrator.down(steps=steps)
                 self.assertIn("steps must be 1 or more", str(caught.exception))
         self.assertEqual(await migrator.applied(), ["a", "b"])
+
+    async def test_down_refuses_a_migration_edited_after_it_applied(self):
+        migrator = AsyncMigrator(self.adapter, self.migrations())
+        await migrator.up()
+        edited = self.migrations()
+        edited[1] = Migration(
+            "b", up="CREATE TABLE tb (id INTEGER, extra INTEGER)", down="DROP TABLE tb"
+        )
+        later = AsyncMigrator(self.adapter, edited)
+        with self.assertRaises(MigrationError) as caught:
+            await later.down()
+        self.assertIn("changed after it was applied", str(caught.exception))
+        self.assertEqual(await later.applied(), ["a", "b"])
+        self.assertEqual(await later.down(allow_changed=True), ["b"])
+
+    async def test_down_to_carries_the_changed_flag(self):
+        migrator = AsyncMigrator(self.adapter, self.migrations())
+        await migrator.up()
+        edited = self.migrations()
+        edited[1] = Migration(
+            "b", up="CREATE TABLE tb (id INTEGER, extra INTEGER)", down="DROP TABLE tb"
+        )
+        later = AsyncMigrator(self.adapter, edited)
+        with self.assertRaises(MigrationError):
+            await later.down_to("a")
+        self.assertEqual(await later.down_to("a", allow_changed=True), ["b"])
+        self.assertEqual(await later.down_to("a"), [])
 
     async def test_failed_step_rolls_back(self):
         migrations = [

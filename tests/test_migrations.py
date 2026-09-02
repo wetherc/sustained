@@ -126,6 +126,46 @@ class TestMigrator(MigrationTestCase):
         with self.assertRaises(ValueError):
             migrator.down()
 
+    def test_down_refuses_a_migration_edited_after_it_applied(self):
+        migrator = Migrator(self.conn, self.migrations())
+        migrator.up()
+        edited = self.migrations()
+        edited[1] = Migration(
+            "add_flag",
+            up="ALTER TABLE mig_users ADD COLUMN flag INTEGER DEFAULT 1",
+            down=["ALTER TABLE mig_users DROP COLUMN flag"],
+        )
+        later = Migrator(self.conn, edited)
+        with self.assertRaises(MigrationError) as caught:
+            later.down()
+        message = str(caught.exception)
+        self.assertIn("changed after it was applied", message)
+        self.assertIn("allow_changed=True", message)
+        self.assertEqual(later.applied(), ["create_mig_users", "add_flag"])
+        # The flag says the caller knows, so the revert runs.
+        self.assertEqual(later.down(allow_changed=True), ["add_flag"])
+
+    def test_down_to_carries_the_changed_flag(self):
+        migrator = Migrator(self.conn, self.migrations())
+        migrator.up()
+        edited = self.migrations()
+        edited[1] = Migration(
+            "add_flag",
+            up="ALTER TABLE mig_users ADD COLUMN flag INTEGER DEFAULT 1",
+            down=["ALTER TABLE mig_users DROP COLUMN flag"],
+        )
+        later = Migrator(self.conn, edited)
+        with self.assertRaises(MigrationError):
+            later.down_to("create_mig_users")
+        self.assertEqual(
+            later.down_to("create_mig_users", allow_changed=True), ["add_flag"]
+        )
+
+    def test_down_accepts_a_migration_whose_checksum_matches(self):
+        migrator = Migrator(self.conn, self.migrations())
+        migrator.up()
+        self.assertEqual(migrator.down(), ["add_flag"])
+
     def test_down_requires_registered_migration(self):
         migrator = Migrator(self.conn, self.migrations())
         migrator.up()

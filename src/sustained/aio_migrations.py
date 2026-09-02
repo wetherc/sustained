@@ -41,6 +41,8 @@ from sustained.migrations import (
     MigrationStep,
     Rehearsal,
     RehearsalResult,
+    _changed_down_message,
+    _changed_since_applied,
     _check_rehearsable,
     _checked_steps,
     _destructive_in,
@@ -971,7 +973,7 @@ class AsyncMigrator:
             return None
         return _restore_migration(migration_id, str(rows[0][0]))
 
-    async def down(self, steps: int = 1) -> List[str]:
+    async def down(self, steps: int = 1, allow_changed: bool = False) -> List[str]:
         """
         Reverts the most recently applied migrations, newest first. Every
         reverted migration must define a down step. Repeatables are never
@@ -982,18 +984,33 @@ class AsyncMigrator:
         migration must be registered with this migrator.
 
         `steps` counts migrations and must be 1 or more.
+
+        A migration whose statements changed since it was applied raises
+        MigrationError, because its down step describes the new contents
+        and the database holds the old ones. Pass allow_changed=True to
+        revert it with the down step as it stands now.
         """
+        from sustained.exceptions import MigrationError
+
         _checked_steps(steps)
         async with self._lock_scope():
             await self._ensure_tracking_table()
-            applied = await self._applied_versioned()
+            records = await self.applied_records()
+            by_record = {r.id: r for r in records}
+            repeatable_ids = {m.id for m in self._repeatables()}
+            applied = [
+                r.id for r in records if r.success and r.id not in repeatable_ids
+            ]
             by_id = {m.id: m for m in self._migrations}
             placeholder = self._compiler.placeholder()
             reverted: List[str] = []
             for migration_id in reversed(applied[-steps:]):
-                migration = by_id.get(migration_id) or await self._generated_migration(
-                    migration_id
-                )
+                migration = by_id.get(migration_id)
+                if migration is not None and not allow_changed:
+                    if _changed_since_applied(migration, by_record.get(migration_id)):
+                        raise MigrationError([_changed_down_message(migration_id)])
+                if migration is None:
+                    migration = await self._generated_migration(migration_id)
                 if migration is None:
                     raise ValueError(
                         f"Applied migration '{migration_id}' is not registered "
@@ -1012,14 +1029,17 @@ class AsyncMigrator:
                 reverted.append(migration_id)
             return reverted
 
-    async def down_to(self, target: str) -> List[str]:
+    async def down_to(self, target: str, allow_changed: bool = False) -> List[str]:
         """
         Reverts applied migrations newest-first until the target is the
         most recent applied migration. The target itself stays applied.
-        Repeatables are never reverted.
+        Repeatables are never reverted. `allow_changed` is passed to
+        down().
         """
         applied = await self._applied_versioned()
         if target not in applied:
             raise ValueError(f"Migration '{target}' is not applied.")
         steps = len(applied) - applied.index(target) - 1
-        return await self.down(steps) if steps else []
+        if not steps:
+            return []
+        return await self.down(steps, allow_changed=allow_changed)

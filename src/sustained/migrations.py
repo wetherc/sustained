@@ -1047,6 +1047,30 @@ def _validation_problems(
     return problems
 
 
+def _changed_since_applied(
+    migration: Migration, record: Optional[AppliedRecord]
+) -> bool:
+    """
+    True when the migration's statements no longer match the checksum the
+    tracking row holds. A row without a checksum, and a callable step with
+    no checksum to compute, compare as unchanged.
+    """
+    if record is None or record.checksum is None:
+        return False
+    current = migration_checksum(migration)
+    return current is not None and current != record.checksum
+
+
+def _changed_down_message(migration_id: str) -> str:
+    """The error for a revert of a migration that was edited."""
+    return (
+        f"Migration '{migration_id}' changed after it was applied, so its "
+        "down step may not reverse the statements that ran. Restore the "
+        "migration, run repair() to accept the new contents, or pass "
+        "allow_changed=True to revert it as it stands now."
+    )
+
+
 def _lock_row(cursor: "Cursor") -> Optional[Sequence[object]]:
     """
     The row a lock statement returned, or None when it returned nothing.
@@ -2403,17 +2427,18 @@ class Migrator:
         source = self.applied() if ids is None else ids
         return [i for i in source if i not in repeatable_ids]
 
-    def down_to(self, target: str) -> List[str]:
+    def down_to(self, target: str, allow_changed: bool = False) -> List[str]:
         """
         Reverts applied migrations newest-first until the target is the
         most recent applied migration. The target itself stays applied.
-        Repeatables are never reverted.
+        Repeatables are never reverted. `allow_changed` is passed to
+        down().
         """
         applied = self._applied_versioned()
         if target not in applied:
             raise ValueError(f"Migration '{target}' is not applied.")
         steps = len(applied) - applied.index(target) - 1
-        return self.down(steps) if steps else []
+        return self.down(steps, allow_changed=allow_changed) if steps else []
 
     def _generated_migration(self, migration_id: str) -> Optional[Migration]:
         """
@@ -2438,7 +2463,7 @@ class Migrator:
             return None
         return _restore_migration(migration_id, str(row[0]))
 
-    def down(self, steps: int = 1) -> List[str]:
+    def down(self, steps: int = 1, allow_changed: bool = False) -> List[str]:
         """
         Reverts the most recently applied migrations, newest first. Every
         reverted migration must define a down step. Repeatables are never
@@ -2450,18 +2475,30 @@ class Migrator:
         must be registered with this migrator.
 
         `steps` counts migrations and must be 1 or more.
+
+        A migration whose statements changed since it was applied raises
+        MigrationError, because its down step describes the new contents
+        and the database holds the old ones. Pass allow_changed=True to
+        revert it with the down step as it stands now.
         """
+        from sustained.exceptions import MigrationError
+
         _checked_steps(steps)
         with self._lock_scope():
             self._ensure_tracking_table()
-            applied = self._applied_versioned()
+            records = self._read_records()
+            by_record = {r.id: r for r in records}
+            applied = self._applied_versioned([r.id for r in records if r.success])
             by_id = {m.id: m for m in self._migrations}
             placeholder = self._compiler.placeholder()
             reverted: List[str] = []
             for migration_id in reversed(applied[-steps:]):
-                migration = by_id.get(migration_id) or self._generated_migration(
-                    migration_id
-                )
+                migration = by_id.get(migration_id)
+                if migration is not None and not allow_changed:
+                    if _changed_since_applied(migration, by_record.get(migration_id)):
+                        raise MigrationError([_changed_down_message(migration_id)])
+                if migration is None:
+                    migration = self._generated_migration(migration_id)
                 if migration is None:
                     raise ValueError(
                         f"Applied migration '{migration_id}' is not registered "

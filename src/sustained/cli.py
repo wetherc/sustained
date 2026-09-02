@@ -664,9 +664,9 @@ def _cmd_migrate(
 
 def _cmd_down(migrator: Migrator, args: argparse.Namespace, config: ModuleType) -> int:
     if args.to is not None:
-        reverted = migrator.down_to(args.to)
+        reverted = migrator.down_to(args.to, allow_changed=args.allow_changed)
     else:
-        reverted = migrator.down(steps=args.steps)
+        reverted = migrator.down(steps=args.steps, allow_changed=args.allow_changed)
     if not reverted:
         print("Nothing to revert.")
     for migration_id in reverted:
@@ -799,6 +799,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="How many migrations to revert (1 or more).",
     )
     group.add_argument("--to", help="Revert until this id is the newest applied.")
+    down.add_argument(
+        "--allow-changed",
+        action="store_true",
+        help="Revert a migration that was edited after it was applied.",
+    )
 
     command(
         "validate",

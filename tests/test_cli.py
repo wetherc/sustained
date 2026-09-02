@@ -119,6 +119,22 @@ class CliTestCase(CliBase):
             self.run_cli("down", "--steps", "two")
         self.assertEqual(caught.exception.code, 2)
 
+    def test_down_refuses_an_edited_migration_until_allowed(self):
+        self.run_cli("migrate")
+        self._write(
+            os.path.join(self.dir.name, "migrations"),
+            "002_flag.up.sql",
+            "CREATE TABLE flags (id BIGINT);",
+        )
+        code, _, err = self.run_cli("down")
+        self.assertEqual(code, 1)
+        self.assertIn("changed after it was applied", err)
+        self.assertIn("flags", self.table_names())
+        code, out, _ = self.run_cli("down", "--allow-changed")
+        self.assertEqual(code, 0)
+        self.assertIn("reverted 002_flag", out)
+        self.assertNotIn("flags", self.table_names())
+
     def test_validate_reports_problems_and_exit_code(self):
         self.run_cli("migrate")
         code, out, _ = self.run_cli("validate")
