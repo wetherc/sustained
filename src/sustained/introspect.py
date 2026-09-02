@@ -222,7 +222,10 @@ _QUOTED_IDENTIFIER_RE = re.compile(r'"([^"]*)"|`([^`]*)`|\[([^\]]*)\]')
 # its own taste: MSSQL reports [price]>(0) for price > 0.
 _OPERATOR_SPACING_RE = re.compile(r"\s*([<>=!+\-*/%,])\s*")
 # Parentheses around one word, which MSSQL writes around every literal.
-_LONE_PARENS_RE = re.compile(r"\((\w+)\)")
+# The open paren must not follow an identifier character, or the pattern
+# would take the parentheses off a call and fold LENGTH(name) to
+# lengthname. Two different expressions would then read as the same one.
+_LONE_PARENS_RE = re.compile(r"(?<![\w)])\((\w+)\)")
 
 
 def _outside_literals(value: str, change: Callable[[str], str]) -> str:
@@ -246,7 +249,8 @@ def normalize_check(expression: str) -> str:
     Reduces a check expression to a comparable form: whitespace collapsed,
     identifier quoting removed, operator spacing and parentheses around a
     single word taken off, balanced outer parentheses stripped, and
-    casefolded. String literals keep their spelling.
+    casefolded. String literals keep their spelling. A call keeps its
+    parentheses, so LENGTH(name) > 5 stays a call.
 
     The rewriting is what an engine does to a check on the way in. MySQL
     and MariaDB report `price` > 0 for the expression price > 0, and
@@ -824,8 +828,10 @@ def _information_schema_plan(
     # Two schemas in one read can each hold a constraint with one name.
     # The join below matches schema names to keep them apart, and the
     # plain-join fallback cannot, so it only runs on a read that covers
-    # one schema.
-    single_schema = catalog.current_schema_sql is not None and not schemas
+    # one schema. With nothing declared the read covers one schema on
+    # every catalog: the schema the connection is on, or the one schema
+    # a catalog with no current-schema expression can see.
+    single_schema = not schemas
 
     columns_by_table: Dict[str, Dict[str, IntrospectedColumn]] = {}
 

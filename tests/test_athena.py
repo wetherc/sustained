@@ -535,6 +535,52 @@ class TestAthenaMigrator(unittest.TestCase):
             self.assertIn("table_schema NOT IN", sql)
             self.assertNotIn("'reporting'", sql)
 
+    def test_a_catalog_with_no_schema_column_falls_back_to_the_plain_join(self):
+        # Presto has no expression for the schema the connection is on.
+        # Its read still covers one schema when no model declares one, so
+        # the plain join stays available when key_column_usage carries no
+        # table_schema column.
+        from sustained.introspect import introspect_schema
+
+        class Cursor:
+            def __init__(self):
+                self.rows = []
+                self.asked = []
+
+            def execute(self, sql, params=()):
+                self.asked.append(sql)
+                self.rows = []
+                if "information_schema.columns" in sql:
+                    self.rows = [("events", "id", "integer", "NO", None)]
+                elif "table_constraints" in sql and "check_constraints" not in sql:
+                    if "kcu.table_schema" in sql:
+                        raise RuntimeError("no table_schema on key_column_usage")
+                    self.rows = [("events", "PRIMARY KEY", "events_pk", "id")]
+
+            def fetchall(self):
+                return self.rows
+
+            def close(self):
+                pass
+
+        class Connection:
+            def __init__(self, cursor):
+                self._cursor = cursor
+
+            def cursor(self):
+                return self._cursor
+
+            def commit(self):
+                pass
+
+            def rollback(self):
+                pass
+
+        cursor = Cursor()
+        schema = introspect_schema(Connection(cursor), Dialects.PRESTO)
+        self.assertTrue(schema.constraints_read)
+        self.assertEqual(schema["events"].primary_key, ("id",))
+
     def test_a_declared_schema_widens_the_athena_read(self):
         from sustained.introspect import introspect_schema
 

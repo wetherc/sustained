@@ -56,6 +56,19 @@ class TestNormalizeCheck(unittest.TestCase):
             normalize_check("name <> 'a, b'"), normalize_check("name<>'a, b'")
         )
 
+    def test_a_call_keeps_its_parentheses(self):
+        # Parentheses around one word come off only where they wrap a
+        # literal. Taking them off a call would fold two different
+        # expressions into one string, and a real difference would then
+        # report as no drift.
+        self.assertNotEqual(
+            normalize_check("col = foo(bar)"), normalize_check("col = foobar")
+        )
+        self.assertEqual(normalize_check("LENGTH(name) > 5"), "length(name)>5")
+        self.assertEqual(
+            normalize_check("(len([name])>(5))"), normalize_check("len(name) > 5")
+        )
+
     def test_literal_case_folds_together(self):
         # Casefolding may merge literals differing only by case; the safe
         # direction, since a false match never generates a drop.
