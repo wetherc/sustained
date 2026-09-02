@@ -143,18 +143,35 @@ class AsyncMigrator:
             await self._adapter.execute(statement, ())
 
     @asynccontextmanager
-    async def _migration_scope(self) -> AsyncIterator[None]:
+    async def _migration_scope(self, transactional: bool = True) -> AsyncIterator[None]:
         """
         A transaction on engines whose schema changes roll back; a bare run
         followed by a commit on engines whose do not.
 
+        `transactional` is the migration's own flag. A migration with
+        transactional=False runs bare and commits at the end, so a
+        statement the engine refuses inside a transaction block, such as
+        CREATE INDEX CONCURRENTLY on Postgres, can run. Its tracking row is
+        written after its statements, so a finished migration is still
+        recorded. An adapter over a driver that opens its own transaction,
+        such as DbApiAsyncAdapter over psycopg2, is the limit here: the
+        driver still opens one, and such a statement still fails. Run it on
+        an adapter that executes bare, such as AsyncpgAdapter.
+
         A rehearsal opens one transaction around the whole run and rolls it
         back at the end, so each migration runs bare and nothing commits.
+
+        Nothing takes a failed non-transactional migration back. The
+        statements that already ran stay in the database, and the tracking
+        row says the attempt failed. The operator finishes or undoes the
+        rest by hand and then runs repair(). On Postgres a failed CREATE
+        INDEX CONCURRENTLY also leaves an invalid index, which needs a
+        DROP INDEX of its own.
         """
         if self._rehearsing:
             yield
             return
-        if self._compiler.supports_transactional_ddl():
+        if transactional and self._compiler.supports_transactional_ddl():
             async with async_transaction(self._adapter, self._dialect):
                 yield
             return
@@ -571,9 +588,13 @@ class AsyncMigrator:
         engine whose schema changes do not roll back, where partial changes
         may remain. A repeatable that already has a row updates it in
         place. A failure to write the row never masks the original error. A
-        rehearsal writes nothing: its whole run rolls back.
+        rehearsal writes nothing: its whole run rolls back. A migration
+        that asked for no transaction leaves partial changes on every
+        engine, so it gets a row wherever it fails.
         """
-        if self._rehearsing or self._compiler.supports_transactional_ddl():
+        if self._rehearsing or (
+            migration.transactional and self._compiler.supports_transactional_ddl()
+        ):
             return
         try:
             timestamp = datetime.now(timezone.utc).isoformat()
@@ -747,7 +768,7 @@ class AsyncMigrator:
         its original seq.
         """
         try:
-            async with self._migration_scope():
+            async with self._migration_scope(migration.transactional):
                 started = time.perf_counter()
                 await self._run_step(migration.up)
                 elapsed_ms = int((time.perf_counter() - started) * 1000)
@@ -935,7 +956,7 @@ class AsyncMigrator:
                 outcomes[migration.id] = (None, reason)
             else:
                 try:
-                    async with self._migration_scope():
+                    async with self._migration_scope(migration.transactional):
                         await self._run_step(cast(MigrationStep, migration.down))
                         await self._execute(
                             f"DELETE FROM {self._table_sql()} WHERE "
@@ -1018,7 +1039,7 @@ class AsyncMigrator:
                     )
                 if migration.down is None:
                     raise ValueError(f"Migration '{migration_id}' has no down step.")
-                async with self._migration_scope():
+                async with self._migration_scope(migration.transactional):
                     await self._run_step(migration.down)
                     await self._execute(
                         f"DELETE FROM {self._table_sql()} WHERE "

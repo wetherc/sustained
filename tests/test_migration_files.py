@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 
 from sustained.migration_files import (
+    declares_no_transaction,
     load_migrations,
     split_sql_statements,
     substitute_placeholders,
@@ -193,6 +194,67 @@ class TestRepeatFiles(LoaderTestCase):
         self.write("v.repeat.sql", "CREATE VIEW ${name} AS SELECT 1;\n")
         migrations = load_migrations(self.dir, placeholders={"name": "v1"})
         self.assertEqual(migrations[0].up, ["CREATE VIEW v1 AS SELECT 1"])
+
+
+class TestNoTransactionMarker(unittest.TestCase):
+    def test_plain_marker(self):
+        self.assertTrue(declares_no_transaction("-- sustained: no transaction\n"))
+
+    def test_case_and_spacing_do_not_matter(self):
+        self.assertTrue(declares_no_transaction("--SUSTAINED:No-Transaction"))
+        self.assertTrue(declares_no_transaction("\t--  sustained:  no_transaction  "))
+
+    def test_marker_may_sit_below_a_statement(self):
+        text = "CREATE INDEX CONCURRENTLY i ON t (x);\n-- sustained: no transaction\n"
+        self.assertTrue(declares_no_transaction(text))
+
+    def test_other_comments_are_not_the_marker(self):
+        self.assertFalse(declares_no_transaction("-- no transaction\n"))
+        self.assertFalse(declares_no_transaction("-- sustained: no rollback\n"))
+        self.assertFalse(declares_no_transaction("SELECT 1;\n"))
+
+    def test_the_marker_must_own_its_line(self):
+        self.assertFalse(
+            declares_no_transaction("SELECT 1; -- sustained: no transaction\n")
+        )
+
+
+class TestLoaderNoTransaction(LoaderTestCase):
+    def test_files_are_transactional_by_default(self):
+        self.write("0001_a.up.sql", "CREATE TABLE a (id INTEGER);\n")
+        self.write("b.repeat.sql", "SELECT 1;\n")
+        migrations = load_migrations(self.dir)
+        self.assertEqual([m.transactional for m in migrations], [True, True])
+
+    def test_marker_in_an_up_file(self):
+        self.write(
+            "0001_a.up.sql",
+            "-- sustained: no transaction\nCREATE INDEX CONCURRENTLY i ON t (x);\n",
+        )
+        self.write("0001_a.down.sql", "DROP INDEX i;\n")
+        migration = load_migrations(self.dir)[0]
+        self.assertFalse(migration.transactional)
+        self.assertEqual(migration.down, ["DROP INDEX i"])
+
+    def test_marker_in_a_repeat_file(self):
+        self.write("v.repeat.sql", "-- sustained: no transaction\nSELECT 1;\n")
+        self.assertFalse(load_migrations(self.dir)[0].transactional)
+
+    def test_marker_in_a_down_file_alone_changes_nothing(self):
+        self.write("0001_a.up.sql", "CREATE TABLE a (id INTEGER);\n")
+        self.write("0001_a.down.sql", "-- sustained: no transaction\nDROP TABLE a;\n")
+        self.assertTrue(load_migrations(self.dir)[0].transactional)
+
+    def test_a_marked_file_migration_runs(self):
+        self.write(
+            "0001_a.up.sql",
+            "-- sustained: no transaction\nCREATE TABLE a (id INTEGER);\n",
+        )
+        conn = sqlite3.connect(":memory:")
+        self.addCleanup(conn.close)
+        migrator = Migrator(conn, load_migrations(self.dir))
+        self.assertEqual(migrator.up(), ["0001_a"])
+        self.assertEqual(migrator.applied(), ["0001_a"])
 
 
 class TestSubstitutePlaceholders(unittest.TestCase):

@@ -138,6 +138,13 @@ def index_must_be_concurrent() -> Guard:
     Blocks `CREATE INDEX` without `CONCURRENTLY` on Postgres, where a
     plain index build holds a write lock on the table for its whole
     duration. Silent on every other dialect, which has no such keyword.
+
+    Postgres refuses CREATE INDEX CONCURRENTLY inside a transaction
+    block, and the migrator wraps a migration in one. Put the index in a
+    migration of its own with transactional=False, or in a SQL file that
+    carries the '-- sustained: no transaction' marker. Such a migration
+    that fails part way leaves an invalid index behind, which you drop by
+    hand before you run it again.
     """
 
     def guard(statements: Sequence[str], dialect: Dialects) -> List[Verdict]:

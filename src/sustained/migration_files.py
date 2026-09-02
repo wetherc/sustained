@@ -18,6 +18,15 @@ embedded semicolons, such as a trigger or procedure, does not survive
 that; write it as a hand-written Migration with a callable step, or keep
 it as the only statement in its file with no trailing semicolon.
 
+A file whose first lines hold the marker comment `-- sustained: no
+transaction` runs outside a transaction. Write it as `-- sustained: no
+transaction` on a line of its own, anywhere in the up file or the repeat
+file. The marker sets `transactional=False` on the Migration, so the up
+step and the down step both run bare. Use it for a statement the engine
+refuses inside a transaction block, such as CREATE INDEX CONCURRENTLY on
+Postgres. A migration like that which fails part way leaves the
+statements before the failure applied.
+
 Files may hold `${key}` placeholders, filled from the mapping passed to
 load_migrations(). Substitution happens before checksums are computed,
 so a changed value reads as a changed migration. `$${` escapes to a
@@ -48,6 +57,25 @@ _REPEAT_SUFFIX = ".repeat.sql"
 _IGNORED_SUFFIXES = ("~", ".bak", ".orig", ".swp", ".swo", ".tmp")
 
 _PLACEHOLDER_RE = re.compile(r"\$\$\{|\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$\{")
+
+# The marker that takes a file migration out of its transaction. It is a
+# comment line of its own, so the file is still valid SQL and the marker
+# reaches the database as a comment. Spelling is loose about case and
+# about the spaces around the words, and nothing else may share the line.
+_NO_TRANSACTION_RE = re.compile(
+    r"^[ \t]*--[ \t]*sustained:[ \t]*no[ \t_-]transaction[ \t]*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def declares_no_transaction(text: str) -> bool:
+    """
+    Whether a migration file asks to run outside a transaction with the
+    '-- sustained: no transaction' marker on a line of its own. The
+    marker may sit anywhere in the file. Case does not matter, and the
+    word pair may be joined by a space, a hyphen, or an underscore.
+    """
+    return _NO_TRANSACTION_RE.search(text) is not None
 
 
 def substitute_placeholders(
@@ -132,6 +160,12 @@ def load_migrations(
     editor backup files ('*~', '*.bak', '*.orig', '*.swp', '*.swo',
     '*.tmp'), which are copies of another file rather than migrations.
 
+    A '-- sustained: no transaction' line in an up file or a repeat file
+    gives the migration transactional=False, so the migrator runs it
+    outside a transaction. The marker is read from the up file and the
+    repeat file only. A down file that holds it changes nothing, because
+    the flag belongs to the migration and already covers the down step.
+
     When a placeholders mapping is given, even an empty one, '${key}'
     markers in the files are filled from it before statements split and
     checksums compute, and an unknown key raises ValueError. When it is
@@ -181,7 +215,8 @@ def load_migrations(
 
     migrations: List[Migration] = []
     for id in sorted(ups):
-        up_statements = split_sql_statements(read(ups[id]))
+        up_text = read(ups[id])
+        up_statements = split_sql_statements(up_text)
         if not up_statements:
             raise ValueError(f"Migration file {ups[id].name!r} has no statements.")
         down_statements = None
@@ -192,10 +227,25 @@ def load_migrations(
                     f"Migration file {downs[id].name!r} has no statements; "
                     "delete it if the migration is not reversible."
                 )
-        migrations.append(Migration(id, up=up_statements, down=down_statements))
+        migrations.append(
+            Migration(
+                id,
+                up=up_statements,
+                down=down_statements,
+                transactional=not declares_no_transaction(up_text),
+            )
+        )
     for id in sorted(repeats):
-        statements = split_sql_statements(read(repeats[id]))
+        repeat_text = read(repeats[id])
+        statements = split_sql_statements(repeat_text)
         if not statements:
             raise ValueError(f"Migration file {repeats[id].name!r} has no statements.")
-        migrations.append(Migration(id, up=statements, repeatable=True))
+        migrations.append(
+            Migration(
+                id,
+                up=statements,
+                repeatable=True,
+                transactional=not declares_no_transaction(repeat_text),
+            )
+        )
     return migrations

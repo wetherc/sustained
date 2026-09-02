@@ -44,6 +44,43 @@ class TestAsyncMigrator(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await migrator.pending(), [])
         self.assertEqual(await migrator.status(), [("a", True), ("b", True)])
 
+    async def test_non_transactional_migration_applies_and_records(self):
+        migrator = AsyncMigrator(
+            self.adapter,
+            [
+                Migration(
+                    "nt",
+                    up="CREATE TABLE nt (id INTEGER)",
+                    down="DROP TABLE nt",
+                    transactional=False,
+                )
+            ],
+        )
+        self.assertEqual(await migrator.up(), ["nt"])
+        self.assertIn("nt", table_names(self.conn))
+        self.assertEqual(await migrator.applied(), ["nt"])
+        self.assertEqual(await migrator.down(), ["nt"])
+        self.assertNotIn("nt", table_names(self.conn))
+
+    async def test_non_transactional_failure_records_a_failure_row(self):
+        migrator = AsyncMigrator(
+            self.adapter,
+            [
+                Migration(
+                    "nt",
+                    up=["CREATE TABLE nt (id INTEGER)", "THIS IS NOT SQL"],
+                    transactional=False,
+                )
+            ],
+        )
+        with self.assertRaises(sqlite3.OperationalError):
+            await migrator.up()
+        row = self.conn.execute(
+            "SELECT id, success FROM sustained_migrations"
+        ).fetchone()
+        self.assertEqual((row[0], row[1]), ("nt", 0))
+        self.assertEqual(await migrator.applied(), [])
+
     async def test_up_is_idempotent_and_targeted(self):
         migrator = AsyncMigrator(self.adapter, self.migrations())
         self.assertEqual(await migrator.up(target="a"), ["a"])

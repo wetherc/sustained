@@ -194,6 +194,15 @@ class Migration:
     raw sql()) refuses the derivation; pass an explicit down step, or
     down=None to declare the migration irreversible. Repeatables never
     derive a down step.
+
+    `transactional` says whether the migrator wraps the migration in a
+    transaction. Set it to False for a statement the engine refuses
+    inside a transaction block, such as CREATE INDEX CONCURRENTLY on
+    Postgres. The flag covers the up step and the down step. A
+    non-transactional migration that fails part way leaves the
+    statements that already ran in the database; the migrator writes a
+    failure row, so validation stops the next up() until you clean up
+    and run repair().
     """
 
     def __init__(
@@ -203,6 +212,7 @@ class Migration:
         down: Union[Optional[MigrationStep], _DeriveDown] = _DERIVE,
         checksum: Optional[str] = None,
         repeatable: bool = False,
+        transactional: bool = True,
     ) -> None:
         if not id:
             raise ValueError("A migration needs a non-empty id.")
@@ -231,6 +241,7 @@ class Migration:
         self.down = down
         self.checksum = checksum
         self.repeatable = repeatable
+        self.transactional = transactional
 
 
 def migration_checksum(migration: Migration) -> Optional[str]:
@@ -1136,9 +1147,11 @@ class Migrator:
 
     Applied migration ids live in a tracking table, created on first use.
     Each migration runs inside a transaction, so a failing step leaves the
-    schema at the previous migration. Engines that do not support
-    transactional DDL may still leave partial changes from a multi-step
-    migration. Engines without transactions at all, such as Athena, run
+    schema at the previous migration. A migration built with
+    transactional=False is the exception: it runs bare, and a failing step
+    there leaves the statements before it applied. Engines that do not
+    support transactional DDL may still leave partial changes from a
+    multi-step migration. Engines without transactions at all, such as Athena, run
     each step bare; a failing migration there can leave partial changes
     that need manual cleanup.
 
@@ -1202,24 +1215,69 @@ class Migrator:
         return (self._table, self._rehearsal_table)
 
     @contextmanager
-    def _migration_scope(self) -> Iterator[None]:
+    def _migration_scope(self, transactional: bool = True) -> Iterator[None]:
         """
         A transaction on engines whose schema changes roll back; a bare run
         followed by a commit (when the driver has one) on engines whose do
         not.
 
+        `transactional` is the migration's own flag. A migration with
+        transactional=False runs outside a transaction on every engine, so
+        a statement the engine refuses inside a transaction block, such as
+        CREATE INDEX CONCURRENTLY on Postgres, can run. Its tracking row is
+        written after its statements, in the same bare mode, so a finished
+        migration is still recorded.
+
         A rehearsal opens one transaction around the whole run and rolls it
         back at the end, so each migration runs bare and nothing commits.
+
+        Nothing takes a failed non-transactional migration back. The
+        statements that already ran stay in the database, and the tracking
+        row says the attempt failed. The operator finishes or undoes the
+        rest by hand and then runs repair(). On Postgres a failed CREATE
+        INDEX CONCURRENTLY also leaves an invalid index, which needs a
+        DROP INDEX of its own.
         """
         if self._rehearsing:
             yield
             return
-        if self._compiler.supports_transactional_ddl():
+        if transactional and self._compiler.supports_transactional_ddl():
             with transaction(self._connection, self._dialect):
+                yield
+            return
+        if not transactional:
+            with self._autocommit_scope():
                 yield
             return
         yield
         self._commit_quietly()
+
+    @contextmanager
+    def _autocommit_scope(self) -> Iterator[None]:
+        """
+        Runs the block with the driver's own transaction control off, and
+        turns it back on at the end.
+
+        A DB-API driver such as psycopg2 opens a transaction before the
+        first statement of its own accord, so a bare run is still a run
+        inside a transaction block. Setting `autocommit` on the connection
+        is what stops that. A driver with no `autocommit` attribute, or one
+        already in autocommit, keeps the older behaviour: the block runs as
+        it is and a commit follows it.
+        """
+        connection = self._connection
+        switchable = getattr(connection, "autocommit", None) is False
+        if switchable:
+            # psycopg2 refuses the switch while a transaction is open.
+            self._commit_quietly()
+            setattr(connection, "autocommit", True)
+        try:
+            yield
+        finally:
+            if switchable:
+                setattr(connection, "autocommit", False)
+            else:
+                self._commit_quietly()
 
     def _execute(
         self, cursor: "Cursor", sql: str, params: Tuple[SqlValue, ...]
@@ -1622,9 +1680,13 @@ class Migrator:
         engine whose schema changes do not roll back, where partial changes
         may remain. A repeatable that already has a row updates it in
         place. A failure to write the row never masks the original error. A
-        rehearsal writes nothing: its whole run rolls back.
+        rehearsal writes nothing: its whole run rolls back. A migration
+        that asked for no transaction leaves partial changes on every
+        engine, so it gets a row wherever it fails.
         """
-        if self._rehearsing or self._compiler.supports_transactional_ddl():
+        if self._rehearsing or (
+            migration.transactional and self._compiler.supports_transactional_ddl()
+        ):
             return
         try:
             timestamp = datetime.now(timezone.utc).isoformat()
@@ -1897,7 +1959,7 @@ class Migrator:
         the models produced, whose id nothing on disk carries.
         """
         try:
-            with self._migration_scope():
+            with self._migration_scope(migration.transactional):
                 started = time.perf_counter()
                 _run_step(self._connection, migration.up, self._compiler)
                 elapsed_ms = int((time.perf_counter() - started) * 1000)
@@ -2219,7 +2281,7 @@ class Migrator:
                 outcomes[migration.id] = (None, reason)
             else:
                 try:
-                    with self._migration_scope():
+                    with self._migration_scope(migration.transactional):
                         _run_step(
                             self._connection,
                             cast(MigrationStep, migration.down),
@@ -2543,7 +2605,7 @@ class Migrator:
                     )
                 if migration.down is None:
                     raise ValueError(f"Migration '{migration_id}' has no down step.")
-                with self._migration_scope():
+                with self._migration_scope(migration.transactional):
                     _run_step(self._connection, migration.down, self._compiler)
                     self._write_tracking_row(
                         f"DELETE FROM {self._table_sql()} WHERE "

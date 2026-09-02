@@ -417,6 +417,37 @@ Passing a mapping, even an empty one, turns substitution on: a `${key}` with no 
 
 Substitution happens before checksums compute, so the checksum covers the SQL that actually ran. Changing a placeholder value after a versioned migration applied flags a checksum mismatch, because different SQL was applied; run `repair()` if the new value is intentional. A repeatable needs no repair: its changed checksum re-runs it with the new value.
 
+## Migrations without a transaction
+
+The migrator wraps each migration in a transaction, on the engines that can roll a schema change back. Some statements refuse to run there. `CREATE INDEX CONCURRENTLY` on Postgres is the common one: it is the safe way to build an index on a busy table, and Postgres rejects it inside a transaction block.
+
+Set `transactional=False` on the migration and it runs outside a transaction:
+
+```python
+Migration(
+    '005_orders_index',
+    up='CREATE INDEX CONCURRENTLY orders_customer_idx ON orders (customer_id)',
+    down='DROP INDEX CONCURRENTLY orders_customer_idx',
+    transactional=False,
+)
+```
+
+A SQL file asks for the same thing with a marker comment on a line of its own:
+
+```sql
+-- 005_orders_index.up.sql
+-- sustained: no transaction
+CREATE INDEX CONCURRENTLY orders_customer_idx ON orders (customer_id);
+```
+
+The marker is read from the up file and the repeat file. Case does not matter. The flag belongs to the migration, so it covers the down step too, and a marker in a down file changes nothing.
+
+The migrator turns the driver's own transaction control off for the migration and turns it back on after, because a DB-API driver such as psycopg2 opens a transaction before your first statement whether you asked for one or not. The tracking row is written after the statements, in the same mode, so a migration that finishes is still recorded.
+
+Nothing rolls a failed one back. The statements that already ran stay in the database, and the tracking row records a failed attempt, so validation stops the next `migrate` until you clean up and run `sustained repair`. Read what landed, finish or undo the rest by hand, then repair. A failed `CREATE INDEX CONCURRENTLY` also leaves an invalid index behind, which you must drop before you try again. Keep such a migration to one statement and the cleanup stays small.
+
+`AsyncMigrator` reads the same flag and runs the migration bare, with one limit: an adapter over a driver that opens its own transaction, such as `DbApiAsyncAdapter` over psycopg2, still opens one, and a statement that refuses a transaction block still fails there. Run it on `AsyncpgAdapter`, which executes every statement bare.
+
 ## Command line
 
 The `sustained` console script (also `python -m sustained`) runs migrations from the shell. It imports a config module, `sustained_config` by default or `--config mymodule`, from the current directory:
@@ -716,6 +747,8 @@ Both commands exit 3. There is no `--force` flag: fix the statement, or take the
 Every one is a factory, so they all read the same at the call site. `no_table_rewrite()` warns where the others block, because whether a change rewrites the table depends on the engine, its version, and whether the two types coerce. Read it against your own engine rather than trusting it.
 
 `index_must_be_concurrent()` and `no_lock_without_timeout()` are silent on every dialect but Postgres, the only one with the keyword and the setting they are about.
+
+`CONCURRENTLY` needs a migration of its own with `transactional=False`, because Postgres refuses that form inside a transaction block. See [Migrations without a transaction](#migrations-without-a-transaction).
 
 ### What guards read, and when
 

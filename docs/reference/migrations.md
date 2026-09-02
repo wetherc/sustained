@@ -10,7 +10,7 @@ Guide: [Schema and Migrations](/schema).
 ## `Migration`
 
 ```python
-Migration(id, up, down=..., checksum=None, repeatable=False)
+Migration(id, up, down=..., checksum=None, repeatable=False, transactional=True)
 ```
 {: .sig}
 
@@ -23,8 +23,11 @@ A `Migration` is one schema change. A step is a SQL string, a list of statements
 | `down` | step or `None` | What reverses it. `None` means it cannot be reverted. |
 | `checksum` | `str` or `None` | Pins a checksum. Needed only for a callable step, which has no SQL to hash. |
 | `repeatable` | `bool` | Re-runs whenever its checksum changes, instead of running once. |
+| `transactional` | `bool` | `False` runs the migration outside a transaction, for a statement the engine refuses inside one. |
 
 When `down` is not given and `up` is a list of reversible ddl steps, the down step derives itself: the inverses of the up steps, newest first. An up step that holds an irreversible ddl step then raises `ValueError`, naming the step; pass an explicit down step, or `down=None` to declare the migration irreversible. An up step with no ddl steps in it derives nothing, and `down` stays `None` as before. Repeatables never derive a down step.
+
+`transactional=False` covers the up step and the down step. The migrator turns the driver's own transaction control off for the migration, so a statement such as `CREATE INDEX CONCURRENTLY` on Postgres can run, and turns it back on after. The tracking row is written after the statements. Nothing rolls a failed one back: the statements that already ran stay applied, and the failure row makes validation stop the next `up()` until you clean up and run `repair()`. `AsyncMigrator` runs such a migration bare too, but an adapter over a driver with its own transaction control, such as `DbApiAsyncAdapter`, still opens a transaction; use `AsyncpgAdapter` there.
 
 `Migration` raises `ValueError` when the id is empty, when a repeatable declares a `down` step, and when a repeatable has a callable step and no explicit `checksum`.
 
@@ -399,6 +402,8 @@ index_must_be_concurrent() -> Guard
 
 Blocks `CREATE INDEX` without `CONCURRENTLY`. Postgres only; silent elsewhere.
 
+Postgres refuses `CREATE INDEX CONCURRENTLY` inside a transaction block, so the index needs a migration with `transactional=False`, or a SQL file with the `-- sustained: no transaction` marker.
+
 ```python
 no_table_rewrite() -> Guard
 ```
@@ -490,6 +495,8 @@ load_migrations(directory, placeholders=None) -> list[Migration]
 {: .sig #load_migrations}
 
 `load_migrations` reads the `<id>.up.sql` files first, each one optionally paired with `<id>.down.sql`, sorted by id. Then it reads the `<id>.repeat.sql` repeatables, also sorted by id. Statements split at line-ending semicolons, with or without a `--` comment after the semicolon, so a semicolon inside a string literal survives the split. A body that holds its own statements, such as a trigger or a procedure, does not survive it.
+
+A `-- sustained: no transaction` line of its own in an up file or a repeat file sets `transactional=False` on that migration. Case does not matter, and the two words may be joined by a space, a hyphen, or an underscore. `declares_no_transaction(text)` reports the same thing for one file's text. The marker is read from the up file and the repeat file only; the flag already covers the down step.
 
 `load_migrations` raises `ValueError` for a missing directory, for a file that matches none of the naming patterns, for an id with both an up file and a repeat file, for a down file with no up file, and for an empty up, down, or repeat file. The naming check reads every file in the directory, whatever its extension, so a misnamed migration such as `0002_add.up.sq` raises instead of loading nothing. It passes over subdirectories, dotfiles, and editor backup files (`*~`, `*.bak`, `*.orig`, `*.swp`, `*.swo`, `*.tmp`); every other file must follow a naming pattern, so keep a README outside the migrations directory.
 

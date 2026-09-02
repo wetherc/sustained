@@ -506,6 +506,128 @@ class TestFailureTracking(MigrationTestCase):
         self.assertEqual(count, 0)
 
 
+class SwitchingConnection:
+    """
+    A sqlite3 connection with a driver-style autocommit switch, like the
+    one psycopg2 carries. It records every switch it is given.
+    """
+
+    def __init__(self, connection):
+        object.__setattr__(self, "_connection", connection)
+        object.__setattr__(self, "switches", [])
+        object.__setattr__(self, "autocommit", False)
+
+    def __setattr__(self, name, value):
+        if name == "autocommit":
+            self.switches.append(value)
+        object.__setattr__(self, name, value)
+
+    def cursor(self):
+        return self._connection.cursor()
+
+    def commit(self):
+        self._connection.commit()
+
+    def rollback(self):
+        self._connection.rollback()
+
+
+class TestNonTransactionalMigrations(MigrationTestCase):
+    def test_migrations_are_transactional_by_default(self):
+        self.assertTrue(Migration("m", up="SELECT 1").transactional)
+
+    def test_flag_is_kept(self):
+        migration = Migration("m", up="SELECT 1", transactional=False)
+        self.assertFalse(migration.transactional)
+
+    def test_it_applies_and_records_its_row(self):
+        migrator = Migrator(
+            self.conn,
+            [
+                Migration(
+                    "nt",
+                    up="CREATE TABLE nt (x INTEGER)",
+                    down="DROP TABLE nt",
+                    transactional=False,
+                )
+            ],
+        )
+        self.assertEqual(migrator.up(), ["nt"])
+        self.assertEqual(migrator.applied(), ["nt"])
+        self.assertIn("nt", table_names(self.conn))
+
+    def test_it_reverts(self):
+        migrator = Migrator(
+            self.conn,
+            [
+                Migration(
+                    "nt",
+                    up="CREATE TABLE nt (x INTEGER)",
+                    down="DROP TABLE nt",
+                    transactional=False,
+                )
+            ],
+        )
+        migrator.up()
+        self.assertEqual(migrator.down(), ["nt"])
+        self.assertNotIn("nt", table_names(self.conn))
+
+    def test_a_failure_leaves_the_earlier_statements_and_a_row(self):
+        migrator = Migrator(
+            self.conn,
+            [
+                Migration(
+                    "nt",
+                    up=["CREATE TABLE nt (x INTEGER)", "THIS IS NOT SQL"],
+                    transactional=False,
+                )
+            ],
+        )
+        with self.assertRaises(sqlite3.OperationalError):
+            migrator.up()
+        self.assertIn("nt", table_names(self.conn))
+        row = self.conn.execute(
+            "SELECT id, success FROM sustained_migrations"
+        ).fetchone()
+        self.assertEqual((row[0], row[1]), ("nt", 0))
+        self.assertEqual(migrator.applied(), [])
+
+    def test_the_driver_switch_goes_off_and_back_on(self):
+        connection = SwitchingConnection(self.conn)
+        migrator = Migrator(
+            connection,
+            [Migration("nt", up="CREATE TABLE nt (x INTEGER)", transactional=False)],
+        )
+        self.assertEqual(migrator.up(), ["nt"])
+        self.assertEqual(connection.switches, [True, False])
+        self.assertFalse(connection.autocommit)
+
+    def test_the_driver_switch_comes_back_after_a_failure(self):
+        connection = SwitchingConnection(self.conn)
+        migrator = Migrator(
+            connection, [Migration("nt", up="THIS IS NOT SQL", transactional=False)]
+        )
+        with self.assertRaises(sqlite3.OperationalError):
+            migrator.up()
+        self.assertFalse(connection.autocommit)
+
+    def test_a_rehearsal_still_runs_it_inside_the_rehearsal(self):
+        migrator = Migrator(
+            self.conn,
+            [
+                Migration(
+                    "nt",
+                    up="CREATE TABLE nt (x INTEGER)",
+                    down="DROP TABLE nt",
+                    transactional=False,
+                )
+            ],
+        )
+        rehearsal = migrator.rehearse()
+        self.assertTrue(rehearsal.ok)
+        self.assertNotIn("nt", table_names(self.conn))
+
+
 class TestBaseline(MigrationTestCase):
     def migrations(self):
         return [
