@@ -520,6 +520,17 @@ class Compiler:
         """
         return False
 
+    def supports_add_constraint(self) -> bool:
+        """
+        Reports whether the dialect can add a named constraint to a table
+        that already exists, with ALTER TABLE ADD CONSTRAINT. A dialect
+        that cannot must carry every foreign key inside CREATE TABLE, so
+        new tables have to be created in dependency order. SQLite cannot,
+        and neither can DuckDB, which says yes to supports_alter_column()
+        but takes no constraint after the table is made.
+        """
+        return self.supports_constraints() and self.supports_alter_column()
+
     def supports_constraints(self) -> bool:
         """
         Reports whether the dialect supports column and table constraints

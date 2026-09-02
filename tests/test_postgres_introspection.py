@@ -588,5 +588,76 @@ class TestMixedCaseColumnNames(unittest.TestCase):
         self.assertIsNone(migration)
 
 
+class TestNewTableForeignKeys(unittest.TestCase):
+    """
+    Postgres can add a constraint to a table that already exists, so a
+    new table's foreign keys run as their own statements after every
+    create. Two new tables may then point at each other.
+    """
+
+    def empty(self):
+        return FakeConnection(FakeCursor(indexes=[], foreign_keys=[]))
+
+    def test_a_reference_runs_after_the_creates(self):
+        show = make_model("PgOShow", "pg_shows", {"id": Integer(primary_key=True)})
+        ticket = make_model(
+            "PgOTicket",
+            "pg_tickets",
+            {
+                "id": Integer(primary_key=True),
+                "show_id": Integer(references="pg_shows.id"),
+            },
+        )
+        migration = autogenerate(
+            self.empty(), [ticket, show], id="create", dialect=Dialects.POSTGRES
+        )
+        self.assertEqual(
+            migration.up,
+            [
+                'CREATE TABLE "pg_shows" ("id" INTEGER PRIMARY KEY)',
+                'CREATE TABLE "pg_tickets" '
+                '("id" INTEGER PRIMARY KEY, "show_id" INTEGER)',
+                'ALTER TABLE "pg_tickets" ADD CONSTRAINT '
+                '"fk_pg_tickets_show_id" FOREIGN KEY ("show_id") '
+                'REFERENCES "pg_shows" ("id")',
+            ],
+        )
+        self.assertEqual(
+            migration.down,
+            [
+                'ALTER TABLE "pg_tickets" DROP CONSTRAINT "fk_pg_tickets_show_id"',
+                'DROP TABLE IF EXISTS "pg_tickets"',
+                'DROP TABLE IF EXISTS "pg_shows"',
+            ],
+        )
+
+    def test_two_tables_may_point_at_each_other(self):
+        left = make_model(
+            "PgCycLeft",
+            "pg_left",
+            {
+                "id": Integer(primary_key=True),
+                "right_id": Integer(references="pg_right.id"),
+            },
+        )
+        right = make_model(
+            "PgCycRight",
+            "pg_right",
+            {
+                "id": Integer(primary_key=True),
+                "left_id": Integer(references="pg_left.id"),
+            },
+        )
+        diff = diff_schema(self.empty(), [left, right], dialect=Dialects.POSTGRES)
+        self.assertEqual(diff.constraint_notes, [])
+        migration = autogenerate(
+            self.empty(), [left, right], id="create", dialect=Dialects.POSTGRES
+        )
+        self.assertEqual(
+            [step.split(" ")[0] for step in migration.up],
+            ["CREATE", "CREATE", "ALTER", "ALTER"],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

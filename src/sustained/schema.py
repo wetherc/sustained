@@ -568,8 +568,13 @@ def render_column_sql(
     name: str,
     col: ColumnDef,
     inline_pk: bool,
+    include_references: bool = True,
 ) -> str:
-    """Renders one column definition for CREATE TABLE or ADD COLUMN."""
+    """
+    Renders one column definition for CREATE TABLE or ADD COLUMN. With
+    include_references False the REFERENCES clause is left off, for a
+    caller that adds the foreign key as its own statement afterwards.
+    """
     compiler.validate_column_def(col)
     parts = [compiler.quote_ddl_identifier(name), compiler.compile_column_type(col)]
     if col.autoincrement:
@@ -586,7 +591,11 @@ def render_column_sql(
         parts.append(f"DEFAULT {compiler.format_value(col.default)}")
     if col.comment is not None and compiler.inline_column_comments():
         parts.append(f"COMMENT {compiler.format_value(col.comment)}")
-    if col.references is not None and compiler.inline_references():
+    if (
+        col.references is not None
+        and include_references
+        and compiler.inline_references()
+    ):
         parts.append(f"REFERENCES {reference_target_sql(compiler, col.references)}")
     return " ".join(parts)
 
@@ -629,6 +638,7 @@ def build_create_table_sql(
     options: Optional[TableOptions] = None,
     extras: Optional[List[str]] = None,
     constraints: Optional[Sequence[TableConstraint]] = None,
+    defer_foreign_keys: bool = False,
 ) -> str:
     """
     Renders a CREATE TABLE statement from typed column definitions using
@@ -636,6 +646,12 @@ def build_create_table_sql(
     appended after the declared columns. `constraints` are declared
     Check and ForeignKey table constraints, rendered after the
     constraints the columns themselves imply.
+
+    With defer_foreign_keys, no foreign key is rendered at all: neither
+    the REFERENCES shorthand on a column nor a declared ForeignKey. The
+    caller adds each one with ALTER TABLE ADD CONSTRAINT once every
+    table exists, so a set of new tables can reference each other in any
+    order.
     """
     if not columns:
         raise ValueError("Cannot create a table with no columns.")
@@ -653,13 +669,21 @@ def build_create_table_sql(
     inline_pk = len(primary_keys) == 1
 
     for name, col in columns.items():
-        column_parts.append(render_column_sql(compiler, name, col, inline_pk))
+        column_parts.append(
+            render_column_sql(
+                compiler,
+                name,
+                col,
+                inline_pk,
+                include_references=not defer_foreign_keys,
+            )
+        )
 
     if len(primary_keys) > 1:
         pk_sql = ", ".join(compiler.quote_ddl_identifier(c) for c in primary_keys)
         table_constraints.append(f"PRIMARY KEY ({pk_sql})")
 
-    if not compiler.inline_references():
+    if not compiler.inline_references() and not defer_foreign_keys:
         for name, col in columns.items():
             if col.references is None:
                 continue
@@ -677,6 +701,8 @@ def build_create_table_sql(
                 )
 
     for declared in constraints or []:
+        if defer_foreign_keys and isinstance(declared, ForeignKey):
+            continue
         table_constraints.append(table_constraint_sql(compiler, declared))
 
     body = ", ".join(column_parts + list(extras or []) + table_constraints)

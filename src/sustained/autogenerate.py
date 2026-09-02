@@ -490,6 +490,14 @@ def diff_schema(
         _diff_indexes(diff, model, actual_table)
         _diff_constraints(compiler, diff, model, actual_table, actual)
 
+    if diff.missing_tables:
+        cycle_notes: List[str] = []
+        diff.missing_tables = _ordered_missing_tables(diff.missing_tables, cycle_notes)
+        # A dialect that can add a constraint later never needs the
+        # order, so a cycle there is not worth reporting.
+        if not compiler.supports_add_constraint():
+            diff.constraint_notes.extend(cycle_notes)
+
     for table_key in actual:
         if table_key not in declared and table_key not in excluded:
             diff.extra_tables.append(table_key)
@@ -964,6 +972,134 @@ def _undeclared_index_sql(
     return statements
 
 
+def _foreign_key_targets(model: Type["Model"]) -> List[str]:
+    """
+    Every table a model's foreign keys point at, lowercased and in
+    declaration order. The references shorthand on a column and a
+    declared ForeignKey both count.
+    """
+    targets: List[str] = []
+    for coldef in (model.tableColumns or {}).values():
+        if coldef.references is not None:
+            table = coldef.references.rsplit(".", 1)[0]
+            targets.append(bare_table_name(table).lower())
+    for constraint in model.tableConstraints or []:
+        if isinstance(constraint, ForeignKey):
+            targets.append(bare_table_name(constraint.target_table).lower())
+    return targets
+
+
+def _ordered_missing_tables(
+    models: List[Type["Model"]], notes: List[str]
+) -> List[Type["Model"]]:
+    """
+    The missing tables in an order that creates a table after the tables
+    it points at. Models are walked in declaration order and each one's
+    targets before itself, so the result is the same on every run. A
+    cycle cannot be ordered; it is reported in `notes` and the tables in
+    it keep their declared order.
+    """
+    by_key: Dict[str, Type["Model"]] = {
+        (model.tableName or "").lower(): model for model in models
+    }
+    ordered: List[Type["Model"]] = []
+    state: Dict[str, bool] = {}
+    reported: Set[str] = set()
+
+    def visit(key: str, path: List[str]) -> None:
+        finished = state.get(key)
+        if finished:
+            return
+        if finished is False:
+            names = path[path.index(key) :] + [key]
+            cycle = " -> ".join(names)
+            if cycle not in reported:
+                reported.add(cycle)
+                notes.append(
+                    "tables reference each other in a cycle and cannot be "
+                    f"created in dependency order: {cycle}"
+                )
+            return
+        state[key] = False
+        for target in _foreign_key_targets(by_key[key]):
+            if target in by_key and target != key:
+                visit(target, path + [key])
+        state[key] = True
+        ordered.append(by_key[key])
+
+    for key in by_key:
+        visit(key, [])
+    return ordered
+
+
+def _create_table_steps(
+    compiler: "Compiler", model: Type["Model"], defer_foreign_keys: bool
+) -> List[str]:
+    """
+    The statements that build one missing table: CREATE TABLE, the
+    column comments a dialect keeps as separate statements, and the
+    model's indexes. Enum types are created once for the whole
+    migration, so they are not repeated here.
+    """
+    from sustained.schema import column_comment_statements
+
+    assert model.tableColumns is not None
+    table_sql = model._qualified_table_sql()
+    statements = [
+        build_create_table_sql(
+            compiler,
+            table_sql,
+            model.tableColumns,
+            options=model.tableOptions,
+            constraints=model.tableConstraints,
+            defer_foreign_keys=defer_foreign_keys,
+        )
+    ]
+    statements.extend(
+        column_comment_statements(compiler, table_sql, model.tableColumns)
+    )
+    statements.extend(model.create_indexes_sql())
+    return statements
+
+
+def _deferred_foreign_key_steps(
+    compiler: "Compiler", model: Type["Model"]
+) -> List[Tuple[str, str]]:
+    """
+    The (add, drop) statement pairs for every foreign key a new table
+    needs, once CREATE TABLE has left them out.
+    """
+    table_sql = model._qualified_table_sql()
+    pairs: List[Tuple[str, str]] = []
+    for name, coldef in (model.tableColumns or {}).items():
+        if coldef.references is None:
+            continue
+        ref_table, ref_column = coldef.references.rsplit(".", 1)
+        constraint = f"fk_{model.tableName}_{name}"
+        pairs.append(
+            (
+                compiler.compile_add_foreign_key(
+                    table_sql,
+                    constraint,
+                    name,
+                    compiler.quote_fully_qualified_ddl_identifier(ref_table),
+                    ref_column,
+                ),
+                compiler.compile_drop_foreign_key(table_sql, constraint),
+            )
+        )
+    for constraint_def in model.tableConstraints or []:
+        if not isinstance(constraint_def, ForeignKey):
+            continue
+        pairs.append(
+            (
+                _declared_fk_sql(compiler, table_sql, constraint_def),
+                compiler.compile_drop_foreign_key(table_sql, constraint_def.name),
+            )
+        )
+    return pairs
+
+
 def autogenerate(
     connection: Connection,
     models: List[Type["Model"]],
@@ -1079,10 +1215,23 @@ def autogenerate(
             up_steps.append(compiler.compile_add_enum_value(type_name, value))
         reversible = False
 
+    # New tables. Where the dialect can add a constraint to a table that
+    # already exists, every foreign key is left out of CREATE TABLE and
+    # added afterwards, so two new tables may point at each other in any
+    # order. Where it cannot, the tables were sorted into dependency
+    # order by the diff and the keys stay inside CREATE TABLE.
+    defer_foreign_keys = compiler.supports_add_constraint()
+    table_downs: List[str] = []
+    fk_downs: List[str] = []
     for model in diff.missing_tables:
-        assert model.tableColumns is not None
-        up_steps.extend(model.create_table_statements(include_enum_types=False))
-        down_steps.insert(0, model.drop_table_sql())
+        up_steps.extend(_create_table_steps(compiler, model, defer_foreign_keys))
+        table_downs.insert(0, model.drop_table_sql())
+    if defer_foreign_keys:
+        for model in diff.missing_tables:
+            for add_sql, drop_sql in _deferred_foreign_key_steps(compiler, model):
+                up_steps.append(add_sql)
+                fk_downs.insert(0, drop_sql)
+    down_steps[0:0] = fk_downs + table_downs
 
     # Changed columns: ALTER in place where the dialect can, otherwise
     # mark the table for a rebuild.

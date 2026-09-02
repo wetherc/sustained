@@ -842,3 +842,88 @@ class TestSchemaReadOnce(AutogenTestCase):
         )
         self.assertTrue(diff.is_empty())
         self.assertIn("body", snapshot["ag_notes"].columns)
+
+
+class TestMissingTableOrder(unittest.TestCase):
+    """
+    SQLite cannot add a constraint to a table that already exists, so
+    every foreign key stays inside CREATE TABLE and the tables have to
+    be created in dependency order.
+    """
+
+    def setUp(self):
+        self.conn = sqlite3.connect(":memory:")
+
+    def tearDown(self):
+        self.conn.close()
+
+    def models(self):
+        show = make_model("OrdShow", "ord_shows", {"id": Integer(primary_key=True)})
+        ticket = make_model(
+            "OrdTicket",
+            "ord_tickets",
+            {
+                "id": Integer(primary_key=True),
+                "show_id": Integer(references="ord_shows.id"),
+            },
+        )
+        return [ticket, show]
+
+    def test_a_referenced_table_is_created_first(self):
+        diff = diff_schema(self.conn, self.models())
+        self.assertEqual(
+            [m.tableName for m in diff.missing_tables], ["ord_shows", "ord_tickets"]
+        )
+        self.assertEqual(diff.constraint_notes, [])
+
+    def test_the_generated_plan_runs(self):
+        migration = autogenerate(self.conn, self.models(), id="create")
+        for statement in migration.up:
+            self.conn.execute(statement)
+        self.assertTrue(diff_schema(self.conn, self.models()).is_empty())
+        self.assertEqual(
+            migration.down,
+            ["DROP TABLE IF EXISTS ord_tickets", "DROP TABLE IF EXISTS ord_shows"],
+        )
+
+    def test_a_cycle_is_reported_as_a_note(self):
+        left = make_model(
+            "CycLeft",
+            "cyc_left",
+            {
+                "id": Integer(primary_key=True),
+                "right_id": Integer(references="cyc_right.id"),
+            },
+        )
+        right = make_model(
+            "CycRight",
+            "cyc_right",
+            {
+                "id": Integer(primary_key=True),
+                "left_id": Integer(references="cyc_left.id"),
+            },
+        )
+        diff = diff_schema(self.conn, [left, right])
+        self.assertEqual(len(diff.constraint_notes), 1)
+        self.assertIn("cycle", diff.constraint_notes[0])
+        self.assertIn("cyc_left -> cyc_right -> cyc_left", diff.constraint_notes[0])
+        self.assertEqual(
+            [m.tableName for m in diff.missing_tables], ["cyc_right", "cyc_left"]
+        )
+
+    def test_a_self_reference_needs_no_order(self):
+        node = make_model(
+            "SelfNode",
+            "self_nodes",
+            {
+                "id": Integer(primary_key=True),
+                "parent_id": Integer(references="self_nodes.id"),
+            },
+        )
+        diff = diff_schema(self.conn, [node])
+        self.assertEqual(diff.constraint_notes, [])
+        self.assertEqual([m.tableName for m in diff.missing_tables], ["self_nodes"])
+
+
+if __name__ == "__main__":
+    unittest.main()

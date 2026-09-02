@@ -79,5 +79,12 @@ class TestDuckDbExecution(unittest.TestCase):
             conn.close()
 
 
+class TestDuckDbCapabilities(unittest.TestCase):
+    def test_no_add_constraint(self):
+        compiler = Dialects.get_compiler(Dialects.DUCKDB)
+        self.assertTrue(compiler.supports_alter_column())
+        self.assertFalse(compiler.supports_add_constraint())
+
+
 if __name__ == "__main__":
     unittest.main()

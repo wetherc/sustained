@@ -39,6 +39,11 @@ class DuckDbCompiler(Compiler):
     def supports_alter_column(self) -> bool:
         return True
 
+    def supports_add_constraint(self) -> bool:
+        # DuckDB takes no ALTER TABLE ADD CONSTRAINT; a constraint has to
+        # be part of the CREATE TABLE statement.
+        return False
+
     def stores_column_comments(self) -> bool:
         return True
 

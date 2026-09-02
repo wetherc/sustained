@@ -462,9 +462,11 @@ class TestMysqlDrift(unittest.TestCase):
         )
         self.assertEqual(migration.down, ["DROP TABLE IF EXISTS `users`"])
 
-    def test_a_reference_becomes_a_table_constraint(self):
+    def test_a_reference_becomes_its_own_statement(self):
         # InnoDB parses a column-level REFERENCES clause and creates
-        # nothing, so the foreign key has to be a table constraint.
+        # nothing, so the foreign key has to be its own statement. It
+        # runs after every new table exists, so the target need not be
+        # created first.
         model = make_model(
             "MysqlShow",
             "shows",
@@ -481,8 +483,16 @@ class TestMysqlDrift(unittest.TestCase):
             [
                 "CREATE TABLE `shows` ("
                 "`id` INT AUTO_INCREMENT PRIMARY KEY, "
-                "`venue_id` INT, "
-                "FOREIGN KEY (`venue_id`) REFERENCES `venues` (`id`))"
+                "`venue_id` INT)",
+                "ALTER TABLE `shows` ADD CONSTRAINT `fk_shows_venue_id` "
+                "FOREIGN KEY (`venue_id`) REFERENCES `venues` (`id`)",
+            ],
+        )
+        self.assertEqual(
+            migration.down,
+            [
+                "ALTER TABLE `shows` DROP FOREIGN KEY `fk_shows_venue_id`",
+                "DROP TABLE IF EXISTS `shows`",
             ],
         )
 
