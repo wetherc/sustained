@@ -117,7 +117,7 @@
         "dsn": "trino://sustained@127.0.0.1:58180/tpch"
       },
       "covers": ["queries"],
-      "note": "Reads the tpch catalog. Neither server takes the migration surface. The floor is the first release under the Trino name; PrestoDB works for the surface its engine has, untested here."
+      "note": "Reads the tpch catalog. Neither server runs migrations. The floor is the first release under the Trino name; PrestoDB works for the features its engine has, untested here."
     },
     {
       "name": "sqlite",
@@ -156,7 +156,7 @@
       "dsn": null,
       "covers": ["queries"],
       "floor": "engine version 3",
-      "note": "Your AWS account, with a staging S3 directory. Iceberg MERGE sets the floor at engine version 3. Athena's migration surface is not exercised, since the tables it needs live in your buckets."
+      "note": "Your AWS account, with a staging S3 directory. Iceberg MERGE sets the floor at engine version 3. Migrations are not tested on Athena, since the tables they need live in your buckets."
     },
     {
       "name": "default",

@@ -67,13 +67,12 @@ Method names also match case-insensitively, so `WHERE` and `leftouterjoin` resol
 
 ## When errors are raised
 
-**At call time.** Sustained checks the argument shapes: an empty IN list, a negative LIMIT, a `merge()` without `onConflict()`, an unknown comparison operator. These raise `ValueError` or `TypeError` from the method you called.
+**At call time.** Sustained checks the arguments themselves: an empty IN list, a negative LIMIT, a `merge()` without `onConflict()`, an unknown comparison operator. These raise `ValueError` or `TypeError` from the method you called.
 
 **At render time**, when `str(query)`, `to_sql()`, or `run()` walks the builder. Sustained checks dialect support and the whole-statement rules: `top()` on Postgres, `RETURNING` on MSSQL, an `UPDATE` with no `WHERE`, a duplicate CTE alias. These raise `DialectError` or `ValueError` from the render call rather than from the method that set them up.
 
-
 ## Reading the signatures
 
-Each entry on these pages opens with its signature on a line of its own, and the text below the signature describes what the call does and what it raises. A `->` on the signature names the return type; a `QueryBuilder` method without one returns the same builder for chaining. `clone()` is the exception: it returns a copy. Tables carry the facts that pair up, such as an operator and what it renders, or a dialect and what it refuses.
+Each entry on these pages opens with its signature on a line of its own, and the text below the signature describes what the call does and what it raises. A `->` on the signature names the return type; a `QueryBuilder` method without one returns the same builder for chaining. `clone()` is the exception: it returns a copy. Tables list the facts that pair up, such as an operator and what it renders, or a dialect and what it refuses.
 
 The signatures are copied from the source, including the defaults. Parameters after `*` are keyword-only.

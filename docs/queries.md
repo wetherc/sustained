@@ -63,7 +63,7 @@ Venue.query().select('name AS venue_name')
 # SELECT name AS venue_name FROM venues
 ```
 
-Alias the second one when a join selects the same column name from two tables. A row is keyed by column name, so one value would replace the other. Sustained refuses that result set with `AmbiguousColumns` and names the repeated columns:
+When a join selects the same column name from two tables, alias one of them. A row is keyed by column name, so one value would otherwise replace the other, and Sustained refuses that result set with `AmbiguousColumns`, naming the repeated columns:
 
 ```python
 Show.query().select(Show.id, Venue.id).innerJoinRelated('venue').run()
@@ -154,7 +154,7 @@ Venue.query().select_func('STRING_AGG', 'name')
 # DialectError: Function 'STRING_AGG' is not supported by the 'MSSQL' dialect.
 ```
 
-Some registered names change spelling instead of raising to account for dialect-specific variations in function names. For example:
+Some registered names change spelling instead of raising, because the engine spells the same function differently:
 
 ```python
 Venue.query().length('name', alias='n')
@@ -167,7 +167,7 @@ Venue.query().now(alias='t')
 # DEFAULT:  DialectError: Function 'NOW' is not supported by the 'DEFAULT' dialect.
 ```
 
-An unregistered name passes through unchecked, which is how you reach a function Sustained has never heard of:
+An unregistered name passes through unchecked, so you can call a function the registry does not list:
 
 ```python
 Venue.query().select_func('SOME_CUSTOM_FN', 'name')
@@ -360,7 +360,7 @@ Show.query().distinctOn('venue_id').orderBy('venue_id').orderBy('starts_at')
 
 `groupByRollup()`, `groupByCube()`, and `groupByGroupingSets()` produce subtotal rows and multi-grain aggregates. They are covered with the rest of `GROUP BY` in [Grouping](./grouping#subtotals-and-multiple-grains).
 
-`for_update(skip_locked=False, nowait=False)` locks the selected rows for the transaction. Postgres only, and unavailable in queries using unions.
+`for_update(skip_locked=False, nowait=False)` locks the selected rows for the transaction. It is available on Postgres only, and not in a query that uses a union.
 
 ## Reading the execution plan
 
@@ -368,7 +368,7 @@ Show.query().distinctOn('venue_id').orderBy('venue_id').orderBy('starts_at')
 
 ## Reusing a query
 
-Each chained call adds to the same builder, so a shared base query collects every branch's filters. `clone()` copies it if you want to create multiple branch queries from the same base:
+Each chained call adds to the same builder, so a shared base query collects every branch's filters. To build several queries from one base, `clone()` each branch first:
 
 ```python
 base = Show.query().where('sold_out', '=', True)

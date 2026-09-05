@@ -131,11 +131,11 @@ RETURNING raises `DialectError`. MariaDB supports it, but both servers share one
 
 A `references` declaration becomes a table-level `FOREIGN KEY` in `CREATE TABLE`, and a named `ADD CONSTRAINT` statement when the column is added to a table that already exists. InnoDB parses a `REFERENCES` clause written beside a column and creates nothing, so a clause written there would look like a foreign key while not enforcing anything.
 
-An unsigned integer column has no `tableColumns` declaration that produces it, so one already in your database reports as drift that a migration won't be able to close. Leave the column out of the model, or move it to a signed type.
+No `tableColumns` declaration produces an unsigned integer column, so one already in your database reports as drift that no migration can close. Leave the column out of the model, or move it to a signed type.
 
 ### Schema changes commit as they run
 
-MySQL has no transactional DDL. Every schema statement commits the moment it runs, whatever the surrounding transaction does. This has two consequences.
+MySQL has no transactional DDL, so every schema statement commits the moment it runs, whatever the surrounding transaction does.
 
 `sustained rehearse` refuses MySQL in place, because a rollback would have no effect and the run would report a database as unchanged when it had changed. Point it at a scratch database instead:
 
@@ -170,11 +170,11 @@ counts = (Event.query()
 
 ## AWS Athena
 
-Athena runs a Trino-based engine over files in S3, so the dialect inherits Presto's query behavior and adds Athena's storage model: `?` placeholders, `MERGE` upserts on Iceberg tables, Athena type spellings (`INT`, `STRING`, `DOUBLE`, `DECIMAL`), and `TableOptions` for `PARTITIONED BY`, `LOCATION`, and `TBLPROPERTIES` clauses. `String(n)` and `Text()` both render `STRING`, because Iceberg tables reject `VARCHAR`. Sustained never calls boto3 itself: pyathena wraps the boto3 query lifecycle behind the DB-API cursor.
+Athena runs a Trino-based engine over files in S3, so the dialect inherits Presto's query behavior and adds Athena's storage model: `?` placeholders, `MERGE` upserts on Iceberg tables, Athena type spellings (`INT`, `STRING`, `DOUBLE`, `DECIMAL`), and `TableOptions` for `PARTITIONED BY`, `LOCATION`, and `TBLPROPERTIES` clauses. `String(n)` and `Text()` both render `STRING`, because Iceberg tables reject `VARCHAR`. Sustained never calls boto3 itself, because pyathena wraps the boto3 query lifecycle behind the DB-API cursor.
 
 Set `pyathena.paramstyle = "qmark"` before you run a parameterized query. Sustained passes parameters as a tuple, and pyathena's default pyformat style takes a dict only. With qmark, pyathena sends the tuple as native Athena execution parameters. This needs pyathena 3 or later.
 
-Athena's API only takes execution parameters as strings, so `run()` converts each value on the way out: numbers through `str()`, booleans to `true`/`false`. Athena infers the value's type from the spot its placeholder sits in, so a converted number still compares against a numeric column. `None` becomes a literal `NULL` in the statement, because the API has no way to pass one. Binary values raise `DialectError`. The conversion runs inside `run()` and the migrator; if you execute `to_sql()` output yourself, pass it through `compiler.prepare_execution(sql, params)` first.
+Athena's API only takes execution parameters as strings, so `run()` converts each value on the way out: numbers through `str()`, booleans to `true`/`false`. Athena infers the value's type from the position of its placeholder, so a converted number still compares against a numeric column. `None` becomes a literal `NULL` in the statement, because the API has no way to pass one. Binary values raise `DialectError`. The conversion runs inside `run()` and the migrator; if you execute `to_sql()` output yourself, pass it through `compiler.prepare_execution(sql, params)` first.
 
 ```python
 import pyathena
@@ -225,11 +225,11 @@ An `Enum` column declares its values once, and each engine enforces the list wit
 | `DEFAULT`, `MSSQL` | CHECK constraint | A VARCHAR sized to the longest value, constrained to the list by `CONSTRAINT ck_<table>_<column>_enum CHECK (col IN (...))`. |
 | `PRESTO`, `ATHENA` | refused | `DialectError` at DDL time, because neither engine can enforce the list. |
 
-On Postgres, `ALTER TYPE ... ADD VALUE` rolls back inside a transaction on PostgreSQL 12 and later, which is what lets `rehearse` prove a migration that carries one. See [Schema and Migrations](./schema#enum-columns) for how enum changes generate.
+On PostgreSQL 12 and later, `ALTER TYPE ... ADD VALUE` rolls back inside a transaction, so `rehearse` can test a migration that contains one. See [Schema and Migrations](./schema#enum-columns) for how enum changes generate.
 
 ## Column comments
 
-A column's `comment` lands where the engine keeps one:
+A column's `comment` is stored wherever the engine keeps one:
 
 | Dialect | Stores | Renders |
 | --- | --- | --- |

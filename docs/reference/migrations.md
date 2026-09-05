@@ -61,7 +61,7 @@ On a `DdlStep`, `render(compiler)` returns the SQL statements for that compiler'
 
 `create_enum`, `drop_enum`, and `add_enum_value` raise `DialectError` at render time on a dialect without named enum types. Each factory raises `ValueError` for a missing name or an empty argument.
 
-`set_column_comment` sets one column's comment, and `comment=None` clears it. Pass `previous` as the comment the column carries now, `None` when it has none, and the step reverses by setting it back. MySQL changes a comment by restating the whole column with `MODIFY COLUMN`, so there the step also needs the column's `ColumnDef` as `column`; the restatement carries the type, nullability, default, and identity, and deliberately never restates UNIQUE, which would add a second index on each run. Dialects that store no column comments raise `DialectError` at render time, and Athena raises because it cannot change a comment in place.
+`set_column_comment` sets one column's comment, and `comment=None` clears it. Pass `previous` as the column's current comment, `None` when it has none, and the step reverses by setting it back. MySQL changes a comment by restating the whole column with `MODIFY COLUMN`, so there the step also needs the column's `ColumnDef` as `column`. The restatement includes the type, nullability, default, and identity, and never restates UNIQUE, which would add a second index on each run. Dialects that store no column comments raise `DialectError` at render time, and Athena raises because it cannot change a comment in place.
 
 Guide: [Typed migration steps](/schema#typed-migration-steps).
 
@@ -76,7 +76,7 @@ Migrator(connection, migrations, table='sustained_migrations', dialect=Dialects.
 
 `guards` is a list of rules over the statements an up run would apply. See [Guards](#guards) below. `callbacks` is a `Callbacks` object, whose functions `up()` calls around the run.
 
-`Migrator` exposes `connection`, `dialect`, and `compiler` as properties. The compiler is what the migrator renders ddl steps through.
+`Migrator` exposes `connection`, `dialect`, and `compiler` as properties. The migrator renders ddl steps through that compiler.
 
 ### Inspecting
 
@@ -172,7 +172,7 @@ The problems validation reports:
 - A checksum no longer matches, which means the migration changed after it ran.
 - A pending migration is ordered before an applied one. `allow_out_of_order=True` accepts that order.
 
-`repair()` fixes the bookkeeping only. It does not undo the schema changes a failed attempt left behind, and it leaves repeatable checksums alone, because a changed checksum is what schedules the re-run.
+`repair()` fixes the bookkeeping only. It does not undo the schema changes a failed attempt left behind, and it leaves repeatable checksums alone, because a changed checksum schedules the re-run.
 
 ### Generating from models
 
@@ -315,7 +315,7 @@ The tracking table is named `sustained_migrations` by default and has these colu
 | `generated` | `BOOLEAN` | Whether a model diff wrote it. Such a row is never reported as an unregistered migration |
 | `steps` | `TEXT` | The up and down statements of a generated migration, as JSON. Null for every registered one, whose statements live in your code or your migrations directory |
 
-On Athena the same columns are all plain and nullable, because Athena enforces no constraints. A tracking table written by an earlier version, with only `id` and `applied_at`, upgrades in place on first use. A generated row written before the `steps` column existed carries no statements, so `down()` cannot revert that row.
+On Athena the same columns are all plain and nullable, because Athena enforces no constraints. A tracking table written by an earlier version, with only `id` and `applied_at`, upgrades in place on first use. A generated row written before the `steps` column existed contains no statements, so `down()` cannot revert that row.
 
 ## The rehearsal table
 
@@ -384,7 +384,7 @@ Callbacks(before_migrate=None, after_migrate=None, on_error=None)
 
 ## Guards
 
-Guards live in `sustained.guards`. A guard is a `Callable[[Sequence[MigrationStatement], Dialects], list[Verdict]]`. A `MigrationStatement` (in `sustained.analysis`) is a `str` that also carries `migration_id`, the migration the statement came from, and `transactional`, that migration's transaction flag. A guard typed against `Sequence[str]` still fits the type and still runs, because the statements are strings. `statement_scope(statement)` returns the pair for one statement, and gives `(None, True)` for a plain string. It reads the statements an up run would apply and returns one `Verdict(rule, verdict, statement)` per objection. The `verdict` field is `BLOCK` (`'block'`) or `WARN` (`'warn'`).
+Guards live in `sustained.guards`. A guard is a `Callable[[Sequence[MigrationStatement], Dialects], list[Verdict]]`. It reads the statements an up run would apply and returns one `Verdict(rule, verdict, statement)` per objection, where the `verdict` field is `BLOCK` (`'block'`) or `WARN` (`'warn'`). A `MigrationStatement` (in `sustained.analysis`) is a `str` that also records `migration_id`, the migration the statement came from, and `transactional`, that migration's transaction flag. A guard typed against `Sequence[str]` still fits the type and still runs, because the statements are strings. `statement_scope(statement)` returns the pair for one statement, and gives `(None, True)` for a plain string.
 
 `up()` raises `GuardBlocked` on a blocking verdict, before any statement runs, and prints warnings on stderr. A callable step renders no SQL, so guards cannot read it. `down()` runs no guards, because a down step undoes work the rules already passed, and `no_drops()` would block every rollback of a create.
 
@@ -418,7 +418,7 @@ no_lock_without_timeout() -> Guard
 
 Blocks a statement that alters or drops a table with no `SET lock_timeout` in force before it. A timeout later in the run does not cover it. Postgres only; silent elsewhere.
 
-A plain `SET lock_timeout`, with or without SESSION, covers the rest of the run. A `SET LOCAL lock_timeout` covers only the statements after it in its own migration, because the commit that ends the migration drops the setting. In a migration with `transactional=False` there is no transaction block to carry a LOCAL setting, so the rule counts it for nothing; use the plain form there.
+A plain `SET lock_timeout`, with or without SESSION, covers the rest of the run. A `SET LOCAL lock_timeout` covers only the statements after it in its own migration, because the commit that ends the migration drops the setting. In a migration with `transactional=False` there is no transaction block in which a LOCAL setting could apply, so the rule counts it for nothing. Use the plain form there.
 
 ```python
 max_statements(limit) -> Guard
@@ -503,7 +503,7 @@ load_migrations(directory, placeholders=None) -> list[Migration]
 ```
 {: .sig #load_migrations}
 
-`load_migrations` reads the `<id>.up.sql` files first, each one optionally paired with `<id>.down.sql`, sorted by id. Then it reads the `<id>.repeat.sql` repeatables, also sorted by id. Statements split at line-ending semicolons, with or without a `--` comment after the semicolon, so a semicolon inside a string literal survives the split. A body with its own statements, such as a trigger or a procedure, does not survive it.
+`load_migrations` reads the `<id>.up.sql` files first, each one optionally paired with `<id>.down.sql`, sorted by id. Then it reads the `<id>.repeat.sql` repeatables, also sorted by id. Statements split at line-ending semicolons, with or without a `--` comment after the semicolon, so a semicolon inside a string literal is left intact. A body with its own statements, such as a trigger or a procedure, is split apart.
 
 A `-- sustained: no transaction` line of its own in an up file or a repeat file sets `transactional=False` on that migration. Case does not matter, and the two words may be joined by a space, a hyphen, or an underscore. `declares_no_transaction(text)` reports the same thing for one file's text. The marker is read from the up file and the repeat file only; the flag already covers the down step.
 
@@ -541,7 +541,7 @@ autogenerate(connection, models, id, dialect=..., allow_drops=False, ignore_chan
 ```
 {: .sig #autogenerate}
 
-Builds the migration a diff asks for. Refuses to generate the lossy differences, and refuses to run at all while the database contains objects the models do not declare, unless you pass `allow_drops=True` or `ignore_undeclared=True`. The migrator passes `ignore_undeclared=True`. A CHECK constraint no model declares is the one object that never refuses: it comes back as a note on the diff, because engines rewrite check expressions and the comparison cannot carry a refusal.
+Builds the migration a diff asks for. Refuses to generate the lossy differences, and refuses to run at all while the database contains objects the models do not declare, unless you pass `allow_drops=True` or `ignore_undeclared=True`. The migrator passes `ignore_undeclared=True`. A CHECK constraint no model declares is the one object that never refuses: it comes back as a note on the diff, because engines rewrite check expressions and the comparison cannot justify a refusal.
 
 ```python
 introspect_schema(connection, dialect=Dialects.DEFAULT, schemas=()) -> dict[str, IntrospectedTable]
@@ -569,7 +569,7 @@ normalize_default(raw) -> str | None
 ```
 {: .sig #normalize_default}
 
-The canonical spelling of a reported column default, for comparison. Balanced outer parentheses, a Postgres `::type` cast with its length, quotes, and an empty argument list all come off. A `nextval(...)` default returns `None`: it is what Postgres reports for a serial column, and no model declaration can equal it, so the diff reports nothing for it.
+The canonical spelling of a reported column default, for comparison. Balanced outer parentheses, a Postgres `::type` cast with its length, quotes, and an empty argument list all come off. A `nextval(...)` default returns `None`, because Postgres reports it for a serial column and no model declaration can equal it, so the diff reports nothing for it.
 
 ### `SchemaDiff`
 
@@ -589,7 +589,7 @@ The canonical spelling of a reported column default, for comparison. Balanced ou
 
 `is_empty()` returns whether the diff found any difference. `summary()` returns one readable line per difference, with the destructive ones marked, or `schema up to date` when there is no difference.
 
-The enum buckets fill on the dialects with named types. Postgres compares against `pg_enum`, and DuckDB against `duckdb_types()`. A DuckDB too old for that view falls back to reading the values from the column's inline type spelling, and a type with no column left reads as absent there. Missing foreign keys and checks generate `ADD CONSTRAINT`; changed and extra ones are gated by `allow_drops`. Primary key set changes, column-level UNIQUE, and default differences always land in `constraint_notes`, and a Postgres check expression whose difference survives normalization lands there too. Generation never migrates a note for you.
+The enum buckets fill on the dialects with named types. Postgres compares against `pg_enum`, and DuckDB against `duckdb_types()`. A DuckDB too old for that view falls back to reading the values from the column's inline type spelling, and a type with no column left reads as absent there. Missing foreign keys and checks generate `ADD CONSTRAINT`; changed and extra ones are gated by `allow_drops`. Primary key set changes, column-level UNIQUE, and default differences always land in `constraint_notes`, and a Postgres check expression whose difference remains after normalization goes there too. Generation never migrates a note for you.
 
 ### What generation refuses
 
@@ -620,7 +620,7 @@ summarize(migration, state, compiler=None) -> PendingSummary
 
 One migration reduced to its id, state, repeatable flag, statement count, and destructive statements. Ddl steps render for the given compiler's dialect, or ANSI when none is given.
 
-`PendingSummary(id, state, repeatable, sql, destructive)` carries that summary. `sql` is `None` for a callable step, which has no SQL to count. Each statement in it is a `MigrationStatement`.
+`PendingSummary(id, state, repeatable, sql, destructive)` contains that summary. `sql` is `None` for a callable step, which has no SQL to count. Each statement in it is a `MigrationStatement`.
 
 ```python
 MigrationStatement(statement, migration_id=None, transactional=True)

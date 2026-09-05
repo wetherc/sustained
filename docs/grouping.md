@@ -14,7 +14,7 @@ title: Grouping and Having Clauses
 # SELECT show_id, COUNT(id) AS sold FROM tickets GROUP BY show_id HAVING COUNT(id) > 100
 ```
 
-WHERE runs before the grouping, and HAVING runs after, so a filter on a raw column belongs in `where()` and a filter on an aggregate belongs in `having()`. Putting an aggregate in `where()` is an error in the database; Sustained won't raise on it.
+WHERE runs before the grouping, and HAVING runs after, so a filter on a raw column belongs in `where()` and a filter on an aggregate belongs in `having()`. The database rejects an aggregate in `where()`, and Sustained does not check for one.
 
 The examples use the venue booking schema from [Getting Started](./getting-started).
 
@@ -61,7 +61,7 @@ Pair it with an aggregate from [Queries](./queries#aggregates):
 
 The first condition in a chain must be a plain `having()`. Starting with `andHaving()` or `orHaving()` raises `RuntimeError`.
 
-Write the aggregate as it appears in the source, not as its alias. Standard SQL evaluates HAVING before the SELECT list exists, so `having('gross', '>', 5000)` is rejected by the database even when `gross` is right there in the select list:
+Write the aggregate as it appears in the source, not as its alias. Standard SQL evaluates HAVING before the SELECT list exists, so the database rejects `having('gross', '>', 5000)` even though `gross` appears in the select list:
 
 ```python
 # Works everywhere.
@@ -120,7 +120,7 @@ Groups can nest as deep as the logic needs. Past two levels, a typed predicate b
 
 ## Subtotals and multiple grains
 
-`groupByRollup()` adds a subtotal for each prefix of the column list, ending in a grand total. Ordering matters here, because a rollup is a hierarchy:
+`groupByRollup()` adds a subtotal for each prefix of the column list, ending in a grand total. The column order defines the hierarchy, so `ROLLUP (venue_id, show_id)` produces a subtotal for each venue but not for each show on its own:
 
 ```python
 Ticket.query().select('price').groupByRollup('show_id')
@@ -135,7 +135,7 @@ Ticket.query().select('price').groupByRollup('show_id')
 Ticket.query().groupByGroupingSets(('show_id',), ('show_id', 'sold_at'), ())
 ```
 
-Rows produced by a subtotal carry `NULL` in the columns they aggregate over, which is indistinguishable from a real `NULL` in the data. Engines expose a `GROUPING()` function to tell them apart; reach it with `select_func()`.
+Rows produced by a subtotal contain `NULL` in the columns they aggregate over, which is indistinguishable from a real `NULL` in the data. Engines expose a `GROUPING()` function to tell them apart, and you can call it through `select_func()`.
 
 ## Where to go next
 

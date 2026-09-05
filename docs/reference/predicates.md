@@ -90,7 +90,7 @@ A `col()` reference is a column reference in the same two places: a function arg
 
 ## Expression objects
 
-The fluent methods on `QueryBuilder` build these objects for you. Construct one directly when you need a shape the fluent method does not cover.
+The fluent methods on `QueryBuilder` build these objects for you. Construct one directly when you need a form the fluent method does not cover.
 
 ```python
 Func(function_name, *args, alias=None)
@@ -219,4 +219,4 @@ These live in `sustained.types`. Use them to annotate code that accepts what the
 | `QueryResolvable` | <code>QueryBuilder &#124; Callable[..., QueryBuilder] &#124; str</code> |
 | `Join` | <code>BasicJoinMapping &#124; JoinMappingWithThrough</code> |
 
-The relation-mapping shapes are `TypedDict`s: `RelationMapping`, `BasicJoinMapping`, `JoinMappingWithThrough`, `ThroughJoinMapping`, and `ThroughJoinValue`. See [Model](/reference/model#relations).
+The relation-mapping types are `TypedDict`s: `RelationMapping`, `BasicJoinMapping`, `JoinMappingWithThrough`, `ThroughJoinMapping`, and `ThroughJoinValue`. See [Model](/reference/model#relations).

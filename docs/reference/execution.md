@@ -25,7 +25,7 @@ These live in `sustained.types` and are re-exported from `sustained`.
 | --- | --- |
 | `Connection` | Protocol: `cursor()`, `commit()`, `rollback()`, `close()`. |
 | `Cursor` | Protocol: `execute()`, `executemany()`, `fetchone()`, `fetchall()`, `close()`, plus `description` and `rowcount`. |
-| `Binding` | `Union[Connection, ConnectionPool]`, which is what `bind()` and every `connection=` argument take. |
+| `Binding` | `Union[Connection, ConnectionPool]`, the type `bind()` and every `connection=` argument take. |
 | `SqlValue` | A value going into the database. Alias for `object`. |
 | `RowValue` | A value read back out. Alias for `Any`. |
 
@@ -33,7 +33,7 @@ The two protocols list only the methods Sustained calls, so a driver connection 
 
 ## Transactions
 
-These live in `sustained.execution`. Reach them through `Model.transaction()` rather than calling them yourself.
+These live in `sustained.execution`. Use them through `Model.transaction()` rather than calling them yourself.
 
 ```python
 transaction(connection, dialect=None)
@@ -42,7 +42,7 @@ transaction(connection, dialect=None)
 
 A context manager. Commits when the block finishes, and rolls back on any exception. The dialect chooses the savepoint spelling for nested blocks; `Model.transaction()` passes the model's dialect for you.
 
-Statements inside the block share one cursor. That matters on DuckDB, whose driver autocommits every statement and gives every cursor its own session: the block opens, commits, and rolls back the transaction with SQL on that shared cursor.
+Statements inside the block share one cursor. DuckDB requires this, because its driver autocommits every statement and gives every cursor its own session, so the block opens, commits, and rolls back the transaction with SQL on that shared cursor.
 
 ```python
 in_transaction(connection) -> bool
@@ -132,7 +132,7 @@ release(connection)
 ```
 {: .sig #release}
 
-Returns the connection to the pool, or closes it when the pool is closed. Any open transaction is rolled back first, on every release, so the next caller never inherits a stale snapshot or an aborted transaction. When the rollback raises, the pool probes the connection with `SELECT 1`: one that answers is kept, because some drivers, duckdb among them, refuse rollback with no transaction open rather than reporting a broken connection. One that does not answer is closed and dropped. A connection the pool did not hand out raises `ValueError`, which is what catches a double release.
+Returns the connection to the pool, or closes it when the pool is closed. Any open transaction is rolled back first, on every release, so the next caller never inherits a stale snapshot or an aborted transaction. When the rollback raises, the pool probes the connection with `SELECT 1`: one that answers is kept, because some drivers, duckdb among them, refuse rollback with no transaction open rather than reporting a broken connection. One that does not answer is closed and dropped. A connection the pool did not hand out raises `ValueError`, which catches a double release.
 
 ```python
 close()
@@ -168,7 +168,7 @@ A row count of `-1` means the driver reported none. Add `returning()` to the wri
 
 `driver_transaction_control()` tells `async_transaction()` how to open and close a block. It returns `False` on the base class and on `AsyncpgAdapter`, so the block runs `BEGIN`, `COMMIT`, and `ROLLBACK` as statements. `DbApiAsyncAdapter` returns `True`, because a DB-API 2.0 driver opens the transaction itself; the block then ends with `commit()` or `rollback()`. It returns `False` when the connection it wraps reports `autocommit` as `True`, because such a connection commits every statement as it runs and its `commit()` closes nothing. `begin_where_ddl_autocommits()` covers the one gap in that promise: sqlite3 in legacy transaction control leaves schema statements outside its implicit transaction, so `DbApiAsyncAdapter` sends a `BEGIN` there.
 
-`scope()` is what every call opens before it runs. A plain adapter yields itself; a pool yields one of its adapters and takes it back at the end, so a statement and its commit stay on one connection.
+Every call opens `scope()` before it runs. A plain adapter yields itself; a pool yields one of its adapters and takes it back at the end, so a statement and its commit stay on one connection.
 
 ```python
 DbApiAsyncAdapter(connection)
@@ -232,7 +232,7 @@ await release(adapter)
 ```
 {: .sig #async_release}
 
-Gives an adapter back, rolling it back first so a failed statement does not reach the next task. An adapter the pool did not hand out raises `ValueError`, which is what catches a double release. When the rollback raises, the pool probes the adapter with `SELECT 1`: one that answers is kept, because some drivers, duckdb among them, refuse rollback with no transaction open rather than reporting a broken connection. One that does not answer is closed and dropped, and its slot reopens.
+Gives an adapter back, rolling it back first so a failed statement does not reach the next task. An adapter the pool did not hand out raises `ValueError`, which catches a double release. When the rollback raises, the pool probes the adapter with `SELECT 1`: one that answers is kept, because some drivers, duckdb among them, refuse rollback with no transaction open rather than reporting a broken connection. One that does not answer is closed and dropped, and its slot reopens.
 
 ```python
 await close()
@@ -251,7 +251,7 @@ async def open_adapter():
 Model.bind_async(AsyncConnectionPool(open_adapter, max_size=10))
 ```
 
-`AsyncMigrator` takes an adapter, not a pool: a migration run belongs on one session.
+`AsyncMigrator` takes an adapter rather than a pool, because a migration run belongs on one session.
 
 ### Async helpers
 
@@ -300,6 +300,6 @@ Async eager loading shares the planner the synchronous path uses, so it covers d
 
 `sustained.rendering` is internal, and visible when a custom expression renders itself.
 
-`RenderContext(compiler, parameterize=False)` carries the compiler and the value-handling mode. `ctx.value(v)` returns a placeholder and collects the value when `parameterize` is set, and returns a formatted SQL literal when it is not. An `Expression` renders as written in either mode. Both `str(query)` and `to_sql()` run through this one code path.
+`RenderContext(compiler, parameterize=False)` contains the compiler and the value-handling mode. `ctx.value(v)` returns a placeholder and collects the value when `parameterize` is set, and returns a formatted SQL literal when it is not. An `Expression` renders as written in either mode. Both `str(query)` and `to_sql()` run through this one code path.
 
 `bind_raw(sql, params, ctx)` fills the `?` markers in a raw fragment, and raises `ValueError` when the marker count does not match the parameter count.

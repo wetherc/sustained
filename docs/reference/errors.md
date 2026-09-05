@@ -139,7 +139,7 @@ Invalid input the builder can detect. The method you call raises some of these, 
 | Two different subqueries sharing a CTE alias |
 | `merge()` where every inserted column is a conflict column |
 | A raw fragment whose `?` count does not match its parameters |
-| An INSERT carrying a WHERE clause |
+| An INSERT with a WHERE clause |
 | A model with no `tableName` in a statement that needs one |
 | A string function argument that is neither a plain column path nor a `Literal` |
 | `for_update()` combined with a union |
@@ -159,7 +159,7 @@ Invalid input the builder can detect. The method you call raises some of these, 
 
 ## `TypeError`
 
-A wrong type in a position where the shape matters: a CTE or an `insert_from` source that is not a `QueryBuilder`, a `using` value that is not a list, an operator that is not a string, a row count that is not an integer.
+A wrong type in a position that requires a specific one: a CTE or an `insert_from` source that is not a `QueryBuilder`, a `using` value that is not a list, an operator that is not a string, a row count that is not an integer.
 
 `bool(predicate)` also raises `TypeError`, so `a and b` on two predicates fails instead of keeping only one side of the expression. Use `&` and `|`.
 

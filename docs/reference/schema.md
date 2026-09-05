@@ -3,7 +3,7 @@ layout: default
 title: Schema types reference
 ---
 
-Everything in `sustained.schema`. These objects are what goes in a model's `tableColumns`, `indexes`, and `tableOptions`, together with the renderers that turn them into DDL.
+Everything in `sustained.schema`. These objects go in a model's `tableColumns`, `indexes`, and `tableOptions`, and the renderers below turn them into DDL.
 
 Guide: [Schema and Migrations](/schema).
 
@@ -107,7 +107,7 @@ A named FOREIGN KEY constraint, listed in `tableConstraints`. `columns` is a str
 
 `ForeignKey` raises `ValueError` for an empty name, no columns, a column and target count that differ, a target without a dot, targets in more than one table, and an action outside the list.
 
-For a single column with no actions, `references='table.column'` on the column definition renders the same constraint. `TableConstraint` is the union type of `Check` and `ForeignKey`, which is what `tableConstraints` accepts.
+For a single column with no actions, `references='table.column'` on the column definition renders the same constraint. `TableConstraint` is the union type of `Check` and `ForeignKey`, and `tableConstraints` accepts it.
 
 Guide: [Table constraints](/schema#table-constraints).
 

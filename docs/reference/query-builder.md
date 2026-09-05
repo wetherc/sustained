@@ -95,7 +95,7 @@ select_window(function_name, alias, partition_by=None, order_by=None, args=None,
 ```
 {: .sig #select_window}
 
-A window function. An `order_by` entry may carry a direction, as in `'price DESC'`. `args` are the function's own arguments. `frame` is a raw frame clause.
+A window function. An `order_by` entry may include a direction, as in `'price DESC'`. `args` are the function's own arguments. `frame` is a raw frame clause.
 
 ```python
 select_case(alias, else_result, when_clauses)
@@ -277,7 +277,7 @@ On MSSQL, `limit()` and `offset()` compile to `OFFSET ... FETCH`, which T-SQL al
 
 Every join type exists in a raw form and a relation form. The types are `join`, `innerJoin`, `leftJoin`, `leftOuterJoin`, `rightJoin`, `rightOuterJoin`, `fullJoin`, `fullOuterJoin`, and `crossJoin`.
 
-**Raw form.** `join(table, ...)` takes one of three shapes:
+**Raw form.** `join(table, ...)` takes one of three argument forms:
 
 ```python
 query.join('venues', 'shows.venue_id', '=', 'venues.id')   # ON condition
@@ -465,7 +465,7 @@ Eager loads relations, with one query per relation per level. A name may be a do
 
 `to_dicts`, `to_df`, `to_arrow`, and `total` raise `ValueError` on any statement that is not a SELECT.
 
-A multi-row `insert()` with no RETURNING runs through the driver's `executemany()`. Rows that carry a `QueryBuilder.raw()` value run as one statement instead, because raw SQL renders in the statement itself and has no value to bind.
+A multi-row `insert()` with no RETURNING runs through the driver's `executemany()`. Rows that contain a `QueryBuilder.raw()` value run as one statement instead, because raw SQL renders in the statement itself and has no value to bind.
 
 ### Async
 
@@ -474,7 +474,7 @@ await arun(adapter=None)
 ```
 {: .sig #arun}
 
-Returns the same shapes as `run()`.
+Returns the same result types as `run()`.
 
 ```python
 await afirst(adapter=None) -> Model | None

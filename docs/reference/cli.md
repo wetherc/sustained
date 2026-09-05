@@ -45,7 +45,7 @@ argparse also exits 2 on a usage error. If your script treats 2 as "work is wait
 
 `rehearse` exits 1 when an up step or a down step failed, when the models did not land, or when the schema did not come back. A migration with no down step is not a failure, so `rehearse` exits 0 for it.
 
-`migrate` exits 4 when the run would remove data and no passing rehearsal covers those statements. The message names the statements and both ways forward, and carries `--target` through when the run had one.
+`migrate` exits 4 when the run would remove data and no passing rehearsal covers those statements. The message names the statements and both ways forward, and repeats `--target` when the run had one.
 
 A block or a refusal on the migration generated from the models happens after the registered migrations have applied. Those ids print on stdout before the error, and they stay applied.
 
@@ -53,7 +53,7 @@ A block or a refusal on the migration generated from the models happens after th
 
 ## The config module
 
-| Attribute | Required | Shape | Default |
+| Attribute | Required | Type | Default |
 | --- | --- | --- | --- |
 | `connection` | one of the two | A DB-API 2.0 connection | checked first |
 | `get_connection` | one of the two | `() -> Connection` | used when `connection` is absent |
@@ -103,13 +103,13 @@ No flag skips a guard for one run. Fix the statement, or take the rule out of th
 
 Only `migrate` calls the callbacks. `rehearse` does not call them, because it rolls everything back. The CLI collects the callbacks into a `Callbacks` object and hands that object to the migrator, and the migrator makes the calls, so the same hooks are available through the API.
 
-`before_migrate` runs before the run starts, which is before validation and before the advisory lock. `after_migrate` runs only when at least one migration applied, so a run with nothing to do calls nothing. `on_error` runs after a failure and before the failure reaches the shell. Its `migration_id` argument is `None` when the run failed before it reached a migration, which is what a guard block or a validation problem looks like.
+`before_migrate` runs before the run starts, which is before validation and before the advisory lock. `after_migrate` runs only when at least one migration applied, so a run with nothing to do calls nothing. `on_error` runs after a failure and before the failure reaches the shell. Its `migration_id` argument is `None` when the run failed before it reached a migration, as it does for a guard block or a validation problem.
 
 The CLI skips a callback that is not callable. When `on_error` itself raises, its error prints to stderr, and the original migration error still decides the exit code.
 
 ### Rehearsal connection
 
-When the config defines `get_rehearsal_connection()`, `rehearse` builds a second migrator on that connection and rehearses on the scratch database instead. The dialect check does not apply there, the changes may survive the rollback, and the footer says so. The scratch connection closes when the command ends.
+When the config defines `get_rehearsal_connection()`, `rehearse` builds a second migrator on that connection and rehearses on the scratch database instead. The dialect check does not apply there, the changes may remain after the rollback, and the footer says so. The scratch connection closes when the command ends.
 
 The rehearsal row goes on the real database rather than the scratch one, keyed against the real database's applied history and pending set. Sustained writes the row only when the scratch run applied every migration pending on the real database. Otherwise the output says the row was not recorded.
 
@@ -205,7 +205,7 @@ $ sustained plan --json
 }
 ```
 
-Every place a command reports SQL uses that statement object, including `drift`. When the config names no models, `drift` is `null` rather than `[]`, so a caller can tell "nothing was compared" from "compared and found no gap". `statements` is `null` for a callable step, which renders no SQL; before version 2.13.0 `statements` was a count. A guard verdict appears on the statement it flags, as `{"rule", "verdict"}`, and a statement no guard flagged carries `[]`. The `guards` key is present from version 2.15.0 onward.
+Every place a command reports SQL uses that statement object, including `drift`. When the config names no models, `drift` is `null` rather than `[]`, so a caller can tell "nothing was compared" from "compared and found no gap". `statements` is `null` for a callable step, which renders no SQL; before version 2.13.0 `statements` was a count. A guard verdict appears on the statement it flags, as `{"rule", "verdict"}`, and a statement no guard flagged has `[]`. The `guards` key is present from version 2.15.0 onward.
 
 `rehearse --json` prints:
 

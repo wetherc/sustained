@@ -3,7 +3,7 @@ layout: default
 title: Support Policy
 ---
 
-This page describes supported databases, database versions, and Python versions, and provides a guaranteed deprecation and removal policy.
+Sustained supports a fixed list of databases, database versions, and Python versions, and a deprecation policy governs how any of them is removed.
 
 ## What support means
 
@@ -19,17 +19,17 @@ Note that the ANSI dialect has no server to run. Sustained compiles SQL for it, 
 | MySQL | 8.0.19 and later; suite runs 8.4 and 26.7 | Container (mysql:8.4, mysql:26.7) | queries, writes, transactions, migrations | No transactional DDL, so rehearse needs scratch=True. ALTER TABLE DROP CONSTRAINT sets the floor. |
 | MariaDB | 10.6 and later; suite runs 11.4 and 12.3 | Container (mariadb:11.4, mariadb:12.3) | queries, writes, transactions, migrations | Same dialect as MySQL. SKIP LOCKED sets the floor. JSON columns read back through their json_valid check. |
 | SQL Server | 2012 and later; suite runs 2022 and 2025 | Container (mcr.microsoft.com/mssql/server:2022-latest, mcr.microsoft.com/mssql/server:2025-latest) | queries, writes, transactions, migrations | Off the rehearsal allowlist, so rehearse refuses without scratch=True. OFFSET with FETCH sets the floor. pyodbc needs the ODBC driver installed. |
-| Presto and Trino | 351 and later; suite runs 468 and 483 | Container (trinodb/trino:468, trinodb/trino:483) | queries | Reads the tpch catalog. Neither server takes the migration surface. The floor is the first release under the Trino name; PrestoDB works for the surface its engine has, untested here. |
+| Presto and Trino | 351 and later; suite runs 468 and 483 | Container (trinodb/trino:468, trinodb/trino:483) | queries | Reads the tpch catalog. Neither server runs migrations. The floor is the first release under the Trino name; PrestoDB works for the features its engine has, untested here. |
 | SQLite | 3.35 and later | In process | queries, writes, transactions, migrations, async | Standard library. The table rebuild path lives here. RETURNING and DROP COLUMN set the floor; sqlite3.sqlite_version says what your Python links. |
 | DuckDB | 1.0 and later | In process | queries, writes, transactions, migrations | In-process, so no container and no advisory lock. Releases before 1.0 are not claimed. |
-| AWS Athena | engine version 3 and later | Your AWS account | queries | Your AWS account, with a staging S3 directory. Iceberg MERGE sets the floor at engine version 3. Athena's migration surface is not exercised, since the tables it needs live in your buckets. |
+| AWS Athena | engine version 3 and later | Your AWS account | queries | Your AWS account, with a staging S3 directory. Iceberg MERGE sets the floor at engine version 3. Migrations are not tested on Athena, since the tables they need live in your buckets. |
 | ANSI (default) | Any | Nothing to run | SQL text only | The portable compiler. Any DB-API 2.0 driver that takes this SQL will work, untested here. |
 
 <!-- end databases -->
 
 The **Covered** column names the feature sets the integration suite runs against that database. Each name maps to one test module in `tests/integration`:
 
-- `queries` is the read surface: joins, eager loading, aggregates, window functions, CTEs, set operations, subqueries, LIMIT and OFFSET, and hydration to models, dicts, DataFrames, and Arrow tables.
+- `queries` is every read feature: joins, eager loading, aggregates, window functions, CTEs, set operations, subqueries, LIMIT and OFFSET, and hydration to models, dicts, DataFrames, and Arrow tables.
 - `writes` is INSERT, UPDATE, DELETE, upserts through `onConflict()`, RETURNING, `INSERT ... SELECT`, and CREATE TABLE AS.
 - `transactions` is commit and rollback as observed from a second connection, savepoint nesting, and `ConnectionPool`.
 - `migrations` is the migration lifecycle: `migrate`, `rehearse`, `down`, `validate`, and `repair`, plus schema introspection, column type and column comment round trips, and SQL file migrations.
@@ -54,7 +54,7 @@ ran     postgres         59 tests, queries, writes, transactions, migrations, as
 
 A clean run verifies your exact release the same way the suite verifies the versions in the table. [Run it yourself](#run-it-yourself) describes the runner.
 
-SQLite has no server: the version tested against is the one your Python links. You can find this with `sqlite3.sqlite_version`.
+SQLite has no server, so the version tested against is the one your Python links, which `sqlite3.sqlite_version` reports.
 
 ## Python versions
 

@@ -99,7 +99,7 @@ Without `clone()`, the second line would filter on both venues at once and retur
 
 ## Filter with Python operators instead of strings
 
-`Model.c` gives every column a typed reference. Use comparison operators to build the condition, and `&`, `|`, and `~` combine multiple conditions.
+`Model.c` gives every column a typed reference. Comparison operators build a condition, and `&`, `|`, and `~` combine conditions.
 
 ```python
 from sustained import col
@@ -164,7 +164,7 @@ ranked = (
 # FROM tickets
 ```
 
-To filter on `rank`, wrap this in a subquery. If you're using DuckDB, you can alternately use `qualify('rank <= 3')`: it is the only dialect that supports this syntax.
+To filter on `rank`, wrap this in a subquery. On DuckDB, the only supported dialect with `QUALIFY`, you can use `qualify('rank <= 3')` instead.
 
 ## Label rows with CASE
 
@@ -488,7 +488,7 @@ migrator.baseline('002_create_shows')   # record as applied, run nothing
 migrator.up()                           # apply only what comes after
 ```
 
-Rows carry checksums, so validation still catches later edits and a null execution time marks them as never having run.
+Rows record checksums, so validation still catches later edits, and a null execution time marks them as never having run.
 
 ---
 
@@ -557,7 +557,7 @@ def get_rehearsal_connection():
     return psycopg.connect('postgresql://localhost/app_rehearsal')
 ```
 
-The scratch database is usually empty, so the whole history replays instead of only what is pending, which proves the migrations run from nothing. The changes may survive the rollback there, so recreate the database before the next rehearsal. In Python, this is `migrator.rehearse(scratch=True)`.
+The scratch database is usually empty, so the whole history replays instead of only what is pending, which proves the migrations run from nothing. The changes may remain after the rollback there, so recreate the database before the next rehearsal. In Python, this is `migrator.rehearse(scratch=True)`.
 
 ## Hand the SQL to a DBA instead of running it
 
@@ -617,7 +617,7 @@ $ sustained repair
 repaired updated the stored checksum of 'create_venues'
 ```
 
-Repeatables are the exception: their changed checksum is what schedules the re-run, so `repair` leaves it alone and the next `migrate` runs the new contents.
+Repeatables are the exception, because a changed checksum schedules the re-run, so `repair` leaves it alone and the next `migrate` runs the new contents.
 
 ## Deploy from two machines at once
 

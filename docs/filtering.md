@@ -3,7 +3,7 @@ layout: default
 title: Filtering Queries
 ---
 
-There are two syntaxes you can use to write a condition:
+You can write a condition as three arguments or as a typed predicate:
 
 ```python
 Show.query().where('sold_out', '=', True)
@@ -13,9 +13,9 @@ Show.query().where(Show.c.sold_out == True)
 # SELECT * FROM shows WHERE shows.sold_out = TRUE
 ```
 
-The three-argument form takes a column name, an operator, and a value, and renders the name exactly as written. The typed form uses Python's own comparison operators against `Model.c`, checks the name against the model's declared columns, and qualifies it with the table. Strings are quicker to type and work on any column, including ones not declared on a model. Typed predicates combine with `&`, `|`, and `~`, which is what you want for more complicated compound and nested where clauses.
+The three-argument form takes a column name, an operator, and a value, and renders the name exactly as written. The typed form uses Python's own comparison operators against `Model.c`, checks the name against the model's declared columns, and qualifies it with the table. Strings are quicker to type and work on any column, including ones not declared on a model. Typed predicates combine with `&`, `|`, and `~`, so they suit compound and nested WHERE clauses.
 
-The examples on this page use the venue booking schema from [Getting Started](./getting-started). Either syntax can be used interchangeably throughout the examples.
+The examples on this page use the venue booking schema from [Getting Started](./getting-started). You can use either syntax in any of them.
 
 ## Comparisons
 
@@ -34,7 +34,7 @@ Venue.query().where('city', '=', 'Minneapolis').orWhere('city', '=', 'St Paul')
 
 The first condition in a chain must be a plain `where()`. Starting with `andWhere()` or `orWhere()` raises `RuntimeError`, because there is nothing for the conjunction to join to.
 
-The operator has to be one of `=`, `!=`, `<>`, `<`, `<=`, `>`, `>=`, `LIKE`, `NOT LIKE`, `ILIKE`, `NOT ILIKE`, `IS`, or `IS NOT`. Anything else raises `ValueError`. The allowlist exists because the operator is the one part of the clause that will always render exactly as written; use `whereRaw()` if you need more flexibility.
+The operator has to be one of `=`, `!=`, `<>`, `<`, `<=`, `>`, `>=`, `LIKE`, `NOT LIKE`, `ILIKE`, `NOT ILIKE`, `IS`, or `IS NOT`. Anything else raises `ValueError`. The allowlist exists because the operator is the one part of the clause that always renders exactly as written. Use `whereRaw()` if you need an operator outside it.
 
 Comparing to `None` with `=` or `!=` renders `IS NULL` or `IS NOT NULL`, because `= NULL` matches nothing in SQL:
 
@@ -86,7 +86,7 @@ Show.query().where(
 
 Use `&` and `|`, never the `and` and `or` keywords. Python evaluates those by truthiness, which would silently discard half your condition, so a `Predicate` raises `TypeError` in a boolean context instead.
 
-The following builtin methods are also provided for convenience:
+Typed columns also provide methods for `LIKE`, `IN`, `BETWEEN`, and `NULL` tests:
 
 ```python
 Show.c.title.like('The %')
@@ -260,7 +260,7 @@ Ticket.query().where(
 
 ## Raw predicates
 
-`whereRaw(sql, params)` is a fallback for anything that you can't otherwise accomplish with the builder. Mark each value with `?`. The values travel as parameters, so a raw fragment is still not a place where user input reaches the SQL text:
+`whereRaw(sql, params)` is a fallback for anything the builder cannot otherwise express. Mark each value with `?`. The values travel as parameters, so user input never reaches the SQL text even in a raw fragment:
 
 ```python
 Ticket.query().whereRaw('price % ? = ?', [10, 0])
@@ -269,7 +269,7 @@ Ticket.query().whereRaw('price % ? = ?', [10, 0])
 
 The marker count must match the parameter count, or the call raises `ValueError`. The fragment renders wrapped in parentheses, so it composes with the rest of the chain without precedence surprises. `havingRaw()` is the same method for HAVING.
 
-`whereRaw` is dialect-specific: the fragment is passed through untouched, so it will not follow `set_dialect()` the way the rest of the builder does and you are responsible for ensuring that the raw SQL you supply is syntactically valid for your database engine.
+The fragment passes through untouched, so it does not follow `set_dialect()` the way the rest of the builder does. You are responsible for writing raw SQL that is valid for your database engine.
 
 ## Where to go next
 

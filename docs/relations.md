@@ -44,7 +44,7 @@ The key is the name you pass to `innerJoinRelated('venue')` and `withGraphFetche
 | `HasManyRelation` | one to many | a list |
 | `ManyToManyRelation` | many to many, through a link table | a list |
 
-The type does not change the SQL a `joinRelated` call produces, apart from the extra hop a `ManyToManyRelation` makes through its link table. It does change what eager loading attaches to each instance, and it is what the migrator reads when it works out which side has the foreign key.
+The type does not change the SQL a `joinRelated` call produces, apart from the extra hop a `ManyToManyRelation` makes through its link table. It does change what eager loading attaches to each instance, and the migrator reads it to work out which side has the foreign key.
 
 A `Show` belongs to one `Venue`, a `BelongsToOneRelation`, and the same relation seen from the other side is a `HasManyRelation`:
 
@@ -112,7 +112,6 @@ All major join types are supported and have dedicated methods:
 | `fullOuterJoinRelated()` | `FULL OUTER JOIN` |
 | `crossJoinRelated()` | `CROSS JOIN` |
 
-
 ```python
 Show.query().select('shows.title', 'venues.name').leftOuterJoinRelated('venue')
 # SELECT shows.title, venues.name FROM shows
@@ -153,7 +152,7 @@ for venue in venues:
     print(venue.name, len(venue.shows))
 ```
 
-You can fetch nested relations through a `withGraphFetched()` call as well: `withGraphFetched('shows.tickets')` will return the tickets of every show of every venue, at one query per level. See [Executing Queries](./executing#eager-loading-relations) for what it needs in the select list.
+A dotted path fetches nested relations, so `withGraphFetched('shows.tickets')` attaches each venue's shows and each show's tickets, at one query per level. See [Executing Queries](./executing#eager-loading-relations) for what it needs in the select list.
 
 ## Raw joins
 
@@ -228,4 +227,4 @@ The table argument has to be a table name. To join against a derived result set,
 | Filter on a joined table | [Filtering](./filtering) |
 | Load relations rather than join them | [Executing Queries](./executing#eager-loading-relations) |
 | Turn a relation into a foreign key | [Schema and Migrations](./schema) |
-| See every join method and mapping shape | [Model reference](./reference/model) |
+| See every join method and mapping key | [Model reference](./reference/model) |

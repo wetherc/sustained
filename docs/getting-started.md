@@ -15,9 +15,9 @@ print(Show.query().select('title').where('sold_out', '=', False))
 # SELECT title FROM shows WHERE sold_out = FALSE
 ```
 
-This guide grows that one class into a working application: a schema Sustained creates for you, queries that join across tables, a schema change applied through a generated migration, and the same migrations run from the command line. Everything here runs against SQLite through the Python standard library, so there is nothing to install but Sustained itself.
+By the end of this guide, you will have grown that one class into a working application: you will have created the schema from your models, joined across tables, applied a schema change through a generated migration, and run the same migrations from the command line. Everything runs against SQLite through the Python standard library, so there is nothing to install but Sustained itself.
 
-Each step builds on the ones before it. If you are new to the package, run through it top to bottom in one sitting.
+Each step builds on the ones before it, so if you are new to the package, run through it top to bottom in one sitting.
 
 ## Install
 
@@ -95,7 +95,7 @@ print(query.to_sql())
 
 ## Create the schema
 
-`Migrator.up(models=[...])` compares the models in your code against the live database, generates the migration that brings the database up to date, records it, and applies it. The models are the source of truth. Sustained changes the database to match them, never the other way round.
+`Migrator.up(models=[...])` compares the models in your code against the live database, generates the migration that brings the database up to date, records it, and applies it. The models are the source of truth, so Sustained changes the database to match them and never the reverse.
 
 ```python
 import sqlite3
@@ -114,7 +114,7 @@ migrator.up(models=[Venue, Show])
 
 `Model.bind()` on the base class shares one connection with every model. Bind a subclass instead to scope a connection to it.
 
-When running a migration, pass every model you manage to the migrator, not only the ones that changed. The diff compares the whole database against the whole list, and a table missing from the list could silently miss updates.
+When running a migration, pass every model you manage to the migrator, not only the ones that changed. The diff compares the whole database against the whole list, so a table missing from the list is not kept up to date.
 
 ## Write and read rows
 

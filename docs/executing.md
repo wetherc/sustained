@@ -18,7 +18,7 @@ shows = (Show.query()
 # [Show(id=1, title='Nightcrawler', ...), ...]
 ```
 
-Sustained works with any DB-API 2.0 connection and never opens one itself. It reads no connection strings and no config files: you build the connection and pass it in.
+Sustained works with any DB-API 2.0 connection and never opens one itself. It reads no connection strings or config files, so you build the connection and pass it in.
 
 Every statement runs parameterized. Values travel as parameters and never as text inside the SQL, so `str(query)` and the string that reaches the database are deliberately different.
 
@@ -82,7 +82,7 @@ show = Show.query().where('title', '=', 'Nightcrawler').first()
 
 ### Type checking
 
-The builder carries its model type: `Show.query()` is a `QueryBuilder[Show]`, and the model survives every clause you chain, so `mypy` and Pyright read the results without a cast or an annotation:
+The builder is generic over its model. `Show.query()` is a `QueryBuilder[Show]`, and every chained clause keeps that type parameter, so `mypy` and Pyright read the results without a cast or an annotation:
 
 ```python
 shows = (Show.query()
@@ -116,7 +116,7 @@ The columns are not typed. A `select()` does not narrow the model, and `to_dicts
 
 ### Names for what you pass in
 
-Sustained exports names for the untyped handoff points of the library. Import them from `sustained`:
+Sustained exports names for the library's untyped handoff points. Import them from `sustained`:
 
 ```python
 from sustained import Binding, Connection, Cursor, RowValue, SqlValue
@@ -134,7 +134,7 @@ def get_connection() -> Connection:
     return sqlite3.connect('app.db')
 ```
 
-`Binding` is what `Model.bind()` takes and what every `connection=` argument accepts: one `Connection`, or a `ConnectionPool` that hands them out.
+`Binding` is the type `Model.bind()` and every `connection=` argument accept: one `Connection`, or a `ConnectionPool` that hands them out.
 
 `SqlValue` and `RowValue` split values by direction. `SqlValue` is a value on its way into the database, bound as a parameter or rendered as a literal. It is `object`, not `Any`, so passing a query value where a column name belongs is still an error. `RowValue` is a value read back, and it stays `Any` because the driver decides whether a `NUMERIC` arrives as a `Decimal` or a `float`.
 
@@ -259,7 +259,7 @@ with Show.transaction():
     )
 ```
 
-Nested blocks use savepoints, so a failure inside an inner block rolls back only that block and the outer transaction carries on. The savepoint statement follows the model's dialect: MSSQL gets `SAVE TRANSACTION`, everything else the ANSI `SAVEPOINT`. DuckDB has no savepoints, so a nested block raises `DialectError` there.
+Nested blocks use savepoints, so a failure inside an inner block rolls back only that block and the outer transaction continues. The savepoint statement follows the model's dialect: MSSQL gets `SAVE TRANSACTION`, everything else the ANSI `SAVEPOINT`. DuckDB has no savepoints, so a nested block raises `DialectError` there.
 
 ## Eager loading relations
 
@@ -316,7 +316,7 @@ A query given the pool by hand inside the block runs on the pinned connection to
 
 An exhausted pool raises `PoolTimeout` after the configured timeout rather than blocking forever. `pool.close()` closes the idle connections.
 
-A transaction belongs to the thread that opened it. A second thread that calls `transaction()` on the same connection gets a `RuntimeError`, because a connection carries one transaction and the block would otherwise nest inside the first thread's. Give each thread its own connection, from a pool or from a second bind target.
+A transaction belongs to the thread that opened it. A second thread that calls `transaction()` on the same connection gets a `RuntimeError`, because a connection runs one transaction at a time and the block would otherwise nest inside the first thread's. Give each thread its own connection, from a pool or from a second bind target.
 
 ## Async execution
 
@@ -349,7 +349,7 @@ async with Show.async_transaction():
 
 ### Async pooling
 
-One adapter runs one statement at a time. A connection carries one transaction, `DbApiAsyncAdapter` serializes every call behind one lock, and asyncpg sends one statement per connection. Ten concurrent `arun()` calls on one adapter queue up behind each other.
+One adapter runs one statement at a time, because a connection runs one transaction at a time, `DbApiAsyncAdapter` serializes every call behind one lock, and asyncpg sends one statement per connection. Ten concurrent `arun()` calls on one adapter therefore queue up behind each other.
 
 `AsyncConnectionPool` is the async twin of `ConnectionPool`. It opens adapters from an async factory, up to `max_size`, and binds like one:
 
@@ -368,9 +368,9 @@ shows, tickets = await asyncio.gather(
 )
 ```
 
-Each call checks one adapter out for its whole length, the statement, its eager loads, and its commit alike, then gives it back. An `async_transaction()` block keeps one adapter from BEGIN to COMMIT. A call handed the same pool inside that block, such as `arun(query, pool)`, runs on the adapter the block checked out, and a nested `async_transaction(pool)` opens a savepoint on it, the way the blocking `transaction(pool)` nests. A released adapter is rolled back first, so a failed statement never reaches the next task; an adapter whose driver refuses rollback with no transaction open, the way duckdb does, is probed with `SELECT 1` and kept when it answers. An exhausted pool raises `PoolTimeout`, the same error the blocking pool raises, and `await pool.close()` closes the idle adapters.
+Each call checks one adapter out for its whole length, including the statement, its eager loads, and its commit, then gives it back. An `async_transaction()` block keeps one adapter from BEGIN to COMMIT. A call handed the same pool inside that block, such as `arun(query, pool)`, runs on the adapter the block checked out, and a nested `async_transaction(pool)` opens a savepoint on it, the way the blocking `transaction(pool)` nests. A released adapter is rolled back first, so a failed statement never reaches the next task; an adapter whose driver refuses rollback with no transaction open, the way duckdb does, is probed with `SELECT 1` and kept when it answers. An exhausted pool raises `PoolTimeout`, the same error the blocking pool raises, and `await pool.close()` closes the idle adapters.
 
-The pool runs no statement itself. `await pool.fetch(...)` raises, because a write and its commit would land on two different connections; take an adapter out with `async with pool.scope() as adapter` when you want to run something by hand. `AsyncMigrator` takes an adapter, not a pool: a migration run belongs on one session.
+The pool runs no statement itself. `await pool.fetch(...)` raises, because a write and its commit would land on two different connections; take an adapter out with `async with pool.scope() as adapter` when you want to run something by hand. `AsyncMigrator` takes an adapter rather than a pool, because a migration run belongs on one session.
 
 ## Watching what runs
 
