@@ -18,15 +18,15 @@ shows = (Show.query()
 # [Show(id=1, title='Nightcrawler', ...), ...]
 ```
 
-Sustained works with any DB-API 2.0 connection and never opens one itself. It reads no connection strings or config files, so you build the connection and pass it in.
+Sustained works with any DB-API 2.0 connection passed to it; it will not open and manage connections itself.
 
-Every statement runs parameterized. Values travel as parameters and never as text inside the SQL, so `str(query)` and the string that reaches the database are deliberately different.
+Every statement runs parameterized: values travel as parameters and never as text inside the SQL.
 
 The examples use the venue booking schema from [Getting Started](./getting-started).
 
 ## Matching the driver to the dialect
 
-The connection's parameter style has to match the dialect's placeholder. `to_sql()` renders the placeholder and `run()` hands the parameters straight to the driver, so a mismatch fails at execution time with a driver error rather than at build time:
+You can generally use any DB-API 2.0 driver to connect to your database backaend of choice, the only caveat is that connection's parameter style has to match the placeholder Sustained uses for the dialect:
 
 | Dialect | Placeholder | Driver |
 | --- | --- | --- |
@@ -39,7 +39,7 @@ On Athena, `run()` also converts each parameter to the string form the Athena AP
 
 ## Binding a connection
 
-`Model.bind()` sets the connection as a class attribute, which subclasses inherit:
+`Model.bind()` sets the connection as a class attribute which subclasses inherit:
 
 ```python
 from sustained import Model
@@ -51,7 +51,7 @@ Show.unbind()        # remove it again
 
 A connection passed to `run()` or `first()` overrides any binding. This is useful when, e.g., one query needs to run against a replica while the rest use the primary.
 
-Sustained looks for a connection in this order: the connection you passed to the call, then the connection pinned by an open `transaction()` block, then the model's binding, whether set on the model or inherited from a parent class. Running with none of those raises `RuntimeError`.
+Sustained looks for a connection first as an argument that you passed to the call, then via a connection pinned by an open `transaction()` block, then the model's binding, whether set on the model or inherited from a parent class. Running with none of those raises `RuntimeError`.
 
 ## Reading rows
 
@@ -70,7 +70,7 @@ show = Show.query().where('title', '=', 'Nightcrawler').first()
 
 ### Other result data structures
 
-`run()` returns model instances. To get the same rows in another form, use one of these methods instead:
+`run()` returns model instances by default. To get return results as another data structure, use one of these methods instead:
 
 | Method | Returns |
 | --- | --- |
@@ -78,11 +78,11 @@ show = Show.query().where('title', '=', 'Nightcrawler').first()
 | `to_df()` | a pandas DataFrame, keeping the column names even when empty |
 | `to_arrow()` | a pyarrow Table |
 
-`pandas` and `pyarrow` are optional dependencies. The methods raise `RuntimeError` naming the install command when the library is missing.
+`pandas` and `pyarrow` are optional dependencies. The methods raise `RuntimeError` if the library is missing.
 
 ### Type checking
 
-The builder is generic over its model. `Show.query()` is a `QueryBuilder[Show]`, and every chained clause keeps that type parameter, so `mypy` and Pyright read the results without a cast or an annotation:
+The builder is generic over its model. `Show.query()` is a `QueryBuilder[Show]`, and every chained clause retains this type parameter, so `mypy` and Pyright read the results without needing a cast or an annotation:
 
 ```python
 shows = (Show.query()
@@ -99,7 +99,7 @@ rows = Show.query().to_dicts()
 # rows: List[Dict[str, Any]]
 ```
 
-`insert()`, `insert_from()`, `create_table_as()`, `update()`, and `delete()` hand back a `WriteBuilder[Show]`, whose `run()` is the affected row count, or the RETURNING rows as dicts:
+`insert()`, `insert_from()`, `create_table_as()`, `update()`, and `delete()` return a `WriteBuilder[Show]`, whose `run()` is the affected row count, or the RETURNING rows as dicts:
 
 ```python
 removed = (Show.query()
@@ -110,11 +110,11 @@ removed = (Show.query()
 # removed: Union[int, List[Dict[str, Any]]]
 ```
 
-`QueryBuilder` and `WriteBuilder` are one class at runtime. The two names exist so that a type checker never reads a row count as a list of models. `isinstance(query, WriteBuilder)` is true for any builder, so do not test with it.
+`QueryBuilder` and `WriteBuilder` are one class at runtime. The two names exist so that a type checker can easily distinguish a row count from a list of models. `isinstance(query, WriteBuilder)` is true for any builder, so do not test against that comparison.
 
 The columns are not typed. A `select()` does not narrow the model, and `to_dicts()` values stay `RowValue`, which is `Any`, because Python has no reasonable way to infer narrower types back out of the SQL string.
 
-### Names for what you pass in
+### Untyped handoffs
 
 Sustained exports names for the library's untyped handoff points. Import them from `sustained`:
 
@@ -122,7 +122,7 @@ Sustained exports names for the library's untyped handoff points. Import them fr
 from sustained import Binding, Connection, Cursor, RowValue, SqlValue
 ```
 
-`Connection` and `Cursor` describe the DB-API 2.0 methods Sustained calls. They are protocols, so a `sqlite3.Connection`, a `psycopg` connection, and a `pyodbc` connection all match without subclassing anything. Annotate a config module's factory with `Connection` and a type checker will expect a real driver:
+`Connection` and `Cursor` describe the DB-API 2.0 methods Sustained calls. They are protocols, so a `sqlite3.Connection`, a `psycopg` connection, and a `pyodbc` connection all match without subclassing. If you annotate a config module's factory with `Connection`, a type checker will expect a real driver:
 
 ```python
 # sustained_config.py
@@ -134,7 +134,7 @@ def get_connection() -> Connection:
     return sqlite3.connect('app.db')
 ```
 
-`Binding` is the type `Model.bind()` and every `connection=` argument accept: one `Connection`, or a `ConnectionPool` that hands them out.
+`Model.bind()` and every `connection=` argument expect a value of type `Binding`: typically via either a `Connection` or a `ConnectionPool`.
 
 `SqlValue` and `RowValue` split values by direction. `SqlValue` is a value on its way into the database, bound as a parameter or rendered as a literal. It is `object`, not `Any`, so passing a query value where a column name belongs is still an error. `RowValue` is a value read back, and it stays `Any` because the driver decides whether a `NUMERIC` arrives as a `Decimal` or a `float`.
 

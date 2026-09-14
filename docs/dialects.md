@@ -3,7 +3,7 @@ layout: default
 title: SQL Dialects
 ---
 
-Sustained compiles the same query for every database engine it supports. You set the dialect once per model, usually at application startup, and every query, DDL statement, and migration for that model renders in that engine's SQL:
+Sustained compiles the same query for every database engine it supports: you set the dialect once per model, usually at application startup, and every query, DDL statement, and migration for that model will then in that engine's SQL:
 
 ```python
 from sustained.dialects import Dialects
@@ -11,11 +11,11 @@ from sustained.dialects import Dialects
 User.set_dialect(Dialects.POSTGRES)
 ```
 
-If an engine lacks a feature, the query raises `DialectError` when it builds, before anything reaches the database.
+Recompiling the query to target a different SQL engine is a one-line configuration change (assuming feature parity between engines for the query you have built). If an engine lacks a feature, the query raises a `DialectError` when it builds.
 
 ## Dialects, drivers, and placeholders
 
-To execute queries, bind a DB-API 2.0 connection whose parameter style matches the dialect's placeholder. `to_sql()` renders that placeholder, and `run()` passes the parameters straight to the driver, so a mismatch fails at execution time.
+To execute queries, bind a DB-API 2.0 connection whose parameter style matches the dialect's placeholder. `to_sql()` renders that placeholder, and `run()` passes the parameters straight to the driver, so a mismatch will fail at execution time.
 
 | Dialect | Engine | Recommended driver | Placeholder | Quoting |
 | --- | --- | --- | --- | --- |
@@ -31,7 +31,7 @@ Async execution wraps a driver in an adapter instead: `AsyncpgAdapter` for async
 
 ## Default (ANSI, SQLite)
 
-The default dialect renders plain ANSI SQL with unquoted identifiers and `?` placeholders. SQLite's built-in driver matches it exactly, and the migration system treats it as SQLite: introspection reads the PRAGMA tables, and column changes rebuild the table, because SQLite cannot alter columns in place.
+The default dialect renders plain ANSI SQL with unquoted identifiers and `?` placeholders. Sustained treats this dialect as executing against SQLite.
 
 ```python
 import sqlite3
@@ -44,11 +44,9 @@ User.bind(sqlite3.connect('app.db'))
 users = User.query().where('active', '=', True).run()
 ```
 
-Upserts render `ON CONFLICT`, RETURNING works, and `whereILike()` compiles to `LOWER(col) LIKE LOWER(pattern)`.
-
 ## PostgreSQL
 
-Postgres supports the largest set of features: native `ILIKE`, `DISTINCT ON`, `RETURNING`, `ON CONFLICT` upserts, `for_update()` row locking, identity columns for `autoincrement`, `JSONB` for the `Json` type, and in-place `ALTER COLUMN` migrations with `USING` cast hints. Migration runs take a `pg_advisory_lock`, so concurrent deploys queue. Placeholders are `%s`, matching psycopg.
+Postgres supports the largest set of features: native `ILIKE`, `DISTINCT ON`, `RETURNING`, `ON CONFLICT` upserts, `for_update()` row locking, identity columns for `autoincrement`, `JSONB` for the `Json` type, and in-place `ALTER COLUMN` migrations with `USING` cast hints. Migration runs take a `pg_advisory_lock`, so concurrent deploys queue behind one another. Placeholders are passed as `%s`.
 
 ```python
 import psycopg
@@ -74,7 +72,7 @@ User.bind(ConnectionPool(lambda: psycopg.connect(DSN), max_size=10))
 
 ## Microsoft SQL Server
 
-MSSQL quotes identifiers with brackets and uses `?` placeholders, matching pyodbc. Booleans render as `1`/`0`, `Boolean` columns as `BIT`, strings as `NVARCHAR`, and timestamps as `DATETIME2`. `top(n)` renders `TOP n`. `limit()` and `offset()` compile to `OFFSET ... FETCH`, which T-SQL only allows after `orderBy()`. Upserts render a `MERGE` statement. `NOW()` translates to `GETDATE()` and `LENGTH()` to `LEN()`.
+MSSQL quotes identifiers with square brackets and uses `?` placeholders. Booleans render as `1`/`0`, `Boolean` columns as `BIT`, strings as `NVARCHAR`, and timestamps as `DATETIME2`. `top(n)` renders `TOP n`. `limit()` and `offset()` compile to `OFFSET ... FETCH` (although T-SQL only allows this after `orderBy()`). Upserts render a `MERGE` statement. `NOW()` translates to `GETDATE()` and `LENGTH()` to `LEN()`.
 
 ```python
 import pyodbc
@@ -94,7 +92,7 @@ RETURNING, CTAS, and `explain()` raise `DialectError`. Use `OUTPUT`, `SELECT INT
 
 ## MySQL and MariaDB
 
-The `MYSQL` dialect serves both MySQL and MariaDB; Sustained does not distinguish between the two. Identifiers quote with backticks and placeholders are `%s`, matching PyMySQL, mysqlclient, and mysql-connector. Upserts render `ON DUPLICATE KEY UPDATE`. `for_update()` works, with `SKIP LOCKED` and `NOWAIT` on MySQL 8.0 and later. Migration runs take a `GET_LOCK` session lock.
+The `MYSQL` dialect supports both MySQL and MariaDB; Sustained does not distinguish between the two. Identifiers quote with backticks and placeholders are `%s`. Upserts render `ON DUPLICATE KEY UPDATE`. `for_update()` works, with `SKIP LOCKED` and `NOWAIT` on MySQL 8.0 and later. Migration runs take a `GET_LOCK` session lock.
 
 ```python
 import pymysql
@@ -110,7 +108,7 @@ newest = (User.query()
 )
 ```
 
-Column types render in the spelling `information_schema` reports back, so a column never drifts against the DDL that created it:
+Column types are automatically converted to database-native types:
 
 | Sustained | MySQL |
 | --- | --- |
@@ -125,19 +123,19 @@ Column types render in the spelling `information_schema` reports back, so a colu
 | `Timestamp()` | `DATETIME` |
 | `Json()` | `JSON` |
 
-`Timestamp()` maps to `DATETIME` rather than `TIMESTAMP`. MySQL's `TIMESTAMP` is four bytes, stops in 2038, and converts time zones on the way in and out, which is not what `Timestamp()` describes.
+`Timestamp()` maps to `DATETIME` rather than `TIMESTAMP`. MySQL's `TIMESTAMP` is four bytes, stops in 2038, and performs implicit timezone conversion.
 
-RETURNING raises `DialectError`. MariaDB supports it, but both servers share one dialect, so the builder refuses what MySQL would reject. Read the row back with a second query, or use `LAST_INSERT_ID()` through raw SQL. `STRING_AGG` raises as well, rather than translating to `GROUP_CONCAT`, whose separator is a keyword and not a second argument. A whole `Text()`, `Json()`, or `Binary()` column takes neither a unique key nor a literal `DEFAULT`: MySQL wants a prefix length for the first and refuses the second.
+RETURNING raises `DialectError`. MariaDB supports it, but MySQL does not. Instead, you can read the row back with a second query, or use `LAST_INSERT_ID()` through raw SQL. `STRING_AGG` raises as well, rather than translating to `GROUP_CONCAT`, whose separator is a keyword and not a second argument. `Text()`, `Json()`, or `Binary()` columns will not accept either a unique key or a literal `DEFAULT`.
 
-A `references` declaration becomes a table-level `FOREIGN KEY` in `CREATE TABLE`, and a named `ADD CONSTRAINT` statement when the column is added to a table that already exists. InnoDB parses a `REFERENCES` clause written beside a column and creates nothing, so a clause written there would look like a foreign key while not enforcing anything.
+A `references` declaration becomes a table-level `FOREIGN KEY` in `CREATE TABLE`, and a named `ADD CONSTRAINT` statement when the column is added to a table that already exists.
 
-No `tableColumns` declaration produces an unsigned integer column, so one already in your database reports as drift that no migration can close. Leave the column out of the model, or move it to a signed type.
+`tableColumns` will never produce an unsigned integer column, so one already in your database reports as unrecoverable drift. Leave the column out of the model, or move it to a signed type to resolve this.
 
 ### Schema changes commit as they run
 
 MySQL has no transactional DDL, so every schema statement commits the moment it runs, whatever the surrounding transaction does.
 
-`sustained rehearse` refuses MySQL in place, because a rollback would have no effect and the run would report a database as unchanged when it had changed. Point it at a scratch database instead:
+`sustained rehearse` refuses to run against MySQL since it cannot safely execute the migration without committing the changes. Point it at a scratch database instead:
 
 ```python
 # sustained_config.py
@@ -147,18 +145,22 @@ def get_rehearsal_connection():
 
 Through the API, that is `migrator.rehearse(scratch=True)` on a migrator built over the throwaway connection.
 
-A migration that fails halfway leaves the statements before it applied. The run records a failure row against that migration, `validate()` refuses the next run while the row is there, and `repair()` clears it once you have checked what landed. `sustained script up` prints every statement the run would have executed, so you can read down the list and find where it stopped.
+The migration run will record any failure against that migration, `validate()` will refuse the next run while the row is there, and `repair()` will clear it once you have checked what landed. `sustained script up` prints every statement the run would have executed, so you can read down the list and find where it stopped.
 
 ## Presto and Trino
 
-The Presto dialect renders double-quoted identifiers, `OFFSET` before `LIMIT`, and `?` placeholders, which matches the `trino` DB-API package. Presto is a query federation engine, so writes are limited: upserts, identity columns, and RETURNING raise `DialectError`.
+The Presto dialect renders double-quoted identifiers, `OFFSET` before `LIMIT`, and uses `?` placeholders. Presto is a query federation engine, so writes are limited: upserts, identity columns, and RETURNING raise `DialectError`.
 
 ```python
 import trino
 from sustained.dialects import Dialects
 
 Event.set_dialect(Dialects.PRESTO)
-Event.bind(trino.dbapi.connect(host='presto.internal', port=8080, catalog='hive', schema='web'))
+Event.bind(trino.dbapi.connect(
+    host='presto.internal',
+    port=8080,
+    catalog='hive',
+    schema='web'))
 
 counts = (Event.query()
     .select('page')
@@ -174,7 +176,7 @@ Athena runs a Trino-based engine over files in S3, so the dialect inherits Prest
 
 Set `pyathena.paramstyle = "qmark"` before you run a parameterized query. Sustained passes parameters as a tuple, and pyathena's default pyformat style takes a dict only. With qmark, pyathena sends the tuple as native Athena execution parameters. This needs pyathena 3 or later.
 
-Athena's API only takes execution parameters as strings, so `run()` converts each value on the way out: numbers through `str()`, booleans to `true`/`false`. Athena infers the value's type from the position of its placeholder, so a converted number still compares against a numeric column. `None` becomes a literal `NULL` in the statement, because the API has no way to pass one. Binary values raise `DialectError`. The conversion runs inside `run()` and the migrator; if you execute `to_sql()` output yourself, pass it through `compiler.prepare_execution(sql, params)` first.
+Athena's API only takes execution parameters as strings, so `run()` converts each value: numbers through `str()`, booleans to `true`/`false`. Athena infers the value's type from the position of its placeholder, so a converted number still compares against a numeric column. `None` becomes a literal `NULL` in the statement. Binary values raise `DialectError`. The conversion runs inside `run()` and the migrator; if you execute `to_sql()` output yourself, pass it through `compiler.prepare_execution(sql, params)` first.
 
 ```python
 import pyathena
@@ -192,7 +194,7 @@ Event.bind(connect(
 deploys = Event.query().where('name', '=', 'deploy').run()
 ```
 
-Every `run()` is one Athena query execution with its own scan cost and latency, so patterns that are cheap elsewhere add up here: eager loading costs one execution per relation, and `cursor_page()` one per page. Athena tables have no constraints, indexes, or transactions. See [Schema and Migrations](./schema#athena) for how DDL and the migrator handle that, and for what requires Iceberg tables.
+Every `run()` is one Athena query execution with its own scan cost and latency, so query patterns that are cheap in most other database engines can add up here: eager loading costs one execution per relation, and `cursor_page()` one execution per page. Athena tables have no constraints, indexes, or transactions. See [Schema and Migrations](./schema#athena) for how DDL and the migrator handle that, and for what requires Iceberg tables.
 
 ## DuckDB
 
@@ -215,7 +217,7 @@ top = (Event.query()
 
 ## Enum columns
 
-An `Enum` column declares its values once, and each engine enforces the list with the mechanism it has:
+An `Enum` column declares its allowed values, and those values are enforced by database-specific mechanisms:
 
 | Dialect | Strategy | Renders |
 | --- | --- | --- |
@@ -229,7 +231,7 @@ On PostgreSQL 12 and later, `ALTER TYPE ... ADD VALUE` rolls back inside a trans
 
 ## Column comments
 
-A column's `comment` is stored wherever the engine keeps one:
+A column's `comment` is stored specific to the database engine as well:
 
 | Dialect | Stores | Renders |
 | --- | --- | --- |
@@ -243,4 +245,4 @@ See [Column comments](./schema#column-comments) for how drift generates.
 
 ## Writing dialect-portable code
 
-If you build queries through the builder's methods rather than raw SQL, one model definition serves every dialect: quoting, placeholders, booleans, `LIMIT` spelling, upsert syntax, and function names (`NOW()`, `LENGTH()`) all follow `set_dialect()`. The differences that cannot be papered over raise `DialectError` with a message naming the alternative, so porting is mostly a matter of running your test suite and reading the errors it raises.
+If you build queries through the builder's methods rather than raw SQL, one model definition is capable of serving every dialect: quoting, placeholders, booleans, `LIMIT` spelling, upsert syntax, and function names (`NOW()`, `LENGTH()`) all follow `set_dialect()`. Database features without clear analogues raise `DialectError` with a message naming the alternative, so porting is mostly a matter of running your test suite and reading the errors it raises.
