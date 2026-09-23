@@ -63,7 +63,7 @@ User.query().order_by('name')    # the same method
 
 The rewrite uppercases only a letter that follows an underscore, so the snake_case spelling of `whereILike` is `where_i_like`, and `where_ilike` does not resolve.
 
-Method names also match case-insensitively, so `WHERE` and `leftouterjoin` resolve as well. Use the canonical spelling, because the other spellings exist only so that a port from Objection.js does not fail on capitalization.
+Join method names also match case-insensitively, so `leftouterjoin` and `LEFTJOIN` resolve as well. Every other method name is case-sensitive, so `WHERE` and `orderby` raise `AttributeError`. Use the canonical spelling, because the other join spellings exist only so that a port from Objection.js does not fail on capitalization.
 
 ## When errors are raised
 

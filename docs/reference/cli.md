@@ -39,7 +39,7 @@ Guide: [Schema and Migrations](/schema#command-line).
 | 3 | `plan` and `migrate`: a guard blocked a statement. |
 | 4 | `migrate` only: the run removes data and no rehearsal proved it. |
 
-`plan` uses all of these codes. It exits 0 when the database is current, 2 when migrations are pending or the models have drifted, 3 when a guard blocked a statement, and 1 when validation found problems. Problems outrank a blocked statement, and a blocked statement outranks pending work.
+`plan` uses every code except 4. It exits 0 when the database is current, 2 when migrations are pending or the models have drifted, 3 when a guard blocked a statement, and 1 when validation found problems. Problems outrank a blocked statement, and a blocked statement outranks pending work.
 
 `argparse` also exits 2 on a usage error. If your script treats 2 as "work is waiting", check stderr for an `error:` line first.
 

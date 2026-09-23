@@ -50,7 +50,7 @@ Before a revert takes back its first migration, it reads the checksum of every m
 
 A generated migration exists only in the run that produced it, so its tracking row stores both its up and its down statements, and a process on a later deploy can revert it from that row without the diff. A rebuild still cannot be reverted, because it has no down step.
 
-The migrator records every applied migration in a tracking table and runs each one inside a transaction. A failing step rolls its own migration back and leaves earlier migrations applied.
+The migrator records every applied migration in a tracking table. On engines whose schema changes roll back, it runs each migration inside a transaction, so a failing step rolls its own migration back and leaves earlier migrations applied. MySQL, Athena, and migrations with `transactional=False` run without that transaction, as the sections below describe.
 
 ## Validation and repair
 
@@ -684,7 +684,7 @@ if rehearsal.ok:
 migrator.up(unrehearsed=True)                  # or skip the proof
 
 migrator.rehearsed(rehearsal.key)              # True
-migrator.rehearsal_outcome(rehearsal.key)      # 'passed', 'failed', or None
+migrator.rehearsal_outcome(rehearsal.key)      # 'passed', 'failed', 'override', or None
 migrator.record_rehearsal(rehearsal.key)       # write one by hand
 ```
 

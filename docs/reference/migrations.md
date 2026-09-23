@@ -72,7 +72,7 @@ Migrator(connection, migrations, table='sustained_migrations', dialect=Dialects.
 ```
 {: .sig}
 
-`Migrator` applies and reverts migrations, records them in a tracking table, and runs each migration inside a transaction. Duplicate ids raise `ValueError`.
+`Migrator` applies and reverts migrations and records them in a tracking table. It runs each migration inside a transaction on engines whose schema changes roll back, which excludes MySQL and Athena, unless the migration sets `transactional=False`. Duplicate ids raise `ValueError`.
 
 `guards` is a list of rules over the statements an up run would apply. See [Guards](#guards) below. `callbacks` is a `Callbacks` object, whose functions `up()` calls around the run.
 
@@ -324,7 +324,7 @@ The rehearsal table is named `sustained_rehearsals` by default, is created on fi
 | Column | Type | Contains |
 | --- | --- | --- |
 | `rehearsal_key` | `VARCHAR(64)` primary key | The key `rehearsal_key()` computes |
-| `outcome` | `VARCHAR(16)` not null | `passed` or `failed` |
+| `outcome` | `VARCHAR(16)` not null | `passed`, `failed`, or `override` |
 | `rehearsed_at` | `TEXT` not null | When the rehearsal ran |
 
 Every diff against the models excludes both tables, so neither table reads as drift or as an object a down step left behind.

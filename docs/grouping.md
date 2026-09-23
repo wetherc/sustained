@@ -127,7 +127,7 @@ Ticket.query().select('price').groupByRollup('show_id')
 # SELECT price FROM tickets GROUP BY ROLLUP (show_id)
 ```
 
-`groupByCube()` adds a subtotal for every combination of the columns, so column order has no effect and the row count grows as a power of two.
+`groupByCube()` adds a subtotal for every combination of the columns, so column order has no effect and the number of grouping sets doubles with each column you add.
 
 `groupByGroupingSets()` takes the combinations explicitly, as tuples. An empty tuple is the grand total:
 

@@ -121,7 +121,7 @@ Postgres reads `current_schema()`, MSSQL reads `SCHEMA_NAME()`, DuckDB reads `cu
 
 Presto and Trino have no expression for the schema the connection is on. Their read covers every schema but the system ones, and a declared `tableSchema` leaves it that wide, because narrowing the read to the declared schema would drop the tables in the connection's own schema.
 
-The declared schemas make their own `IN` list, and the read compares the current-schema expression beside it with `OR`, because Postgres returns `NULL` from `current_schema()` when the first `search_path` entry names a schema that does not exist, and a `NULL` inside the `IN` list would make the whole list match nothing.
+The declared schemas make their own `IN` list, and the read compares the current-schema expression beside it with `OR`. Postgres returns `NULL` from `current_schema()` when the first `search_path` entry names a schema that does not exist, and in that case the `OR` branch matches no rows while the declared schemas still match.
 
 The constraint join matches schema names as well as constraint names, because a constraint name is only unique within its schema. An engine whose `key_column_usage` has no `table_schema` column falls back to the plain join, but only when no model declares a `tableSchema`. The plain join cannot keep two schemas apart, so when a declared schema widens the read, the constraints stay unread instead.
 

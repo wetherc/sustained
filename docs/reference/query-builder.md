@@ -227,7 +227,7 @@ limit(value)
 ```
 {: .sig #limit}
 
-Caps the row count. Raises `ValueError` when set twice or combined with `top()`, and `TypeError` for a value that is not an integer.
+Caps the row count. Raises `ValueError` for a negative value, when set twice, or when combined with `top()`, and `TypeError` for a value that is not an integer.
 
 ```python
 offset(value)
@@ -262,7 +262,7 @@ for_update(skip_locked=False, nowait=False)
 ```
 {: .sig #for_update}
 
-Row locking. Postgres only. Raises `ValueError` when both flags are set, or when combined with a union.
+Row locking. Postgres and MySQL only. Raises `ValueError` when both flags are set, or when combined with a union.
 
 ```python
 clone() -> QueryBuilder

@@ -67,6 +67,23 @@ class Show(Model):
             'modelClass': 'Venue',
             'join': {'from': 'shows.venue_id', 'to': 'venues.id'},
         },
+        'tickets': {
+            'relation': RelationType.HasManyRelation,
+            'modelClass': 'Ticket',
+            'join': {'from': 'shows.id', 'to': 'tickets.show_id'},
+        },
+        'artists': {
+            'relation': RelationType.ManyToManyRelation,
+            'modelClass': 'Artist',
+            'join': {
+                'from': 'shows.id',
+                'through': {
+                    'from': {'table': 'show_artists', 'key': 'show_id'},
+                    'to': {'table': 'show_artists', 'key': 'artist_id'},
+                },
+                'to': 'artists.id',
+            },
+        },
     }
 
 
@@ -319,7 +336,7 @@ Artist.query().insert({'name': 'Duster', 'country': 'US'}) \
     .onConflict('name').ignore().run()     # keep the existing row
 ```
 
-The conflict columns must have a unique constraint or primary key in the database, or the statement fails there. `merge()` updates every inserted column except the conflict columns, or only the columns in a list you pass it. Postgres, SQLite, and DuckDB render `ON CONFLICT`, MSSQL renders `MERGE`, and Presto raises `DialectError`.
+The conflict columns must have a unique constraint or primary key in the database, or the statement fails there. `merge()` updates every inserted column except the conflict columns, or only the columns in a list you pass it. Postgres, SQLite, and DuckDB render `ON CONFLICT`, MySQL renders `ON DUPLICATE KEY UPDATE`, MSSQL and Athena (on Iceberg tables) render `MERGE`, and Presto raises `DialectError`.
 
 ## Get the generated id back from an insert
 
@@ -329,11 +346,15 @@ rows = Venue.query().insert({'name': 'Roseland', 'city': 'Portland'}) \
 # [{'id': 3}]
 ```
 
-The statement returns dicts instead of a row count. MSSQL and Presto raise `DialectError`, so on MSSQL use an `OUTPUT` clause through raw SQL.
+The statement returns dicts instead of a row count. MySQL, MSSQL, Presto, and Athena raise `DialectError`. On MSSQL, use an `OUTPUT` clause through raw SQL, and on MySQL, read the row back with a second query.
 
 ## Copy rows between tables
 
 ```python
+class TicketArchive(Model):
+    tableName = 'ticket_archive'
+
+
 recent = Ticket.query().select('show_id', 'price').where('sold_at', '>', '2026-01-01')
 
 TicketArchive.query().insert_from(['show_id', 'price'], recent).run()

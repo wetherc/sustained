@@ -7,7 +7,7 @@ Sustained supports a fixed list of databases, database versions, and Python vers
 
 ## What support means
 
-For every database in the table that has a server, "supported" means that we guarantee Sustained's behavior against every version of that database from the minimum to the maximum listed version, inclusive. We currently run the full integration suite only against the oldest and newest supported versions, and we assume that every version between them remains compatible with Sustained. We plan to close this gap in our testing.
+For every database in the table that has a server, "supported" means that we guarantee Sustained's behavior against every version of that database from the floor to the newest suite version, inclusive. We currently run the full integration suite only against the two suite versions, and we assume that every other version in that range remains compatible with Sustained. We plan to close this gap in our testing.
 
 The ANSI dialect has no server to run, so Sustained compiles SQL for it and unit tests check the SQL text.
 
@@ -41,9 +41,9 @@ We do not test writes or migrations against databases that do not support transa
 
 ## Database versions
 
-The **Versions** column lists a floor and a suite version. Each dialect's floor is the oldest database version that can execute Sustained's full set of SQL statements, and the Notes column lists the statements that version added. On a release older than the floor, only those unsupported statements fail and everything else continues to work. We change the floor only in a major release of Sustained.
+The **Versions** column lists a floor and, for databases that run in a container, two suite versions. Each dialect's floor is the oldest database version that can execute Sustained's full set of SQL statements, and the Notes column lists the statements that version added. On a release older than the floor, only those unsupported statements fail and everything else continues to work. We change the floor only in a major release of Sustained.
 
-The suite version is the oldest release the vendor still supports, and the integration tests run against it. When the vendor ends support for that release, a minor release of Sustained moves the suite version to the next release and notes the change in the changelog. The suite also tests the vendor's latest release, which the table lists as the upper bound of the suite version.
+The first suite version is the oldest release the vendor still supports. When the vendor ends support for that release, a minor release of Sustained moves the suite version to the next release and notes the change in the changelog. The second suite version is the vendor's latest release, and it sets the upper end of the supported range.
 
 To check your exact version, point the suite at your server and run it:
 

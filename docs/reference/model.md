@@ -110,7 +110,7 @@ Model.create_table_sql(if_not_exists=False) -> str
 ```
 {: .sig #create_table_sql}
 
-The CREATE TABLE statement from `tableColumns` and `tableOptions`. Raises `ValueError` when the model sets no `tableColumns` or no `tableName`.
+The CREATE TABLE statement from `tableColumns`, `tableConstraints`, and `tableOptions`. Raises `ValueError` when the model sets no `tableColumns` or no `tableName`.
 
 ```python
 Model.create_indexes_sql() -> list[str]

@@ -384,7 +384,7 @@ Without the clones, the second line would filter on both venues and return nothi
 
 ## Method naming
 
-The canonical names are camelCase: `orderBy`, `groupBy`, `whereIn`, `unionAll`, `leftJoin`. Each also accepts its snake_case spelling: `order_by`, `group_by`, `where_in`, `union_all`, `left_join`. The translation is mechanical, and it uppercases the letter after each underscore, so `whereILike` is `where_i_like`. (Method names are also not case sensitive, so you could probably use Mocking Spongebob case if you wanted to `.iNnErJoIn()` something. Note that at time of writing I haven't actually tested this, but am pretty sure it holds.)
+The canonical names are camelCase: `orderBy`, `groupBy`, `whereIn`, `unionAll`, `leftJoin`. Each also accepts its snake_case spelling: `order_by`, `group_by`, `where_in`, `union_all`, `left_join`. The translation is mechanical, and it uppercases the letter after each underscore, so `whereILike` is `where_i_like`. (Join method names are also not case sensitive, so you can use Mocking Spongebob case if you want to `.iNnErJoIn()` something. Every other method name is case sensitive.)
 
 ## Getting the SQL out
 

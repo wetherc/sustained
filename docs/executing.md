@@ -22,7 +22,7 @@ Sustained works with any DB-API 2.0 connection passed to it; it will not open an
 
 Every statement runs parameterized: values travel as parameters and never as text inside the SQL.
 
-The examples use the venue booking schema from [Getting Started](./getting-started).
+The examples use the venue booking schema from [Recipes](./recipes), which extends the one in [Getting Started](./getting-started) with tickets and artists.
 
 ## Matching the driver to the dialect
 
@@ -199,7 +199,7 @@ Chain `onConflict(columns)` after `insert()`, then `merge()` to update the exist
 
 `merge()` updates every inserted column except the conflict columns, or only the columns in a list you pass it. The conflict columns need a unique constraint or primary key in the database, or the engine rejects the statement. If every inserted column is also a conflict column, `merge()` has nothing left to update and raises `ValueError`.
 
-Postgres, SQLite, and DuckDB render `ON CONFLICT`, MSSQL renders a `MERGE` statement, and Presto raises `DialectError`.
+Postgres, SQLite, and DuckDB render `ON CONFLICT`, MySQL renders `ON DUPLICATE KEY UPDATE`, MSSQL renders a `MERGE` statement, Athena renders `MERGE` for Iceberg tables, and Presto raises `DialectError`.
 
 ### RETURNING
 
@@ -214,7 +214,7 @@ rows = (Show.query()
 # [{'id': 42}]
 ```
 
-MSSQL and Presto raise `DialectError`, so on MSSQL use an `OUTPUT` clause through raw SQL instead.
+MySQL, MSSQL, Presto, and Athena raise `DialectError`. On MSSQL, use an `OUTPUT` clause through raw SQL instead, and on MySQL, read the row back with a second query.
 
 ### INSERT ... SELECT and CREATE TABLE AS
 
