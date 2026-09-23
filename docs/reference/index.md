@@ -54,16 +54,15 @@ The package root does not re-export `Dialects`, `ConnectionPool`, the async adap
 
 ## Method naming
 
-The canonical names are camelCase. You can also call every camelCase method by its snake_case spelling, because `QueryBuilder.__getattr__` rewrites `_x` to `X` before it looks the name up:
+The canonical names are camelCase. A method name matches without regard to case or underscores, so you can also call every method by its snake_case spelling or in any capitalization:
 
 ```python
 User.query().orderBy('name')     # canonical
 User.query().order_by('name')    # the same method
+User.query().ORDER_BY('name')    # the same method
 ```
 
-The rewrite uppercases only a letter that follows an underscore, so the snake_case spelling of `whereILike` is `where_i_like`, and `where_ilike` does not resolve.
-
-Join method names also match case-insensitively, so `leftouterjoin` and `LEFTJOIN` resolve as well. Every other method name is case-sensitive, so `WHERE` and `orderby` raise `AttributeError`. Use the canonical spelling, because the other join spellings exist only so that a port from Objection.js does not fail on capitalization.
+The rule covers the defined methods such as `select()` and `select_func()`, the `join`, `where`, and `having` families, `groupBy`, `orderBy`, the `on` builder inside a join, and the builder a nested `where` group receives. `whereILike` therefore also resolves as `where_i_like` and `where_ilike`. A name that folds to no method raises `AttributeError`. Use the canonical spelling in new code, because the type stubs describe only that spelling; the other spellings exist so that a port from Objection.js does not fail on capitalization.
 
 ## When errors are raised
 

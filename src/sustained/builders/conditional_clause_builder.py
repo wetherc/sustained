@@ -76,17 +76,16 @@ class ConditionalClauseBuilder(ABC):
                 f"'{type(self).__name__}' object has no attribute '{name}'"
             )
 
-        base_name = re.sub(r"^(or|and)", "", name, flags=re.IGNORECASE)
-        if not base_name:
-            raise AttributeError(
-                f"'{type(self).__name__}' object has no attribute '{name}'"
-            )
-        lookup_name = base_name[0].lower() + base_name[1:]
-        lookup_name = re.sub(r"^having", "where", lookup_name, flags=re.IGNORECASE)
-        method_name = self._WHERE_METHOD_MAP.get(lookup_name)
+        # Names match without regard to case or underscores, the same way
+        # QueryBuilder resolves them, so WHERE_IN reaches whereIn.
+        folded = name.replace("_", "")
+        base_name = re.sub(r"^(or|and)", "", folded, flags=re.IGNORECASE)
+        lookup_name = re.sub(r"^having", "where", base_name.lower())
+        lowered = {k.lower(): v for k, v in self._WHERE_METHOD_MAP.items()}
+        method_name = lowered.get(lookup_name)
 
         if method_name:
-            conjunction_str = re.match(r"^(or|and)", name, flags=re.IGNORECASE)
+            conjunction_str = re.match(r"^(or|and)", folded, flags=re.IGNORECASE)
             if conjunction_str:
                 conjunction = conjunction_str.group(0).upper()
             else:

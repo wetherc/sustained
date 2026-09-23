@@ -14,6 +14,7 @@ from typing import (
     cast,
 )
 
+from ..naming import resolve_public_name
 from ..rendering import Renderable, RenderContext, render_part
 from ..types import BasicJoinMapping, JoinMappingWithThrough
 
@@ -37,6 +38,17 @@ class OnClauseBuilder:
             compiler if compiler else Dialects.get_compiler(Dialects.DEFAULT)
         )
         self._conditions: List[Tuple[str, Renderable]] = []
+
+    def __getattr__(self, name: str) -> Callable[..., "OnClauseBuilder"]:
+        """Resolves `ON`, `and_on`, and any other spelling of on, andOn, and orOn."""
+        canonical = (
+            None if name.startswith("_") else resolve_public_name(type(self), name)
+        )
+        if canonical is None:
+            raise AttributeError(
+                f"'{type(self).__name__}' object has no attribute '{name}'"
+            )
+        return cast(Callable[..., "OnClauseBuilder"], getattr(self, canonical))
 
     def on(self, col1: str, op: str, col2: Union[str, "AnyQuery"]) -> "OnClauseBuilder":
         """Adds an ON condition. If this is not the first condition, it's treated as AND ON."""
@@ -167,7 +179,9 @@ class JoinClauseBuilder:
 
         join_prefixes = "|".join(k for k in self._JOIN_METHOD_MAP.keys() if k)
         join_match = re.match(
-            rf"^({join_prefixes})?(Join)(Related)?$", name, re.IGNORECASE
+            rf"^({join_prefixes})?(Join)(Related)?$",
+            name.replace("_", ""),
+            re.IGNORECASE,
         )
 
         if join_match:

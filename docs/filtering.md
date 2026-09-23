@@ -156,7 +156,7 @@ Show.query().whereILike('title', 'the %')
 # DEFAULT:  SELECT * FROM shows WHERE LOWER(title) LIKE LOWER('the %')
 ```
 
-The snake_case spelling of `whereILike` is `where_i_like`, because the translation uppercases the letter after each underscore.
+Sustained ignores case and underscores when it matches a method name, so `where_i_like` and `where_ilike` both reach `whereILike`.
 
 ### NULL and BETWEEN
 
