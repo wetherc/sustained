@@ -1838,8 +1838,9 @@ class Migrator:
 
     def rehearsal_outcome(self, key: str) -> Optional[str]:
         """
-        What the recorded rehearsal of this key proved: 'passed', 'failed',
-        or None when no rehearsal has covered it.
+        The outcome recorded for this key: 'passed' or 'failed' from a
+        rehearsal, 'override' from a run with unrehearsed=True, or None when
+        no row covers it.
         """
         self._ensure_rehearsal_table()
         placeholder = self._compiler.placeholder()

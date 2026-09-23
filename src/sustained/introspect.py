@@ -561,10 +561,10 @@ def _schema_predicate(
     unscoped.
 
     The declared schemas make their own IN list and the current schema
-    is compared beside it. An engine expression inlined into the IN list
-    would take every declared schema down with it when the expression
-    returns NULL, which Postgres does when the first search_path entry
-    names a schema that does not exist.
+    is compared beside it with OR. Postgres returns NULL from
+    current_schema() when the first search_path entry names a schema that
+    does not exist, and then the OR branch matches no rows while the
+    declared schemas still match.
     """
     parts: List[str] = []
     if schemas:
@@ -1217,8 +1217,8 @@ def _postgres_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
     # The read covers the schema the connection is on, plus every schema
     # the models declare.
     # current_schema() returns NULL when the first search_path entry
-    # names a schema that does not exist, so it is compared beside the
-    # declared schemas instead of standing in an IN list with them.
+    # names a schema that does not exist. _scoped_filter compares it
+    # beside the declared schemas, which still match in that case.
     table_filter = _scoped_filter("c.table_schema", "current_schema()", schemas)
     constraint_filter = _scoped_filter("tc.table_schema", "current_schema()", schemas)
     namespace_filter = _scoped_filter("n.nspname", "current_schema()", schemas)
