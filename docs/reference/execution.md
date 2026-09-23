@@ -125,14 +125,14 @@ acquire_raw()
 ```
 {: .sig #acquire_raw}
 
-Checks a connection out. You have to release it yourself. Raises `PoolTimeout` when the pool stays exhausted past `timeout`, and `RuntimeError` when the pool is closed. A factory that raises does not consume a slot.
+Checks a connection out, and you release it yourself with `release()`. Raises `PoolTimeout` when the pool stays exhausted past `timeout`, and `RuntimeError` when the pool is closed. A factory that raises does not consume a slot.
 
 ```python
 release(connection)
 ```
 {: .sig #release}
 
-Returns the connection to the pool, or closes it when the pool is closed. Any open transaction is rolled back first, on every release, so the next caller never inherits a stale snapshot or an aborted transaction. When the rollback raises, the pool probes the connection with `SELECT 1`: one that answers is kept, because some drivers, duckdb among them, refuse rollback with no transaction open rather than reporting a broken connection. One that does not answer is closed and dropped. A connection the pool did not hand out raises `ValueError`, which catches a double release.
+Returns the connection to the pool, or closes it when the pool is closed. Any open transaction is rolled back first, on every release, so the next caller never inherits a stale snapshot or an aborted transaction. When the rollback raises, the pool probes the connection with `SELECT 1`: one that answers is kept, because some drivers, `duckdb` among them, refuse rollback with no transaction open rather than reporting a broken connection. One that does not answer is closed and dropped. A connection the pool did not hand out raises `ValueError`, which catches a double release.
 
 ```python
 close()
@@ -166,7 +166,7 @@ These live in `sustained.aio`. Every adapter has the same methods, so a query do
 
 A row count of `-1` means the driver reported none. Add `returning()` to the write when you need an exact count.
 
-`driver_transaction_control()` tells `async_transaction()` how to open and close a block. It returns `False` on the base class and on `AsyncpgAdapter`, so the block runs `BEGIN`, `COMMIT`, and `ROLLBACK` as statements. `DbApiAsyncAdapter` returns `True`, because a DB-API 2.0 driver opens the transaction itself; the block then ends with `commit()` or `rollback()`. It returns `False` when the connection it wraps reports `autocommit` as `True`, because such a connection commits every statement as it runs and its `commit()` closes nothing. `begin_where_ddl_autocommits()` covers the one gap in that promise: sqlite3 in legacy transaction control leaves schema statements outside its implicit transaction, so `DbApiAsyncAdapter` sends a `BEGIN` there.
+`driver_transaction_control()` tells `async_transaction()` how to open and close a block. It returns `False` on the base class and on `AsyncpgAdapter`, so the block runs `BEGIN`, `COMMIT`, and `ROLLBACK` as statements. `DbApiAsyncAdapter` returns `True`, because a DB-API 2.0 driver opens the transaction itself; the block then ends with `commit()` or `rollback()`. It returns `False` when the connection it wraps reports `autocommit` as `True`, because such a connection commits every statement as it runs and its `commit()` closes nothing. `begin_where_ddl_autocommits()` covers one exception to that rule. `sqlite3` in legacy transaction control leaves schema statements outside its implicit transaction, so `DbApiAsyncAdapter` sends a `BEGIN` there.
 
 Every call opens `scope()` before it runs. A plain adapter yields itself; a pool yields one of its adapters and takes it back at the end, so a statement and its commit stay on one connection.
 
@@ -182,16 +182,16 @@ AiosqliteAdapter(connection)
 ```
 {: .sig #aiosqliteadapter}
 
-Wraps aiosqlite and awaits the driver directly.
+Wraps `aiosqlite` and awaits the driver directly.
 
 ```python
 AsyncpgAdapter(connection)
 ```
 {: .sig #asyncpgadapter}
 
-Wraps asyncpg. Converts `%s` placeholders to `$1..$n`. asyncpg is autocommit, so `commit()` and `rollback()` do nothing, `driver_transaction_control()` is `False`, and `executemany()` returns `-1`. `execute()` reads its count out of the status string and returns `-1` when the status reports none.
+Wraps `asyncpg` and converts `%s` placeholders to `$1..$n`. `asyncpg` is autocommit, so `commit()` and `rollback()` do nothing, `driver_transaction_control()` is `False`, and `executemany()` returns `-1`. `execute()` reads its count out of the status string and returns `-1` when the status reports none.
 
-`AsyncAdapter` is the abstract base class. Subclass it for a driver that has no adapter here. `close()` does nothing on the base, for an adapter that borrows a connection it does not own.
+`AsyncAdapter` is the abstract base class. Subclass it for a driver that has no adapter here. `close()` does nothing on the base class, which suits an adapter that borrows a connection it does not own.
 
 ## `AsyncConnectionPool`
 
@@ -225,14 +225,14 @@ await acquire()
 ```
 {: .sig #async_acquire}
 
-Checks an adapter out. You have to release it yourself. Raises `PoolTimeout` when the pool stays exhausted past `timeout`, and `RuntimeError` when the pool is closed.
+Checks an adapter out, and you release it yourself with `release()`. Raises `PoolTimeout` when the pool stays exhausted past `timeout`, and `RuntimeError` when the pool is closed.
 
 ```python
 await release(adapter)
 ```
 {: .sig #async_release}
 
-Gives an adapter back, rolling it back first so a failed statement does not reach the next task. An adapter the pool did not hand out raises `ValueError`, which catches a double release. When the rollback raises, the pool probes the adapter with `SELECT 1`: one that answers is kept, because some drivers, duckdb among them, refuse rollback with no transaction open rather than reporting a broken connection. One that does not answer is closed and dropped, and its slot reopens.
+Gives an adapter back, rolling it back first so a failed statement does not reach the next task. An adapter the pool did not hand out raises `ValueError`, which catches a double release. When the rollback raises, the pool probes the adapter with `SELECT 1`: one that answers is kept, because some drivers, `duckdb` among them, refuse rollback with no transaction open rather than reporting a broken connection. One that does not answer is closed and dropped, and its slot reopens.
 
 ```python
 await close()
@@ -298,7 +298,7 @@ Async eager loading shares the planner the synchronous path uses, so it covers d
 
 ## Rendering
 
-`sustained.rendering` is internal, and visible when a custom expression renders itself.
+`sustained.rendering` is internal, but you see it when a custom expression renders itself.
 
 `RenderContext(compiler, parameterize=False)` contains the compiler and the value-handling mode. `ctx.value(v)` returns a placeholder and collects the value when `parameterize` is set, and returns a formatted SQL literal when it is not. An `Expression` renders as written in either mode. Both `str(query)` and `to_sql()` run through this one code path.
 

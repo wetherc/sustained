@@ -9,7 +9,7 @@ A schema change is hard to take back once it has run, so the migrator is built a
 
 ## Automated migration in one call
 
-`Migrator.up(models=[...])` diffs the live database against your models, generates the migration, records it, and applies it along with everything else pending. Run it again after changing a model and only the difference is applied. Additive changes need nothing hand-written.
+`Migrator.up(models=[...])` diffs the live database against your models, generates the migration, records it, and applies it along with everything else pending. If you run it again after you change a model, it applies only the difference, and additive changes need no hand-written migration.
 
 ```python
 from sustained import Model
@@ -32,11 +32,11 @@ migrator.up(models=[User])     # adds only the bio column
 
 The diff is taken after the pending migrations have run, so it sees the schema they left behind. A generated migration always runs last of the versioned ones, so `models` cannot be combined with a `target`.
 
-`Migrator.sync()` did this before version 2.13.0. It still works, prints a deprecation warning, and will be removed in 3.0.
+`Migrator.sync()`, deprecated since version 2.13.0, does the same thing. It still works but prints a deprecation warning, and it will be removed in 3.0.
 
 ## Automated rollback
 
-Generated migrations are reversible: a created table records a DROP as its down step, and an added column records a DROP COLUMN. You can roll back one step, several steps, or down to a known-good migration.
+Generated migrations are reversible: a created table records a `DROP` as its down step, and an added column records a `DROP COLUMN`. You can roll back one step, several steps, or down to a known-good migration.
 
 ```python
 migrator.down()                # revert the newest applied migration
@@ -44,13 +44,13 @@ migrator.down(steps=2)         # revert the two newest
 migrator.down_to('auto_20260814...')  # revert until this id is newest
 ```
 
-`steps` counts migrations and must be 0 or more. A count of 0 reverts nothing. A negative count raises `ValueError`, and `sustained down --steps -1` stops at the command line.
+`steps` counts migrations and must be 0 or more, so a count of 0 reverts nothing. A negative count raises `ValueError`, and the command line rejects `sustained down --steps -1`.
 
-A revert reads the checksum of every migration it is about to take back, before it reverts the first one. A migration edited after it was applied raises `MigrationError` and nothing is reverted, because the down step in front of you describes the new contents while the database still contains the old ones. Restore the migration, run `repair()` to accept the new contents, or pass `allow_changed=True` (`sustained down --allow-changed`) to revert it as it stands now.
+Before a revert takes back its first migration, it reads the checksum of every migration it is about to revert. If a migration was edited after it was applied, the revert raises `MigrationError` and reverts nothing, because the down step describes the new contents while the database still contains the old ones. Restore the migration, run `repair()` to accept the new contents, or pass `allow_changed=True` (`sustained down --allow-changed`) to revert it as it stands now.
 
-A generated migration exists only in the run that produced it, so its tracking row stores the statements it ran. A later process, on a later deploy, can revert it from that row without having the diff in hand. A rebuild, which has no down step, still cannot be reverted.
+A generated migration exists only in the run that produced it, so its tracking row stores both its up and its down statements, and a process on a later deploy can revert it from that row without the diff. A rebuild still cannot be reverted, because it has no down step.
 
-Every applied migration is recorded in a tracking table, each runs inside a transaction, and a failing step rolls itself back and leaves earlier migrations applied.
+The migrator records every applied migration in a tracking table and runs each one inside a transaction. A failing step rolls its own migration back and leaves earlier migrations applied.
 
 ## Validation and repair
 
@@ -70,7 +70,7 @@ migrator.up(allow_out_of_order=True)    # accept a late-arriving migration
 migrator.up(validate=False)             # skip the checks entirely
 ```
 
-`repair()` brings the tracking table back in line: it deletes rows left by failed attempts and rewrites stored checksums after an intentional edit, including null checksums on rows written before checksums existed. Repair only fixes bookkeeping. Schema changes that a failed attempt left behind need manual cleanup first. Repeatables keep their stored checksums, so a changed repeatable is scheduled to re-run and the next `up()` runs it.
+`repair()` brings the tracking table back in line: it deletes rows left by failed attempts and rewrites stored checksums after an intentional edit, including null checksums on rows written before checksums existed. Repair fixes only the bookkeeping, so before you run it you must clean up by hand any schema changes that a failed attempt left behind. Repair leaves the stored checksums of repeatables alone, so a changed repeatable stays scheduled and the next `up()` re-runs it.
 
 ```python
 migrator.repair()
@@ -78,17 +78,17 @@ migrator.repair()
 #  "updated the stored checksum of 'create_users'"]
 ```
 
-Checksums are computed on the exact SQL text, so reformatting a migration counts as an edit; run `repair()` to accept it. Callable steps have no SQL to hash and record a null checksum, which validation skips. Pass `Migration(..., checksum='...')` to pin one yourself. That argument is for callable steps only: on a step made of SQL it would replace the hash of the statements and hide every later edit, so it raises `ValueError`.
+Checksums are computed on the exact SQL text, so reformatting a migration counts as an edit; run `repair()` to accept it. A callable step has no SQL to hash, so it records a null checksum, which validation skips. To pin one yourself, pass `Migration(..., checksum='...')`. The argument is for callable steps only, and it raises `ValueError` on a SQL step, because there it would replace the hash of the statements and hide every later edit.
 
-On engines without transactions, a failing step writes a row with the success flag off, so the interrupted run is visible. Validation then blocks `up()` until you clean up and run `repair()`.
+On engines without transactions, a failing step writes a row with the success flag off, so the interrupted run is visible, and validation blocks `up()` until you clean up and run `repair()`.
 
 ## Concurrency
 
-While a run is in progress, the migrator keeps an exclusive advisory lock named after the tracking table, so two application instances deploying at once queue instead of racing each other's DDL. Postgres uses `pg_advisory_lock`, MSSQL uses `sp_getapplock`, and MySQL uses `GET_LOCK`. All three are session-scoped and release on disconnect. MySQL and MSSQL report a lock they did not grant in the value they return instead of raising, so the migrator reads that value and raises `MigrationError` when the lock was not granted. SQLite and DuckDB serialize writers on their own. Athena has no lock to take, so run one migrator at a time there.
+While a run is in progress, the migrator keeps an exclusive advisory lock named after the tracking table, so two application instances deploying at once queue instead of racing each other's DDL. Postgres uses `pg_advisory_lock`, MSSQL uses `sp_getapplock`, and MySQL uses `GET_LOCK`. All three are session-scoped and release on disconnect. MySQL and MSSQL do not raise when they refuse a lock and report the refusal in their return value instead, so the migrator reads that value and raises `MigrationError` when the lock was not granted. SQLite and DuckDB serialize writers on their own. Athena has no lock to take, so run one migrator at a time there.
 
 ## Adopting an existing database
 
-`baseline()` records migrations as applied without running them, for a database whose schema already matches. Rows record real checksums, so validation still catches later edits, and a null execution time marks them as never having run. Later `up()` calls apply only what comes after.
+`baseline()` records migrations as applied without running them, for a database whose schema already matches. The baseline rows store real checksums, so validation still catches later edits, and a null execution time marks them as never having run. Later `up()` calls apply only what comes after.
 
 ```python
 migrator.baseline('create_users')   # record up to and including this id
@@ -123,17 +123,17 @@ print(migration.down)  # ['ALTER TABLE users DROP COLUMN bio']
 
 Autogeneration refuses to guess about anything that loses data or fails on populated tables:
 
-- **A NOT NULL column needs a value for the rows already there.** Adding a NOT NULL column, or tightening an existing column to NOT NULL, requires a `default` or a `backfill` on the column definition. Without one the change is refused, since the rows already in the table would have no value. Generation emits add-nullable, an UPDATE backfill, then SET NOT NULL, or folds the backfill into a SQLite rebuild. An empty table has no such rows, so a new column is added there without a value. The async migrator runs no statement but the schema read, so it cannot look for those rows and refuses the column whether the table is empty or not.
-- **Drops are opt-in.** Extra tables and columns are left alone unless you pass `allow_drops=True`, which generates the drops. A migration containing drops has no down step, because the dropped data cannot come back. `autogenerate()` called directly still raises on undeclared objects; the migrator passes `ignore_undeclared=True`, since a database that hand-written migrations also touch may have undeclared tables.
+- **A NOT NULL column needs a value for the rows already there.** Adding a NOT NULL column, or tightening an existing column to NOT NULL, requires a `default` or a `backfill` on the column definition. Without one, generation refuses the change, because the rows already in the table would have no value. Generation emits an add-nullable step, an `UPDATE` backfill, and then `SET NOT NULL`, or folds the backfill into a SQLite rebuild. An empty table has no such rows, so generation adds a new column there without a value. The async migrator runs no statement except the schema read, so it cannot check for those rows and refuses the column even when the table is empty.
+- **Drops are opt-in.** Generation leaves extra tables and columns alone unless you pass `allow_drops=True`, which generates the drops. A migration containing drops has no down step, because the dropped data cannot come back. If you call `autogenerate()` directly, it still raises on undeclared objects. The migrator passes `ignore_undeclared=True`, because hand-written migrations may also touch the database and leave tables that no model declares.
 - **Type and nullability changes migrate per dialect.** Postgres, MySQL, MSSQL, and DuckDB alter in place with reversible down steps, and Postgres casts take a hint through `type_casts={'table.col': 'col::integer'}`. SQLite cannot alter a column, so it rebuilds the table, which is not reversible; [Column changes on SQLite](#column-changes-on-sqlite) describes that path. Presto and Trino can do neither, so generation raises `DialectError` there and you write the migration by hand. Pass `ignore_changed_columns=True` to skip changed columns entirely.
-- **A primary key or autoincrement column cannot be added to an existing table.** ALTER TABLE cannot add one, so generation refuses.
-- **Statements that remove data need a rehearsal.** `up()` refuses to run a DROP, a column drop, or a TRUNCATE until a passing rehearsal has proved that exact set of statements. `up(unrehearsed=True)` applies them anyway. See [Rehearsal logging and tracking](#rehearsal-logging-and-tracking).
-- **Your own rules run too.** Guards read every statement an up run would apply, generated or hand-written, and can block it. Down runs are not checked. See [Guards](#guards).
-- The tracking table and the rehearsal table are excluded from diffing, and `exclude_tables` protects any other tables Sustained does not manage.
+- **A primary key or autoincrement column cannot be added to an existing table.** `ALTER TABLE` cannot add one, so generation refuses.
+- **Statements that remove data need a rehearsal.** `up()` refuses to run a `DROP`, a column drop, or a `TRUNCATE` until a passing rehearsal has proved that exact set of statements. `up(unrehearsed=True)` applies them anyway. See [Rehearsal logging and tracking](#rehearsal-logging-and-tracking).
+- **Your own rules run too.** Guards read every statement an up run would apply, generated or hand-written, and can block it, but they do not check down runs. See [Guards](#guards).
+- Diffing skips the tracking table and the rehearsal table, and `exclude_tables` protects any other tables Sustained does not manage.
 
-Renames cannot be detected from the catalog, so pass hints: `up(models=models, renames={'users.name': 'full_name'}, table_renames={'old': 'new'})` emits reversible RENAME statements instead of a destructive drop-plus-add.
+The catalog cannot show a rename, so pass hints: `up(models=models, renames={'users.name': 'full_name'}, table_renames={'old': 'new'})` emits reversible `RENAME` statements instead of a destructive drop-plus-add.
 
-Foreign keys and CHECK constraints declared in `tableConstraints` are diffed and migrated; see [Table constraints](#table-constraints). Primary key set changes, column-level unique, and default differences are reported as constraint notes in the diff, but never auto-migrated.
+Foreign keys and CHECK constraints declared in `tableConstraints` are diffed and migrated; see [Table constraints](#table-constraints). The diff reports primary key set changes, column-level unique, and default differences as constraint notes, but never migrates them automatically.
 
 ### Column changes on SQLite
 
@@ -141,7 +141,7 @@ SQLite cannot alter a column in place, so a type or nullability change rebuilds 
 
 The rebuild drops the old table, which SQLite refuses while rows in another table point at it, so the steps run between `PRAGMA foreign_keys = OFF` and `PRAGMA foreign_keys = ON`. SQLite ignores both statements inside an open transaction, so a migration that contains them is generated with `transactional=False` and the migrator runs it outside one. The migrator turns the driver's own transaction control off for that run and puts it back at the end, so a stock `sqlite3` connection can run the rebuild. A rebuild that nothing points at needs no pragma and keeps its transaction.
 
-Because the guarded rebuild runs bare, a step that fails leaves the steps before it applied, leaves the copy table `<table>_sustained_new` behind, and leaves foreign key enforcement off on that connection. Turn it back on with `PRAGMA foreign_keys = ON`, or open a new connection, then finish or undo the rest by hand and run `repair()`.
+Because the guarded rebuild runs outside a transaction, a step that fails leaves the steps before it applied, leaves the copy table `<table>_sustained_new` behind, and leaves foreign key enforcement off on that connection. Turn it back on with `PRAGMA foreign_keys = ON`, or open a new connection, then finish or undo the rest by hand and run `repair()`.
 
 Columns and indexes the models do not declare are kept through the rebuild unless you pass `allow_drops=True`. An index on an expression is invisible to introspection, so a rebuild loses it and you have to recreate it by hand.
 
@@ -174,7 +174,7 @@ class User(Model):
     indexes = [Index('ix_users_email', 'email', unique=True)]
 ```
 
-`autoincrement` requires a single integer primary key. DuckDB and Presto raise `DialectError` because they have no identity columns. A model with `tableColumns` also gets strict column-name access automatically, so a misspelled column raises `AttributeError`.
+`autoincrement` requires a single integer primary key. On DuckDB and Presto it raises `DialectError`, because they have no identity columns. A model with `tableColumns` also gets strict column-name access automatically, so a misspelled column raises `AttributeError`.
 
 ## Enum columns
 
@@ -194,11 +194,11 @@ class Post(Model):
     }
 ```
 
-Pass the values as strings, or pass one Python `enum.Enum` class whose member values are strings. Hydrated values stay plain strings either way; Sustained never coerces them back into the Python class. A `default` is checked against the values when the column is declared.
+Pass the values as strings, or pass one Python `enum.Enum` class whose member values are strings. Hydrated values stay plain strings either way; Sustained never coerces them back into the Python class. Sustained checks a `default` against the values when you declare the column.
 
 `name` is required. A Postgres enum is a database object with its own identity, so an explicit name gives the diff something stable to compare, and it lets two models share one type: the same name with the same values in two models is one type, and the same name with different values raises `ValueError`.
 
-Rendering follows the dialect. Postgres and DuckDB create a named type with `CREATE TYPE ... AS ENUM` and reference it by name. MySQL writes the value list into the column type as `ENUM('draft', 'published', ...)`. ANSI, SQLite, and MSSQL have no enum type, so the column renders as a VARCHAR sized to the longest value, constrained to the list by a CHECK constraint named `ck_<table>_<column>_enum`. Presto and Athena refuse the column with `DialectError`, because neither engine can enforce it. [SQL Dialects](./dialects#enum-columns) has the full table.
+Rendering follows the dialect. Postgres and DuckDB create a named type with `CREATE TYPE ... AS ENUM` and reference it by name. MySQL writes the value list into the column type as `ENUM('draft', 'published', ...)`. ANSI, SQLite, and MSSQL have no enum type, so the column renders as a `VARCHAR` sized to the longest value, constrained to the list by a CHECK constraint named `ck_<table>_<column>_enum`. Presto and Athena refuse the column with `DialectError`, because neither engine can enforce it. [SQL Dialects](./dialects#enum-columns) has the full table.
 
 On the dialects with a named type, `CREATE TYPE` renders before the table that uses it, and dropping the table drops the type with it once no remaining model references it, under the same `allow_drops=True` the table drop needs. `DROP TYPE` is destructive: `plan` labels it, `no_drops()` blocks it, and the rehearsal gate covers it.
 
@@ -206,7 +206,7 @@ On the dialects with a named type, `CREATE TYPE` renders before the table that u
 
 Appending a value to the model generates the change: `ALTER TYPE ... ADD VALUE` on Postgres, a restated value list through `MODIFY COLUMN` on MySQL, and a re-created CHECK constraint on the check-strategy dialects. On Postgres the generated migration is irreversible, because Postgres has no `DROP VALUE`; its `down` is `None`. PostgreSQL 12 and later roll `ADD VALUE` back inside a transaction, so `rehearse` can prove it, and the [support policy](./support) states that floor. DuckDB cannot append to a type in place and refuses.
 
-Removing or reordering values refuses with a recipe instead of generating: create a new type, move the column over with a `USING` cast, then drop the old type. Converting an existing VARCHAR column to an enum works through the same `type_casts` hints as any other Postgres type change.
+If you remove or reorder values, generation refuses and gives a recipe instead: create a new type, move the column over with a `USING` cast, then drop the old type. Converting an existing `VARCHAR` column to an enum works through the same `type_casts` hints as any other Postgres type change.
 
 ## Column comments
 
@@ -225,7 +225,7 @@ Where the comment is stored depends on the dialect. MySQL, MariaDB, Presto, Trin
 
 Introspection reads the comments back on every dialect that stores them, and generation keeps them in sync. A comment changed or removed out of band shows up in `plan` and `diff`, and the generated migration writes the declared text back, with a down step that restores what the database had. A dialect that stores no comments never reports comment drift, and neither does a catalog read that could not see them, so absence is never mistaken for removal.
 
-The comment is not part of a step's identity when it is absent, so adding `comment` support changed no existing migration checksums. Athena stores a comment at `CREATE TABLE` but cannot change one in place, so a drifted comment there becomes a constraint note and the rest of the migration still generates; recreate the table or write the `CHANGE COLUMN` statement by hand. A hand-written `set_column_comment` step still raises `DialectError` on Athena.
+A step's checksum includes the comment only when the column declares one. Athena stores a comment at `CREATE TABLE` but cannot change one in place, so a drifted comment there becomes a constraint note and the rest of the migration still generates; recreate the table or write the `CHANGE COLUMN` statement by hand. A hand-written `set_column_comment` step still raises `DialectError` on Athena.
 
 Hand-written migrations set or clear a comment with the [`set_column_comment` step](./reference/migrations#typed-ddl-steps).
 
@@ -251,17 +251,17 @@ class Ticket(Model):
 
 Every constraint takes a name, because diffs and down steps address a constraint by its name. A `Check` expression is raw SQL and renders as written, so quote any identifiers inside it yourself.
 
-A `ForeignKey` takes its columns as a string or a sequence, and its targets as `'table.column'` strings, one per constrained column, all pointing at one table. `on_delete` and `on_update` accept `CASCADE`, `SET NULL`, `RESTRICT`, `NO ACTION`, and `SET DEFAULT`. For a single column with no actions, the `references='table.column'` shorthand on the column definition does the same thing. There is no Unique constraint object: `Index(name, *columns, unique=True)` already covers it.
+A `ForeignKey` takes its columns as a string or a sequence, and its targets as `'table.column'` strings, one per constrained column, all pointing at one table. `on_delete` and `on_update` accept `CASCADE`, `SET NULL`, `RESTRICT`, `NO ACTION`, and `SET DEFAULT`. For a single column with no actions, the `references='table.column'` shorthand on the column definition does the same thing. There is no Unique constraint object, because `Index(name, *columns, unique=True)` already covers it.
 
-A table the database lacks is created without its foreign keys on any engine that takes `ALTER TABLE ADD CONSTRAINT`: Postgres, MySQL, MariaDB, and MSSQL. Every key follows as its own statement once all the new tables exist, so two new tables may point at each other, and a table may point at itself. SQLite and DuckDB take no constraint after the table is made, so their keys stay inside `CREATE TABLE` and the new tables are created in dependency order instead. A reference cycle cannot be ordered; it is reported as a constraint note, and you write that migration by hand.
+On any engine that accepts `ALTER TABLE ADD CONSTRAINT` (Postgres, MySQL, MariaDB, and MSSQL), a new table is created without its foreign keys. Each key follows as its own statement once all the new tables exist, so two new tables may point at each other, and a table may point at itself. SQLite and DuckDB cannot add a constraint after the table exists, so their keys stay inside `CREATE TABLE` and the new tables are created in dependency order instead. A reference cycle has no dependency order, so the diff reports it as a constraint note and you write that migration by hand.
 
 Constraint differences generate migrations. A constraint the model declares and the database lacks generates `ADD CONSTRAINT`, with the matching drop as the down step. A changed foreign key generates a drop plus an add under `allow_drops=True`; the down step restores the introspected key when its target is known, and the migration is irreversible otherwise. Constraints in the database that no model declares follow the same rules as extra indexes: they block generation unless `ignore_undeclared` is set, and they drop only under `allow_drops=True`.
 
-A CHECK constraint is the exception. It never blocks generation. Engines rewrite a check expression on the way in, so a check the models do declare can read back as one they do not, and a refusal there would stop a diff that has nothing wrong with it. An undeclared check comes back as a note on the diff instead, and `allow_drops=True` still drops it.
+CHECK constraints are the exception to this rule and never block generation. Engines rewrite a check expression on the way in, so a check the models do declare can read back as one they do not, and a refusal there would stop a diff that has nothing wrong with it. An undeclared check comes back as a note on the diff instead, and `allow_drops=True` still drops it.
 
 Checks diff on every engine whose catalog reports them: Postgres, MySQL 8.0.16 and later, MariaDB, MSSQL, DuckDB, and SQLite. Presto and Athena have no CHECK constraints, so nothing diffs there. An engine too old for `information_schema.check_constraints` reads no checks, and a declared check then stays undiffed rather than reporting as missing.
 
-Check expressions compare normalized, because engines rewrite them: Postgres stores `price > 0` as `((price > 0))`, and keyword case and whitespace vary. A difference that remains after normalization is reported as a constraint note on Postgres rather than generating a drop, so a cosmetic rewrite never costs you a constraint. SQLite cannot add or drop a table constraint in place, so those changes route through the same table rebuild as its column changes.
+Sustained normalizes check expressions before it compares them, because engines rewrite them: Postgres stores `price > 0` as `((price > 0))`, and keyword case and whitespace vary. A difference that remains after normalization is reported as a constraint note on Postgres rather than generating a drop, so a cosmetic rewrite never costs you a constraint. SQLite cannot add or drop a table constraint in place, so those changes route through the same table rebuild as its column changes.
 
 Presto and Athena enforce no table constraints and raise `DialectError` when a model declares them there. Primary key set changes stay reported as notes and are never generated, because a safe primary key migration needs a table rebuild on most engines.
 
@@ -275,7 +275,7 @@ User.drop_table(conn)     # DROP TABLE IF EXISTS
 
 `create_table()` and `drop_table()` commit when they finish, the same way `run()` does, so the DDL persists after the connection closes. Inside a `transaction()` block they leave the commit to the block.
 
-Introspection reads one schema: the one the connection is on, plus any schema a model names in `tableSchema`. A snapshot keys its tables on the bare name, so two models declaring the same table name in different schemas are refused; diff them in separate calls. See [Schema scope](./reference/dialects#schema-scope).
+Introspection reads the schema the connection is on, plus any schema that a model names in `tableSchema`. A snapshot keys its tables on the bare name, so it refuses two models that declare the same table name in different schemas; diff them in separate calls. See [Schema scope](./reference/dialects#schema-scope).
 
 Types map per dialect: `BIT`, `NVARCHAR`, and `DATETIME2` on MSSQL; `JSONB` and identity columns on Postgres; plain `INTEGER PRIMARY KEY` rowid behavior on the default dialect. Schema introspection reads SQLite's PRAGMA tables on the default dialect, and `information_schema.columns` elsewhere.
 
@@ -307,7 +307,7 @@ This renders `PARTITIONED BY (day(created_at)) LOCATION '...' TBLPROPERTIES ('ta
 
 - **Diffs read the connection's schema only.** Introspection scopes to `current_schema`, so a plan sees the tables in the schema the connection was opened on and nothing from other Glue databases.
 - **Every string column renders `STRING`.** `String(n)` and `Text()` are the same column type on Athena. Iceberg tables reject `VARCHAR`, and Athena enforces no length either way, so the declared length only documents intent. The engine reports the column back as `varchar`, which the diff reads as the same type.
-- **Migrations run without transactions.** Athena has none, so the migrator runs each step bare and never calls rollback. A failing multi-step migration can leave partial changes that need manual cleanup. The tracking table needs its own storage location:
+- **Migrations run without transactions.** Athena has no transactions, so the migrator runs each step on its own and never calls rollback. A failing multi-step migration can leave partial changes that need manual cleanup. The tracking table needs its own storage location:
 
 ```python
 migrator = Migrator(
@@ -321,7 +321,7 @@ migrator = Migrator(
 
 Reverting migrations deletes tracking rows, which requires the tracking table to be Iceberg.
 
-- **Column changes use Iceberg rules.** A generated migration adds columns with `ALTER TABLE ... ADD COLUMNS` and changes types with `CHANGE COLUMN`, which Iceberg only allows for widenings such as `INT` to `BIGINT`. Renames, nullability changes, and `type_casts` hints raise `DialectError`; write those by hand in a `Migration`.
+- **Column changes use Iceberg rules.** A generated migration adds columns with `ALTER TABLE ... ADD COLUMNS` and changes types with `CHANGE COLUMN`, which Iceberg allows only for widenings such as `INT` to `BIGINT`. Renames, nullability changes, and `type_casts` hints raise `DialectError`; write those by hand in a `Migration`.
 
 Upserts (`onConflict().merge()`), `UPDATE`, `DELETE`, and `down()` reverts all depend on Iceberg tables. Plain Hive external tables are read-and-append only.
 
@@ -337,7 +337,7 @@ For the same reason, `rehearse` refuses MySQL against the real database and asks
 
 ## Hand-written migrations
 
-Anything autogeneration will not express, you write explicitly. A `Migration` pairs an id with an up step and an optional down step. A step is a SQL string, a list of statements, a [typed ddl step](#typed-migration-steps), or a callable receiving the connection. Hand-written and generated migrations share one ordered list and one tracking table.
+For anything that autogeneration will not express, you write the migration yourself. A `Migration` pairs an id with an up step and an optional down step. A step is a SQL string, a list of statements, a [typed ddl step](#typed-migration-steps), or a callable receiving the connection. Hand-written and generated migrations share one ordered list and one tracking table.
 
 ```python
 from sustained.migrations import Migration, Migrator, create_table_migration
@@ -379,11 +379,11 @@ migrations = [
 
 The available steps are `create_table`, `drop_table`, `add_column`, `drop_column`, `rename_column`, `rename_table`, `add_foreign_key`, `drop_foreign_key`, `add_check`, `drop_constraint`, `create_index`, `drop_index`, `create_enum`, `drop_enum`, `add_enum_value`, and `sql()` for one raw statement. The [migrations reference](./reference/migrations#typed-ddl-steps) has every signature.
 
-The migration above declares no down step, and it does not need one: a step that creates, adds, or renames something knows the step that takes it back, so a migration whose up is all reversible ddl steps derives its down automatically, the inverses newest first. The example's derived down drops the index, then drops the column. A step that cannot reverse, which is any drop, `add_enum_value`, or `sql()`, refuses the derivation with `ValueError`; give that migration an explicit down step, or `down=None` to declare it irreversible. An explicit down step always wins over the derivation.
+The migration above declares no down step, and it does not need one. A step that creates, adds, or renames something knows the step that takes it back, so a migration whose up steps are all reversible `ddl` steps derives its down automatically, with the inverses newest first. The example's derived down drops the index, then drops the column. A step that cannot reverse, which is any drop, `add_enum_value`, or `sql()`, refuses the derivation with `ValueError`; give that migration an explicit down step, or `down=None` to declare it irreversible. An explicit down step always wins over the derivation.
 
-Guards, the `destructive` labels, and the rehearsal gate all read a ddl step's rendered SQL, which none of them can do for a callable step. When a change fits the typed steps, prefer them over a callable for that reason.
+Guards, the `destructive` labels, and the rehearsal gate all read a `ddl` step's rendered SQL, which none of them can do for a callable step, so a change written with typed steps stays visible to all three.
 
-The checksum of a ddl step hashes its operation name and arguments rather than its rendered SQL, so it is the same on every dialect, and moving a project from SQLite to Postgres never invalidates an applied migration. One caveat: `ddl.create_table(model)` reads the model's columns when the step is built, so a later model edit changes the migration's checksum. Pass an explicit `columns` mapping when the migration must outlive the model.
+The checksum of a ddl step hashes its operation name and arguments rather than its rendered SQL, so it is the same on every dialect, and moving a project from SQLite to Postgres never invalidates an applied migration. However, `ddl.create_table(model)` reads the model's columns when the step is built, so a later model edit changes the migration's checksum. Pass an explicit `columns` mapping when the migration must outlive the model.
 
 ## Migrations as SQL files
 
@@ -403,7 +403,7 @@ migrator = Migrator(conn, load_migrations('migrations'))
 migrator.up()
 ```
 
-Empty up or down files, a down file without its up file, and files that fit no naming pattern raise `ValueError`. The naming check reads every file in the directory, whatever its extension, so a typo like `0002_add.up.sq` cannot be skipped silently. Keep other files, a README included, outside the migrations directory. Subdirectories are passed over, and so are dotfiles and editor backup files (`*~`, `*.bak`, `*.orig`, `*.swp`, `*.swo`, `*.tmp`).
+Empty up or down files, a down file without its up file, and files that fit no naming pattern raise `ValueError`. The naming check reads every file in the directory, whatever its extension, so a typo like `0002_add.up.sq` cannot be skipped silently. Keep other files, a README included, outside the migrations directory. The loader skips subdirectories, dotfiles, and editor backup files (`*~`, `*.bak`, `*.orig`, `*.swp`, `*.swo`, `*.tmp`).
 
 ## Repeatable migrations
 
@@ -415,7 +415,7 @@ DROP VIEW IF EXISTS active_users;
 CREATE VIEW active_users AS SELECT * FROM users WHERE active = 1;
 ```
 
-Edit the file and the next `migrate` re-runs it, so keep the SQL replace-safe (`CREATE OR REPLACE`, or a drop first). The tracking table keeps one row per repeatable, updated in place on re-runs with its original sequence number. Repeatables have no down file, and `down` never touches them. `baseline` records every repeatable at its current checksum, so adopting an existing schema does not re-run objects it already contains.
+Edit the file and the next `migrate` re-runs it, so keep the SQL replace-safe (`CREATE OR REPLACE`, or a drop first). The tracking table keeps one row per repeatable and updates it in place on each re-run, keeping its original sequence number. Repeatables have no down file, and `down` never touches them. `baseline` records every repeatable at its current checksum, so adopting an existing schema does not re-run objects it already contains.
 
 `status` (and `Migrator.statuses()`) reports each migration as `applied`, `pending`, or `changed`. `changed` marks a repeatable whose contents differ from its last run. In Python, pass `Migration(id, up=..., repeatable=True)`. A repeatable with a callable step needs an explicit `checksum` so that re-runs can be detected. An id may not have both an up file and a repeat file.
 
@@ -434,11 +434,11 @@ migrations = load_migrations('migrations', placeholders={'reader': 'app_ro'})
 
 Passing a mapping, even an empty one, turns substitution on: a `${key}` with no value then raises `ValueError` naming the file and the key, and `$${` escapes to a literal `${`. With no mapping, files load untouched. Keys are identifiers; there are no expressions, defaults, or environment lookups.
 
-Substitution happens before checksums compute, so the checksum covers the SQL that actually ran. Changing a placeholder value after a versioned migration applied flags a checksum mismatch, because different SQL was applied; run `repair()` if the new value is intentional. A repeatable needs no repair: its changed checksum re-runs it with the new value.
+Sustained substitutes placeholders before it computes checksums, so the checksum covers the SQL that ran. If you change a placeholder value after a versioned migration has applied, validation flags a checksum mismatch, because the new SQL differs from what was applied; run `repair()` if the new value is intentional. A repeatable needs no repair: its changed checksum re-runs it with the new value.
 
 ## Migrations without a transaction
 
-The migrator wraps each migration in a transaction, on the engines that can roll a schema change back. Some statements refuse to run there. `CREATE INDEX CONCURRENTLY` on Postgres is the common one: it is the safe way to build an index on a busy table, and Postgres rejects it inside a transaction block.
+The migrator wraps each migration in a transaction, on the engines that can roll a schema change back. Some statements refuse to run inside a transaction. The most common is `CREATE INDEX CONCURRENTLY` on Postgres, which is the safe way to build an index on a busy table and which Postgres rejects inside a transaction block.
 
 Set `transactional=False` on the migration and it runs outside a transaction:
 
@@ -459,15 +459,15 @@ A SQL file asks for the same thing with a marker comment on a line of its own:
 CREATE INDEX CONCURRENTLY orders_customer_idx ON orders (customer_id);
 ```
 
-The marker is read from the up file and the repeat file. Case does not matter. The flag belongs to the migration, so it covers the down step too, and a marker in a down file changes nothing.
+The loader reads the marker from the up file and the repeat file, in any letter case. The flag belongs to the migration, so it covers the down step too, and a marker in a down file changes nothing.
 
 The migrator turns the driver's own transaction control off for the migration and turns it back on after, because a DB-API driver such as psycopg2 opens a transaction before your first statement whether you asked for one or not. The tracking row is written after the statements, in the same mode, so a migration that finishes is still recorded.
 
-Nothing rolls a failed one back. The statements that already ran stay in the database, and the tracking row records a failed attempt, so validation stops the next `migrate` until you clean up and run `sustained repair`. Read what landed, finish or undo the rest by hand, then repair. A failed `CREATE INDEX CONCURRENTLY` also leaves an invalid index behind, which you must drop before you try again. Keep such a migration to one statement and the cleanup stays small.
+Nothing rolls back a failed migration of this kind. The statements that already ran stay in the database, and the tracking row records a failed attempt, so validation stops the next `migrate` until you clean up and run `sustained repair`. Read what landed, finish or undo the rest by hand, then repair. A failed `CREATE INDEX CONCURRENTLY` also leaves an invalid index behind, which you must drop before you try again. A migration with one statement keeps that cleanup small.
 
-`AsyncMigrator` reads the same flag and runs the migration bare, with one limit: an adapter over a driver that opens its own transaction, such as `DbApiAsyncAdapter` over psycopg2, still opens one, and a statement that refuses a transaction block still fails there. Run it on `AsyncpgAdapter`, which executes every statement bare.
+`AsyncMigrator` reads the same flag and runs the migration outside a transaction. However, an adapter over a driver that opens its own transaction, such as `DbApiAsyncAdapter` over psycopg2, still opens one, so a statement that refuses a transaction block still fails there. Run such a migration on `AsyncpgAdapter`, which executes every statement bare.
 
-A rehearsal leaves such a migration out. The rehearsal runs every step inside one transaction and rolls it back, which is exactly what these statements refuse or ignore, and running one outside that transaction would apply it for real. Its result reports `up_ok` as `None` with the reason, the rest of the run is still proved, and the run can still pass. What the migration does can only be seen by running it.
+A rehearsal leaves such a migration out, because it runs every step inside one transaction and rolls it back. These statements refuse or ignore that transaction, and running one outside it would apply it for real. The result reports `up_ok` as `None` with the reason, and the rehearsal still proves the rest of the run, which can still pass. You see what the migration does only when you run it for real.
 
 ## Command line
 
@@ -513,7 +513,7 @@ applied  auto_20260816120000_001
 schema matches the models
 ```
 
-A difference prints one `drift` line each. This is a report only: the run has already happened, and the exit code does not change.
+Each difference prints one `drift` line. The report is informational, because the run has already happened, and it does not change the exit code.
 
 ### Reading a plan
 
@@ -534,13 +534,13 @@ drift
 run: sustained rehearse
 ```
 
-A statement that removes data or an object that contains it is labelled `destructive`: `DROP TABLE`, `DROP COLUMN`, `DROP TYPE`, `DROP VIEW`, `DROP MATERIALIZED VIEW`, `DROP DATABASE`, `DROP SCHEMA ... CASCADE`, a constraint drop, `TRUNCATE`, and `DELETE FROM`. A column drop written without the COLUMN keyword, as MySQL allows, is labelled as well. A plain `DROP SCHEMA` refuses a non-empty schema, so only the CASCADE form is labelled. The scan is textual, but it keeps comments and quoted text out, so a drop named inside a string literal is not labelled.
+A statement that removes data or an object that contains it is labelled `destructive`: `DROP TABLE`, `DROP COLUMN`, `DROP TYPE`, `DROP VIEW`, `DROP MATERIALIZED VIEW`, `DROP DATABASE`, `DROP SCHEMA ... CASCADE`, a constraint drop, `TRUNCATE`, and `DELETE FROM`. A column drop written without the `COLUMN` keyword, as MySQL allows, is labelled as well. A plain `DROP SCHEMA` refuses a non-empty schema, so only the `CASCADE` form is labelled. The scan is textual, but it ignores comments and quoted text, so a drop named inside a string literal is not labelled.
 
-The footer points at `rehearse` rather than `migrate` when a pending migration has one of these labels, because `migrate` will refuse it until a rehearsal has proved it. Once a rehearsal has recorded a row for that run, the footer reads `run: sustained migrate` again. With nothing destructive waiting, it reads `run: sustained migrate` from the start.
+The footer points at `rehearse` rather than `migrate` when a pending migration has one of these labels, because `migrate` will refuse it until a rehearsal has proved it. The footer reads `run: sustained migrate` when nothing destructive is waiting, or once a rehearsal has recorded a row for that run.
 
 The drift section appears only when the config module names `models`. It reports every difference, drops included, while `migrate` never generates a drop. When drops are all that is left, the footer says so instead of offering `sustained migrate`. With no `models`, the plan says drift went unchecked rather than reporting none.
 
-When the config module names `guards`, `plan` runs them and prints a fourth section. See [Guards](#guards). The guards read the statements `migrate` would apply: the pending migrations, and the generated migration without the drops. The drift section is the wider set, so a drop it lists has no verdict, because no run would read it.
+When the config module names `guards`, `plan` runs them and prints a fourth section, described under [Guards](#guards). The guards read the statements `migrate` would apply: the pending migrations, and the generated migration without the drops. The drift section is the wider set, so a drop it lists has no verdict, because no run would read it.
 
 `plan` exits 0 when the database is current, 2 when work is waiting, 3 when a guard blocked a statement, and 1 when validation found problems. Validation problems take priority over the other codes, and a blocked statement takes priority over work that is merely waiting. Note that argparse also exits 2 on a usage error, so a script that treats 2 as "work is waiting" should check stderr for an `error:` line.
 
@@ -573,7 +573,7 @@ $ sustained plan --json
 
 Every command that reports SQL uses that statement object, `drift` included. `statements` is `null` for a callable step, which renders no SQL. A guard verdict is attached to the statement it flags and appears nowhere else, so there is one place to read what a statement will do. Statements no rule flagged have an empty `guards` list. `drift` is `null`, not `[]`, when the config module names no models, so a caller can tell "nothing was compared" from "compared and found no gap". `status --json` prints `{"migrations": [{"id": ..., "state": ...}]}` and `validate --json` prints `{"ok": ..., "problems": [...]}`. Output is plain in both modes; nothing is coloured.
 
-Before version 2.13.0, `statements` was a count. A script that read the number needs updating.
+Releases before 2.13.0 print `statements` as a count, so a script that reads it as a number needs updating.
 
 ## Rehearsing a migration
 
@@ -619,21 +619,21 @@ The run exits 1 when an up or a down step failed, when the models did not land, 
 
 A rehearsal proves that the statements are valid, that the models arrive, and that the down steps take the schema back. It proves nothing about how long they take on a production-sized table, or what happens to the rows in it.
 
-The `reversed` check compares tables and columns. Indexes, constraints, and column defaults are left out, because engines report those in spellings that differ between an original object and a rebuilt one, and the check would report differences that are not real. A leftover index after a down step is not detected yet. Where the schema cannot be read at all, the check reports as not run instead of failing.
+The `reversed` check compares tables and columns. Indexes, constraints, and column defaults are left out, because engines report those in spellings that differ between an original object and a rebuilt one, and the check would report differences that are not real. The check does not detect an index left over after a down step. Where the schema cannot be read at all, the check reports as not run instead of failing.
 
 `sustained rehearse` passes the config module's `models` when it names any, so the generated migration is rehearsed with the pending ones. It is never registered, and it rolls back with everything else.
 
-`rehearse --json` prints one object: `{"rehearsed": [...], "scratch": false, "key": "...", "recorded": true, "ok": true}`. In each result, `landed` and `reversed` are `null` when the check did not run, `[]` when it passed, and the lines naming the trouble when it failed. `key` and `recorded` describe the rehearsal row, covered next.
+`rehearse --json` prints one object: `{"rehearsed": [...], "scratch": false, "key": "...", "recorded": true, "ok": true}`. In each result, `landed` and `reversed` are `null` when the check did not run, `[]` when it passed, and the lines naming the trouble when it failed. `key` and `recorded` describe the rehearsal row, which [Rehearsal logging and tracking](#rehearsal-logging-and-tracking) covers.
 
 The rehearsal creates the tracking table when the database has none, because it reads the applied rows before it opens its transaction. It also creates the rehearsal table and writes one row there after the rollback, described below. Nothing else persists: the tracking rows the rehearsal writes roll back with everything else, and the migrations stay pending. A callable step that commits on its own is the exception, since that commit cannot be taken back.
 
-Only databases whose schema changes roll back can rehearse: SQLite, Postgres, and DuckDB. The rest are refused, and so is a connection in autocommit mode or one inside an open `transaction()` block, because none of them could take the changes back. The check reads the declared dialect, so declare it. The default dialect passes, since the generic compiler usually serves SQLite. A config that leaves the dialect unset while pointing at MySQL, whose DDL commits as it runs, would rehearse for real.
+Only databases whose schema changes roll back can rehearse: SQLite, Postgres, and DuckDB. `rehearse` refuses every other engine, and also a connection in autocommit mode or one inside an open `transaction()` block, because none of them could take the changes back. The check reads the declared dialect, and the default dialect passes because the generic compiler usually serves SQLite. So a config that leaves the dialect unset while it points at MySQL, whose DDL commits as it runs, would rehearse for real, and declaring the dialect prevents that.
 
 ### Rehearsal logging and tracking
 
 A rehearsal that passes writes one row into a second table, `sustained_rehearsals`, created on first use like the tracking table. The row records a key, whether the run passed, and when it ran.
 
-`migrate` reads it. A run that would remove data stops unless a passing rehearsal row covers it. It reads the same list the `destructive` labels use, `DELETE FROM` included:
+`migrate` reads that table and stops a run that would remove data unless a passing rehearsal row covers it. It decides what removes data from the same list the `destructive` labels use, `DELETE FROM` included:
 
 ```console
 $ sustained migrate
@@ -662,9 +662,9 @@ The key is a SHA-256 over two ordered lists: the checksums of the migrations alr
 - **Editing a migration voids its rehearsal row.** The statements changed, so the key changed, and the gate closes again.
 - **A different history voids it too.** A rehearsal proves a set of statements against one starting schema. A database that has applied a different set of migrations gets its own key and its own rehearsal.
 
-Ids are not part of the key, only statements. A generated migration takes a new timestamped id every time the diff runs, and its rehearsal row stays valid across that change. A model edit that leaves the generated SQL unchanged keeps the row too.
+Ids are not part of the key, so a generated migration's rehearsal row stays valid even though the migration takes a new timestamped id every time the diff runs. A model edit that leaves the generated SQL unchanged keeps the row too.
 
-`migrate --target` runs a shorter set, which has its own key. A rehearsal applied every one of those shorter sets on its way up and took them all back on the way down, so it records a row for each one that removes data. The rows cover every start point too, because a targeted run leaves a history the next targeted run starts from. One rehearsal therefore covers the whole run, every target within it, and a sequence of targeted runs that walks through it.
+`migrate --target` runs a shorter set, which has its own key. A rehearsal applies every one of those shorter sets on its way up and takes them all back on the way down, so it records a row for each one that removes data. The rows cover every start point too, because a targeted run leaves a history the next targeted run starts from. One rehearsal therefore covers the whole run, every target within it, and a sequence of targeted runs that walks through it.
 
 `--unrehearsed` is the override. It writes a row of its own under the same key, with the outcome `override`, so the database records what was applied unproved and when. That row never opens the gate for a later run: only a `passed` row does. There is no config setting that turns the gate off.
 
@@ -673,7 +673,7 @@ A refused run exits 4, which a pipeline can tell apart from a failure. A targete
 The gate shares its limits with the `destructive` labels in `plan`:
 
 - A callable step has no SQL to read, so it never triggers the gate. A callable that drops a table applies without a rehearsal row.
-- The scan is textual. It reads the words in a statement, not its structure. A `DELETE FROM` that removes one row gates the run the same way as one that removes every row.
+- The scan is textual and reads the words in a statement rather than its structure, so a `DELETE FROM` that removes one row gates the run the same way as one that removes every row.
 
 In Python the same rules apply through the API. `rehearse()` returns a `Rehearsal`, which is a list of results with `key`, `recorded`, and `ok` attributes:
 
@@ -690,7 +690,7 @@ migrator.record_rehearsal(rehearsal.key)       # write one by hand
 
 A failing rehearsal records its failure under the same key, so the refusal reads `The last rehearsal of these statements failed` rather than reporting no rehearsal at all.
 
-`AsyncMigrator` has the same methods, the same flag on `up()`, and the same key function, so a row written by either migrator opens the gate for the other on the same database. Both migrators cover a generated migration the same way, so a rehearsal run by one opens the gate for the other.
+`AsyncMigrator` has the same methods, the same flag on `up()`, and the same key function, so a row written by either migrator opens the gate for the other on the same database, generated migrations included.
 
 ### Rehearsing on a scratch database
 
@@ -701,7 +701,7 @@ def get_rehearsal_connection():
     return psycopg.connect('postgresql://localhost/app_rehearsal')
 ```
 
-The scratch database is usually empty, so the whole history replays rather than what is pending on the real one, which proves the migrations run from nothing. The dialect check does not apply, the changes may remain after the rollback, and the footer says so. The connection closes when the command ends. On an engine whose schema changes do not roll back, the rehearsed objects stay behind, so recreate the scratch database before the next rehearsal.
+The scratch database is usually empty, so the rehearsal replays the whole history rather than only what is pending on the real database, which proves that the migrations run from nothing. The dialect check does not apply, the changes may remain after the rollback, and the footer says so. The connection closes when the command ends. On an engine whose schema changes do not roll back, the rehearsed objects stay behind, so recreate the scratch database before the next rehearsal.
 
 The rehearsal row belongs on the database `migrate` will read, not on the throwaway one, so the CLI writes it there after the scratch run passes. The key is computed against the real database's history and pending set. It is written only when the scratch run applied every migration pending on the real database; otherwise the output says the row was not recorded. Rows go in for the shorter target sets too, the same ones a real rehearsal records, so `migrate --target` reads a row after a scratch run. A scratch rehearsal cannot cover a generated migration, because the diff it runs against the throwaway schema is not the diff the real run will produce.
 
@@ -731,7 +731,7 @@ guards = [no_drops(), index_must_be_concurrent(), max_statements(50)]
 migrator = Migrator(conn, migrations, dialect=Dialects.POSTGRES, guards=guards)
 ```
 
-Each rule returns a verdict on each statement it objects to: `block` or `warn`. A `block` raises `GuardBlocked`. A `warn` prints on stderr and the run goes on. A block on the registered migrations stops the run before a single statement runs. A block on the migration generated from your models comes later, because those statements do not exist until the registered migrations have applied; the registered ids print before the error, and they stay applied.
+Each rule returns a verdict, `block` or `warn`, on each statement it objects to. A `block` raises `GuardBlocked`, while a `warn` prints on stderr and the run goes on. A block on the registered migrations stops the run before a single statement runs. A block on the migration generated from your models comes later, because those statements do not exist until the registered migrations have applied; the registered ids print before the error, and they stay applied.
 
 ```console
 $ sustained plan
@@ -753,7 +753,7 @@ error: A guard blocked this run:
 Fix the statement, or take the rule out of the guard list to run it anyway.
 ```
 
-Both commands exit 3. There is no `--force` flag: fix the statement, or take the rule out of the list.
+Both commands exit 3. There is no `--force` flag, so to run the statement you fix it or take the rule out of the list.
 
 ### The rules
 
@@ -775,13 +775,13 @@ Every one is a factory, so they all read the same at the call site. `no_table_re
 
 Guards read every SQL statement an up run would apply: SQL file migrations, Python migrations with string steps, and the diff against your models. A callable step renders no SQL, so guards cannot see inside it, the same limit the destructive labels have.
 
-Down runs are not checked. A down undoes work the rules already passed, so `no_drops()` would block every rollback of a create.
+Guards do not check down runs, because a down undoes work the rules already passed, and `no_drops()` would block every rollback of a create.
 
-A rule reads the run in order, and each statement it reads names the migration it came from. Both facts affect `no_lock_without_timeout()`. A plain `SET lock_timeout`, with or without SESSION, sets the timeout for the session, so it covers every statement after it in the run. A `SET LOCAL lock_timeout` ends at the commit that ends its migration, so it covers only the statements after it in that same migration, and the next migration starts uncovered. In a migration with `transactional=False` there is no transaction block for a LOCAL setting to live in, so Postgres ignores it and the rule counts it for nothing; write the plain `SET lock_timeout` there.
+A rule reads the run in order, and each statement it reads names the migration it came from. Both facts affect `no_lock_without_timeout()`. A plain `SET lock_timeout`, with or without `SESSION`, sets the timeout for the session, so it covers every statement after it in the run. A `SET LOCAL lock_timeout` ends at the commit that ends its migration, so it covers only the statements after it in that same migration, and the next migration starts uncovered. In a migration with `transactional=False` there is no transaction block for a `LOCAL` setting to live in, so Postgres ignores it and so does the rule; write the plain `SET lock_timeout` there.
 
 The statements a guard receives are strings, so a rule written as a function over strings needs no change to read them.
 
-`migrate` checks twice. The registered migrations are checked before anything runs. The diff against the models cannot be generated until those have run, so its statements are checked the moment they exist, alongside the registered statements from the same run, so a rule about the whole run counts the whole run. A warning already printed is not printed again.
+`migrate` checks twice. The registered migrations are checked before anything runs. The migrator cannot generate the diff against the models until those have run, so it checks the diff's statements the moment they exist. It checks them together with the registered statements from the same run, so a rule about the whole run counts the whole run. A warning already printed is not printed again.
 
 `rehearse` does not enforce guards. It runs against a database it is about to roll back, and stopping it there would stop you from testing the statement you are trying to fix.
 

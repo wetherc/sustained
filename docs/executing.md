@@ -33,9 +33,9 @@ You can generally use any DB-API 2.0 driver to connect to your database backaend
 | `DEFAULT`, `MSSQL`, `PRESTO`, `DUCKDB`, `ATHENA` | `?` | `sqlite3`, `pyodbc`, `trino`, `duckdb`, `pyathena` with `pyathena.paramstyle = "qmark"` |
 | `POSTGRES`, `MYSQL` | `%s` | `psycopg`, `PyMySQL` |
 
-[SQL Dialects](./dialects) provides more information about each supported driver, and gives sample connection patterns.
+[SQL Dialects](./dialects) provides more information about each supported driver and gives sample connection patterns.
 
-On Athena, `run()` also converts each parameter to the string form the Athena API wants before handing it to pyathena, and rewrites a `None` parameter's placeholder to a literal `NULL`. If you execute `to_sql()` output yourself there, pass it through `compiler.prepare_execution(sql, params)` first.
+On Athena, `run()` also converts each parameter to the string form that the Athena API expects before it hands the parameters to `pyathena`, and it rewrites the placeholder of a `None` parameter as a literal `NULL`. If you execute `to_sql()` output yourself there, pass it through `compiler.prepare_execution(sql, params)` first.
 
 ## Binding a connection
 
@@ -49,7 +49,7 @@ Show.bind(conn)      # only Show
 Show.unbind()        # remove it again
 ```
 
-A connection passed to `run()` or `first()` overrides any binding. This is useful when, e.g., one query needs to run against a replica while the rest use the primary.
+A connection passed to `run()` or `first()` overrides any binding. This is useful when, for example, one query needs to run against a replica while the rest use the primary.
 
 Sustained looks for a connection first as an argument that you passed to the call, then via a connection pinned by an open `transaction()` block, then the model's binding, whether set on the model or inherited from a parent class. Running with none of those raises `RuntimeError`.
 
@@ -116,7 +116,7 @@ The columns are not typed. A `select()` does not narrow the model, and `to_dicts
 
 ### Untyped handoffs
 
-Sustained exports names for the library's untyped handoff points. Import them from `sustained`:
+Sustained exports type names for the connections and values that pass between your code and the library. You can import them from `sustained`:
 
 ```python
 from sustained import Binding, Connection, Cursor, RowValue, SqlValue
@@ -136,11 +136,11 @@ def get_connection() -> Connection:
 
 `Model.bind()` and every `connection=` argument expect a value of type `Binding`: typically via either a `Connection` or a `ConnectionPool`.
 
-`SqlValue` and `RowValue` split values by direction. `SqlValue` is a value on its way into the database, bound as a parameter or rendered as a literal. It is `object`, not `Any`, so passing a query value where a column name belongs is still an error. `RowValue` is a value read back, and it stays `Any` because the driver decides whether a `NUMERIC` arrives as a `Decimal` or a `float`.
+`SqlValue` and `RowValue` split values by direction. `SqlValue` is a value on its way into the database, whether bound as a parameter or rendered as a literal, and it is `object` rather than `Any`, so passing a query value where a column name belongs is still a type error. `RowValue` is a value read back, and it stays `Any` because the driver decides whether a `NUMERIC` arrives as a `Decimal` or a `float`.
 
 ## Writing rows
 
-`insert()`, `update()`, and `delete()` turn the builder into a write statement. They take the same `where()` methods and the same parameterized rendering as a SELECT:
+`insert()`, `update()`, and `delete()` turn the builder into a write statement. They accept the same `where()` methods as a `SELECT` and use the same parameterized rendering:
 
 ```python
 Show.query().insert({'venue_id': 1, 'title': 'Nightcrawler'}).run()
@@ -155,9 +155,9 @@ Ticket.query().delete().where('sold_at', 'IS', None).run()
 
 A write commits when it finishes, unless it is inside a transaction, and returns the affected row count.
 
-The count is `-1` when the driver reports none. asyncpg does this for a batched multi-row insert, and for any statement whose status string ends without a number. Add `returning()` when you need an exact count: the write gives back one row per row it wrote, so `len()` of that list is the count.
+The count is `-1` when the driver reports none, which `asyncpg` does for a batched multi-row insert and for any statement whose status string ends without a number. If you need an exact count, add `returning()`. The write then returns one row for each row it wrote, so `len()` of that list is the count.
 
-A multi-row insert takes a list. Every row must have the same columns, so that the statement has one template:
+A multi-row insert takes a list, and every row in it must have the same columns so that the statement has one template:
 
 ```python
 Ticket.query().insert([
@@ -166,9 +166,9 @@ Ticket.query().insert([
 ]).run()
 ```
 
-Without a RETURNING clause, a multi-row insert goes through the driver's `executemany()` with a single-row template, which is the fast path for bulk loads.
+Without a `RETURNING` clause, a multi-row insert goes through the driver's `executemany()` with a single-row template, which is the fast path for bulk loads.
 
-### UPDATE and DELETE need a WHERE
+### Required WHERE for UPDATE and DELETE
 
 An `update()` or `delete()` with no `where()` raises `ValueError` before it reaches the database.
 
@@ -197,13 +197,13 @@ Chain `onConflict(columns)` after `insert()`, then `merge()` to update the exist
 )
 ```
 
-`merge()` updates every inserted column except the conflict columns, or only the columns in a list you pass it. The conflict columns need a unique constraint or primary key in the database, or the engine rejects the statement. A `merge()` with nothing left to update raises `ValueError`, which happens when every inserted column is also a conflict column.
+`merge()` updates every inserted column except the conflict columns, or only the columns in a list you pass it. The conflict columns need a unique constraint or primary key in the database, or the engine rejects the statement. If every inserted column is also a conflict column, `merge()` has nothing left to update and raises `ValueError`.
 
-Postgres, SQLite, and DuckDB render `ON CONFLICT`. MSSQL renders a `MERGE` statement. Presto raises `DialectError`.
+Postgres, SQLite, and DuckDB render `ON CONFLICT`, MSSQL renders a `MERGE` statement, and Presto raises `DialectError`.
 
 ### RETURNING
 
-`returning()` adds the clause on dialects that have it. The statement then returns a list of dicts instead of a row count:
+`returning()` adds a `RETURNING` clause on dialects that support it, and the statement then returns a list of dicts instead of a row count:
 
 ```python
 rows = (Show.query()
@@ -214,11 +214,11 @@ rows = (Show.query()
 # [{'id': 42}]
 ```
 
-MSSQL and Presto raise `DialectError`. On MSSQL, use `OUTPUT` through raw SQL instead.
+MSSQL and Presto raise `DialectError`, so on MSSQL use an `OUTPUT` clause through raw SQL instead.
 
 ### INSERT ... SELECT and CREATE TABLE AS
 
-`insert_from(columns, query)` inserts another query's result. `create_table_as(name, temporary=False)` turns a SELECT into a CTAS statement:
+`insert_from(columns, query)` inserts another query's result. `create_table_as(name, temporary=False)` turns a `SELECT` into a CTAS statement:
 
 ```python
 class ShowArchive(Model):
@@ -239,9 +239,9 @@ ShowArchive.query().insert_from(['id', 'title'], past).run()
 # CREATE TABLE sellouts AS SELECT id FROM shows WHERE sold_out = ?
 ```
 
-`insert_from()` writes to the table of the model it is called on. The target is the model in front of `.query()`, and the source is the query you pass in.
+`insert_from()` writes to the table of the model in front of `.query()` and reads from the query you pass in.
 
-MSSQL raises `DialectError` for CTAS. Use `SELECT INTO` through raw SQL there.
+MSSQL raises `DialectError` for CTAS, so use `SELECT INTO` through raw SQL there.
 
 ## Transactions
 
@@ -273,9 +273,9 @@ for venue in venues:
         print(venue.name, show.title)
 ```
 
-A `HasManyRelation` or `ManyToManyRelation` attaches a list. The to-one relation types attach a single instance or `None`.
+A `HasManyRelation` or `ManyToManyRelation` attaches a list, and the to-one relation types attach a single instance or `None`.
 
-Eager loading matches rows on the join key, so both result sets need that column. Keep it in your `select()`, or select every column. A relation through a link table loads with one query that joins the link table to the far table.
+Eager loading matches rows on the join key, so both result sets need that column, and you must either keep it in your `select()` or select every column. A relation through a link table loads with one query that joins the link table to the far table.
 
 A dotted path loads a relation of a relation:
 
@@ -312,7 +312,7 @@ with Show.transaction():
     Ticket.query().insert({'show_id': 1, 'price': 45}).run()
 ```
 
-A query given the pool by hand inside the block runs on the pinned connection too, so `query.run(pool)` stays in the transaction instead of checking a second connection out.
+If you pass the pool to a query by hand inside the block, the query also runs on the pinned connection, so `query.run(pool)` stays in the transaction instead of checking out a second connection.
 
 An exhausted pool raises `PoolTimeout` after the configured timeout rather than blocking forever. `pool.close()` closes the idle connections.
 
@@ -343,15 +343,15 @@ async with Show.async_transaction():
     await Show.query().update({'sold_out': True}).where('id', '=', 1).arun()
 ```
 
-`arun()` mirrors `run()`: hydration, RETURNING rows, batched multi-row inserts, and eager loading. Both paths share the same loader, so dotted paths, per-level batching, and relations through a link table behave the same way. `async_transaction()` mirrors `transaction()` as well: nested blocks open a savepoint, so an inner failure rolls back only the inner block. A rolled-back savepoint is released after, so the same block can run again under the same name.
+`arun()` mirrors `run()`, including hydration, `RETURNING` rows, batched multi-row inserts, and eager loading. Both paths share the same loader, so dotted paths, per-level batching, and relations through a link table behave the same way. `async_transaction()` mirrors `transaction()` as well: nested blocks open a savepoint, so an inner failure rolls back only the inner block. A rolled-back savepoint is released afterward, so the same block can run again under the same name.
 
-`async_transaction()` opens and closes the block the way the driver wants it. `DbApiAsyncAdapter` wraps a DB-API 2.0 driver, which opens the transaction itself, so the block sends no `BEGIN` and ends with the driver's `commit()` or `rollback()`. A connection the caller put in autocommit is the exception: it commits every statement as it runs, so its blocks get the statements instead. `AsyncpgAdapter` runs in autocommit and reads `commit()` as a no-op, so its blocks get `BEGIN`, `COMMIT`, and `ROLLBACK` as statements. A dialect whose driver has no transaction control, such as DuckDB, gets the statements too. A custom adapter says which it is by overriding `driver_transaction_control()`, which returns `False` on the base class.
+`async_transaction()` opens and closes the block the way the driver expects. `DbApiAsyncAdapter` wraps a DB-API 2.0 driver, which opens the transaction itself, so the block sends no `BEGIN` and ends with the driver's `commit()` or `rollback()`. The exception is a connection that you put in autocommit mode, which commits every statement as it runs, so its blocks send the transaction statements instead. `AsyncpgAdapter` runs in autocommit and treats `commit()` as a no-op, so its blocks send `BEGIN`, `COMMIT`, and `ROLLBACK` as statements. A dialect whose driver has no transaction control, such as DuckDB, also gets the statements. A custom adapter declares which kind it is by overriding `driver_transaction_control()`, which returns `False` on the base class.
 
 ### Async pooling
 
-One adapter runs one statement at a time, because a connection runs one transaction at a time, `DbApiAsyncAdapter` serializes every call behind one lock, and asyncpg sends one statement per connection. Ten concurrent `arun()` calls on one adapter therefore queue up behind each other.
+One adapter runs one statement at a time, because a connection runs one transaction at a time, `DbApiAsyncAdapter` serializes every call behind one lock, and `asyncpg` sends one statement per connection. Ten concurrent `arun()` calls on one adapter therefore queue up behind each other.
 
-`AsyncConnectionPool` is the async twin of `ConnectionPool`. It opens adapters from an async factory, up to `max_size`, and binds like one:
+`AsyncConnectionPool` is the async twin of `ConnectionPool`. It opens adapters from an async factory, up to `max_size`, and you bind it the same way:
 
 ```python
 from sustained.aio import AsyncpgAdapter
@@ -368,9 +368,9 @@ shows, tickets = await asyncio.gather(
 )
 ```
 
-Each call checks one adapter out for its whole length, including the statement, its eager loads, and its commit, then gives it back. An `async_transaction()` block keeps one adapter from BEGIN to COMMIT. A call handed the same pool inside that block, such as `arun(query, pool)`, runs on the adapter the block checked out, and a nested `async_transaction(pool)` opens a savepoint on it, the way the blocking `transaction(pool)` nests. A released adapter is rolled back first, so a failed statement never reaches the next task; an adapter whose driver refuses rollback with no transaction open, the way duckdb does, is probed with `SELECT 1` and kept when it answers. An exhausted pool raises `PoolTimeout`, the same error the blocking pool raises, and `await pool.close()` closes the idle adapters.
+Each call checks one adapter out for its whole length, including the statement, its eager loads, and its commit, then gives it back. An `async_transaction()` block keeps one adapter from `BEGIN` to `COMMIT`. If you pass the same pool to a call inside that block, such as `arun(query, pool)`, the call runs on the adapter that the block checked out, and a nested `async_transaction(pool)` opens a savepoint on it, the same way the blocking `transaction(pool)` nests. The pool rolls back each released adapter first, so a failed statement never reaches the next task. If an adapter's driver refuses a rollback with no transaction open, as `duckdb` does, the pool instead probes the adapter with `SELECT 1` and keeps it when the probe succeeds. An exhausted pool raises `PoolTimeout`, the same error the blocking pool raises, and `await pool.close()` closes the idle adapters.
 
-The pool runs no statement itself. `await pool.fetch(...)` raises, because a write and its commit would land on two different connections; take an adapter out with `async with pool.scope() as adapter` when you want to run something by hand. `AsyncMigrator` takes an adapter rather than a pool, because a migration run belongs on one session.
+The pool runs no statements itself, so `await pool.fetch(...)` raises, because a write and its commit would otherwise land on two different connections. When you want to run something by hand, take an adapter out with `async with pool.scope() as adapter`. `AsyncMigrator` takes an adapter rather than a pool, because a migration run needs to stay on one session.
 
 ## Watching what runs
 
@@ -387,7 +387,7 @@ set_statement_listener(log)
 set_statement_listener(None)   # remove it
 ```
 
-One listener is registered at a time, and it sees every statement in the process, including the migrator's.
+Only one listener can be registered at a time, and it sees every statement in the process, including the migrator's.
 
 ## Where to go next
 

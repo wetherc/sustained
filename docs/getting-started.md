@@ -3,7 +3,7 @@ layout: default
 title: Getting Started
 ---
 
-Sustained needs no database to start. Describe a table, and you can print SQL against it before anything is connected:
+You do not need a database to start with Sustained. Once you describe a table, you can print SQL against it before you connect anything:
 
 ```python
 from sustained import Model
@@ -31,7 +31,7 @@ Sustained has no required dependencies. `pandas` and `pyarrow` are optional, and
 
 A model is a class with a table name. If you also define its `tableColumns`, Sustained can manage its schema changes.
 
-Save this as `venues.py`. It is the schema for the rest of the guide: venues that host shows.
+Save this as `venues.py`. The rest of the guide uses its schema, in which venues host shows.
 
 ```python
 from sustained import Model, RelationType
@@ -114,7 +114,7 @@ migrator.up(models=[Venue, Show])
 
 `Model.bind()` on the base class shares one connection with every model. Bind a subclass instead to scope a connection to it.
 
-When running a migration, pass every model you manage to the migrator, not only the ones that changed. The diff compares the whole database against the whole list, so a table missing from the list is not kept up to date.
+When you run a migration, pass every model you manage to the migrator, not only the ones that changed. The diff compares the whole database against the whole list, so a table missing from the list is not kept up to date.
 
 ## Write and read rows
 
@@ -166,7 +166,7 @@ print(query.to_dicts())
 # [{'title': 'Tour Finale', 'city': 'Minneapolis'}]
 ```
 
-`col('venues.capacity') > 1400` is a typed predicate. Python's comparison operators build the condition, and `&`, `|`, and `~` boolean operators combine multiple conditions. The three-argument form, `where('capacity', '>', 1400)`, does the same thing.
+`col('venues.capacity') > 1400` is a typed predicate. Python's comparison operators build the condition, and the `&`, `|`, and `~` operators combine conditions. The three-argument form, `where('capacity', '>', 1400)`, does the same thing.
 
 Grouping and aggregates work the way the SQL does:
 
@@ -210,13 +210,13 @@ migrator.up(models=[Venue, Show])   # generate, record, apply
 migrator.down()                     # revert the newest applied migration
 ```
 
-Migration generation refuses to guess about anything that loses data. Dropping a table or column needs `allow_drops=True`. A rename needs a hint, because the database catalog cannot tell a rename operation apart from a drop plus an add. Tightening a column to NOT NULL needs a `default` or a `backfill` value for the rows that already exist. Read [Schema and Migrations](./schema) for each rule.
+Migration generation refuses to guess about anything that loses data. Dropping a table or column needs `allow_drops=True`. A rename needs a hint, because the database catalog cannot tell a rename operation apart from a drop plus an add. Tightening a column to `NOT NULL` needs a `default` or a `backfill` value for the rows that already exist. Read [Schema and Migrations](./schema) for each rule.
 
 ## Move migrations to the shell
 
-Generated migrations suit development in a notebook. For deploys, keep migrations as files you can commit and review, and run them with the `sustained` command.
+Generated migrations suit development in a notebook. For deploys, you can keep migrations as files that you commit and review, and run them with the `sustained` command.
 
-A migration is a pair of SQL files named for its id. Migrations run in ascending id order.
+Each migration is a pair of SQL files named for its id, and migrations run in ascending id order.
 
 ```
 migrations/
@@ -257,9 +257,9 @@ migrations_dir = 'migrations'
 models = [Venue, Show]
 ```
 
-`models` is optional. Including it lets `sustained plan` also report the gap between your models and the database.
+`models` is optional, but if you include it, `sustained plan` also reports the gap between your models and the database.
 
-Now read the plan. It returns with exit code 2 when work is waiting, so a deploy script can branch on it:
+Now read the plan. The command exits with code 2 when work is waiting, so a deploy script can branch on it:
 
 ```console
 $ sustained plan
@@ -271,7 +271,7 @@ pending
 run: sustained migrate
 ```
 
-Rehearse the changes before you apply them. This runs every pending migration, runs the downgrade steps back down, and rolls the whole thing back, so you learn whether the SQL is valid and whether it reverses while the real schema is still untouched:
+Rehearse the changes before you apply them. This runs every pending migration, runs the downgrade steps, and rolls the whole thing back, so you learn whether the SQL is valid and whether it reverses while the real schema is still untouched:
 
 ```console
 $ sustained rehearse
@@ -294,13 +294,11 @@ applied  002_create_shows
 
 `sustained down --steps 1` reverts the newest migration. `--steps` must be 0 or more, and 0 reverts nothing. `sustained down --to 001_create_venues` reverts until that migration is the newest applied.
 
-A rehearsal proves the statements are valid and that the down steps reverse them. It does not indicate anything about how long they take to execute on a production-sized table.
+A rehearsal proves that the statements are valid and that the down steps reverse them, but it tells you nothing about how long they take to execute on a production-sized table.
 
 Only databases whose schema changes roll back can rehearse in place: SQLite, Postgres, and DuckDB. Elsewhere, point the rehearsal at a scratch database with `get_rehearsal_connection()` in the config module. [Schema and Migrations](./schema) explains both paths.
 
-## Where to go next
-
-You have the whole loop: models, queries, generated migrations, and CLI-driven migrations.
+## Next steps
 
 | To learn | Read |
 | --- | --- |

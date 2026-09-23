@@ -58,14 +58,14 @@ A composable condition. Pass a `Predicate` to `where()` or `having()` as the onl
 
 ## Marking columns and literals
 
-Sustained decides whether a bare string is a column name or a value. In function arguments and CASE results it reads the string as a column. These two classes override that reading.
+Sustained decides whether a bare string is a column name or a value, and in function arguments and `CASE` results it reads the string as a column. The two classes below override that reading.
 
 ```python
 Column(name)
 ```
 {: .sig #column}
 
-The string is a column reference or raw SQL. Sustained does not quote it and does not treat it as a value.
+The string is a column reference or raw SQL, which Sustained neither quotes it nor treats it as a value.
 
 ```python
 Literal(value)
@@ -118,7 +118,7 @@ CaseExpression(alias, else_result)
 ```
 {: .sig #caseexpression}
 
-A CASE expression. `when(condition, result)` appends a WHEN/THEN pair and returns the `CaseExpression`, so pairs chain. `whens` returns a copy of the pairs.
+A `CASE` expression. `when(condition, result)` appends a `WHEN`/`THEN` pair and returns the `CaseExpression`, so pairs chain. `whens` returns a copy of the pairs.
 
 ```python
 Subquery(query, alias)
@@ -140,11 +140,11 @@ Show.query().select('title', Subquery(ticket_count, 'tickets_sold'))
 
 `render(ctx)` renders the subquery with the outer statement's render context, so its values parameterize with the rest of the statement. `str()` inlines them as literals, for reading and logging.
 
-`render_operand(ctx)` renders it with no alias, for the places where the subquery stands as a value: a function argument, or one side of a comparison. The compiler calls it there. Passing `None` for the context inlines the values.
+`render_operand(ctx)` renders it with no alias, for the places where the subquery stands as a value, such as a function argument or one side of a comparison, and the compiler calls it in those places. Passing `None` for the context inlines the values.
 
 ### Aliases in a nested position
 
-An alias belongs to the select list. Where one of these objects stands as a value, the alias is left off: a function argument, or the value side of a comparison. `Func`, `AggregateExpression`, `WindowExpression`, `CaseExpression` and `Subquery` all drop it there, so you can pass the same object to `select()` and to a function call and get valid SQL from both.
+An alias belongs to the select list, so Sustained leaves it off where one of these objects stands as a value (a function argument, or the value side of a comparison). `Func`, `AggregateExpression`, `WindowExpression`, `CaseExpression`, and `Subquery` all drop it there, so you can pass the same object to `select()` and to a function call and get valid SQL from both.
 
 A nested object also renders through the compiler of the statement that contains it, not through the default dialect. A `CASE` with boolean results renders `1` and `0` on MS SQL Server and `TRUE` and `FALSE` elsewhere, in the select list and inside a function call alike.
 

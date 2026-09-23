@@ -3,7 +3,7 @@ layout: default
 title: Command line reference
 ---
 
-The `sustained` console script installs with the package. It also runs as `python -m sustained`.
+The `sustained` console script installs with the package, and you can also run it as `python -m sustained`.
 
 ```
 sustained <command> [--config MODULE] [command options]
@@ -41,13 +41,13 @@ Guide: [Schema and Migrations](/schema#command-line).
 
 `plan` uses all of these codes. It exits 0 when the database is current, 2 when migrations are pending or the models have drifted, 3 when a guard blocked a statement, and 1 when validation found problems. Problems outrank a blocked statement, and a blocked statement outranks pending work.
 
-argparse also exits 2 on a usage error. If your script treats 2 as "work is waiting", check stderr for an `error:` line first.
+`argparse` also exits 2 on a usage error. If your script treats 2 as "work is waiting", check stderr for an `error:` line first.
 
 `rehearse` exits 1 when an up step or a down step failed, when the models did not land, or when the schema did not come back. A migration with no down step is not a failure, so `rehearse` exits 0 for it.
 
 `migrate` exits 4 when the run would remove data and no passing rehearsal covers those statements. The message names the statements and both ways forward, and repeats `--target` when the run had one.
 
-A block or a refusal on the migration generated from the models happens after the registered migrations have applied. Those ids print on stdout before the error, and they stay applied.
+A block or a refusal on the migration generated from the models happens after the registered migrations have applied. The ids of those migrations print on stdout before the error, and the migrations stay applied.
 
 `validate` exits 1 when it finds problems, and 0 when it finds none. The exit codes are the same with and without `--json`.
 
@@ -101,9 +101,9 @@ No flag skips a guard for one run. Fix the statement, or take the rule out of th
 
 ### Callbacks
 
-Only `migrate` calls the callbacks. `rehearse` does not call them, because it rolls everything back. The CLI collects the callbacks into a `Callbacks` object and hands that object to the migrator, and the migrator makes the calls, so the same hooks are available through the API.
+Only `migrate` calls the callbacks, and `rehearse` does not, because it rolls everything back. The CLI collects the callbacks into a `Callbacks` object and hands that object to the migrator, and the migrator makes the calls, so the same hooks are available through the API.
 
-`before_migrate` runs before the run starts, which is before validation and before the advisory lock. `after_migrate` runs only when at least one migration applied, so a run with nothing to do calls nothing. `on_error` runs after a failure and before the failure reaches the shell. Its `migration_id` argument is `None` when the run failed before it reached a migration, as it does for a guard block or a validation problem.
+`before_migrate` runs before the run starts, ahead of validation and the advisory lock. `after_migrate` runs only when at least one migration applied, so a run with nothing to do calls nothing. `on_error` runs after a failure and before the failure reaches the shell. Its `migration_id` argument is `None` when the run failed before it reached a migration, as it does after a guard block or a validation problem.
 
 The CLI skips a callback that is not callable. When `on_error` itself raises, its error prints to stderr, and the original migration error still decides the exit code.
 
@@ -149,7 +149,7 @@ guards
   warn   no_table_rewrite  ALTER TABLE users ALTER COLUMN age TYPE BIGINT
 ```
 
-The drift section appears only when the config names `models`. It reports every difference, drops included, and `migrate` never generates a drop. A drift section of only drops says so instead of offering the command. The `run:` line prints only when validation found no problems.
+The drift section appears only when the config names `models`. It reports every difference, drops included, even though `migrate` never generates a drop. A drift section that contains only drops says so instead of offering the command. The `run:` line prints only when validation found no problems.
 
 ```console
 $ sustained rehearse
@@ -172,7 +172,7 @@ rollback complete, database unchanged
 run: sustained plan
 ```
 
-When the config names `models`, `migrate` reads the schema back after a successful run. It prints `schema matches the models`, or one `drift    <gap>` line per difference that is left. This report does not change the exit code.
+When the config names `models`, `migrate` reads the schema back after a successful run. It prints `schema matches the models`, or one `drift    <gap>` line per remaining difference. This report does not change the exit code.
 
 The other commands print `applied  <id>`, `reverted <id>`, `repaired <action>`, or `baselined <id>`, one per line. With nothing to do they print `Nothing to apply.`, `Nothing to revert.`, `Nothing to repair.`, `Nothing to baseline.`, or `Nothing to rehearse.` `validate` prints `OK`, or one `problem  <text>` line per problem.
 

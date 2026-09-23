@@ -34,7 +34,7 @@ Venue.query().where('city', '=', 'Minneapolis').orWhere('city', '=', 'St Paul')
 
 The first condition in a chain must be a plain `where()`. Starting with `andWhere()` or `orWhere()` raises `RuntimeError`, because there is nothing for the conjunction to join to.
 
-The operator has to be one of `=`, `!=`, `<>`, `<`, `<=`, `>`, `>=`, `LIKE`, `NOT LIKE`, `ILIKE`, `NOT ILIKE`, `IS`, or `IS NOT`. Anything else raises `ValueError`. The allowlist exists because the operator is the one part of the clause that always renders exactly as written. Use `whereRaw()` if you need an operator outside it.
+The operator has to be one of `=`, `!=`, `<>`, `<`, `<=`, `>`, `>=`, `LIKE`, `NOT LIKE`, `ILIKE`, `NOT ILIKE`, `IS`, or `IS NOT`, and anything else raises `ValueError`. The allowlist exists because the operator is the one part of the clause that always renders exactly as written. Use `whereRaw()` if you need an operator outside it.
 
 Comparing to `None` with `=` or `!=` renders `IS NULL` or `IS NOT NULL`, because `= NULL` matches nothing in SQL:
 
@@ -108,7 +108,7 @@ A predicate goes to `where()` or to `having()`, and works anywhere the three-arg
 
 ## The where family
 
-Each of the following methods can be used as is, or prefixed with `and` or `or`. For example, `whereBetween` can also be written as `andWhereBetween` or `orWhereBetween` when it joins an earlier condition.
+You can use each method in the table as is or with an `and` or `or` prefix. For example, you can write `whereBetween` as `andWhereBetween` or `orWhereBetween` when it joins an earlier condition.
 
 | Method | Arguments | Renders |
 | --- | --- | --- |
@@ -120,7 +120,7 @@ Each of the following methods can be used as is, or prefixed with `and` or `or`.
 | `whereExists` / `whereNotExists` | query or callable | `EXISTS (...)` |
 | `whereRaw` | SQL, parameters | the fragment, in parentheses |
 
-Each base also exists as a `having` method for filtering groups. See [Grouping](./grouping).
+Each base method also has a `having` counterpart for filtering groups, which [Grouping](./grouping) covers.
 
 ### IN and NOT IN
 
@@ -132,7 +132,7 @@ Show.query().where('sold_out', '=', True).andWhereNotIn('venue_id', [4, 5])
 # SELECT * FROM shows WHERE sold_out = TRUE AND venue_id NOT IN (4, 5)
 ```
 
-An empty list raises `ValueError`. `IN ()` is a syntax error on most engines, and the intent behind an empty list is usually a filter that got no values rather than a query that should match nothing.
+An empty list raises `ValueError`, because `IN ()` is a syntax error on most engines and an empty list usually comes from a filter that got no values rather than a query meant to match nothing.
 
 The values can be another query instead of a list:
 
@@ -172,7 +172,7 @@ Ticket.query().whereBetween('price', 20, 50)
 
 ### EXISTS
 
-`whereExists()` takes a query or a callable that receives one. Reference the outer query's columns with `QueryBuilder.raw()`, which stops the name being rendered as a string value:
+`whereExists()` takes a query or a callable that receives one. Reference the outer query's columns with `QueryBuilder.raw()`, which keeps the builder from rendering the name as a string value:
 
 ```python
 from sustained.builder import QueryBuilder
@@ -209,7 +209,7 @@ The builder the callable receives has no model behind it, so `from_()` takes a t
 
 ## Grouping conditions
 
-Pass a callable to any `where` method and it receives a builder for a parenthesized group. This is how you get `A AND (B OR C)`:
+Pass a callable to any `where` method and it receives a builder for a parenthesized group, which is how you write `A AND (B OR C)`:
 
 ```python
 (Show.query()
@@ -246,7 +246,7 @@ Groups nest as deep as the logic needs:
 #   AND ((price < 20 AND show_id = 1) OR (price > 100 AND show_id = 2))
 ```
 
-The typed form does the same thing with parentheses instead of lambdas, and reads better past two levels:
+The typed form builds the same groups with parentheses instead of a lambda at each level:
 
 ```python
 Ticket.query().where(
@@ -260,7 +260,7 @@ Ticket.query().where(
 
 ## Raw predicates
 
-`whereRaw(sql, params)` is a fallback for anything the builder cannot otherwise express. Mark each value with `?`. The values travel as parameters, so user input never reaches the SQL text even in a raw fragment:
+`whereRaw(sql, params)` is a fallback for anything the builder cannot otherwise express. Mark each value with `?` so that it travels as a parameter, which keeps user input out of the SQL text even in a raw fragment:
 
 ```python
 Ticket.query().whereRaw('price % ? = ?', [10, 0])

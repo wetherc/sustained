@@ -5,7 +5,7 @@ title: Recipes
 
 Each recipe is a standalone snippet that completes one common task.
 
-Every example uses the venue booking schema from [Getting Started](./getting-started), extended with artists, tickets, and a link table so the joins have somewhere to go.
+Every example uses the venue booking schema from [Getting Started](./getting-started), extended with artists, tickets, and a link table for the join examples.
 
 ```python
 from sustained import Model, RelationType
@@ -86,7 +86,7 @@ class Ticket(Model):
 
 ## Reuse one filter for several queries
 
-A builder changes in place, so a shared base query would collect every branch's filters. You can create a deep copy of it with `clone()`.
+A builder changes in place, so a shared base query would collect the filters from every branch. To keep the branches apart, give each one a deep copy of the base query with `clone()`.
 
 ```python
 sold_out = Show.query().where('sold_out', '=', True)
@@ -110,11 +110,11 @@ Show.query().where((Show.c.sold_out == True) & ~(Show.c.title.like('Cancelled%')
 Show.query().innerJoinRelated('venue').where(col('venues.capacity') > 1400)
 ```
 
-Use `&` and `|`, never `and` and `or`. A `Predicate` raises `TypeError` in a boolean context, so the keyword version fails loudly instead of quietly evaluating to one side.
+Use `&` and `|` rather than `and` and `or`. A `Predicate` raises `TypeError` in a boolean context, so the keyword version fails with an error instead of evaluating to one side.
 
 ## Group a set of OR conditions
 
-You can pass a lambda to any `where` method: it receives a builder whose conditions render inside parentheses for nested and grouped clauses.
+You can pass a lambda to any `where` method. The lambda receives a builder whose conditions render inside parentheses, which lets you group and nest clauses.
 
 ```python
 Show.query().where('venue_id', '=', 1).andWhere(
@@ -123,11 +123,11 @@ Show.query().where('venue_id', '=', 1).andWhere(
 # WHERE venue_id = 1 AND (sold_out = TRUE OR starts_at > '2026-09-01')
 ```
 
-Groups can nest arbitrarily deep. The only limit is what your peers are willing to code review. The first condition in any chain must be a plain `where`, never `andWhere` or `orWhere`.
+Groups can nest arbitrarily deep. The only limit is what your peers are willing to code review. The first condition in each chain must be a plain `where` rather than `andWhere` or `orWhere`.
 
 ## Filter the result of an aggregate
 
-`having()` takes the aggregate as written, because column aliases are not available to HAVING in standard SQL.
+`having()` takes the aggregate expression as written, because standard SQL does not let `HAVING` refer to column aliases.
 
 ```python
 revenue = (
@@ -175,7 +175,7 @@ Show.query().select('title').select_case(
 # SELECT title, CASE WHEN sold_out = 1 THEN 'sold out' ELSE 'open' END AS status
 ```
 
-Results are string literals by default. Wrap a result in `Column('other_col')` when it names a column instead.
+`select_case()` treats each result as a string literal by default, so wrap a result in `Column('other_col')` when it names a column instead.
 
 ## Feed one query into another with a CTE
 
@@ -188,7 +188,7 @@ Venue.query() \
     .innerJoin('sold_out_shows', 'venues.id', '=', 'sold_out_shows.venue_id')
 ```
 
-A raw join needs a table name, so a derived result set has to become a CTE first and then join by its alias. Pass `recursive=True` to `with_()` for a self-referencing CTE.
+A raw join needs a table name, so you turn a derived result set into a CTE first and then join it by its alias. Pass `recursive=True` to `with_()` for a self-referencing CTE.
 
 ## Filter by whether related rows exist
 
@@ -203,7 +203,7 @@ Venue.query().select('name').whereExists(
 )
 ```
 
-Wrap the outer-query column in `QueryBuilder.raw()`. Without it, `'venues.id'` is read as a value to bind, not as a column to compare against.
+Wrap the outer query's column in `QueryBuilder.raw()`, because without it Sustained binds `'venues.id'` as a string value instead of comparing against the column.
 
 ## Page through a large table
 
@@ -220,7 +220,7 @@ first = Show.query().cursor_page('id', 100).run()
 second = Show.query().cursor_page('id', 100, after=first[-1].id).run()
 ```
 
-The cursor column must be unique and sorted, or you will have a bad time.
+The cursor column must be unique and sorted, or the next page skips rows that share the last row's value.
 
 ## Count the matches without running the query
 
@@ -241,7 +241,7 @@ Show.query().to_df()      # pandas DataFrame
 Show.query().to_arrow()   # pyarrow Table
 ```
 
-`pandas` and `pyarrow` are optional dependencies; each method raises a `RuntimeError` naming the missing package if they can't be found.
+`pandas` and `pyarrow` are optional dependencies, and when one is not installed, the method that needs it raises a `RuntimeError` naming the missing package.
 
 ---
 
@@ -291,7 +291,7 @@ Give `modelClass` the class name as a string. Every model with a `tableName` reg
 'modelClass': 'Show'
 ```
 
-The class must be imported before the query is built, or the name will not resolve and Sustained raises `ValueError`.
+You must import the class before you build the query, or the name does not resolve and Sustained raises `ValueError`.
 
 ---
 
@@ -307,7 +307,7 @@ Ticket.query().insert([
 ]).run()
 ```
 
-Every row must have the same keys. Without a RETURNING clause this runs through the driver's `executemany()`, which is the fast path for bulk loads.
+Every row must have the same keys. Without a `RETURNING` clause, this runs through the driver's `executemany()`, which is the fast path for bulk loads.
 
 ## Insert or update on conflict
 
@@ -319,7 +319,7 @@ Artist.query().insert({'name': 'Duster', 'country': 'US'}) \
     .onConflict('name').ignore().run()     # keep the existing row
 ```
 
-The conflict columns must have a unique constraint or primary key in the database, or the statement fails there. `merge()` updates every inserted column except the conflict columns; pass a list to narrow it. Postgres, SQLite, and DuckDB render `ON CONFLICT`, MSSQL renders `MERGE`, and Presto raises `DialectError`.
+The conflict columns must have a unique constraint or primary key in the database, or the statement fails there. `merge()` updates every inserted column except the conflict columns, or only the columns in a list you pass it. Postgres, SQLite, and DuckDB render `ON CONFLICT`, MSSQL renders `MERGE`, and Presto raises `DialectError`.
 
 ## Get the generated id back from an insert
 
@@ -329,7 +329,7 @@ rows = Venue.query().insert({'name': 'Roseland', 'city': 'Portland'}) \
 # [{'id': 3}]
 ```
 
-The statement returns dicts instead of a row count. MSSQL and Presto raise `DialectError`; use an `OUTPUT` clause through raw SQL on MSSQL.
+The statement returns dicts instead of a row count. MSSQL and Presto raise `DialectError`, so on MSSQL use an `OUTPUT` clause through raw SQL.
 
 ## Copy rows between tables
 
@@ -339,7 +339,7 @@ recent = Ticket.query().select('show_id', 'price').where('sold_at', '>', '2026-0
 TicketArchive.query().insert_from(['show_id', 'price'], recent).run()
 ```
 
-For a new table instead of an existing one, `create_table_as('name')` turns a SELECT into CTAS. MSSQL raises; use `SELECT ... INTO` through raw SQL there.
+To copy into a new table instead of an existing one, `create_table_as('name')` turns a `SELECT` into a CTAS statement. MSSQL raises `DialectError`, so use `SELECT ... INTO` through raw SQL there.
 
 ## Update every row on purpose
 
@@ -376,7 +376,7 @@ migrator.up(models=[Venue, Artist, Show, Ticket])
 # ['auto_20260816133122_029439']
 ```
 
-Pass every model you manage, not only the changed one. A table missing from the list will not be kept up to date.
+Pass every model you manage, not only the changed one, because Sustained does not keep a table up to date when its model is missing from the list.
 
 ## Preview the migration before it runs
 
@@ -387,9 +387,9 @@ if migration is not None:
     # ['ALTER TABLE shows ADD COLUMN support_act VARCHAR(200)']
 ```
 
-`plan()` returns `None` when the schema is current. It records nothing and applies nothing, so the migration it returns is not left pending. To validate your changes on the actual database before applying it, pass the same models to `rehearse(models=[...])`. Note that this is only supported for engines that allow rollbacks of schema changes; otherwise, apply your changes to a test database instead.
+`plan()` returns `None` when the schema is current. It records nothing and applies nothing, so the migration it returns is not left pending. To test the migration on the real database before you apply it, pass the same models to `rehearse(models=[...])`. This works only on engines that can roll back schema changes, so on other engines, apply your changes to a test database instead.
 
-For the differences without the SQL, `diff_schema()` reports every gap:
+If you want the differences without the SQL, `diff_schema()` reports every gap:
 
 ```python
 from sustained.autogenerate import diff_schema
@@ -401,7 +401,7 @@ print(diff_schema(conn, [Venue, Artist, Show, Ticket]).summary())
 
 ## Rename a column instead of dropping and re-adding it
 
-A database catalog cannot tell a rename from a drop plus an add, so pass the explicit hints when needed:
+A database catalog cannot tell a rename from a drop plus an add, so pass an explicit hint when you rename:
 
 ```python
 migrator.up(models=models, renames={'shows.name': 'title'})
@@ -416,7 +416,7 @@ Without the hint, the old column is left alone and the new one is added beside i
 migrator.up(models=models, allow_drops=True)
 ```
 
-A migration containing a drop has no down step. The data cannot come back, so there is nothing to reverse.
+A migration that contains a drop has no down step, because the dropped data cannot come back.
 
 ## Add a NOT NULL column to a table with rows
 
@@ -426,7 +426,7 @@ Give the column a value for the rows that already exist, either a `default` or a
 'country': String(2, nullable=False, backfill='US')
 ```
 
-Generation then emits three steps: add the new column as nullable, `UPDATE` the existing rows, then set `NOT NULL`. Without a value it refuses, because the existing rows would have no value to store.
+Sustained then generates three steps: add the new column as nullable, `UPDATE` the existing rows, then set `NOT NULL`. Without a value, generation refuses, because the existing rows would have no value to store.
 
 ## Write a migration by hand
 
@@ -453,7 +453,7 @@ A step is a SQL string, a list of statements, or a callable that receives the co
 
 ## Keep a view in step with its definition
 
-A view is replaced, not evolved, so it fits badly in a versioned migration. An `<id>.repeat.sql` file re-runs whenever its contents change.
+You replace a view rather than alter it step by step, so it fits badly in a versioned migration. Instead, put it in an `<id>.repeat.sql` file, which re-runs whenever its contents change.
 
 ```sql
 -- upcoming_shows.repeat.sql
@@ -464,7 +464,7 @@ CREATE VIEW upcoming_shows AS
   WHERE shows.sold_out = FALSE;
 ```
 
-Keep the SQL safe to re-run: `CREATE OR REPLACE`, or drop the view first. Repeatables run after every versioned migration, have no down step, and `down` never touches them.
+Keep the SQL safe to re-run by using `CREATE OR REPLACE` or by dropping the view first. Repeatables run after every versioned migration, have no down step, and `down` never touches them.
 
 ## Fill a value into a SQL migration at load time
 
@@ -479,7 +479,7 @@ from sustained.migration_files import load_migrations
 migrations = load_migrations('migrations', placeholders={'reader': 'app_ro'})
 ```
 
-Passing a mapping, even an empty one, turns substitution on: a `${key}` with no value then raises `ValueError` naming the file and the key. `$${` escapes a literal `${`. Substitution happens before the checksum is computed, so changing a value after a versioned migration ran shows up as a checksum mismatch.
+Passing a mapping, even an empty one, turns substitution on: a `${key}` with no value then raises `ValueError` naming the file and the key. `$${` escapes a literal `${`. Sustained substitutes values before it computes the checksum, so changing a value after a versioned migration ran shows up as a checksum mismatch.
 
 ## Adopt a database that already has the schema
 
@@ -488,7 +488,7 @@ migrator.baseline('002_create_shows')   # record as applied, run nothing
 migrator.up()                           # apply only what comes after
 ```
 
-Rows record checksums, so validation still catches later edits, and a null execution time marks them as never having run.
+The baseline rows record checksums, so validation still catches later edits, and their null execution time marks them as never having run.
 
 ---
 
@@ -550,14 +550,14 @@ $ sustained plan --json
 
 ## Rehearse where the rollback cannot be trusted
 
-Only SQLite, Postgres, and DuckDB roll schema changes back, so only they can rehearse against the real database. Elsewhere, point the rehearsal at a throwaway one:
+Only SQLite, Postgres, and DuckDB roll schema changes back, so only those engines can rehearse against the real database. On other engines, point the rehearsal at a throwaway database:
 
 ```python
 def get_rehearsal_connection():
     return psycopg.connect('postgresql://localhost/app_rehearsal')
 ```
 
-The scratch database is usually empty, so the whole history replays instead of only what is pending, which proves the migrations run from nothing. The changes may remain after the rollback there, so recreate the database before the next rehearsal. In Python, this is `migrator.rehearse(scratch=True)`.
+The scratch database is usually empty, so the whole history replays instead of only what is pending, which proves that the migrations run on an empty database. The changes may remain after the rollback there, so recreate the database before the next rehearsal. In Python, this is `migrator.rehearse(scratch=True)`.
 
 ## Hand the SQL to a DBA instead of running it
 
@@ -572,7 +572,7 @@ The output includes the tracking-table bookkeeping, so a run applied by hand sti
 
 ## Run something before and after a migration
 
-The config module can name three callbacks, and `migrate` calls whichever it finds:
+The config module can define `before_migrate`, `after_migrate`, and `on_error`, and `migrate` calls whichever ones it finds:
 
 ```python
 def before_migrate(connection):
@@ -587,11 +587,11 @@ def on_error(connection, migration_id, error):
     page_someone(f'{migration_id} failed: {error}')
 ```
 
-`after_migrate` runs only when something applied, so a no-op run stays quiet. `migration_id` is `None` when the run failed before reaching a migration. Only `migrate` calls them; `rehearse` does not, because nothing real happened.
+`after_migrate` runs only when something applied, so a no-op run stays quiet. `migration_id` is `None` when the run failed before reaching a migration. Only `migrate` calls them, and `rehearse` skips them because a rehearsal leaves the real database unchanged.
 
 ## Recover from a failed migration
 
-A failed attempt is recorded, and validation then blocks the next run.
+Sustained records a failed attempt, and validation then blocks the next run.
 
 ```console
 $ sustained validate
@@ -606,7 +606,7 @@ $ sustained repair
 repaired removed the failed attempt of '004_trim'
 ```
 
-`repair` only fixes tracking rows. It does not undo half-applied schema changes, and it will not tell you which ones there were. Fix the schema by hand and verify it before you run `repair`.
+`repair` fixes only the tracking rows, so it does not undo half-applied schema changes or tell you which ones there were. Fix the schema by hand and check it before you run `repair`.
 
 ## Accept an edit to a migration that already ran
 
@@ -617,13 +617,13 @@ $ sustained repair
 repaired updated the stored checksum of 'create_venues'
 ```
 
-Repeatables are the exception, because a changed checksum schedules the re-run, so `repair` leaves it alone and the next `migrate` runs the new contents.
+Repeatables are the exception. For a repeatable, a changed checksum schedules a re-run, so `repair` leaves the checksum alone and the next `migrate` runs the new contents.
 
 ## Deploy from two machines at once
 
-Nothing to configure. During a run the migrator keeps an exclusive advisory lock named after the tracking table, so a second deploy waits instead of racing. Postgres uses `pg_advisory_lock`, MSSQL uses `sp_getapplock`, and MySQL uses `GET_LOCK`. The last two return a status rather than raising, so the run stops with `MigrationError` when the status says the lock was not granted. SQLite and DuckDB serialize writers themselves.
+You do not need to configure anything. During a run, the migrator keeps an exclusive advisory lock named after the tracking table, so a second deploy waits instead of racing. Postgres uses `pg_advisory_lock`, MSSQL uses `sp_getapplock`, and MySQL uses `GET_LOCK`. The last two return a status rather than raising, so the run stops with `MigrationError` when the status says the lock was not granted. SQLite and DuckDB serialize writers themselves.
 
-Athena has no locking mechanism, so be careful to run only one migrator at a time there.
+Athena has no locking mechanism, so make sure that only one migrator runs at a time there.
 
 ---
 
@@ -698,7 +698,7 @@ print(query)              # values inlined, for reading
 print(query.to_sql())     # placeholders and parameters, as executed
 ```
 
-`str(query)` is for logs and eyeballs. Never send its output to a database: the inlined values are formatted for reading, not for safety.
+`str(query)` output is for logs and eyeballs. Never send it to a database, because the inlined values are formatted for reading rather than for safe execution.
 
 ## Log every statement the application runs
 
@@ -708,7 +708,7 @@ from sustained.execution import set_statement_listener
 set_statement_listener(lambda sql, params, seconds: log.info('%s %r %.3fs', sql, params, seconds))
 ```
 
-The listener fires after every executed statement. Pass `None` to remove it. It is global, not per model or connection.
+The listener fires after every executed statement, and it is global rather than per model or per connection. Pass `None` to remove it.
 
 ## Read the query plan
 
@@ -717,11 +717,11 @@ Show.query().where('sold_out', '=', True).explain()
 Show.query().where('sold_out', '=', True).explain(analyze=True)
 ```
 
-`analyze=True` executes the statement to measure it, so do not point it at a write. MSSQL raises `DialectError`; use `SET SHOWPLAN_XML` through raw SQL.
+`analyze=True` executes the statement to measure it, so on a write statement it changes data. MSSQL raises `DialectError`, so on MSSQL use `SET SHOWPLAN_XML` through raw SQL.
 
 ## Catch a column typo before the database does
 
-Declare the model's columns. Any model with `tableColumns` gets this automatically.
+Declare the model's columns with `tableColumns`, and the model gets this check automatically.
 
 ```python
 class Show(Model):

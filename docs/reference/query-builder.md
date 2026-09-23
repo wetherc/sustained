@@ -39,7 +39,7 @@ select(*columns)
 ```
 {: .sig #select}
 
-Adds columns to the SELECT list. Accepts strings, the `'col AS alias'` form, `Model.column` references, `ColumnExpr`, and any expression object. The SELECT list defaults to `*` when you never call `select()`.
+Adds columns to the `SELECT` list. Accepts strings, the `'col AS alias'` form, `Model.column` references, `ColumnExpr`, and any expression object. The `SELECT` list defaults to `*` when you never call `select()`.
 
 ```python
 distinct()
@@ -60,7 +60,7 @@ from_(table, alias=None)
 ```
 {: .sig #from_}
 
-Overrides the FROM source with a table name or a `QueryBuilder`. Raises `ValueError` when a subquery has no alias, and `TypeError` for any other type.
+Overrides the `FROM` source with a table name or a `QueryBuilder`. Raises `ValueError` when a subquery has no alias, and `TypeError` for any other type.
 
 ```python
 with_(table_alias, subquery, recursive=False)
@@ -102,13 +102,13 @@ select_case(alias, else_result, when_clauses)
 ```
 {: .sig #select_case}
 
-A CASE expression from `(condition, result)` tuples. Results are string literals unless you wrap them in `Column()`.
+A `CASE` expression from `(condition, result)` tuples. Results are string literals unless you wrap them in `Column()`.
 
 Every registered function is also a method of its own name, so `query.coalesce('nick', 'name', alias='display')` and `query.select_func('COALESCE', ...)` build the same expression. The registered functions and their per-dialect spellings are in [Predicates and expressions](/reference/predicates#function-registry).
 
 ## Filtering
 
-The `where` family is generated. Every base below exists in a plain, an `and`, and an `or` form.
+Sustained generates the `where` family, so every base below exists in a plain, an `and`, and an `or` form.
 
 ```python
 where(column_or_callable, op=None, val=None)
@@ -122,28 +122,28 @@ whereIn(col, values_or_query)
 ```
 {: .sig #wherein}
 
-IN over a list, a `QueryBuilder`, or a callable. An empty list raises `ValueError`. `whereNotIn` builds the NOT IN form.
+`IN` over a list, a `QueryBuilder`, or a callable. An empty list raises `ValueError`. `whereNotIn` builds the `NOT IN` form.
 
 ```python
 whereBetween(col, low, high)
 ```
 {: .sig #wherebetween}
 
-Range comparison. `whereNotBetween` builds the NOT BETWEEN form.
+Range comparison. `whereNotBetween` builds the `NOT BETWEEN` form.
 
 ```python
 whereExists(query_or_callable)
 ```
 {: .sig #whereexists}
 
-EXISTS subquery. `whereNotExists` builds the NOT EXISTS form.
+`EXISTS` subquery. `whereNotExists` builds the `NOT EXISTS` form.
 
 ```python
 whereLike(col, pattern)
 ```
 {: .sig #wherelike}
 
-LIKE. `whereILike` is the case-insensitive form.
+`LIKE`. `whereILike` is the case-insensitive form.
 
 ```python
 whereNull(col)
@@ -157,7 +157,7 @@ whereRaw(sql, params=None)
 ```
 {: .sig #whereraw}
 
-A raw fragment with `?` value markers. The values still parameterize. The fragment renders wrapped in parentheses. A question mark inside a string literal or a quoted identifier is text, not a marker.
+A raw fragment with `?` value markers, whose values still parameterize. The fragment renders wrapped in parentheses, and a question mark inside a string literal or a quoted identifier is text rather than a marker.
 
 Prefix a base with `and` or `or` for the conjunction, as in `andWhereIn` or `orWhereNotBetween`. The first condition in a chain must be a plain `where`; an `and` or `or` form in that position raises `RuntimeError`.
 
@@ -181,7 +181,7 @@ groupBy(*columns)
 ```
 {: .sig #groupby}
 
-GROUP BY.
+`GROUP BY`.
 
 ```python
 groupByRollup(*columns)
@@ -211,7 +211,7 @@ qualify(condition)
 
 Filters on window results. Takes a `Predicate` or a raw string. Raises `DialectError` at render time on every dialect but DuckDB.
 
-The `having` family mirrors the `where` family: the same bases, the same three prefixes, the same arguments, and the same errors. `having`, `andHavingIn`, `orHavingNotBetween`, and `havingRaw` all exist. Filter on the aggregate as written, as in `having('COUNT(id)', '>', 10)`, because standard SQL does not expose SELECT aliases to HAVING.
+The `having` family mirrors the `where` family: the same bases, the same three prefixes, the same arguments, and the same errors. `having`, `andHavingIn`, `orHavingNotBetween`, and `havingRaw` all exist. Filter on the aggregate as written, as in `having('COUNT(id)', '>', 10)`, because standard SQL does not expose `SELECT` aliases to `HAVING`.
 
 ## Ordering, paging, and locking
 
@@ -248,7 +248,7 @@ page(page, page_size)
 ```
 {: .sig #page}
 
-LIMIT and OFFSET from a zero-based page number.
+`LIMIT` and `OFFSET` from a zero-based page number.
 
 ```python
 cursor_page(column, page_size, after=None)
@@ -285,11 +285,11 @@ query.join('profiles', using=['profile_id'])               # USING list
 query.join('venues', lambda j: j.on(...).orOn(...))        # lambda
 ```
 
-`crossJoin(table)` also takes the table on its own, since a cross join has no condition. Every other join type raises `ValueError` without one.
+`crossJoin(table)` also takes the table on its own, because a cross join has no condition. Every other join type raises `ValueError` without one.
 
 The table argument must be a table name. To join a derived result set, put it in a CTE with `with_()` and join the CTE by its alias. Mixing `using` with positional arguments raises `ValueError`, and a `using` value that is not a list raises `TypeError`.
 
-**Relation form.** `joinRelated(relation_name, alias=None)`, and the same prefixed variant for every other join type. The join condition comes from `relationMappings`. A `ManyToManyRelation` joins the through table first, always with an INNER JOIN; the join type you name applies to the second hop. An unknown relation name raises `ValueError`, and so does a mapping that is missing `modelClass`, `join`, `from`, or `to`.
+**Relation form.** `joinRelated(relation_name, alias=None)`, and the same prefixed variant for every other join type. The join condition comes from `relationMappings`. A `ManyToManyRelation` joins the through table first, always with an `INNER JOIN`; the join type you name applies to the second hop. An unknown relation name raises `ValueError`, and so does a mapping that is missing `modelClass`, `join`, `from`, or `to`.
 
 ### `OnClauseBuilder`
 
@@ -300,7 +300,7 @@ on(col1, op, col2)
 ```
 {: .sig #on}
 
-The first ON condition. `col2` may be a `QueryBuilder`, which renders as a parenthesized subquery. `andOn` and `orOn` add further conditions with the same arguments; either one raises `RuntimeError` as the first call.
+The first `ON` condition. `col2` may be a `QueryBuilder`, which renders as a parenthesized subquery. `andOn` and `orOn` add further conditions with the same arguments; either one raises `RuntimeError` as the first call.
 
 A lambda that adds no condition raises `RuntimeError` at render time.
 
@@ -311,23 +311,23 @@ union(*queries, all=False)
 ```
 {: .sig #union}
 
-UNION, or UNION ALL when `all=True`. `unionAll(*queries)` is the UNION ALL shorthand.
+`UNION`, or `UNION ALL` when `all=True`. `unionAll(*queries)` is the `UNION ALL` shorthand.
 
 ```python
 intersect(*queries)
 ```
 {: .sig #intersect}
 
-INTERSECT.
+`INTERSECT`.
 
 ```python
 except_(*queries)
 ```
 {: .sig #except_}
 
-EXCEPT. The trailing underscore keeps the name off the Python keyword.
+`EXCEPT`. The trailing underscore avoids a clash with the Python keyword `except`.
 
-`ORDER BY`, `LIMIT`, and `OFFSET` on the outer query apply to the whole result. The same clauses on a member query render inside that member's parentheses. CTEs from every member are elevated to one top-level `WITH`.
+`ORDER BY`, `LIMIT`, and `OFFSET` on the outer query apply to the whole result. The same clauses on a member query render inside that member's parentheses. Sustained lifts the CTEs from every member into one top-level `WITH`.
 
 ## Writing data
 
@@ -336,7 +336,7 @@ insert(values)
 ```
 {: .sig #insert}
 
-INSERT from a dict or a list of dicts. Raises `ValueError` on an empty list, on a row with no columns, and on rows whose columns differ from each other.
+`INSERT` from a dict or a list of dicts. Raises `ValueError` on an empty list, on a row with no columns, and on rows whose columns differ from each other.
 
 ```python
 insert_from(columns, query)
@@ -350,14 +350,14 @@ update(values)
 ```
 {: .sig #update}
 
-UPDATE. Raises `ValueError` on an empty dict, and at render time when the query has no `where()`.
+`UPDATE`. Raises `ValueError` on an empty dict, and at render time when the query has no `where()`.
 
 ```python
 delete()
 ```
 {: .sig #delete}
 
-DELETE. Raises `ValueError` at render time when the query has no `where()`.
+`DELETE`. Raises `ValueError` at render time when the query has no `where()`.
 
 ```python
 onConflict(*columns)
@@ -385,14 +385,14 @@ returning(*columns)
 ```
 {: .sig #returning}
 
-RETURNING. Defaults to `*`. The statement then returns dicts instead of a row count.
+`RETURNING`, which defaults to `*`. The statement then returns dicts instead of a row count.
 
 ```python
 create_table_as(table_name, temporary=False)
 ```
 {: .sig #create_table_as}
 
-CREATE TABLE AS from a SELECT. Raises `ValueError` on a statement that is not a SELECT, and on an empty table name.
+`CREATE TABLE AS` from a `SELECT`. Raises `ValueError` on a statement that is not a `SELECT`, and on an empty table name.
 
 An `UPDATE` or `DELETE` with no filter raises instead of touching every row. To update or delete every row on purpose, add `where(QueryBuilder.raw('1'), '=', 1)`.
 
@@ -412,7 +412,7 @@ run(connection=None)
 ```
 {: .sig #run}
 
-Executes the statement. A SELECT returns hydrated instances with eager relations attached. A write commits, unless it runs inside a `transaction()` block, and returns the affected row count, or dicts when `RETURNING` is set.
+Executes the statement. A `SELECT` returns hydrated instances with eager relations attached. A write commits, unless it runs inside a `transaction()` block, and returns the affected row count, or dicts when `RETURNING` is set.
 
 ```python
 first(connection=None) -> Model | None
@@ -433,21 +433,21 @@ to_df(connection=None) -> pandas.DataFrame
 ```
 {: .sig #to_df}
 
-Raises `RuntimeError` when pandas is not installed.
+Raises `RuntimeError` when `pandas` is not installed.
 
 ```python
 to_arrow(connection=None) -> pyarrow.Table
 ```
 {: .sig #to_arrow}
 
-Raises `RuntimeError` when pyarrow is not installed.
+Raises `RuntimeError` when `pyarrow` is not installed.
 
 ```python
 total(connection=None) -> int
 ```
 {: .sig #total}
 
-`SELECT COUNT(*)` over the query with the ordering, LIMIT, OFFSET, and TOP stripped. The builder is unchanged.
+`SELECT COUNT(*)` over the query with the ordering, `LIMIT`, `OFFSET`, and `TOP` stripped. The builder is unchanged.
 
 ```python
 explain(connection=None, analyze=False) -> list[tuple]
@@ -463,9 +463,9 @@ withGraphFetched(*relation_names)
 
 Eager loads relations, with one query per relation per level. A name may be a dotted path such as `'shows.tickets'`. Raises `ValueError` for an unknown relation name or path segment.
 
-`to_dicts`, `to_df`, `to_arrow`, and `total` raise `ValueError` on any statement that is not a SELECT.
+`to_dicts`, `to_df`, `to_arrow`, and `total` raise `ValueError` on any statement that is not a `SELECT`.
 
-A multi-row `insert()` with no RETURNING runs through the driver's `executemany()`. Rows that contain a `QueryBuilder.raw()` value run as one statement instead, because raw SQL renders in the statement itself and has no value to bind.
+A multi-row `insert()` with no `RETURNING` runs through the driver's `executemany()`. Rows that contain a `QueryBuilder.raw()` value run as one statement instead, because raw SQL renders in the statement itself and has no value to bind.
 
 ### Async
 

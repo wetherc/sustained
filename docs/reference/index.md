@@ -21,7 +21,7 @@ If you are looking for how to do something specific, [Recipes](/recipes) is the 
 
 ## What imports from where
 
-Some names are available from the package root. The rest need their module path.
+You can import some names from the package root, and the rest need their module path.
 
 ```python
 # from sustained
@@ -54,16 +54,16 @@ The package root does not re-export `Dialects`, `ConnectionPool`, the async adap
 
 ## Method naming
 
-The canonical names are camelCase. Every camelCase method also answers to its snake_case spelling, because `QueryBuilder.__getattr__` rewrites `_x` to `X` before it looks the name up:
+The canonical names are camelCase. You can also call every camelCase method by its snake_case spelling, because `QueryBuilder.__getattr__` rewrites `_x` to `X` before it looks the name up:
 
 ```python
 User.query().orderBy('name')     # canonical
 User.query().order_by('name')    # the same method
 ```
 
-The rewrite uppercases only a letter that follows an underscore. So `whereILike` is spelled `where_i_like` in snake_case, and `where_ilike` does not resolve.
+The rewrite uppercases only a letter that follows an underscore, so the snake_case spelling of `whereILike` is `where_i_like`, and `where_ilike` does not resolve.
 
-Method names also match case-insensitively, so `WHERE` and `leftouterjoin` resolve as well. Use the canonical spelling. The other spellings exist so that a port from Objection.js does not fail on capitalization.
+Method names also match case-insensitively, so `WHERE` and `leftouterjoin` resolve as well. Use the canonical spelling, because the other spellings exist only so that a port from Objection.js does not fail on capitalization.
 
 ## When errors are raised
 
@@ -73,6 +73,6 @@ Method names also match case-insensitively, so `WHERE` and `leftouterjoin` resol
 
 ## Reading the signatures
 
-Each entry on these pages opens with its signature on a line of its own, and the text below the signature describes what the call does and what it raises. A `->` on the signature names the return type; a `QueryBuilder` method without one returns the same builder for chaining. `clone()` is the exception: it returns a copy. Tables list the facts that pair up, such as an operator and what it renders, or a dialect and what it refuses.
+Each entry on these pages opens with its signature on a line of its own, and the text below the signature describes what the call does and what it raises. A `->` on the signature names the return type; a `QueryBuilder` method without one returns the same builder for chaining, except `clone()`, which returns a copy. Tables list the facts that pair up, such as an operator and what it renders, or a dialect and what it refuses.
 
 The signatures are copied from the source, including the defaults. Parameters after `*` are keyword-only.

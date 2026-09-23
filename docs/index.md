@@ -3,9 +3,9 @@ layout: default
 title: Sustained Documentation
 ---
 
-Sustained is a Python query builder, lightweight ORM, and schema migration tool, originally inspired by [Objection.js](https://vincit.github.io/objection.js/). You define one set of model classes to describe your tables. Sustained builds and runs the queries against them, and keeps the schema itself in step.
+Sustained is a Python query builder, lightweight ORM, and schema migration tool, originally inspired by [Objection.js](https://vincit.github.io/objection.js/). You describe your tables in one set of model classes, and Sustained uses those classes both to build and run queries and to keep the schema in step.
 
-The syntax will look familiar if you have worked with Objection, Kysely, or even knex before:
+The syntax will look familiar if you have worked with Objection, Kysely, or even Knex before:
 
 ```python
 adults = User.query().where(User.c.age >= 18).orderBy('name').run()
@@ -15,27 +15,27 @@ adults = User.query().where(User.c.age >= 18).orderBy('name').run()
 
 With Sustained, you can:
 
-- **Build SQL programmatically.** Selects, aggregates, window functions, CASE expressions, every join type, CTEs (including recursive), unions, INTERSECT and EXCEPT, subqueries in SELECT, FROM, WHERE, and JOIN clauses.
-- **Target seven dialects.** ANSI (default), PostgreSQL, MySQL and MariaDB, MSSQL, Presto, AWS Athena, and DuckDB. Quoting, placeholders, upsert syntax, LIMIT/OFFSET spelling, and function names all follow the dialect. Unsupported features raise `DialectError` at build time instead of failing in the database. Migrating queries between dialects is a one-line change.
-- **Execute queries safely.** Every statement runs parameterized against any DB-API 2.0 connection or a `ConnectionPool`. Transactions nest through savepoints. `update()` and `delete()` refuse to run without a WHERE clause.
-- **Write data.** `insert()`, `update()`, `delete()`, upserts through `onConflict()`, `INSERT ... SELECT`, CREATE TABLE AS, and RETURNING.
-- **Hydrate results.** Rows become model instances, plain dicts, pandas DataFrames, or pyarrow Tables. Relations eager load with `withGraphFetched()`. A type checker reads `Show.query().run()` as `List[Show]`.
-- **Run queries async.** The same queries run through driver adapters with `await query.arun()`, including asyncpg and aiosqlite. `AsyncConnectionPool` pools those adapters, so concurrent queries do not queue behind one connection.
+- **Build SQL programmatically.** Selects, aggregates, window functions, `CASE` expressions, every join type, CTEs (including recursive), unions, `INTERSECT` and `EXCEPT`, and subqueries in `SELECT`, `FROM`, `WHERE`, and `JOIN` clauses.
+- **Target seven dialects.** ANSI (default), PostgreSQL, MySQL and MariaDB, MSSQL, Presto, AWS Athena, and DuckDB. Quoting, placeholders, upsert syntax, `LIMIT`/`OFFSET` spelling, and function names all follow the dialect. Unsupported features raise `DialectError` at build time instead of failing in the database. Migrating queries between dialects is a one-line change.
+- **Execute queries safely.** Every statement runs parameterized against any DB-API 2.0 connection or a `ConnectionPool`. Transactions nest through savepoints, and `update()` and `delete()` refuse to run without a `WHERE` clause.
+- **Write data.** `insert()`, `update()`, `delete()`, upserts through `onConflict()`, `INSERT ... SELECT`, `CREATE TABLE AS`, and `RETURNING`.
+- **Hydrate results.** Rows become model instances, plain dicts, `pandas` DataFrames, or `pyarrow` Tables. Relations eager load with `withGraphFetched()`. A type checker reads `Show.query().run()` as `List[Show]`.
+- **Run queries async.** The same queries run through driver adapters, including `asyncpg` and `aiosqlite`, with `await query.arun()`. `AsyncConnectionPool` pools those adapters, so concurrent queries do not queue behind one connection.
 
 ## Schema management with Sustained
 
-Sustained also manages schema changes. It generates migrations from your models, tests each change before it runs, and rolls a migration back when you ask. These features are described in detail at [Schema and Migrations](./schema).
+Sustained also manages schema changes. It generates migrations from your models, tests each change before it runs, and rolls a migration back when you ask. [Schema and Migrations](./schema) describes these features in detail.
 
 With Sustained, schema migrations are:
 
-- **Generated from your models.** `Migrator.up(models=[...])` diffs the live database against your models, generates the migration, records it, and applies it. Run it again after a model change and only the difference is applied. `down()` rolls it back.
-- **Rehearsed before they land.** `sustained rehearse` applies every pending migration, runs the downgrade steps to test the revert plan, and rolls the whole thing back. A migration that fails to run, or fails to reverse, is reported before it reaches the real schema. A config module can send the rehearsal to a scratch database instead.
+- **Generated from your models.** `Migrator.up(models=[...])` diffs the live database against your models, generates the migration, records it, and applies it. If you run it again after a model change, it applies only the difference. `down()` rolls it back.
+- **Rehearsed before they land.** `sustained rehearse` applies every pending migration, runs the downgrade steps to test the revert plan, and rolls the whole thing back. If a migration fails to run or fails to reverse, the rehearsal reports it before the migration reaches the real schema. A config module can send the rehearsal to a scratch database instead.
 - **Planned in one screen.** `sustained plan` shows your pending migrations, outstanding problems that `validate` would report, and any gap between your models and the database's current state.
-- **Verified before every run.** Sustained keeps a per-database tracking table that records a sequence number, a SHA-256 checksum, an apply timestamp, execution time, and a success flag per migration. `validate` refuses a run when a migration was edited after it ran, arrives out of order, or left a failed attempt behind. `repair` will delete failed runs from the tracking table and update script checksums after manual corrections.
+- **Verified before every run.** Sustained keeps a per-database tracking table that records a sequence number, a SHA-256 checksum, an apply timestamp, execution time, and a success flag per migration. `validate` refuses a run when a migration was edited after it ran, arrives out of order, or left a failed attempt behind. After manual corrections, `repair` deletes failed runs from the tracking table and updates script checksums.
 - **Gated by custom safeguards.** A guard is a built-in rule such as `no_drops()`, `index_must_be_concurrent()`, or `max_statements(n)`, or a function you write. Guards read every statement a run would apply and block the deployment when a rule fails.
-- **Safe by default.** Drops need explicit `allow_drops=True`, renames need explicit hints, NOT NULL changes need a `default` or `backfill`. Destructive changes will never run by default.
+- **Safe by default.** Drops need an explicit `allow_drops=True`, renames need explicit hints, and `NOT NULL` changes need a `default` or `backfill`, so destructive changes never run by default.
 - **Written your way.** Migrations can be Python `Migration` objects, `<id>.up.sql` and `<id>.down.sql` files with `${placeholders}`, or `<id>.repeat.sql` files for views and seed data, which re-run whenever their contents change.
-- **Ready for deploys.** The `sustained` console script runs `plan`, `status`, `rehearse`, `migrate`, `down`, `validate`, `repair`, `script`, and `baseline`, with exit codes for pipelines and `before_migrate`, `after_migrate`, and `on_error` callbacks around a run. Concurrent deploys queue on an advisory lock. `baseline` adopts a database that already matches. `script('up')` renders the SQL for a DBA instead of running it. `AsyncMigrator` does all of it on an async adapter.
+- **Ready for deploys.** The `sustained` console script runs `plan`, `status`, `rehearse`, `migrate`, `down`, `validate`, `repair`, `script`, and `baseline`, with exit codes for pipelines and `before_migrate`, `after_migrate`, and `on_error` callbacks around a run. Concurrent deploys queue on an advisory lock. `baseline` adopts a database whose schema already matches the migrations. `script('up')` renders the SQL for a DBA instead of running it. `AsyncMigrator` does all of this on an async adapter.
 
 ## Finding your way
 
@@ -58,7 +58,7 @@ The guides each explain one area in depth, and they build on each other in this 
 | Run queries, write data, transactions, pooling, async | [Executing Queries](./executing) |
 | Create tables, rehearse, generate and roll back migrations | [Schema and Migrations](./schema) |
 
-Released versions are listed in the [Changelog](./changelog).
+The [Changelog](./changelog) lists released versions.
 
 ## Installing
 

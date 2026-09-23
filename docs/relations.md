@@ -11,7 +11,7 @@ Show.query().select('shows.title', 'venues.name').innerJoinRelated('venue')
 # INNER JOIN venues ON shows.venue_id = venues.id
 ```
 
-Relations are also what `withGraphFetched()` loads and what the migrator turns into foreign keys. If you need to join among tables that lack a relation mapping, use a [raw join](#raw-joins).
+Relations are also what `withGraphFetched()` loads and what the migrator turns into foreign keys. To join tables that lack a relation mapping, use a [raw join](#raw-joins).
 
 The examples use the venue booking schema from [Getting Started](./getting-started).
 
@@ -33,7 +33,7 @@ class Show(Model):
     }
 ```
 
-The key is the name you pass to `innerJoinRelated('venue')` and `withGraphFetched('venue')`. It can be any name that reads well in context; it does not have to match the joined table.
+The key is the name you pass to `innerJoinRelated('venue')` and `withGraphFetched('venue')`. It can be any name, and it does not have to match the joined table.
 
 ### Relation types
 
@@ -92,13 +92,13 @@ class Artist(Model):
 'modelClass': 'Venue'    # the name, resolved when the query is built
 ```
 
-The string form exists to prevent cyclical imports: with it, `Show` and `Venue` can point at each other from separate modules, as long as both classes exist by the time the query builds. A name that never resolves raises `ValueError`.
+The string form prevents circular imports, because with it `Show` and `Venue` can point at each other from separate modules, as long as both classes exist by the time the query builds. A name that never resolves raises `ValueError`.
 
-A name two model classes share resolves to neither of them. It raises `ValueError` naming both classes, unless the module that declares the relation defines the name itself. Pass the class when you have two models with one name.
+When two model classes share a name, a string reference to that name resolves to neither of them and raises `ValueError` naming both classes, unless the module that declares the relation defines the name itself. Pass the class when you have two models with one name.
 
 ## Joining a relation
 
-All major join types are supported and have dedicated methods:
+Each major join type has its own method:
 
 | Method | Renders |
 | --- | --- |
@@ -132,7 +132,7 @@ Show.query().select('shows.title', 'v.name').innerJoinRelated('venue', alias='v'
 
 ### What a through join renders
 
-Joining a `ManyToManyRelation` produces two joins. The hop to the link table is always an INNER JOIN, and the join type you asked for applies to the far table:
+Joining a `ManyToManyRelation` produces two joins. The hop to the link table is always an `INNER JOIN`, and the join type you asked for applies to the far table:
 
 ```python
 Artist.query().select('artists.name', 'shows.title').leftJoinRelated('shows')
@@ -199,7 +199,7 @@ Both sides of an `on()` are column references. To compare a column against a val
 
 ### A subquery on the right of ON
 
-The right side of an ON condition can be a whole query, which renders parenthesized. This joins each show to its most expensive ticket:
+The right side of an `ON` condition can be a whole query, which renders parenthesized. This joins each show to its most expensive ticket:
 
 ```python
 priciest = Ticket.query().select('MAX(price)').whereRaw('tickets.show_id = shows.id', [])
@@ -218,7 +218,7 @@ The inner query renders like any other part of the statement. Under `to_sql()` i
 
 ### Joins against derived results
 
-The table argument has to be a table name. To join against a derived result set, put the subquery in a CTE with `with_()` and join the CTE by its alias, as in [Queries](./queries#common-table-expressions). Nested join conditions beyond the `on`, `andOn`, and `orOn` chain are not supported either. Write such a condition as a CTE.
+The table argument has to be a table name. To join against a derived result set, put the subquery in a CTE with `with_()` and join the CTE by its alias, as in [Queries](./queries#common-table-expressions). The join builder also does not support nested conditions beyond the `on`, `andOn`, and `orOn` chain, so write such a condition as a CTE.
 
 ## Where to go next
 

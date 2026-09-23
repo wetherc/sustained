@@ -169,7 +169,7 @@ repr(instance)
 
 ## Relations
 
-A `relationMappings` entry has three keys.
+A `relationMappings` entry has these keys.
 
 | Key | Value |
 | --- | --- |

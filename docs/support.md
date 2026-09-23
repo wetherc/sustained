@@ -7,9 +7,9 @@ Sustained supports a fixed list of databases, database versions, and Python vers
 
 ## What support means
 
-For every database with a server in the table, "supported" means that we guarantee Sustained's behavior against this database for all versions of the database between the minimum and maximum listed versions (inclusive). Our testing posture currently only runs a full suite of integration tests against the oldest supported and newest supported versions, and assumes any intermediate version between those remains compatible with Sustained. This is a gap in our posture today and one that will be closed.
+For every database in the table that has a server, "supported" means that we guarantee Sustained's behavior against every version of that database from the minimum to the maximum listed version, inclusive. We currently run the full integration suite only against the oldest and newest supported versions, and we assume that every version between them remains compatible with Sustained. We plan to close this gap in our testing.
 
-Note that the ANSI dialect has no server to run. Sustained compiles SQL for it, and unit tests check the SQL text.
+The ANSI dialect has no server to run, so Sustained compiles SQL for it and unit tests check the SQL text.
 
 <!-- databases: generated from support.json -->
 
@@ -29,21 +29,21 @@ Note that the ANSI dialect has no server to run. Sustained compiles SQL for it, 
 
 The **Covered** column names the feature sets the integration suite runs against that database. Each name maps to one test module in `tests/integration`:
 
-- `queries` is every read feature: joins, eager loading, aggregates, window functions, CTEs, set operations, subqueries, LIMIT and OFFSET, and hydration to models, dicts, DataFrames, and Arrow tables.
-- `writes` is INSERT, UPDATE, DELETE, upserts through `onConflict()`, RETURNING, `INSERT ... SELECT`, and CREATE TABLE AS.
+- `queries` is every read feature: joins, eager loading, aggregates, window functions, CTEs, set operations, subqueries, `LIMIT` and `OFFSET`, and hydration to models, dicts, DataFrames, and Arrow tables.
+- `writes` is `INSERT`, `UPDATE`, `DELETE`, upserts through `onConflict()`, `RETURNING`, `INSERT ... SELECT`, and `CREATE TABLE AS`.
 - `transactions` is commit and rollback as observed from a second connection, savepoint nesting, and `ConnectionPool`.
 - `migrations` is the migration lifecycle: `migrate`, `rehearse`, `down`, `validate`, and `repair`, plus schema introspection, column type and column comment round trips, and SQL file migrations.
 - `async` is `arun()`, `async_transaction()`, and `AsyncMigrator` on an async driver.
 
-Where a dialect does not implement a feature (for example `RETURNING` on MySQL) we test that `to_sql()` raises `DialectError` and that nothing reaches the server.
+Where a dialect does not implement a feature (for example `RETURNING` on MySQL), we test that `to_sql()` raises `DialectError` and that nothing reaches the server.
 
-Databases that don't support transactions (Presto) are not tested against writes or migrations. SQL dialects that have no execution engine (ANSI) only evaluate the syntactic correctness of generated SQL.
+We do not test writes or migrations against databases that do not support transactions (Presto). For SQL dialects that have no execution engine (ANSI), the tests check only that the generated SQL is syntactically correct.
 
 ## Database versions
 
-The **Versions** column lists a floor and a suite version. Each dialect's floor is set by the oldest database version able to execute Sustained's full set of SQL statements. The statement(s) added in that version are listed in the Notes column. On a release older than the floor, only those unsupported statements fail; everything else continues to work. The floor version will only ever be updated in a major release of Sustained.
+The **Versions** column lists a floor and a suite version. Each dialect's floor is the oldest database version that can execute Sustained's full set of SQL statements, and the Notes column lists the statements that version added. On a release older than the floor, only those unsupported statements fail and everything else continues to work. We change the floor only in a major release of Sustained.
 
-The suite version is the database version that the integration tests run against and is the oldest release the vendor still supports. When the vendor ends support for it, the suite version moves to the next release in a minor release of Sustained, and is noted in the changelog. The latest version released by the vendor is also tested and noted as the upper bound of the suite version.
+The suite version is the oldest release the vendor still supports, and the integration tests run against it. When the vendor ends support for that release, a minor release of Sustained moves the suite version to the next release and notes the change in the changelog. The suite also tests the vendor's latest release, which the table lists as the upper bound of the suite version.
 
 To check your exact version, point the suite at your server and run it:
 
@@ -64,7 +64,7 @@ Sustained runs on CPython 3.9 and later. The test suite runs on 3.9, 3.10, 3.11,
 
 <!-- end python -->
 
-A Python version stays supported until CPython itself ends support for it. After that, it is dropped in a minor release. The release before support is removed will always list it as an upcoming change in the CHANGELOG.
+A Python version stays supported until CPython itself ends support for it, and after that we drop it in a minor release. The release before the one that removes support always lists the removal as an upcoming change in the changelog.
 
 ## Run it yourself
 
@@ -91,7 +91,7 @@ removing postgres, postgres-latest, mysql, mysql-latest, mariadb, mariadb-latest
 1 of 13 still waiting
 ```
 
-Containers are defined in `docker/compose.yaml` and are removed at the end of the test suite. Docker must be installed, but you never interact with it directly. You can name a target database engine to run only tests against that database:
+`docker/compose.yaml` defines the containers, and the runner removes them when the suite ends. You need Docker installed, but you never interact with it directly. To run the tests against only one database engine, name it as the target:
 
 ```console
 $ python3 matrix.py postgres
@@ -99,9 +99,9 @@ $ python3 matrix.py python
 $ python3 matrix.py --check
 ```
 
-Each container database also has a `<name>-latest` target, for example `postgres-latest`. It runs the same tests against the newest release the vendor supports.
+Each container database also has a `<name>-latest` target, for example `postgres-latest`, which runs the same tests against the newest release the vendor supports.
 
-A skipped test is reported as a failure. Exit codes are 0 for a clean run, 1 for a failure, and 2 when nothing failed and something was still waiting.
+The runner reports a skipped test as a failure. Exit codes are 0 for a clean run, 1 for a failure, and 2 when nothing failed and something was still waiting.
 
 To test against an existing server, set its connection variable, for example `SUSTAINED_TEST_POSTGRES_DSN`, and the test runner will not start a separate container for it. Athena runs in your own AWS account: point `SUSTAINED_TEST_ATHENA_S3_DIR` at a staging directory and supply a profile with `--athena-profile`.
 
@@ -109,15 +109,15 @@ To test against an existing server, set its connection variable, for example `SU
 
 A public name is anything the documentation names: a class, a function, a method, a keyword argument, a CLI command, a CLI flag, or an exit code.
 
-A public name is removed in three steps.
+To remove a public name, we follow these steps:
 
 1. **Warn.** The name keeps working and raises a `DeprecationWarning` that names its replacement. The changelog entry says the same thing.
 2. **Wait.** At least one minor release ships with the warning in place.
 3. **Remove.** The name is removed in the next major release, and only there.
 
-For example, `sync()` was replaced by `up(models=[...])` in v2.13.0. It will still run, emitting a `DeprecationWarning`, until it is removed in v3.0.
+For example, v2.13.0 deprecated `sync()` in favor of `up(models=[...])`. `sync()` still runs and emits a `DeprecationWarning` until v3.0 removes it.
 
-If support for a database engine is ever removed, that will follow this same policy.
+If we ever remove support for a database engine, the removal follows the same policy.
 
 ## What a version number promises
 
@@ -125,8 +125,8 @@ If support for a database engine is ever removed, that will follow this same pol
 - A **minor** release adds behaviour, deprecates a name, drops an unsupported Python version, or moves a server version forward. Working code keeps working, and warnings may be new.
 - A **major** release removes deprecated names and may change behaviour that working code depends on. The changelog lists every removal.
 
-Generated SQL is part of the promise. A statement that changes between patch releases is a defect.
+Generated SQL is part of this promise, so a statement that changes between patch releases is a defect.
 
 ## Security problems
 
-Report a security problem through a private advisory on the [GitHub repository](https://github.com/wetherc/sustained/security/advisories), not a public issue. Fixes ship in a patch release against the newest minor version. Older minor versions are not patched.
+Report a security problem through a private advisory on the [GitHub repository](https://github.com/wetherc/sustained/security/advisories), not a public issue. Security fixes ship in a patch release against the newest minor version, and we do not patch older minor versions.

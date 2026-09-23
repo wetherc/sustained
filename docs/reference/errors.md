@@ -24,11 +24,11 @@ Exception
 
 `SustainedError` is the base class for the errors Sustained defines itself. `PoolTimeout` sits outside that tree, on `RuntimeError`, so an `except RuntimeError` around connection handling catches a pool timeout.
 
-The rest are the standard builtins, raised where a builtin says the right thing. Sustained does not wrap driver exceptions, so a syntax error or a constraint violation reaches you as your driver's own exception type.
+The rest are standard builtins, which Sustained raises where the builtin type already describes the error. Sustained does not wrap driver exceptions, so a syntax error or a constraint violation reaches you as your driver's own exception type.
 
 ## `AmbiguousColumns`
 
-A result set returns the same column name more than once, which a join over tables that share a column name does. A row is keyed by column name, so one value would replace the other. Sustained raises this before it hydrates the first row, from `run()`, `to_dicts()`, `to_df()`, `to_arrow()`, and their async twins. The `columns` attribute lists the repeated names.
+A result set returns the same column name more than once, as a join over tables that share a column name does. A row is keyed by column name, so one value would replace the other. Sustained raises this before it hydrates the first row, from `run()`, `to_dicts()`, `to_df()`, `to_arrow()`, and their async twins. The `columns` attribute lists the repeated names.
 
 ```
 This result set returns 'id' more than once, usually from a join over tables
@@ -60,7 +60,7 @@ The `problems` attribute is a list of strings. The message is `Migration validat
 
 `Migrator.up()` and `Migrator.validate()` raise it. Call `validate(raise_on_problems=False)` to get the list back instead.
 
-The problems validation reports:
+Validation reports these problems:
 
 | Problem | Fix |
 | --- | --- |
@@ -73,7 +73,7 @@ The problems validation reports:
 
 A run would apply SQL that removes data, and no passing rehearsal covers that exact set of statements.
 
-`Migrator.up()` and `AsyncMigrator.up()` raise it. Sustained checks the registered migrations before any statement runs. A run with models is checked a second time, against the migration generated from those models, which exists only once the registered migrations have applied. A refusal at that second check leaves the registered migrations applied and lists their ids on the exception's `applied` attribute.
+`Migrator.up()` and `AsyncMigrator.up()` raise it. Sustained checks the registered migrations before any statement runs. It checks a run with models a second time, against the migration generated from those models, which exists only once the registered migrations have applied. A refusal at that second check leaves the registered migrations applied and lists their ids on the exception's `applied` attribute.
 
 The message names the migration and the statement, then both ways forward:
 
@@ -139,7 +139,7 @@ Invalid input the builder can detect. The method you call raises some of these, 
 | Two different subqueries sharing a CTE alias |
 | `merge()` where every inserted column is a conflict column |
 | A raw fragment whose `?` count does not match its parameters |
-| An INSERT with a WHERE clause |
+| An `INSERT` with a `WHERE` clause |
 | A model with no `tableName` in a statement that needs one |
 | A string function argument that is neither a plain column path nor a `Literal` |
 | `for_update()` combined with a union |
@@ -152,7 +152,7 @@ Invalid input the builder can detect. The method you call raises some of these, 
 | Reverting a migration with no down step |
 | Rehearsing on a dialect whose schema changes do not roll back |
 | Rehearsing on an autocommit connection, or inside a `transaction()` block |
-| Generation refusing a drop, a NOT NULL change, or a new primary key column |
+| Generation refusing a drop, a `NOT NULL` change, or a new primary key column |
 | A migration file matching none of the naming patterns |
 | An empty migration file, or a down file with no up file |
 | A `${placeholder}` that is unknown or malformed |

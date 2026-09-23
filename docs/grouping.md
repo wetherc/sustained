@@ -61,7 +61,7 @@ Pair it with an aggregate from [Queries](./queries#aggregates):
 
 The first condition in a chain must be a plain `having()`. Starting with `andHaving()` or `orHaving()` raises `RuntimeError`.
 
-Write the aggregate as it appears in the source, not as its alias. Standard SQL evaluates HAVING before the SELECT list exists, so the database rejects `having('gross', '>', 5000)` even though `gross` appears in the select list:
+Write the aggregate expression itself rather than its alias. Standard SQL evaluates HAVING before the SELECT list exists, so the database rejects `having('gross', '>', 5000)` even though `gross` appears in the select list:
 
 ```python
 # Works everywhere.
@@ -102,7 +102,7 @@ Ticket.query().groupBy('show_id').havingRaw('SUM(price) % ? = ?', [10, 0])
 
 ## Grouping conditions
 
-Pass a callable to any `having` method for a parenthesized group. The builder it receives has the `having` methods on it:
+Pass a callable to any `having` method to build a parenthesized group, and call the `having` methods on the builder it receives:
 
 ```python
 (Ticket.query()
@@ -116,7 +116,7 @@ Pass a callable to any `having` method for a parenthesized group. The builder it
 # HAVING COUNT(id) > 50 AND (SUM(price) < 1000 OR MAX(price) >= 250)
 ```
 
-Groups can nest as deep as the logic needs. Past two levels, a typed predicate built from `Model.c` and combined with `&` and `|` reads better, and `having()` accepts one in place of the three arguments.
+Groups can nest as deep as the logic needs. `having()` also accepts a typed predicate built from `Model.c` and combined with `&` and `|` in place of the three arguments, which replaces the nested lambdas with parentheses.
 
 ## Subtotals and multiple grains
 
@@ -127,7 +127,7 @@ Ticket.query().select('price').groupByRollup('show_id')
 # SELECT price FROM tickets GROUP BY ROLLUP (show_id)
 ```
 
-`groupByCube()` adds a subtotal for every combination of the columns, so ordering does not matter and the row count grows as a power of two.
+`groupByCube()` adds a subtotal for every combination of the columns, so column order has no effect and the row count grows as a power of two.
 
 `groupByGroupingSets()` takes the combinations explicitly, as tuples. An empty tuple is the grand total:
 

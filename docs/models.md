@@ -18,7 +18,7 @@ The examples use the venue booking schema from [Getting Started](./getting-start
 
 ## Naming the table
 
-`tableName` is the only required attribute. Models also support a `tableSchema` and `database` when the table needs a qualified name:
+`tableName` is the only required attribute. Models also support `tableSchema` and `database` attributes when the table needs a qualified name:
 
 ```python
 class Venue(Model):
@@ -30,7 +30,7 @@ print(Venue.query())
 # SELECT * FROM analytics.public.venues
 ```
 
-The parts join with dots in the order database, schema, table. Both extra attributes default to `None` and are omitted in query building. Quoting follows the dialect you've specified, so the same class renders, e.g., `"analytics"."public"."venues"` on Postgres.
+Sustained joins the parts with dots in the order database, schema, table. Both extra attributes default to `None`, and the query leaves out any part that is `None`. Quoting follows the dialect you set, so on Postgres the same class renders `"analytics"."public"."venues"`.
 
 ## Columns as attributes
 
@@ -44,9 +44,9 @@ Venue.query().select(Venue.name, Venue.city)
 # SELECT venues.name, venues.city FROM venues
 ```
 
-Qualified names matter in joins, where two tables can both have columns with the same name. They come from the same three parts as the table name, so a model with a `database` and `tableSchema` produces `analytics.public.venues.city`.
+In a join, two tables can both have columns with the same name, and the qualified name tells the database which one you mean. Qualified names come from the same three parts as the table name, so a model with a `database` and `tableSchema` produces `analytics.public.venues.city`.
 
-Instances do not behave this way. An instance has one attribute per column the query selected, so `venue.city` gives the value of that row. A column the query left out raises `AttributeError`, so `hasattr(venue, 'city')` and `if venue.city:` reflect what the row contains rather than returning a default.
+Instances work differently, because an instance has one attribute per column the query selected, so `venue.city` gives the value for that row. A column the query left out raises `AttributeError`, so `hasattr(venue, 'city')` and `if venue.city:` reflect what the row contains rather than returning a default.
 
 ## Catching column typos
 
@@ -62,7 +62,7 @@ Venue.citty
 # Declared columns: id, name, city, capacity.
 ```
 
-The check runs on the class and on the `Model.c` namespace below. It does not run on the string arguments to `select()` or `where()`, which are passed through to the SQL as written.
+The check runs on the class and on the `Model.c` namespace below. It does not run on the string arguments to `select()` or `where()`, which Sustained passes through to the SQL as written.
 
 Declaring `tableColumns` sets `columns` for you from the same keys, so a model with a typed schema gets the check without repeating the names:
 
@@ -98,7 +98,7 @@ Venue.query().where((Venue.c.capacity > 1000) & (Venue.c.city == 'Minneapolis'))
 # SELECT * FROM venues WHERE (venues.capacity > 1000 AND venues.city = 'Minneapolis')
 ```
 
-The result of a comparison is a `Predicate`, which combines with `&`, `|`, and `~`. Pass it to `where()` or `having()`. For a table with no model in scope, `col('show_artists.artist_id')` builds the same kind of reference from a dotted path.
+A comparison returns a `Predicate`. You can combine predicates with `&`, `|`, and `~`, and pass them to `where()` or `having()`. For a table with no model in scope, `col('show_artists.artist_id')` builds the same kind of reference from a dotted path.
 
 [Filtering](./filtering#typed-predicates) covers the full operator set and the methods for `LIKE`, `IN`, `BETWEEN`, and `NULL`.
 
@@ -118,11 +118,11 @@ class Venue(Model):
     }
 ```
 
-The string form prevents cyclical imports: `Venue` and `Show` can point at each other from separate modules as long as both classes exist before the query is built. A name that never resolves raises `ValueError` at build time, naming the reference it could not find.
+The string form prevents circular imports, because `Venue` and `Show` can point at each other from separate modules as long as both classes exist before the query is built. A name that never resolves raises `ValueError` at build time, naming the reference it could not find.
 
 `get_registered_model('Show')` returns the class or `None`. `resolve_model_reference` takes a class or a name and returns the class, raising for an unresolvable name.
 
-Two model classes can share a class name, in the same module or across modules. Neither one then owns the name in the registry, and a string reference to it raises `ValueError` naming both classes. The reference resolves anyway when the module that declares the relation defines the name itself, because that module says which class is meant. Pass the class instead of its name when two of your models share a name.
+If two model classes share a class name, in the same module or across modules, neither one owns the name in the registry, and a string reference to it raises `ValueError` naming both classes. The reference still resolves when the module that declares the relation defines the name itself, because that module says which class is meant. Pass the class instead of its name when two of your models share a name.
 
 The registry never drops an entry, so a model class registered once stays reachable by name for the life of the process, even after the module that defined it is gone.
 
@@ -137,7 +137,7 @@ Venue.set_dialect(Dialects.POSTGRES)   # quoting, placeholders, function names
 Venue.bind(psycopg.connect(DSN))       # every query on Venue can now run()
 ```
 
-Setting either on `Model` itself applies to every model that does not set its own. Setting it on a subclass scopes it to only that subclass. `Model.unbind()` removes a binding, and passing a connection to `run()` overrides one.
+Setting either on `Model` itself applies it to every model that does not set its own, and setting it on a subclass applies it to that subclass only. `Model.unbind()` removes a binding, and passing a connection to `run()` overrides one.
 
 Two models with different dialects can coexist, so a query against Postgres and a query against Athena can run in one process.
 
@@ -145,7 +145,7 @@ Two models with different dialects can coexist, so a query against Postgres and 
 
 ## Models built at runtime
 
-`create_model()` returns a model class from a name and a table name for schemas discovered at runtime:
+For schemas you discover at runtime, `create_model()` builds a model class from a name and a table name:
 
 ```python
 from sustained import create_model

@@ -43,7 +43,7 @@ Each type is a factory that returns a `ColumnDef`. Every factory accepts the ful
 | JSON | `JSON` | `JSONB` | `JSON` | `NVARCHAR(MAX)` | `STRING` | `JSON` |
 | ENUM | `VARCHAR(n)` + CHECK | the named type | `ENUM(...)` | `NVARCHAR(n)` + CHECK | `DialectError` | the named type |
 
-An ENUM column renders per the dialect's enum strategy. Postgres and DuckDB reference a named type created with `CREATE TYPE`. MySQL writes the value list inline. The default dialect and MSSQL render a VARCHAR sized to the longest value, constrained to the list by a CHECK constraint named `ck_<table>_<column>_enum`. Presto raises like Athena. [SQL Dialects](/dialects#enum-columns) has the details.
+An ENUM column renders per the dialect's enum strategy. Postgres and DuckDB reference a named type created with `CREATE TYPE`. MySQL writes the value list inline. The default dialect and MSSQL render a VARCHAR sized to the longest value, constrained to the list by a CHECK constraint named `ck_<table>_<column>_enum`. Presto raises `DialectError`, as Athena does. [SQL Dialects](/dialects#enum-columns) has the details.
 
 MySQL spells `BOOLEAN` as `TINYINT(1)` because its catalog reports the underlying type rather than the synonym. It spells `TIMESTAMP` as `DATETIME` because a MySQL `TIMESTAMP` column is four bytes, stops in 2038, and converts time zones, while `Timestamp()` describes a plain wall clock.
 
@@ -70,7 +70,7 @@ Use the factories above rather than constructing a `ColumnDef` yourself. Every k
 | `enum_name`, `enum_values` | `str`, values | The type name and permitted values of an ENUM column. Valid only there; use the `Enum` factory, which fills both. |
 | `comment` | `str` | A description stored in the database catalog on dialects that keep column comments. Must be a non-empty string, or the factory raises `ValueError`. Dialects without column comments render nothing. See [Column comments](/schema#column-comments). |
 
-`default` fills new rows in the database. `backfill` fills the rows that are already in the table, at migration time. A NOT NULL change needs one or the other.
+`default` fills new rows in the database, and `backfill` fills the rows already in the table at migration time. A NOT NULL change needs one or the other.
 
 ## `Enum`
 
@@ -121,7 +121,7 @@ Guide: [Table constraints](/schema#table-constraints).
 | MSSQL | `IDENTITY(1,1)` |
 | DuckDB, Presto, Athena | `DialectError` |
 
-The DuckDB message names the alternative: a sequence with a DEFAULT expression.
+On DuckDB, the error message suggests a sequence with a DEFAULT expression instead.
 
 ## `Index`
 

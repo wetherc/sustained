@@ -1,10 +1,10 @@
 # Sustained Developer Guide
 
-This document provides a high-level overview of the architecture and design patterns used in the Sustained query builder. It is intended for developers who want to contribute to the package or understand its internal workings.
+If you want to contribute to Sustained or understand how it works inside, start with the architecture and design patterns of the query builder described below.
 
 ## Core Architecture
 
-The design of Sustained is heavily inspired by [Objection.js](https://vincit.github.io/objection.js/), with a focus on a fluent, chainable API for building SQL queries programmatically. The query builder is designed to be **mutable**, meaning that each method call modifies the internal state of the current `QueryBuilder` instance and returns `self` to allow for chaining.
+The design of Sustained is heavily inspired by [Objection.js](https://vincit.github.io/objection.js/), with a focus on a fluent, chainable API for building SQL queries programmatically. The query builder is **mutable**, so each method call modifies the internal state of the current `QueryBuilder` instance and returns `self`, which lets you chain calls.
 
 The architecture is composed of several key components that work together to translate a series of method calls into a final SQL string.
 
@@ -19,9 +19,9 @@ The `Model` class (`sustained/model.py`) is the primary entry point for users of
 
 The `QueryBuilder` (`sustained/builder.py`) is the central component of the library. It acts as the main fluent interface that users interact with.
 
--   **State Management:** It does not manage the complex state of the query directly. Instead, each clause lives in its own specialized `*ClauseBuilder` object.
+-   **State Management:** Rather than manage the query's state directly, it keeps each clause in its own specialized `*ClauseBuilder` object.
 -   **Composition:** When a method like `.where()` or `.select()` is called on the `QueryBuilder`, it delegates that call to the appropriate internal builder (e.g., `self._where_builder` or `self._select_clause_builder`).
--   **Assembly:** Rendering happens through a `RenderContext` (`sustained/rendering.py`) that carries the compiler and the value-handling mode. `str(query)` renders with values inlined as SQL literals. `to_sql()` renders with dialect placeholders and returns the collected parameters. Clauses that carry user values store deferred render functions instead of finished strings, so both modes share one code path.
+-   **Assembly:** Rendering happens through a `RenderContext` (`sustained/rendering.py`) that bundles the compiler and the value-handling mode. `str(query)` renders with values inlined as SQL literals, while `to_sql()` renders with dialect placeholders and returns the collected parameters. Clauses that contain user values store deferred render functions instead of finished strings, so both modes share one code path.
 -   **Execution:** `run()` and `first()` (`sustained/execution.py`) execute the parameterized statement on a DB-API 2.0 connection and hydrate result rows into model instances.
 
 ### The `*ClauseBuilder`s
@@ -39,18 +39,18 @@ The `Compiler` (`sustained/compilers/`) is responsible for translating the query
 
 ### Expression Classes
 
-Located in `sustained/expressions.py`, classes like `Func`, `Column`, and `AggregateExpression` are simple data structures. They represent parts of a query that are not simple literal values. They are passed from the `QueryBuilder` down through the `*ClauseBuilder`s and are ultimately rendered into SQL by the `Compiler`.
+Located in `sustained/expressions.py`, classes like `Func`, `Column`, and `AggregateExpression` are simple data structures that represent the parts of a query that are not literal values. The `QueryBuilder` passes them down through the `*ClauseBuilder`s, and the `Compiler` renders them into SQL.
 
 ## The Query Building Lifecycle
 
 The lifecycle of one query shows how the components fit together.
 
 1.  **Instantiation:** A user calls `MyModel.query()`. The `Model` creates a `QueryBuilder` instance, passing it the currently configured `Dialect`.
-2.  **Construction:** The user chains methods like `.select()`, `.where()`, and `.orderBy()`. Each of these calls is delegated to the corresponding internal `*ClauseBuilder`, which updates its internal state.
+2.  **Construction:** The user chains methods like `.select()`, `.where()`, and `.orderBy()`. The `QueryBuilder` delegates each call to the corresponding internal `*ClauseBuilder`, which updates its own state.
 3.  **Compilation:** The user calls `str(query_builder)` to get the final SQL string.
 4.  **Assembly:** `QueryBuilder._render_sql(ctx)` walks the statement in SQL order. It elevates CTEs to the top of the statement, renders each internal builder, and threads the `RenderContext` into every clause with user values. `__str__()` calls it with an inline-literal context; `to_sql()` calls it with a parameterizing context and returns `(sql, params)`.
 5.  **Dialect-Specific Rendering:** For parts of the query that are dialect-dependent (like `LIMIT`/`OFFSET`, identifier quoting, booleans, and ILIKE), the builders call methods on the configured `Compiler` instance.
-6.  **Final String:** The `QueryBuilder` joins all the rendered fragments together into the final, complete SQL statement.
+6.  **Final String:** The `QueryBuilder` joins the rendered fragments into the final SQL statement.
 
 ## Development Setup
 
@@ -80,11 +80,11 @@ python3 matrix.py python           # the unit suite on each interpreter on PATH
 python3 matrix.py --check          # what would run, and what is missing
 ```
 
-Each container row also carries a `latest` block in `support.json`. That block pins the newest release the vendor supports, and the runner shows it as a `-latest` target. The target runs the same test module against that release.
+Each container row in `support.json` also contains a `latest` block, which pins the newest release the vendor supports. The runner shows that release as a `-latest` target, which runs the same test module against it.
 
 Servers other than SQLite and DuckDB come from `docker/compose.yaml`, which the runner starts and removes for you. Ports are the usual port plus 50000, or plus 50100 for a `-latest` service, so a server you already run locally is left alone. Set a row's connection variable, for example `SUSTAINED_TEST_POSTGRES_DSN` or `SUSTAINED_TEST_POSTGRES_LATEST_DSN`, to use your own server instead of a container.
 
-Each driver has to match the paramstyle its dialect emits, which is why SQL Server uses `pyodbc` and needs the Microsoft ODBC driver installed:
+Each driver has to match the paramstyle its dialect emits, so SQL Server uses `pyodbc`, which needs the Microsoft ODBC driver installed:
 
 ```bash
 pip install "psycopg[binary]" pymysql pyodbc trino duckdb pyathena
@@ -112,12 +112,10 @@ Adding a database means adding a row to `support.json`, a service to the compose
         FunctionMetadata(supported_dialects=[Dialects.POSTGRES, Dialects.MSSQL])
     )
     ```
-3.  `QueryBuilder.select_func()` now validates the new function against the active dialect. If the function requires special rendering syntax for a specific dialect, you can add a custom renderer.
+3.  `QueryBuilder.select_func()` then validates the new function against the active dialect. If the function requires special rendering syntax for a specific dialect, you can add a custom renderer.
 
 ## Dynamic Method Resolution with `__getattr__`
 
 The `QueryBuilder` uses a `__getattr__` method to provide a wide, expressive API without having to explicitly define dozens of similar methods. This is how it supports variations like `where`, `orWhere`, `whereIn`, `andWhereLike`, etc.
 
-When a method is called on a `QueryBuilder` instance that doesn't actually exist (e.g., `orWhereIn(...)`), `__getattr__` intercepts the call. It uses regular expressions to determine if the method name matches a known pattern (e.g., `^(or|and)?(WhereIn)$`). If it finds a match, it dynamically calls the corresponding method on the appropriate internal builder (`_where_builder` in this case), passing along the arguments.
-
-This use of metaprogramming makes the fluent interface possible.
+When a method is called on a `QueryBuilder` instance that doesn't exist (e.g., `orWhereIn(...)`), `__getattr__` intercepts the call. It uses regular expressions to determine whether the method name matches a known pattern (e.g., `^(or|and)?(WhereIn)$`). If it finds a match, it dynamically calls the corresponding method on the appropriate internal builder (`_where_builder` in this case), passing along the arguments.
