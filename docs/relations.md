@@ -141,6 +141,21 @@ Artist.query().select('artists.name', 'shows.title').leftJoinRelated('shows')
 # LEFT JOIN shows ON show_artists.show_id = shows.id
 ```
 
+When you join through the same link table a second time, pass an `alias`. The second join renders the link table as `<alias>_<link table>`, so each copy of the link table has its own name. A repeated join through a link table without an alias raises `ValueError`:
+
+```python
+(
+    Artist.query()
+    .innerJoinRelated('shows', alias='booked')
+    .leftJoinRelated('shows', alias='other')
+)
+# SELECT * FROM artists
+# INNER JOIN show_artists ON artists.id = show_artists.artist_id
+# INNER JOIN shows AS booked ON show_artists.show_id = booked.id
+# INNER JOIN show_artists AS other_show_artists ON artists.id = other_show_artists.artist_id
+# LEFT JOIN shows AS other ON other_show_artists.show_id = other.id
+```
+
 ## Loading relations instead of joining them
 
 A join flattens the related rows into the same result rows, so a venue with five shows appears five times. `withGraphFetched()` runs a second query instead and attaches the results to each instance:

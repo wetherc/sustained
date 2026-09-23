@@ -7,6 +7,7 @@ from typing import (
     Callable,
     List,
     Optional,
+    Set,
     Tuple,
     Type,
     Union,
@@ -137,6 +138,10 @@ class JoinClauseBuilder:
             compiler if compiler else Dialects.get_compiler(Dialects.DEFAULT)
         )
         self._joins: List[Renderable] = []
+        # Link tables that a many-to-many join has already added. A second
+        # join through the same link table renders it under an alias, so each
+        # copy of the link table has its own name.
+        self._link_tables: Set[str] = set()
 
     def render(self, ctx: RenderContext) -> str:
         """
@@ -368,9 +373,21 @@ class JoinClauseBuilder:
         )
         through_from_key = self._compiler.quote_identifier(through_from_mapping["key"])
 
+        through_table_part = quoted_through_table
+        if through_table_name in self._link_tables:
+            if not alias:
+                raise ValueError(
+                    f"The link table '{through_table_name}' is already joined. "
+                    "Pass alias= to join through it again."
+                )
+            link_alias = f"{alias}_{through_table_name.rsplit('.', 1)[-1]}"
+            quoted_through_table = self._compiler.quote_identifier(link_alias)
+            through_table_part = f"{through_table_part} AS {quoted_through_table}"
+        self._link_tables.add(through_table_name)
+
         on_clause1 = f"{from_col} = {quoted_through_table}.{through_from_key}"
         # The join to the through table is always an INNER JOIN.
-        join_clause1 = f"INNER JOIN {quoted_through_table} ON {on_clause1}"
+        join_clause1 = f"INNER JOIN {through_table_part} ON {on_clause1}"
         self._joins.append(join_clause1)
 
         # Second join: from the 'through' table to the final related model's table.

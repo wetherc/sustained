@@ -291,7 +291,7 @@ The first hop is always an `INNER JOIN`. The join type you name applies to the s
 
 ## Join the same table twice
 
-Give the second join an alias and refer to it by that name.
+Give the second join an alias and refer to it by that name. For a many-to-many relation, Sustained also renders the second copy of the link table as `<alias>_<link table>`, here `support_show_artists`.
 
 ```python
 Show.query() \

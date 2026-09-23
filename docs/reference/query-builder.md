@@ -289,7 +289,7 @@ query.join('venues', lambda j: j.on(...).orOn(...))        # lambda
 
 The table argument must be a table name. To join a derived result set, put it in a CTE with `with_()` and join the CTE by its alias. Mixing `using` with positional arguments raises `ValueError`, and a `using` value that is not a list raises `TypeError`.
 
-**Relation form.** `joinRelated(relation_name, alias=None)`, and the same prefixed variant for every other join type. The join condition comes from `relationMappings`. A `ManyToManyRelation` joins the through table first, always with an `INNER JOIN`; the join type you name applies to the second hop. An unknown relation name raises `ValueError`, and so does a mapping that is missing `modelClass`, `join`, `from`, or `to`.
+**Relation form.** `joinRelated(relation_name, alias=None)`, and the same prefixed variant for every other join type. The join condition comes from `relationMappings`. A `ManyToManyRelation` joins the through table first, always with an `INNER JOIN`; the join type you name applies to the second hop. A second join through the same link table renders it as `<alias>_<link table>`, and raises `ValueError` when you pass no `alias`. An unknown relation name raises `ValueError`, and so does a mapping that is missing `modelClass`, `join`, `from`, or `to`.
 
 ### `OnClauseBuilder`
 

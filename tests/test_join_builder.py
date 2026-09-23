@@ -136,6 +136,27 @@ class TestJoinBuilder(unittest.TestCase):
             "SELECT * FROM persons INNER JOIN persons_movies ON persons.id = persons_movies.personId INNER JOIN movies AS m ON persons_movies.movieId = m.id",
         )
 
+    def test_repeated_through_join_aliases_the_link_table(self):
+        query = (
+            self.Person.query()
+            .innerJoinRelated("movies", alias="first")
+            .leftJoinRelated("movies", alias="second")
+        )
+        self.assertEqual(
+            str(query),
+            "SELECT * FROM persons "
+            "INNER JOIN persons_movies ON persons.id = persons_movies.personId "
+            "INNER JOIN movies AS first ON persons_movies.movieId = first.id "
+            "INNER JOIN persons_movies AS second_persons_movies "
+            "ON persons.id = second_persons_movies.personId "
+            "LEFT JOIN movies AS second ON second_persons_movies.movieId = second.id",
+        )
+
+    def test_repeated_through_join_without_alias_raises(self):
+        query = self.Person.query().innerJoinRelated("movies")
+        with self.assertRaisesRegex(ValueError, "persons_movies"):
+            query.innerJoinRelated("movies")
+
     def test_default_join_related(self):
         query = self.Animal.query().joinRelated("owner")
         self.assertEqual(
