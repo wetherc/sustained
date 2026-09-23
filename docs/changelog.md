@@ -7,6 +7,13 @@ Every released version of Sustained, newest first. The same text lives in `CHANG
 
 Version numbers follow semantic versioning. A major version marks a change that can break working code. A minor version adds new features. A patch version fixes a defect without changing public API signatures or introducing new functionality.
 
+## 2.24.2
+
+### Fixed
+
+- A second join through the same many-to-many relation renders its link table as `<alias>_<link table>`, such as `support_show_artists`, and both of its `ON` conditions use that name. The link table rendered under its bare name in both joins, so `innerJoinRelated('artists', alias='headline').leftJoinRelated('artists', alias='support')` named `show_artists` twice and the database rejected the statement. The first join keeps the bare name, so a query with one many-to-many join renders the same SQL. A repeated join through a link table without an alias raises `ValueError`.
+- Every query builder method name matches without regard to case or underscores, as the documentation described. Only join names did: `WHERE` and `ORDERBY` passed the family pattern and then raised an `AttributeError` naming the clause builder, a defined method such as `select` matched only its exact spelling, and `where_ilike` and `WHERE_IN` did not resolve. The rule covers the `join`, `where`, and `having` families, `orderBy`, the defined methods, the `on` builder inside a join, and the builder a nested `where` group receives. `COUNT()` with no argument reaches the `count()` method, which renders `COUNT(*)`. The type stubs describe only the canonical spellings.
+
 ## 2.24.1
 
 ### Fixed
