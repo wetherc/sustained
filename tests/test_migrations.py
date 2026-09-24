@@ -33,6 +33,10 @@ from sustained.migrations import (
 )
 from sustained.schema import Integer, String
 
+# sqlite3.connect(autocommit=...) and Connection.autocommit arrived in
+# Python 3.12.
+HAS_SQLITE_AUTOCOMMIT = hasattr(sqlite3.Connection, "autocommit")
+
 
 class MigUser(Model):
     tableName = "mig_users"
@@ -1246,6 +1250,7 @@ class TestRehearse(MigrationTestCase):
         self.assertEqual(table_names(self.conn), {"sustained_migrations"})
         self.assertFalse(results.recorded)
 
+    @unittest.skipUnless(HAS_SQLITE_AUTOCOMMIT, "sqlite3 autocommit needs 3.12")
     def test_rehearse_refuses_an_autocommit_connection(self):
         conn = sqlite3.connect(":memory:", autocommit=True)
         self.addCleanup(conn.close)

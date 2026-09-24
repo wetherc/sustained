@@ -19,6 +19,10 @@ from sustained.execution import (
     transaction,
 )
 
+# sqlite3.connect(autocommit=...) and Connection.autocommit arrived in
+# Python 3.12.
+HAS_SQLITE_AUTOCOMMIT = hasattr(sqlite3.Connection, "autocommit")
+
 
 class TxUser(Model):
     tableName = "users"
@@ -376,6 +380,7 @@ class TestNeedsExplicitBegin(unittest.TestCase):
         finally:
             conn.close()
 
+    @unittest.skipUnless(HAS_SQLITE_AUTOCOMMIT, "sqlite3 autocommit needs 3.12")
     def test_a_sqlite3_connection_in_the_new_control_does_not(self):
         conn = sqlite3.connect(":memory:", autocommit=False)
         try:

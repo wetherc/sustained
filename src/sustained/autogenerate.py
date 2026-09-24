@@ -481,8 +481,9 @@ def diff_schema(
             first = declared[key]
             raise ValueError(
                 f"Two models declare the table '{model.tableName}': "
-                f"'{first.__name__}' in schema {first.tableSchema or 'the '
-                'connection default'} and '{model.__name__}' in schema "
+                f"'{first.__name__}' in schema "
+                f"{first.tableSchema or 'the connection default'} and "
+                f"'{model.__name__}' in schema "
                 f"{model.tableSchema or 'the connection default'}. A schema "
                 "read keys on the bare table name, so the two cannot be "
                 "told apart. Diff them in separate calls."

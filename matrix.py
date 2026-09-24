@@ -272,13 +272,40 @@ def run_server(name):
     )
 
 
+def interpreter_version(path):
+    """The X.Y an interpreter reports, or None when it will not run."""
+    try:
+        done = subprocess.run(
+            [path, "-c", "import sys; print('%d.%d' % sys.version_info[:2])"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return done.stdout.strip() if done.returncode == 0 else None
+
+
 def interpreters():
-    """Every python3.X on PATH that support.json names, newest first."""
-    found = []
-    for version in reversed(SUPPORT["python"]["versions"]):
-        path = shutil.which(f"python{version}")
-        found.append((version, path))
-    return found
+    """Every Python on PATH that support.json names, newest first.
+
+    Each python, python3 and python3.X in every PATH directory reports its
+    own version, because a name does not always say it: macOS ships 3.9 as
+    /usr/bin/python3 with no python3.9 beside it.
+    """
+    wanted = SUPPORT["python"]["versions"]
+    by_version = {}
+    seen = set()
+    for folder in os.environ.get("PATH", "").split(os.pathsep):
+        for name in ["python", "python3"] + [f"python{v}" for v in wanted]:
+            path = shutil.which(name, path=folder)
+            if not path or os.path.realpath(path) in seen:
+                continue
+            seen.add(os.path.realpath(path))
+            version = interpreter_version(path)
+            if version in wanted:
+                by_version.setdefault(version, path)
+    return [(version, by_version.get(version)) for version in reversed(wanted)]
 
 
 def run_python():

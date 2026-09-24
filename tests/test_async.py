@@ -18,6 +18,10 @@ from sustained.exceptions import DialectError
 from sustained.execution import set_statement_listener
 from sustained.schema import Integer, String
 
+# sqlite3.connect(autocommit=...) and Connection.autocommit arrived in
+# Python 3.12.
+HAS_SQLITE_AUTOCOMMIT = hasattr(sqlite3.Connection, "autocommit")
+
 
 class AioOwner(Model):
     tableName = "aio_owners"
@@ -171,6 +175,7 @@ class TestAsyncExecution(AsyncTestCase):
             await AioOwner.query().arun()
 
 
+@unittest.skipUnless(HAS_SQLITE_AUTOCOMMIT, "sqlite3 autocommit needs 3.12")
 class TestAutocommitDbApiAdapter(unittest.IsolatedAsyncioTestCase):
     """A DB-API connection already in autocommit needs the BEGIN itself."""
 

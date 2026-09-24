@@ -22,6 +22,10 @@ from sustained.migrations import (
     _ReplayCursor,
 )
 
+# sqlite3.connect(autocommit=...) and Connection.autocommit arrived in
+# Python 3.12.
+HAS_SQLITE_AUTOCOMMIT = hasattr(sqlite3.Connection, "autocommit")
+
 # What a rehearsal leaves behind: the tracking table and the row it
 # earned, both created by the rehearsal itself.
 SUSTAINED_TABLES = {"sustained_migrations", "sustained_rehearsals"}
@@ -268,6 +272,7 @@ class TestAsyncMigrator(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([m.id for m in await changed.pending()], ["r"])
         self.assertEqual(await changed.up(), ["r"])
 
+    @unittest.skipUnless(HAS_SQLITE_AUTOCOMMIT, "sqlite3 autocommit needs 3.12")
     async def test_rehearse_rejects_autocommit_connections(self):
         self.conn.autocommit = True
         migrator = AsyncMigrator(self.adapter, self.migrations())
