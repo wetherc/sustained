@@ -1746,13 +1746,32 @@ class TestDestructivePrefixKeys(unittest.TestCase):
         keeping = [m for m in self.pending if "DROP" not in str(m.up)]
         self.assertEqual(_destructive_prefix_keys(self.history, keeping), [])
 
-    def test_repeatables_are_left_out(self):
-        pending = list(self.pending)
-        pending.insert(0, Migration("seed", up="SELECT 1", repeatable=True))
-        self.assertEqual(
-            _destructive_prefix_keys(self.history, pending),
-            _destructive_prefix_keys(self.history, self.pending),
-        )
+    def tail_key(self, start, repeatables):
+        """The key of an untargeted run after pending[:start] applied."""
+        history = list(self.history)
+        for seq, migration in enumerate(self.pending[:start], len(history) + 1):
+            history.append(
+                AppliedRecord(migration.id, seq, migration_checksum(migration), True)
+            )
+        return rehearsal_key(history, self.pending[start:] + repeatables)
+
+    def test_a_repeatable_extends_only_the_untargeted_run(self):
+        seed = Migration("seed", up="SELECT 1", repeatable=True)
+        keys = _destructive_prefix_keys(self.history, [seed] + self.pending)
+        targeted = _destructive_prefix_keys(self.history, self.pending)
+        # Every start point before 'five' reaches a drop, so its tail with
+        # the repeatable gets a key. The start point after 'five' runs only
+        # the repeatable, which removes nothing.
+        tails = [self.tail_key(start, [seed]) for start in range(5)]
+        self.assertEqual(set(keys), set(targeted) | set(tails))
+        self.assertEqual(len(keys), len(targeted) + len(tails))
+        self.assertNotIn(self.tail_key(5, [seed]), keys)
+
+    def test_a_repeatable_that_removes_data_keys_every_tail(self):
+        self.pending = [m for m in self.pending if "DROP" not in str(m.up)]
+        purge = Migration("purge", up="DELETE FROM k", repeatable=True)
+        keys = _destructive_prefix_keys(self.history, self.pending + [purge])
+        self.assertEqual(keys, [self.tail_key(start, [purge]) for start in range(4)])
 
     def test_each_migration_renders_once(self):
         renders = []
@@ -2038,6 +2057,21 @@ class TestDestructiveGate(MigrationTestCase):
         self.assertEqual(migrator.up(target="001_drop"), ["001_drop"])
         self.assertEqual(migrator.up(target="002_trim"), ["002_trim"])
         self.assertNotIn("gate_second", table_names(self.conn))
+
+    def test_an_untargeted_run_after_a_targeted_one_includes_the_repeatables(self):
+        first = Migration(
+            "001_add",
+            up="CREATE TABLE gate_new (id INTEGER)",
+            down="DROP TABLE gate_new",
+        )
+        trim = Migration("002_trim", up="DROP TABLE gate_old")
+        seed = Migration("seed", up="SELECT 1", repeatable=True)
+        migrator = Migrator(self.conn, [first, trim, seed])
+        self.assertTrue(migrator.rehearse().ok)
+        self.assertEqual(migrator.up(target="001_add"), ["001_add"])
+        # The rest of the run starts from the history the target wrote and
+        # ends with the repeatable, the tail the rehearsal ran.
+        self.assertEqual(migrator.up(), ["002_trim", "seed"])
 
     def test_a_rehearsal_with_models_also_covers_the_registered_set(self):
         migrator = Migrator(self.conn, [self.drop])

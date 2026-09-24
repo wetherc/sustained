@@ -264,7 +264,7 @@ rehearsed(key) -> bool
 
 Whether a passing rehearsal covers the key.
 
-A passing `rehearse()` records its own row and returns the key on the result. It also records a row for each shorter run a `target` would produce that removes data, because the rehearsal applied and reverted those statements on its way through. `rehearse(scratch=True)` records nothing, because the row belongs on the database the next run reads, so record that row there yourself with `record_rehearsal()`.
+A passing `rehearse()` records its own row and returns the key on the result. It also records a row for each shorter run a `target` would produce that removes data, and for each run without a target that could follow those targeted runs, because the rehearsal applied and reverted those statements on its way through. `rehearse(scratch=True)` records nothing, because the row belongs on the database the next run reads, so record that row there yourself with `record_rehearsal()`.
 
 `up()` reads a rehearsal row before it applies any statement that removes data, and raises `RehearsalRequired` when no row covers the content. A callable step renders no SQL, so it never triggers the check.
 

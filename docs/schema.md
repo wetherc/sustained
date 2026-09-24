@@ -687,7 +687,7 @@ The key is a SHA-256 over two ordered lists: the checksums of the migrations alr
 
 Ids are not part of the key, so a generated migration's rehearsal row stays valid even though the migration takes a new timestamped id every time the diff runs. A model edit that leaves the generated SQL unchanged keeps the row too.
 
-`migrate --target` runs a shorter set, which has its own key. A rehearsal applies every one of those shorter sets on its way up and takes them all back on the way down, so it records a row for each one that removes data. The rows cover every start point too, because a targeted run leaves a history the next targeted run starts from. One rehearsal therefore covers the whole run, every target within it, and a sequence of targeted runs that walks through it.
+`migrate --target` runs a shorter set, which has its own key. A rehearsal applies every one of those shorter sets on its way up and takes them all back on the way down, so it records a row for each one that removes data. The rows cover every start point too, because a targeted run leaves a history the next targeted run starts from. A run without a target that follows them applies the rest of the migrations and then the pending repeatables, and the rehearsal records a row for that run from each start point too. One rehearsal therefore covers the whole run, every target within it, and a sequence of targeted runs that walks through it, whether the last step names a target or not.
 
 `--unrehearsed` is the override. It writes a row of its own under the same key, with the outcome `override`, so the database records what was applied unproved and when. That row never opens the gate for a later run: only a `passed` row does. There is no config setting that turns the gate off.
 

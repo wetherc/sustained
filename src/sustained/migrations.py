@@ -516,6 +516,12 @@ def _destructive_prefix_keys(
     up(target=B) asked for a key nothing had recorded, and the second run
     demanded a rehearsal it had already passed.
 
+    An up() without a target that follows targeted runs applies the rest
+    of the versioned list and then the pending repeatables, which is the
+    tail of the rehearsal's own run. Each start point therefore also gets
+    a key for that tail, or up(target=A) followed by up() asked for a key
+    nothing had recorded.
+
     Only slices that remove data get a key: nothing else ever reads the
     rehearsal table, and a row per slice on every rehearsal would be
     waste. Each migration's statements render once, and the digests are
@@ -523,17 +529,31 @@ def _destructive_prefix_keys(
     and one hash per key.
     """
     versioned = [m for m in pending if not m.repeatable]
+    repeatables = [m for m in pending if m.repeatable]
     removes = [bool(_destructive_in([m], compiler)) for m in versioned]
+    repeatables_remove = bool(_destructive_in(repeatables, compiler))
+
     # Checksums come out once per migration; the slice loops below would
     # otherwise recompute each one per (start, end) pair.
-    tokens = [
-        (_rehearsal_token(migration_checksum(m), m.id) + "\n").encode("utf-8")
-        for m in versioned
-    ]
+    def encoded(migration: Migration) -> bytes:
+        checksum = migration_checksum(migration)
+        return (_rehearsal_token(checksum, migration.id) + "\n").encode("utf-8")
+
+    tokens = [encoded(m) for m in versioned]
+    tail = [encoded(m) for m in repeatables]
     history = _history_digest(applied)
     keys: List[str] = []
     seen: Set[str] = set()
-    for start in range(len(versioned)):
+
+    def add(digest: Digest) -> None:
+        key = digest.hexdigest()
+        if key not in seen:
+            seen.add(key)
+            keys.append(key)
+
+    # The last start point has every versioned migration applied, so only
+    # the repeatables remain for it.
+    for start in range(len(versioned) + 1):
         digest = history.copy()
         digest.update(b"run\n")
         # A slice removes data as soon as one of its migrations does, so
@@ -543,13 +563,15 @@ def _destructive_prefix_keys(
             digest.update(tokens[index])
             destructive = destructive or removes[index]
             if destructive:
-                key = digest.copy().hexdigest()
-                if key not in seen:
-                    seen.add(key)
-                    keys.append(key)
+                add(digest)
+        if tail and (destructive or repeatables_remove):
+            for token in tail:
+                digest.update(token)
+            add(digest)
         # The next start point begins where this one's first migration
         # has already applied.
-        history.update(tokens[start])
+        if start < len(versioned):
+            history.update(tokens[start])
     return keys
 
 
