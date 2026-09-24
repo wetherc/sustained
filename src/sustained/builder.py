@@ -55,6 +55,14 @@ if TYPE_CHECKING:
     from sustained.model import Model
 
 
+# MSSQL refuses TOP beside OFFSET ... FETCH (Msg 10741), and TOP alone
+# cannot skip rows.
+_TOP_WITH_OFFSET = (
+    "Cannot use top() with offset(). Use orderBy() with limit() and "
+    "offset() to skip rows."
+)
+
+
 def _validate_row_count(value: int, keyword: str) -> None:
     """Rejects values that are not non-negative integers.
 
@@ -676,6 +684,8 @@ class QueryBuilder:
             raise ValueError("TOP can only be set once per query.")
         if self._limit_value is not None:
             raise ValueError("Cannot use top() with limit().")
+        if self._offset_value is not None:
+            raise ValueError(_TOP_WITH_OFFSET)
         self._top_value = value
         return self
 
@@ -851,6 +861,8 @@ class QueryBuilder:
         _validate_row_count(value, "OFFSET")
         if self._offset_value is not None:
             raise ValueError("Offset can only be set once per query.")
+        if self._top_value is not None:
+            raise ValueError(_TOP_WITH_OFFSET)
         self._offset_value = value
         return self
 

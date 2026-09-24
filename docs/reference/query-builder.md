@@ -241,7 +241,7 @@ top(value)
 ```
 {: .sig #top}
 
-`TOP n`. MSSQL only; every other dialect raises `DialectError` at render time. `top()` and `limit()` are mutually exclusive.
+`TOP n`. MSSQL only; every other dialect raises `DialectError` at render time. `top()` and `limit()` are mutually exclusive. `top()` and `offset()` in one query raise `ValueError`, because T-SQL refuses `TOP` beside `OFFSET`; use `orderBy()` with `limit()` and `offset()` to skip rows.
 
 ```python
 page(page, page_size)

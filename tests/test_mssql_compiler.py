@@ -130,3 +130,21 @@ class TestMssqlUnicodeLiterals(unittest.TestCase):
         self.assertEqual(normalize_default("(n'raw')"), "RAW")
         self.assertEqual(normalize_default("('raw')"), "RAW")
         self.assertEqual(normalize_default("NOW()"), "NOW")
+
+
+class TestTopWithOffset(unittest.TestCase):
+    def test_offset_after_top_raises(self):
+        with self.assertRaisesRegex(ValueError, "top\\(\\) with offset\\(\\)"):
+            Person.query().top(5).offset(10)
+
+    def test_top_after_offset_raises(self):
+        with self.assertRaisesRegex(ValueError, "top\\(\\) with offset\\(\\)"):
+            Person.query().offset(10).top(5)
+
+    def test_limit_with_offset_still_works(self):
+        query = QueryBuilder(Person, dialect=Dialects.MSSQL)
+        self.assertEqual(
+            str(query.orderBy("id").limit(5).offset(10)),
+            "SELECT * FROM [person] ORDER BY [id] ASC "
+            "OFFSET 10 ROWS FETCH NEXT 5 ROWS ONLY",
+        )

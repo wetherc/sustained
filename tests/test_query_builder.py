@@ -297,9 +297,8 @@ class TestQueryBuilder(unittest.TestCase):
         class User(Model):
             tableName = "users"
 
-        query = User.query().select("*").top(10).offset(20)
-        with self.assertRaises(DialectError):
-            str(query)
+        with self.assertRaisesRegex(ValueError, r"top\(\) with offset\(\)"):
+            User.query().select("*").top(10).offset(20)
 
     def test_top_and_limit_raise_error(self):
         class User(Model):

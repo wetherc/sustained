@@ -118,6 +118,7 @@ Invalid input the builder can detect. The method you call raises some of these, 
 | A string in place of a value list or a subquery | `whereIn`, `whereExists`, `havingIn`, `havingExists`, `in_()`, `not_in()` |
 | A row count that is negative | `limit`, `top`, `offset`, `page`, `cursor_page` |
 | `limit()` and `top()` in one query, or either one set twice | Paging |
+| `top()` and `offset()` in one query | Paging |
 | An operator outside the allowlist | `where`, `having` |
 | A column string that is not a column name, `table.*`, or a call on one column | `where`, `having`, `join` |
 | A table name that is not a plain dotted name | `from_` |
