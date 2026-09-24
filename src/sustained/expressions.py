@@ -151,6 +151,13 @@ class ColumnExpr:
 
             return Predicate(render_sub)
 
+        if isinstance(values, (str, bytes)):
+            # A string is a sequence of characters, so list() would turn
+            # in_("active") into IN ('a', 'c', 't', ...).
+            raise ValueError(
+                f"{operator} takes a list of values or a query, not the string "
+                f"{values!r}. Pass [{values!r}] to match one value."
+            )
         if not values:
             raise ValueError("IN/NOT IN requires a non-empty list of values.")
         items = list(values)

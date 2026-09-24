@@ -81,6 +81,19 @@ class TestColumnExprMethods(unittest.TestCase):
         with self.assertRaises(ValueError):
             PredUser.c.id.in_([])
 
+    def test_string_in_rejected(self):
+        for value in ("active", b"active"):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(ValueError, "not the string"):
+                    PredUser.c.name.in_(value)
+                with self.assertRaisesRegex(ValueError, "NOT IN takes"):
+                    PredUser.c.name.not_in(value)
+
+    def test_one_string_in_a_list_matches_whole(self):
+        sql, params = PredUser.query().where(PredUser.c.name.in_(["active"])).to_sql()
+        self.assertEqual(sql, "SELECT * FROM users WHERE users.name IN (?)")
+        self.assertEqual(params, ("active",))
+
     def test_in_subquery(self):
         sub = PredUser.query().select("id")
         sql = str(PredUser.query().where(PredUser.c.id.not_in(sub)))

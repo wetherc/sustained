@@ -37,7 +37,7 @@ Each method below returns a `Predicate`.
 | `like(pattern)` | `LIKE` |
 | `not_like(pattern)` | `NOT LIKE` |
 | `ilike(pattern)` | `ILIKE`, native on Postgres and DuckDB, `LOWER() LIKE LOWER()` elsewhere |
-| `in_(values)` | `IN (...)` over a list or a `QueryBuilder`. An empty list raises `ValueError`. |
+| `in_(values)` | `IN (...)` over a list or a `QueryBuilder`. An empty list or a string raises `ValueError`, so `in_('active')` does not match each character. |
 | `not_in(values)` | `NOT IN (...)`. An empty list raises `ValueError`. |
 | `between(low, high)` | `BETWEEN low AND high` |
 | `not_between(low, high)` | `NOT BETWEEN low AND high` |
