@@ -27,6 +27,7 @@ from sustained.migrations import (
     Migrator,
     _destructive_prefix_keys,
     _legacy_checksum,
+    _legacy_rehearsal_key,
     checked_unique_ids,
     create_table_migration,
     migration_checksum,
@@ -2171,6 +2172,34 @@ class TestDestructiveGate(MigrationTestCase):
         # The rest of the run starts from the history the target wrote and
         # ends with the repeatable, the tail the rehearsal ran.
         self.assertEqual(migrator.up(), ["002_trim", "seed"])
+
+    def test_a_row_under_the_legacy_key_opens_the_gate(self):
+        later = Migration("002_add", up="CREATE TABLE gate_new (id INTEGER)")
+        migrator = Migrator(self.conn, [self.drop, later])
+        # The keys a release before 2.25.0 recorded for the full run and
+        # for the targeted prefix.
+        for run in ([self.drop, later], [self.drop]):
+            migrator.record_rehearsal(_legacy_rehearsal_key([], run))
+        self.assertIsNone(migrator.rehearsal_outcome(rehearsal_key([], [self.drop])))
+        self.assertEqual(migrator.run_outcome([], [self.drop]), REHEARSAL_PASSED)
+        self.assertEqual(migrator.up(target="001_drop"), ["001_drop"])
+        self.assertNotIn("gate_old", table_names(self.conn))
+
+    def test_a_row_under_the_current_key_wins_over_the_legacy_one(self):
+        migrator = Migrator(self.conn, [self.drop])
+        migrator.record_rehearsal(_legacy_rehearsal_key([], [self.drop]))
+        migrator.record_rehearsal(rehearsal_key([], [self.drop]), REHEARSAL_FAILED)
+        self.assertEqual(migrator.run_outcome([], [self.drop]), REHEARSAL_FAILED)
+        with self.assertRaises(RehearsalRequired):
+            migrator.up()
+
+    def test_a_run_whose_checksums_did_not_change_has_no_legacy_key(self):
+        def step(connection):
+            return None
+
+        pinned = Migration("001_call", up=step, checksum="abc")
+        self.assertIsNone(_legacy_rehearsal_key([], [pinned]))
+        self.assertIsNone(Migrator(self.conn, [pinned]).run_outcome([], [pinned]))
 
     def test_a_rehearsal_writes_every_row_in_one_commit(self):
         migrations = [

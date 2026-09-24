@@ -988,6 +988,24 @@ class TestAsyncRehearsalRows(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("gate_old", table_names(self.conn))
         self.assertNotIn("gate_new", table_names(self.conn))
 
+    async def test_a_row_under_the_legacy_key_opens_the_gate(self):
+        from sustained.migrations import _legacy_rehearsal_key, rehearsal_key
+
+        migrator = AsyncMigrator(self.adapter, [self.drop])
+        await migrator.record_rehearsal(_legacy_rehearsal_key([], [self.drop]))
+        self.assertIsNone(
+            await migrator.rehearsal_outcome(rehearsal_key([], [self.drop]))
+        )
+        self.assertEqual(await migrator.up(), ["001_drop"])
+
+    async def test_a_run_without_a_legacy_key_reads_the_current_one(self):
+        def step(connection):
+            return None
+
+        pinned = Migration("001_call", up=step, checksum="abc")
+        migrator = AsyncMigrator(self.adapter, [pinned])
+        self.assertIsNone(await migrator.run_outcome([], [pinned]))
+
     async def test_a_rehearsal_writes_every_row_with_one_stamp(self):
         migrations = [
             Migration(

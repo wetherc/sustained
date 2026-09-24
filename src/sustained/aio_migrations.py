@@ -59,6 +59,7 @@ from sustained.migrations import (
     _down_sweep,
     _failed_attempt_problem,
     _is_current,
+    _legacy_rehearsal_key,
     _lock_message,
     _migration_state,
     _next_seq,
@@ -410,6 +411,19 @@ class AsyncMigrator:
         """True when a passing rehearsal covers this key."""
         return await self.rehearsal_outcome(key) == REHEARSAL_PASSED
 
+    async def run_outcome(
+        self, applied: Sequence[AppliedRecord], run: Sequence[Migration]
+    ) -> Optional[str]:
+        """
+        The outcome recorded for a run of these migrations from this
+        applied history, as up() reads it. Mirrors Migrator.run_outcome().
+        """
+        outcome = await self.rehearsal_outcome(rehearsal_key(applied, run))
+        legacy = _legacy_rehearsal_key(applied, run)
+        if outcome is None and legacy is not None:
+            outcome = await self.rehearsal_outcome(legacy)
+        return outcome
+
     async def _require_rehearsal_row(
         self,
         records: List[AppliedRecord],
@@ -428,7 +442,7 @@ class AsyncMigrator:
         destructive = _destructive_in(run, self._compiler)
         if not destructive:
             return
-        outcome = await self.rehearsal_outcome(rehearsal_key(records, run))
+        outcome = await self.run_outcome(records, run)
         if outcome == REHEARSAL_PASSED:
             return
         raise RehearsalRequired(_rehearsal_message(destructive, outcome, target))

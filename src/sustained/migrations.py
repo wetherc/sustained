@@ -516,6 +516,25 @@ def rehearsal_key(applied: Sequence[AppliedRecord], run: Sequence[Migration]) ->
     return digest.hexdigest()
 
 
+def _legacy_rehearsal_key(
+    applied: Sequence[AppliedRecord], run: Sequence[Migration]
+) -> Optional[str]:
+    """
+    The key a release before 2.25.0 wrote for this run, or None when it
+    is the same as rehearsal_key(). Those releases hashed each pending
+    migration's legacy checksum. The applied history reads the stored
+    checksums either way, and a database those releases wrote stores the
+    legacy ones until repair() rewrites them.
+    """
+    digest = _applied_digest(applied)
+    for migration in run:
+        token = _rehearsal_token(_legacy_checksum(migration), migration.id)
+        digest.update(token.encode("utf-8"))
+        digest.update(b"\n")
+    key = digest.hexdigest()
+    return None if key == rehearsal_key(applied, run) else key
+
+
 def _destructive_in(
     run: Sequence[Migration], compiler: Optional["Compiler"] = None
 ) -> List[Tuple[str, str]]:
@@ -2018,6 +2037,22 @@ class Migrator:
         """True when a passing rehearsal covers this key."""
         return self.rehearsal_outcome(key) == REHEARSAL_PASSED
 
+    def run_outcome(
+        self, applied: Sequence[AppliedRecord], run: Sequence[Migration]
+    ) -> Optional[str]:
+        """
+        The outcome recorded for a run of these migrations from this
+        applied history, as up() reads it. It looks up rehearsal_key()
+        first. When no row has that key, it looks up the key a release
+        before 2.25.0 wrote for the same run, so a rehearsal recorded
+        before an upgrade still covers the run after it.
+        """
+        outcome = self.rehearsal_outcome(rehearsal_key(applied, run))
+        legacy = _legacy_rehearsal_key(applied, run)
+        if outcome is None and legacy is not None:
+            outcome = self.rehearsal_outcome(legacy)
+        return outcome
+
     def _has_columns(self, columns: Tuple[str, ...]) -> bool:
         """Probes the tracking table for the given columns."""
         try:
@@ -2528,7 +2563,7 @@ class Migrator:
         destructive = _destructive_in(run, self._compiler)
         if not destructive:
             return
-        outcome = self.rehearsal_outcome(rehearsal_key(records, run))
+        outcome = self.run_outcome(records, run)
         if outcome == REHEARSAL_PASSED:
             return
         raise RehearsalRequired(_rehearsal_message(destructive, outcome, target))

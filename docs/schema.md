@@ -684,6 +684,7 @@ The key is a SHA-256 over two ordered lists: the checksums of the migrations alr
 
 - **Editing a migration voids its rehearsal row.** The statements changed, so the key changed, and the gate closes again.
 - **A different history voids it too.** A rehearsal proves a set of statements against one starting schema. A database that has applied a different set of migrations gets its own key and its own rehearsal.
+- **A row from a release before 2.25.0 still counts.** Those releases hashed an older checksum format, and `migrate` also reads the row under that key. `repair()` rewrites old stored checksums, which changes the history part of the key, so rehearse again after a repair.
 
 Ids are not part of the key, so a generated migration's rehearsal row stays valid even though the migration takes a new timestamped id every time the diff runs. A model edit that leaves the generated SQL unchanged keeps the row too.
 

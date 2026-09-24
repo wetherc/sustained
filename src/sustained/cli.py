@@ -71,6 +71,7 @@ from sustained.exceptions import GuardBlocked, MigrationError, RehearsalRequired
 from sustained.guards import Verdict, blocking, run_guards
 from sustained.migration_files import load_migrations
 from sustained.migrations import (
+    REHEARSAL_PASSED,
     CallbackResult,
     Callbacks,
     Migration,
@@ -79,7 +80,6 @@ from sustained.migrations import (
     RehearsalResult,
     migration_sql,
     rehearsal_failed,
-    rehearsal_key,
 )
 from sustained.types import Connection
 
@@ -290,7 +290,7 @@ def _rehearsal_row_covers(migrator: Migrator, config: ModuleType) -> bool:
     if not pending:
         return False
     records = migrator.read_applied_records()
-    if migrator.rehearsed(rehearsal_key(records, pending)):
+    if migrator.run_outcome(records, pending) == REHEARSAL_PASSED:
         return True
     models = getattr(config, "models", None)
     if not models:
@@ -298,7 +298,7 @@ def _rehearsal_row_covers(migrator: Migrator, config: ModuleType) -> bool:
     generated = migrator.plan(list(models))
     if generated is None:
         return False
-    return migrator.rehearsed(rehearsal_key(records, pending + [generated]))
+    return migrator.run_outcome(records, pending + [generated]) == REHEARSAL_PASSED
 
 
 def _print_pending(summaries: List[PendingSummary]) -> None:

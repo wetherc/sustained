@@ -265,6 +265,13 @@ rehearsed(key) -> bool
 Whether a passing rehearsal covers the key.
 
 ```python
+run_outcome(applied, run) -> str | None
+```
+{: .sig #run_outcome}
+
+The outcome recorded for a run of the migrations in `run`, starting from the rows in `applied`, which is the lookup `up()` makes. It reads the row under `rehearsal_key(applied, run)` first. When no row has that key, it reads the row under the key a release before 2.25.0 wrote for the same run, so a rehearsal recorded before an upgrade still covers the run after it. That key hashes the older checksum format, which cannot tell a split statement from the original. Added in 2.25.0.
+
+```python
 record_scratch_rehearsal(results) -> str | None
 ```
 {: .sig #record_scratch_rehearsal}
@@ -492,6 +499,7 @@ Every method is a coroutine:
 - `record_scratch_rehearsal`
 - `rehearsal_outcome`
 - `rehearsed`
+- `run_outcome`
 - `script`
 - `plan`
 - `drift`

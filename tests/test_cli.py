@@ -999,6 +999,24 @@ class RehearsalRowCliTestCase(CliBase):
         self.assertIn("run: sustained migrate", out)
         self.assertNotIn("run: sustained rehearse", out)
 
+    def test_a_row_an_earlier_release_wrote_still_covers_the_drop(self):
+        from sustained.migration_files import load_migrations
+        from sustained.migrations import _legacy_rehearsal_key
+
+        with contextlib.closing(self.db()) as conn:
+            migrator = Migrator(
+                conn, load_migrations(os.path.join(self.dir.name, "migrations"))
+            )
+            key = _legacy_rehearsal_key(
+                migrator.read_applied_records(), migrator.pending()
+            )
+            migrator.record_rehearsal(key)
+        code, out, _ = self.run_cli("plan")
+        self.assertIn("run: sustained migrate", out)
+        code, out, _ = self.run_cli("migrate")
+        self.assertEqual(code, 0)
+        self.assertNotIn("flags", self.table_names())
+
     def test_a_targeted_run_gets_the_target_back_in_the_message(self):
         code, _, err = self.run_cli("migrate", "--target", "003_trim")
         self.assertEqual(code, 4)
