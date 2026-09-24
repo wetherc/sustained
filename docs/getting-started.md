@@ -241,7 +241,7 @@ CREATE TABLE venues (
 DROP TABLE venues;
 ```
 
-A config module tells the command where the database and the migrations are. Save it as `sustained_config.py` next to the migrations directory:
+A config module tells the command where the database and the migrations are. Save it as `sustained_config.py` next to the migrations directory. It opens a new database file, `deploy.db`, because `tour.db` already has the tables that the Python steps created, and `001_create_venues` would fail there with `table venues already exists`:
 
 ```python
 import sqlite3
@@ -250,7 +250,7 @@ from venues import Show, Venue
 
 
 def get_connection():
-    return sqlite3.connect('tour.db')
+    return sqlite3.connect('deploy.db')
 
 
 migrations_dir = 'migrations'
@@ -267,18 +267,27 @@ pending
   001_create_venues  1 statement
   002_create_shows   1 statement
 
-2 pending migrations
+drift
+  CREATE TABLE "venues" ("id" INTEGER PRIMARY KEY, "name" VARCHAR(120) NOT NULL, "city" VARCHAR(80) NOT NULL, "capacity" INTEGER)
+  CREATE TABLE "shows" ("id" INTEGER PRIMARY KEY, "venue_id" INTEGER NOT NULL REFERENCES "venues" ("id"), "title" VARCHAR(200) NOT NULL, "starts_at" TIMESTAMP, "sold_out" BOOLEAN DEFAULT FALSE)
+
+2 pending migrations, 2 drift statements
 run: sustained migrate
 ```
+
+The drift section compares the models with the database as it is now, before the pending migrations run, so on an empty database it lists both tables. `migrate` compares again after it applies the migrations.
 
 Rehearse the changes before you apply them. This runs every pending migration, runs the downgrade steps, and rolls the whole thing back, so you learn whether the SQL is valid and whether it reverses while the real schema is still untouched:
 
 ```console
 $ sustained rehearse
-rehearsed 001_create_venues  up ok, down ok
-rehearsed 002_create_shows   up ok, down ok
+rehearsed 001_create_venues  up ok, down ok, reversed
+rehearsed 002_create_shows   up ok, down ok, reversed
 rollback complete, database unchanged
+rehearsal row recorded
 ```
+
+`reversed` means the tables and columns after the down steps matched those before the run. The rehearsal row is the record that `migrate` checks before it applies a migration that removes data.
 
 Then apply it:
 
@@ -286,6 +295,7 @@ Then apply it:
 $ sustained migrate
 applied  001_create_venues
 applied  002_create_shows
+schema matches the models
 
 $ sustained status
 applied  001_create_venues
