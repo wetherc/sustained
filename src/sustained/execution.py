@@ -515,7 +515,14 @@ def transaction(
 
     compiler = Dialects.get_compiler(dialect)
     cursor = connection.cursor()
-    driver_control = compiler.driver_transaction_control()
+    # A connection the caller put in autocommit, such as
+    # sqlite3.connect(autocommit=True) or psycopg with autocommit on,
+    # sends no BEGIN of its own and reads rollback() as a no-op, so the
+    # block would roll nothing back.
+    driver_control = (
+        compiler.driver_transaction_control()
+        and getattr(connection, "autocommit", False) is not True
+    )
     if not driver_control:
         # The driver runs autocommit, so the transaction is opened, kept,
         # and closed in SQL on this one cursor.

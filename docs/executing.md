@@ -271,6 +271,8 @@ with Show.transaction():
 
 Nested blocks use savepoints, so a failure inside an inner block rolls back only that block and the outer transaction continues. The savepoint statement follows the model's dialect: MSSQL gets `SAVE TRANSACTION`, everything else the ANSI `SAVEPOINT`. DuckDB has no savepoints, so a nested block raises `DialectError` there.
 
+A connection that you put in autocommit, such as `sqlite3.connect(autocommit=True)` or a psycopg connection with `autocommit` on, commits every statement as it runs and ignores `rollback()`. The block reads the connection's `autocommit` attribute and, when it is `True`, sends `BEGIN`, `COMMIT`, and `ROLLBACK` as statements, so the block still rolls back.
+
 ## Eager loading relations
 
 `withGraphFetched()` loads the relations named in `relationMappings` when the query runs, at one extra query per relation:
