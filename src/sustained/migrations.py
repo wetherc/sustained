@@ -53,7 +53,12 @@ from typing import (
 
 from sustained.ddl import DdlStep
 from sustained.dialects import Dialects
-from sustained.execution import cursor_scope, pinned_transaction, transaction
+from sustained.execution import (
+    cursor_scope,
+    in_transaction,
+    pinned_transaction,
+    transaction,
+)
 from sustained.types import Connection, Cursor, RowValue, SqlValue
 
 if TYPE_CHECKING:
@@ -1736,6 +1741,19 @@ class Migrator:
         except Exception:
             pass
 
+    def _refuse_open_transaction(self, verb: str) -> None:
+        """
+        Raises when a transaction() block is open on the connection. The
+        run commits its own work as it goes, and that commit would take
+        the caller's uncommitted work with it.
+        """
+        if in_transaction(self._connection):
+            raise ValueError(
+                f"{verb} cannot run inside an open transaction() block: "
+                "it commits as it goes, and the commit would take the "
+                "caller's work with it."
+            )
+
     @contextmanager
     def _lock_scope(self) -> Iterator[None]:
         """
@@ -1857,6 +1875,7 @@ class Migrator:
                 f"{REHEARSAL_PASSED!r}, {REHEARSAL_FAILED!r}, or "
                 f"{REHEARSAL_OVERRIDE!r}."
             )
+        self._refuse_open_transaction("record_rehearsal")
         self._ensure_rehearsal_table()
         placeholder = self._compiler.placeholder()
         table = self._rehearsal_table_sql()
@@ -2080,6 +2099,7 @@ class Migrator:
         cancel that run without the new contents ever reaching the
         database.
         """
+        self._refuse_open_transaction("repair")
         records = self.applied_records()
         by_id = {m.id: m for m in self._migrations}
         placeholder = self._compiler.placeholder()
@@ -2229,6 +2249,7 @@ class Migrator:
         exception's `applied` attribute. The migrator's callbacks fire
         around the run.
         """
+        self._refuse_open_transaction("up")
         callbacks = self._callbacks
         if callbacks.before_migrate is not None:
             callbacks.before_migrate(self._connection)
@@ -2509,8 +2530,6 @@ class Migrator:
         it without proof. What such a migration does can only be seen by
         running it.
         """
-        from sustained.execution import in_transaction
-
         if not scratch:
             _check_rehearsable(self._dialect)
         if getattr(self._connection, "autocommit", False) is True:
@@ -2782,6 +2801,7 @@ class Migrator:
         recorded at its current checksum, so the first migrate after
         adoption does not re-run objects the schema already holds.
         """
+        self._refuse_open_transaction("baseline")
         versioned = self._versioned()
         ids = [m.id for m in versioned]
         if target not in ids:
@@ -2920,6 +2940,7 @@ class Migrator:
         Repeatables are never reverted. `allow_changed` is passed to
         down().
         """
+        self._refuse_open_transaction("down_to")
         applied = self._applied_versioned()
         if target not in applied:
             raise ValueError(f"Migration '{target}' is not applied.")
@@ -2974,6 +2995,7 @@ class Migrator:
         from sustained.exceptions import MigrationError
 
         _checked_steps(steps)
+        self._refuse_open_transaction("down")
         with self._lock_scope():
             self._ensure_tracking_table()
             records = self._read_records()

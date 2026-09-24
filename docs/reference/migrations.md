@@ -149,6 +149,8 @@ Records migrations up to and including `target` as applied, without running them
 
 A migration that fails re-raises the driver's exception with a `migration_id` attribute attached, so the caller can tell which migration failed.
 
+`up`, `down`, `down_to`, `baseline`, `repair`, and `record_rehearsal` commit their own work as they go. Each one raises `ValueError` before it sends a statement when a `transaction()` block is open on the connection, because that commit would also commit the caller's uncommitted work. `before_migrate` does not fire for a refused `up`. On `AsyncMigrator` the same calls refuse an open `async_transaction()` block on the adapter.
+
 ### Validating and repairing
 
 ```python

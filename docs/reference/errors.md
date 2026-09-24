@@ -160,6 +160,7 @@ Invalid input the builder can detect. The method you call raises some of these, 
 | Reverting a migration with no down step |
 | Rehearsing on a dialect whose schema changes do not roll back |
 | Rehearsing on an autocommit connection, or inside a `transaction()` block |
+| Running `up`, `down`, `down_to`, `baseline`, `repair`, or `record_rehearsal` inside a `transaction()` block |
 | Generation refusing a drop, a `NOT NULL` change, or a new primary key column |
 | A migration file matching none of the naming patterns |
 | An empty migration file, or a down file with no up file |

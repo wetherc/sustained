@@ -34,7 +34,7 @@ from typing import (
     cast,
 )
 
-from sustained.aio import AsyncAdapter, async_transaction
+from sustained.aio import AsyncAdapter, async_transaction, in_async_transaction
 from sustained.dialects import Dialects
 from sustained.migrations import (
     _UPGRADE_COLUMNS,
@@ -202,6 +202,19 @@ class AsyncMigrator:
         except Exception:
             pass
 
+    def _refuse_open_transaction(self, verb: str) -> None:
+        """
+        Raises when an async_transaction() block is open on the adapter.
+        The run commits its own work as it goes, and that commit would
+        take the caller's uncommitted work with it.
+        """
+        if in_async_transaction(self._adapter):
+            raise ValueError(
+                f"{verb} cannot run inside an open async_transaction() "
+                "block: it commits as it goes, and the commit would take "
+                "the caller's work with it."
+            )
+
     async def _execute(self, sql: str, params: Tuple[SqlValue, ...]) -> None:
         """Runs one parameterized statement, adapted for the dialect."""
         await self._adapter.execute(*self._compiler.prepare_execution(sql, params))
@@ -333,6 +346,7 @@ class AsyncMigrator:
                 f"{REHEARSAL_PASSED!r}, {REHEARSAL_FAILED!r}, or "
                 f"{REHEARSAL_OVERRIDE!r}."
             )
+        self._refuse_open_transaction("record_rehearsal")
         await self._ensure_rehearsal_table()
         placeholder = self._compiler.placeholder()
         table = self._rehearsal_table_sql()
@@ -594,6 +608,7 @@ class AsyncMigrator:
         cancel that run without the new contents ever reaching the
         database.
         """
+        self._refuse_open_transaction("repair")
         records = await self.applied_records()
         by_id = {m.id: m for m in self._migrations}
         placeholder = self._compiler.placeholder()
@@ -637,6 +652,7 @@ class AsyncMigrator:
         recorded at its current checksum, so the first migrate after
         adoption does not re-run objects the schema already holds.
         """
+        self._refuse_open_transaction("baseline")
         versioned = self._versioned()
         ids = [m.id for m in versioned]
         if target not in ids:
@@ -790,6 +806,7 @@ class AsyncMigrator:
         migrator's callbacks fire around the run, and each is awaited
         when it returns an awaitable.
         """
+        self._refuse_open_transaction("up")
         callbacks = self._callbacks
         await self._fire(callbacks.before_migrate, self._adapter)
         try:
@@ -1054,7 +1071,7 @@ class AsyncMigrator:
         the run can still pass, and the row a passing run records covers
         it without proof.
         """
-        from sustained.aio import in_async_transaction, pinned_async_transaction
+        from sustained.aio import pinned_async_transaction
 
         if not scratch:
             _check_rehearsable(self._dialect)
@@ -1431,6 +1448,7 @@ class AsyncMigrator:
         from sustained.exceptions import MigrationError
 
         _checked_steps(steps)
+        self._refuse_open_transaction("down")
         async with self._lock_scope():
             await self._ensure_tracking_table()
             records = await self.applied_records()
@@ -1481,6 +1499,7 @@ class AsyncMigrator:
         Repeatables are never reverted. `allow_changed` is passed to
         down().
         """
+        self._refuse_open_transaction("down_to")
         applied = await self._applied_versioned()
         if target not in applied:
             raise ValueError(f"Migration '{target}' is not applied.")
