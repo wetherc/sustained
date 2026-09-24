@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from contextlib import asynccontextmanager, closing
+from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from typing import (
     TYPE_CHECKING,
@@ -42,6 +42,7 @@ from sustained.execution import checked_columns, notify_statement
 from sustained.types import (
     ColumnDescription,
     Connection,
+    Cursor,
     RelationTree,
     RowValue,
     SqlValue,
@@ -123,6 +124,20 @@ class AsyncAdapter:
         """
         yield self
 
+    @asynccontextmanager
+    async def session(self) -> AsyncIterator[None]:
+        """
+        Keeps every statement inside the block on one database session.
+
+        async_transaction() and a rehearsal run their BEGIN, their work and
+        their COMMIT or ROLLBACK inside this block. The base does nothing,
+        because aiosqlite and asyncpg run every statement on the connection
+        itself, which is one session. An adapter that opens a new session
+        per statement must override it: otherwise the BEGIN, the work and
+        the ROLLBACK reach different sessions, and the work commits.
+        """
+        yield
+
     async def close(self) -> None:
         """
         Closes the connection behind the adapter. The base does nothing,
@@ -195,24 +210,62 @@ class DbApiAsyncAdapter(AsyncAdapter):
         # One statement at a time per connection; DB-API connections are
         # not safe for concurrent use.
         self._lock = asyncio.Lock()
+        # The cursor an open session() block runs every statement on.
+        self._session_cursor: Optional[Cursor] = None
+
+    @contextmanager
+    def _cursor(self) -> Iterator[Cursor]:
+        """
+        The session's cursor inside a session() block, left open for the
+        rest of the block. Outside one, a new cursor closed after use.
+        """
+        if self._session_cursor is not None:
+            yield self._session_cursor
+            return
+        cursor = self._connection.cursor()
+        try:
+            yield cursor
+        finally:
+            cursor.close()
 
     def _fetch_sync(
         self, sql: str, params: Tuple[SqlValue, ...]
     ) -> Tuple[List[str], List[Sequence[RowValue]]]:
-        with closing(self._connection.cursor()) as cursor:
+        with self._cursor() as cursor:
             cursor.execute(sql, params)
             columns = [d[0] for d in cursor.description] if cursor.description else []
             return columns, list(cursor.fetchall())
 
     def _execute_sync(self, sql: str, params: Tuple[SqlValue, ...]) -> int:
-        with closing(self._connection.cursor()) as cursor:
+        with self._cursor() as cursor:
             cursor.execute(sql, params)
             return int(cursor.rowcount)
 
     def _executemany_sync(self, sql: str, seq: List[Tuple[SqlValue, ...]]) -> int:
-        with closing(self._connection.cursor()) as cursor:
+        with self._cursor() as cursor:
             cursor.executemany(sql, seq)
             return int(cursor.rowcount)
+
+    @asynccontextmanager
+    async def session(self) -> AsyncIterator[None]:
+        # On DuckDB every cursor is its own session, so a cursor per
+        # statement would put BEGIN, the work and ROLLBACK in different
+        # sessions. The block opens one cursor and runs every statement on
+        # it. A nested block keeps the outer block's cursor.
+        if self._session_cursor is not None:
+            yield
+            return
+        async with self._lock:
+            cursor = await asyncio.to_thread(self._connection.cursor)
+            self._session_cursor = cursor
+        try:
+            yield
+        finally:
+            # The pin drops before the lock wait, so a cancellation during
+            # that wait cannot leave later statements on a closed cursor.
+            self._session_cursor = None
+            async with self._lock:
+                await asyncio.to_thread(cursor.close)
 
     async def fetch(
         self, sql: str, params: Tuple[SqlValue, ...]
@@ -520,43 +573,45 @@ async def _transaction_on(
             _active_async_transactions[key] = (adapter, depth - 1)
         return
 
-    _active_async_transactions[key] = (adapter, 0)
-    token = _pinned_adapter.set(adapter)
-    # The block is driven by the driver's own calls only when both the
-    # dialect and the adapter have transaction control. DuckDB autocommits
-    # every statement, and an adapter in autocommit mode (asyncpg) reads
-    # commit() as a no-op, so those blocks run BEGIN, COMMIT and ROLLBACK
-    # as statements. A DB-API driver opens its transaction itself, so a
-    # BEGIN on top of it would report a transaction already in progress.
-    driver_control = (
-        compiler.driver_transaction_control() and adapter.driver_transaction_control()
-    )
-    try:
-        if driver_control:
-            await adapter.begin_where_ddl_autocommits()
-        else:
-            begin_sql = compiler.begin_transaction_sql()
-            if begin_sql is not None:
-                await adapter.execute(begin_sql, ())
+    async with adapter.session():
+        _active_async_transactions[key] = (adapter, 0)
+        token = _pinned_adapter.set(adapter)
+        # The block is driven by the driver's own calls only when both the
+        # dialect and the adapter have transaction control. DuckDB autocommits
+        # every statement, and an adapter in autocommit mode (asyncpg) reads
+        # commit() as a no-op, so those blocks run BEGIN, COMMIT and ROLLBACK
+        # as statements. A DB-API driver opens its transaction itself, so a
+        # BEGIN on top of it would report a transaction already in progress.
+        driver_control = (
+            compiler.driver_transaction_control()
+            and adapter.driver_transaction_control()
+        )
         try:
-            yield adapter
-        except BaseException:
             if driver_control:
-                await adapter.rollback()
+                await adapter.begin_where_ddl_autocommits()
             else:
-                rollback_sql = compiler.rollback_transaction_sql()
-                if rollback_sql is not None:
-                    await adapter.execute(rollback_sql, ())
-            raise
-        if driver_control:
-            await adapter.commit()
-        else:
-            commit_sql = compiler.commit_transaction_sql()
-            if commit_sql is not None:
-                await adapter.execute(commit_sql, ())
-    finally:
-        _pinned_adapter.reset(token)
-        del _active_async_transactions[key]
+                begin_sql = compiler.begin_transaction_sql()
+                if begin_sql is not None:
+                    await adapter.execute(begin_sql, ())
+            try:
+                yield adapter
+            except BaseException:
+                if driver_control:
+                    await adapter.rollback()
+                else:
+                    rollback_sql = compiler.rollback_transaction_sql()
+                    if rollback_sql is not None:
+                        await adapter.execute(rollback_sql, ())
+                raise
+            if driver_control:
+                await adapter.commit()
+            else:
+                commit_sql = compiler.commit_transaction_sql()
+                if commit_sql is not None:
+                    await adapter.execute(commit_sql, ())
+        finally:
+            _pinned_adapter.reset(token)
+            del _active_async_transactions[key]
 
 
 async def run_async(

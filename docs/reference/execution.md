@@ -161,6 +161,7 @@ These live in `sustained.aio`. Every adapter has the same methods, so a query do
 | `await rollback()` | `None` |
 | `await close()` | `None` |
 | `async with scope()` | the adapter one call runs on |
+| `async with session()` | `None`; keeps the block's statements on one session |
 | `driver_transaction_control()` | whether the driver opens the transaction |
 | `await begin_where_ddl_autocommits()` | the `BEGIN` such a driver still needs |
 
@@ -169,6 +170,8 @@ A row count of `-1` means the driver reported none. Add `returning()` to the wri
 `driver_transaction_control()` tells `async_transaction()` how to open and close a block. It returns `False` on the base class and on `AsyncpgAdapter`, so the block runs `BEGIN`, `COMMIT`, and `ROLLBACK` as statements. `DbApiAsyncAdapter` returns `True`, because a DB-API 2.0 driver opens the transaction itself; the block then ends with `commit()` or `rollback()`. It returns `False` when the connection it wraps reports `autocommit` as `True`, because such a connection commits every statement as it runs and its `commit()` closes nothing. `begin_where_ddl_autocommits()` covers one exception to that rule. `sqlite3` in legacy transaction control leaves schema statements outside its implicit transaction, so `DbApiAsyncAdapter` sends a `BEGIN` there.
 
 Every call opens `scope()` before it runs. A plain adapter yields itself; a pool yields one of its adapters and takes it back at the end, so a statement and its commit stay on one connection.
+
+`async_transaction()` and `AsyncMigrator.rehearse()` run inside `session()`, from the `BEGIN` to the `COMMIT` or `ROLLBACK`. The base class does nothing there, because `aiosqlite` and `asyncpg` run every statement on one session. `DbApiAsyncAdapter` opens one cursor for the block and runs every statement on it. On DuckDB each cursor is its own session, so a cursor per statement would commit the work outside the transaction. A custom adapter that opens a new session per statement must override `session()` in the same way, or its transactions do not roll back.
 
 ```python
 DbApiAsyncAdapter(connection)

@@ -1046,8 +1046,11 @@ class AsyncMigrator:
         # The lock sits outside the rehearsal transaction, so the rollback
         # runs before the lock is released. The state reads sit inside it,
         # so a concurrent migrator cannot apply between the read and the
-        # rehearsal.
-        async with self._lock_scope():
+        # rehearsal. The session keeps BEGIN, the rehearsed work and the
+        # rollback on one database session: DbApiAsyncAdapter over DuckDB
+        # would otherwise open a session per statement, and the work would
+        # commit.
+        async with self._lock_scope(), self._adapter.session():
             await self.validate()
             pending = await self.pending()
             record_list = await self.applied_records()
