@@ -840,8 +840,9 @@ class AsyncMigrator:
         migrations before anything runs, and read them again together
         with the generated migration, whose statements exist only once
         the registered ones have applied. A block or a missing row at
-        that second reading leaves the registered migrations applied, and
-        lists their ids on the exception's `applied` attribute. The
+        that second reading leaves the registered migrations applied.
+        Any error raised after a migration applied lists the ids that
+        applied on the exception's `applied` attribute. The
         migrator's callbacks fire around the run, and each is awaited
         when it returns an awaitable.
         """
@@ -965,57 +966,61 @@ class AsyncMigrator:
                 records, registered_run, unrehearsed, target
             )
             final_run = list(registered_run)
-            for migration in versioned_now:
-                await self._apply(migration, next_seq, update=False)
-                next_seq += 1
-                applied_now.append(migration.id)
-            if models is not None:
-                generated = await self.plan(
-                    models,
-                    allow_drops=allow_drops,
-                    ignore_changed_columns=ignore_changed_columns,
-                    migration_id=migration_id,
-                    renames=renames,
-                    table_renames=table_renames,
-                    type_casts=type_casts,
-                )
-                if generated is not None:
-                    # The generated statements are known only now, after
-                    # the registered migrations left the schema they diff
-                    # against, so both gates run a second time before the
-                    # one migration they could not see. The registered
-                    # migrations are already applied and committed by
-                    # then, so a block here reports what it stopped after.
-                    final_run = registered_run + [generated]
-                    try:
+            # A migration applied before a failure stays applied and
+            # committed, so the error lists it for the caller.
+            try:
+                for migration in versioned_now:
+                    await self._apply(migration, next_seq, update=False)
+                    next_seq += 1
+                    applied_now.append(migration.id)
+                if models is not None:
+                    generated = await self.plan(
+                        models,
+                        allow_drops=allow_drops,
+                        ignore_changed_columns=ignore_changed_columns,
+                        migration_id=migration_id,
+                        renames=renames,
+                        table_renames=table_renames,
+                        type_casts=type_casts,
+                    )
+                    if generated is not None:
+                        # The generated statements are known only now, after
+                        # the registered migrations left the schema they diff
+                        # against, so both gates run a second time before the
+                        # one migration they could not see. The registered
+                        # migrations are already applied and committed by
+                        # then, so a block here reports what it stopped after.
+                        final_run = registered_run + [generated]
                         check_guards(self._guards, final_run, self._dialect, warned)
                         await self._require_rehearsal_row(
                             records, final_run, unrehearsed, target
                         )
-                    except Exception as error:
-                        _tag_applied(error, applied_now)
-                        raise
-                    # The migration joins the registered list only after
-                    # it applied. A failed one left there would run again
-                    # on the next up() of a long-lived migrator, and would
-                    # run alongside a fresh diff of the same models.
-                    await self._apply(generated, next_seq, update=False, generated=True)
-                    self._migrations.append(generated)
-                    next_seq += 1
-                    applied_now.append(generated.id)
-            for migration in repeatables_now:
-                record = records_by_id.get(migration.id)
-                await self._apply(migration, next_seq, update=record is not None)
-                if record is None:
-                    next_seq += 1
-                applied_now.append(migration.id)
-            if unrehearsed and _destructive_in(final_run, self._compiler):
-                # The proof was waived, so the row says so. It never
-                # unlocks a later run: only 'passed' does that.
-                await self.record_rehearsal(
-                    rehearsal_key(records, final_run), REHEARSAL_OVERRIDE
-                )
-            return applied_now
+                        # The migration joins the registered list only after
+                        # it applied. A failed one left there would run again
+                        # on the next up() of a long-lived migrator, and would
+                        # run alongside a fresh diff of the same models.
+                        await self._apply(
+                            generated, next_seq, update=False, generated=True
+                        )
+                        self._migrations.append(generated)
+                        next_seq += 1
+                        applied_now.append(generated.id)
+                for migration in repeatables_now:
+                    record = records_by_id.get(migration.id)
+                    await self._apply(migration, next_seq, update=record is not None)
+                    if record is None:
+                        next_seq += 1
+                    applied_now.append(migration.id)
+                if unrehearsed and _destructive_in(final_run, self._compiler):
+                    # The proof was waived, so the row says so. It never
+                    # unlocks a later run: only 'passed' does that.
+                    await self.record_rehearsal(
+                        rehearsal_key(records, final_run), REHEARSAL_OVERRIDE
+                    )
+                return applied_now
+            except Exception as error:
+                _tag_applied(error, applied_now)
+                raise
 
     async def _apply(
         self, migration: Migration, seq: int, update: bool, generated: bool = False
