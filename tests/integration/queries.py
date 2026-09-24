@@ -323,6 +323,19 @@ class QueriesCase(unittest.TestCase):
         rows = self.Widget.query().whereIn("maker_id", acme).run()
         self.assertEqual({"hinge", "bracket"}, {row.name for row in rows})
 
+    def test_a_unicode_literal_reads_back_unchanged(self):
+        # MSSQL stores a literal without the N prefix in the database's
+        # code page, which turns these characters into '?'.
+        self.seed()
+        label = "Łódź ✓"
+        rows = (
+            self.Widget.query()
+            .select_case("label", label, [("1 = 0", "never")])
+            .where("id", "=", 1)
+            .to_dicts()
+        )
+        self.assertEqual([{"label": label}], rows)
+
     def test_a_percent_sign_in_raw_sql_reaches_the_server(self):
         self.seed()
         odd = self.Widget.query().whereRaw("size % ? = ?", [2, 1]).run()

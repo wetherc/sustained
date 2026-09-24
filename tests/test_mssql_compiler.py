@@ -1,6 +1,6 @@
 import unittest
 
-from sustained import DialectError, Model
+from sustained import DialectError, Model, QueryBuilder
 from sustained.dialects import Dialects
 
 
@@ -90,7 +90,7 @@ class TestMssqlCreateTable(unittest.TestCase):
 
     def test_creating_only_when_missing_checks_the_catalog(self):
         sql = self.build(True)
-        self.assertTrue(sql.startswith("IF OBJECT_ID('[widgets]', 'U') IS NULL "))
+        self.assertTrue(sql.startswith("IF OBJECT_ID(N'[widgets]', 'U') IS NULL "))
         self.assertNotIn("IF NOT EXISTS", sql)
 
     def test_other_dialects_keep_the_clause(self):
@@ -103,3 +103,30 @@ class TestMssqlCreateTable(unittest.TestCase):
             if_not_exists=True,
         )
         self.assertTrue(sql.startswith('CREATE TABLE IF NOT EXISTS "widgets" ('))
+
+
+class TestMssqlUnicodeLiterals(unittest.TestCase):
+    def setUp(self):
+        self.compiler = Dialects.get_compiler(Dialects.MSSQL)
+
+    def test_string_literal_has_the_n_prefix(self):
+        self.assertEqual(self.compiler.format_value("Łódź"), "N'Łódź'")
+        self.assertEqual(self.compiler.format_value("it's"), "N'it''s'")
+
+    def test_other_values_have_no_prefix(self):
+        self.assertEqual(self.compiler.format_value(5), "5")
+        self.assertEqual(self.compiler.format_value(None), "NULL")
+
+    def test_case_result_has_the_n_prefix(self):
+        query = QueryBuilder(Person, dialect=Dialects.MSSQL).select_case(
+            "label", "✓", [("id = 1", "x")]
+        )
+        self.assertIn("THEN N'x' ELSE N'✓' END", str(query))
+
+    def test_reported_unicode_default_compares_to_the_bare_value(self):
+        from sustained.introspect import normalize_default
+
+        self.assertEqual(normalize_default("(N'raw')"), "RAW")
+        self.assertEqual(normalize_default("(n'raw')"), "RAW")
+        self.assertEqual(normalize_default("('raw')"), "RAW")
+        self.assertEqual(normalize_default("NOW()"), "NOW")

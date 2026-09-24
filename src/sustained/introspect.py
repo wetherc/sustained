@@ -329,8 +329,9 @@ def is_sequence_default(raw: Optional[str]) -> bool:
 def normalize_default(raw: Optional[str]) -> Optional[str]:
     """
     Reduces a reported column default to a comparable form: strips
-    balanced outer parentheses, Postgres ::type casts, quotes, and an
-    empty argument list, and uppercases. The argument list is why
+    balanced outer parentheses, Postgres ::type casts, the N prefix of an
+    MSSQL Unicode string, quotes, and an empty argument list, and
+    uppercases. The argument list is why
     MariaDB's current_timestamp() and MySQL's CURRENT_TIMESTAMP compare
     equal.
 
@@ -354,6 +355,9 @@ def normalize_default(raw: Optional[str]) -> Optional[str]:
     ):
         value = value[1:-1].strip()
     value = _CAST_RE.sub("", value)
+    # MSSQL reports a Unicode string default as N'...'.
+    if value[:2] in ("N'", "n'"):
+        value = value[1:]
     value = value.strip("'\"")
     value = re.sub(r"\(\s*\)$", "", value.strip())
     return value.upper()

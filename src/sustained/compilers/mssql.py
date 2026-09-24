@@ -2,6 +2,7 @@ import re
 from typing import TYPE_CHECKING, Optional, Sequence
 
 from sustained.exceptions import DialectError
+from sustained.types import SqlValue
 
 from .base import Compiler
 
@@ -183,6 +184,14 @@ class MssqlCompiler(Compiler):
         raise DialectError(
             "MSSQL has no EXPLAIN statement. Use SET SHOWPLAN_XML via raw SQL."
         )
+
+    def format_value(self, value: SqlValue) -> str:
+        if isinstance(value, str):
+            # Without the N prefix the literal is VARCHAR in the database's
+            # code page, and a character outside it, such as one in a CASE
+            # result or an enum value list, is stored as '?'.
+            return "N" + super().format_value(value)
+        return super().format_value(value)
 
     def compile_boolean(self, value: bool) -> str:
         # T-SQL has no boolean literals; BIT columns compare against 1 and 0.

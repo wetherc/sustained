@@ -39,7 +39,7 @@ class TestIlikeCompilation(unittest.TestCase):
 
     def test_mssql_emulates_ilike(self):
         sql = str(MsPerson.query().whereILike("name", "j%"))
-        self.assertIn("LOWER([name]) LIKE LOWER('j%')", sql)
+        self.assertIn("LOWER([name]) LIKE LOWER(N'j%')", sql)
 
     def test_where_with_ilike_operator_routes_through_compiler(self):
         sql = str(DefPerson.query().where("name", "ilike", "j%"))

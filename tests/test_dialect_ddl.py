@@ -76,29 +76,29 @@ class TestMssqlAlter(unittest.TestCase):
     def test_sp_rename(self):
         self.assertEqual(
             self.c.compile_rename_column("[dbo].[t]", "a", "b"),
-            "EXEC sp_rename 'dbo.t.a', 'b', 'COLUMN'",
+            "EXEC sp_rename N'dbo.t.a', N'b', 'COLUMN'",
         )
         self.assertEqual(
             self.c.compile_rename_table("[t]", "[t2]"),
-            "EXEC sp_rename 't', 't2'",
+            "EXEC sp_rename N't', N't2'",
         )
 
     def test_sp_rename_escapes_quotes(self):
         self.assertEqual(
             self.c.compile_rename_column("[dbo].[o'clock]", "a'b", "c'd"),
-            "EXEC sp_rename 'dbo.o''clock.a''b', 'c''d', 'COLUMN'",
+            "EXEC sp_rename N'dbo.o''clock.a''b', N'c''d', 'COLUMN'",
         )
 
     def test_sp_rename_table_takes_the_bare_new_name(self):
         self.assertEqual(
             self.c.compile_rename_table("[dbo].[t]", "[dbo].[t2]"),
-            "EXEC sp_rename 'dbo.t', 't2'",
+            "EXEC sp_rename N'dbo.t', N't2'",
         )
 
     def test_sp_rename_keeps_a_bracket_inside_a_name(self):
         self.assertEqual(
             self.c.compile_rename_table("[a]]b]", "[c]]d]"),
-            "EXEC sp_rename 'a]b', 'c]d'",
+            "EXEC sp_rename N'a]b', N'c]d'",
         )
 
     def test_drop_index_requires_table(self):

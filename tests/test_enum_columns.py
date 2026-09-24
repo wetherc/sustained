@@ -148,7 +148,7 @@ class TestEnumRendering(unittest.TestCase):
         sql = EnumPost.create_table_sql()
         self.assertIn("[status] NVARCHAR(9) NOT NULL", sql)
         self.assertIn(
-            "CONSTRAINT [ck_posts_status_enum] CHECK ([status] IN ('draft', 'published'))",
+            "CONSTRAINT [ck_posts_status_enum] CHECK ([status] IN (N'draft', N'published'))",
             sql,
         )
 
@@ -569,7 +569,7 @@ class TestEnumColumnAdded(unittest.TestCase):
             [
                 "ALTER TABLE [posts] ADD [status] NVARCHAR(9)",
                 "ALTER TABLE [posts] ADD CONSTRAINT [ck_posts_status_enum] "
-                "CHECK ([status] IN ('draft', 'published'))",
+                "CHECK ([status] IN (N'draft', N'published'))",
             ],
         )
         self.assertEqual(

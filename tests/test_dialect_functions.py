@@ -51,7 +51,8 @@ class TestDialectFunctions(unittest.TestCase):
                 )
                 # We don't check the full string due to quoting differences,
                 # just that the main parts are there.
-                self.assertIn("COALESCE(nickname, 'N/A')", str(query))
+                # MSSQL writes a string literal with the N prefix.
+                self.assertRegex(str(query), r"COALESCE\(nickname, N?'N/A'\)")
                 self.assertIn("AS", str(query))
                 self.assertIn("display_name", str(query))
 
