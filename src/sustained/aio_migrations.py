@@ -1027,7 +1027,7 @@ class AsyncMigrator:
         the run can still pass, and the row a passing run records covers
         it without proof.
         """
-        from sustained.aio import in_async_transaction
+        from sustained.aio import in_async_transaction, pinned_async_transaction
 
         if not scratch:
             _check_rehearsable(self._dialect)
@@ -1064,98 +1064,102 @@ class AsyncMigrator:
             attempted: List[Migration] = list(pending)
             has_drift = False
             self._rehearsing = True
-            try:
-                # Close whatever transaction the reads above opened, so the
-                # explicit BEGIN starts a fresh one instead of warning.
-                await self._rollback_quietly()
-                begin = self._compiler.begin_transaction_sql()
-                if begin is not None:
-                    await self._adapter.execute(begin, ())
-                ran: List[Migration] = []
-                skipped: List[Migration] = []
-                up_error: Optional[Tuple[str, str]] = None
+            # The adapter is registered as inside a transaction, so a
+            # callable step that runs arun(adapter) skips its commit and
+            # a nested async_transaction() takes a savepoint.
+            async with pinned_async_transaction(self._adapter):
+                try:
+                    # Close whatever transaction the reads above opened, so the
+                    # explicit BEGIN starts a fresh one instead of warning.
+                    await self._rollback_quietly()
+                    begin = self._compiler.begin_transaction_sql()
+                    if begin is not None:
+                        await self._adapter.execute(begin, ())
+                    ran: List[Migration] = []
+                    skipped: List[Migration] = []
+                    up_error: Optional[Tuple[str, str]] = None
 
-                async def apply_each(group: List[Migration]) -> None:
-                    nonlocal seq, up_error
-                    for migration in group:
-                        if not migration.transactional:
-                            # The rehearsal runs inside one transaction,
-                            # which this migration's statements refuse or
-                            # ignore. It is reported as unproved rather
-                            # than run and failed.
-                            skipped.append(migration)
-                            continue
-                        try:
-                            await self._apply(
-                                migration, seq, update=migration.id in records
-                            )
-                        except Exception as error:
-                            up_error = (migration.id, str(error))
-                            return
-                        seq += 1
-                        ran.append(migration)
-
-                # The order matches up(): the versioned migrations, then
-                # the generated one, then the repeatables, which may read
-                # objects the generated migration creates.
-                await apply_each([m for m in pending if not m.repeatable])
-                landed: Dict[str, List[str]] = {}
-                if models is not None and up_error is None:
-                    # The diff is taken here, inside the rehearsal, so it
-                    # sees the schema the pending migrations just left. The
-                    # generated migration joins the run without being
-                    # registered: nothing outside the rehearsal should see a
-                    # migration the rollback is about to take back.
-                    drift = await self.plan(
-                        models,
-                        allow_drops=allow_drops,
-                        ignore_changed_columns=ignore_changed_columns,
-                        migration_id=migration_id,
-                        renames=renames,
-                        table_renames=table_renames,
-                        type_casts=type_casts,
-                    )
-                    if drift is not None:
-                        attempted.append(drift)
-                        has_drift = True
-                        if not drift.transactional:
-                            # A generated SQLite rebuild says
-                            # transactional=False, and its pragmas are
-                            # ignored inside the rehearsal transaction.
-                            skipped.append(drift)
-                        else:
+                    async def apply_each(group: List[Migration]) -> None:
+                        nonlocal seq, up_error
+                        for migration in group:
+                            if not migration.transactional:
+                                # The rehearsal runs inside one transaction,
+                                # which this migration's statements refuse or
+                                # ignore. It is reported as unproved rather
+                                # than run and failed.
+                                skipped.append(migration)
+                                continue
                             try:
                                 await self._apply(
-                                    drift, seq, update=False, generated=True
+                                    migration, seq, update=migration.id in records
                                 )
                             except Exception as error:
-                                up_error = (drift.id, str(error))
-                            else:
-                                seq += 1
-                                ran.append(drift)
-                                # The renames have already run, so the schema
-                                # holds the new names. Passing the hints again
-                                # would ask to rename objects that are gone.
-                                landed[drift.id] = await self.drift(
-                                    models,
-                                    ignore_changed_columns=ignore_changed_columns,
-                                )
-                if up_error is None:
-                    await apply_each([m for m in pending if m.repeatable])
-                outcomes = {} if up_error else await self._rehearse_down(ran)
-                reverted = None
-                if before is not None and _reversal_provable(ran, outcomes):
-                    from sustained.autogenerate import diff_snapshots
+                                up_error = (migration.id, str(error))
+                                return
+                            seq += 1
+                            ran.append(migration)
 
-                    after = await self._snapshot()
-                    if after is not None:
-                        reverted = diff_snapshots(before, after)
-                results = _rehearsal_results(
-                    ran, up_error, outcomes, landed, reverted
-                ) + _skipped_results(skipped)
-            finally:
-                self._rehearsing = False
-                await self._roll_back_rehearsal()
+                    # The order matches up(): the versioned migrations, then
+                    # the generated one, then the repeatables, which may read
+                    # objects the generated migration creates.
+                    await apply_each([m for m in pending if not m.repeatable])
+                    landed: Dict[str, List[str]] = {}
+                    if models is not None and up_error is None:
+                        # The diff is taken here, inside the rehearsal, so it
+                        # sees the schema the pending migrations just left. The
+                        # generated migration joins the run without being
+                        # registered: nothing outside the rehearsal should see a
+                        # migration the rollback is about to take back.
+                        drift = await self.plan(
+                            models,
+                            allow_drops=allow_drops,
+                            ignore_changed_columns=ignore_changed_columns,
+                            migration_id=migration_id,
+                            renames=renames,
+                            table_renames=table_renames,
+                            type_casts=type_casts,
+                        )
+                        if drift is not None:
+                            attempted.append(drift)
+                            has_drift = True
+                            if not drift.transactional:
+                                # A generated SQLite rebuild says
+                                # transactional=False, and its pragmas are
+                                # ignored inside the rehearsal transaction.
+                                skipped.append(drift)
+                            else:
+                                try:
+                                    await self._apply(
+                                        drift, seq, update=False, generated=True
+                                    )
+                                except Exception as error:
+                                    up_error = (drift.id, str(error))
+                                else:
+                                    seq += 1
+                                    ran.append(drift)
+                                    # The renames have already run, so the schema
+                                    # holds the new names. Passing the hints again
+                                    # would ask to rename objects that are gone.
+                                    landed[drift.id] = await self.drift(
+                                        models,
+                                        ignore_changed_columns=ignore_changed_columns,
+                                    )
+                    if up_error is None:
+                        await apply_each([m for m in pending if m.repeatable])
+                    outcomes = {} if up_error else await self._rehearse_down(ran)
+                    reverted = None
+                    if before is not None and _reversal_provable(ran, outcomes):
+                        from sustained.autogenerate import diff_snapshots
+
+                        after = await self._snapshot()
+                        if after is not None:
+                            reverted = diff_snapshots(before, after)
+                    results = _rehearsal_results(
+                        ran, up_error, outcomes, landed, reverted
+                    ) + _skipped_results(skipped)
+                finally:
+                    self._rehearsing = False
+                    await self._roll_back_rehearsal()
             # The rehearsal row is written after the rollback, in its own
             # committed transaction, and still inside the lock.
             key = rehearsal_key(record_list, attempted)

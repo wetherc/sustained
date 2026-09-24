@@ -504,6 +504,34 @@ async def async_transaction(
             _pinned_source.reset(source)
 
 
+@asynccontextmanager
+async def pinned_async_transaction(adapter: AsyncAdapter) -> AsyncIterator[None]:
+    """
+    Marks the adapter as inside a transaction the caller opens and ends
+    itself, and pins it for the length of the block.
+
+    async_transaction() decides the end of its block. A rehearsal decides
+    for itself, because it rolls back only when every proof is collected.
+    The block gets the rest of the machinery: arun() skips its commit,
+    in_async_transaction() reports the adapter busy, and a nested
+    async_transaction() takes a savepoint. Without it, a callable step
+    that runs arun(adapter) would commit the rehearsed work.
+
+    Raises:
+        ValueError: If a transaction is already open on the adapter.
+    """
+    if in_async_transaction(adapter):
+        raise ValueError("a transaction is already open on this adapter")
+    key = id(adapter)
+    _active_async_transactions[key] = (adapter, 0)
+    token = _pinned_adapter.set(adapter)
+    try:
+        yield
+    finally:
+        _pinned_adapter.reset(token)
+        del _active_async_transactions[key]
+
+
 async def _undo_savepoint_async(
     compiler: "Compiler",
     adapter: AsyncAdapter,

@@ -794,6 +794,49 @@ class TestAsyncRehearse(unittest.IsolatedAsyncioTestCase):
             with self.assertRaisesRegex(ValueError, "async_transaction"):
                 await migrator.rehearse()
 
+    async def test_a_callable_step_that_runs_arun_does_not_commit(self):
+        from sustained.aio import async_transaction, in_async_transaction
+        from sustained.model import Model
+        from sustained.schema import Integer
+
+        seed_model = type(
+            "RehearsalSeed",
+            (Model,),
+            {
+                "tableName": "ra",
+                "tableColumns": {"id": Integer(primary_key=True)},
+            },
+        )
+        seen = []
+
+        async def seed(adapter):
+            seen.append(in_async_transaction(adapter))
+            await seed_model.query().insert({"id": 1}).arun(adapter)
+            # A nested block takes a savepoint rather than a commit.
+            async with async_transaction(adapter):
+                await seed_model.query().insert({"id": 2}).arun()
+
+        migrator = AsyncMigrator(
+            self.adapter,
+            [
+                self.migrations()[0],
+                Migration("002_seed", up=seed, down="DELETE FROM ra", checksum="s1"),
+            ],
+        )
+        results = await migrator.rehearse()
+        self.assertTrue(results.ok)
+        self.assertEqual(seen, [True])
+        self.assertFalse(in_async_transaction(self.adapter))
+        self.assertEqual(table_names(self.conn), SUSTAINED_TABLES)
+
+    async def test_pinned_async_transaction_refuses_a_second_block(self):
+        from sustained.aio import pinned_async_transaction
+
+        async with pinned_async_transaction(self.adapter):
+            with self.assertRaisesRegex(ValueError, "already open"):
+                async with pinned_async_transaction(self.adapter):
+                    pass
+
     async def test_validation_problems_stop_the_rehearsal(self):
         from sustained.exceptions import MigrationError
 
