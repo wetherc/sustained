@@ -155,3 +155,36 @@ class SchemaChangeTests:
         tables = self.tables()
         self.assertIn(">", tables["it_widgets"].checks["ck_it_bounds"])
         self.assertIn("<", tables["it_makers"].checks["ck_it_bounds"])
+
+    def test_tables_no_model_declares_drop_child_first(self):
+        # The catalog lists it_makers before it_widgets, and the engine
+        # refuses to drop a table that a foreign key still names.
+        from sustained.schema import ForeignKey
+
+        def model(class_name, table, **extra):
+            return type(
+                class_name,
+                (Model,),
+                {"tableName": table, "_dialect": self.DIALECT, **extra},
+            )
+
+        maker = model(
+            "MakerDropped", "it_makers", tableColumns={"id": Integer(primary_key=True)}
+        )
+        widget = model(
+            "WidgetDropped",
+            "it_widgets",
+            tableColumns={"id": Integer(primary_key=True), "maker_id": Integer()},
+            tableConstraints=[
+                ForeignKey("fk_it_widgets_maker", "maker_id", "it_makers.id")
+            ],
+        )
+        events = model(
+            "EventsKept", "it_events", tableColumns={"id": Integer(primary_key=True)}
+        )
+        migrator = self.migrator()
+        migrator.up(models=[maker, widget])
+        self.execute("INSERT INTO it_makers (id) VALUES (1)")
+        self.execute("INSERT INTO it_widgets (id, maker_id) VALUES (1, 1)")
+        migrator.up(models=[events], allow_drops=True, unrehearsed=True)
+        self.assertIsNone(migrator.plan([events], allow_drops=True))

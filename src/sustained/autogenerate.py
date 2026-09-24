@@ -1113,61 +1113,119 @@ def _foreign_key_targets(model: Type["Model"]) -> List[str]:
     return targets
 
 
-def _ordered_missing_tables(
-    models: List[Type["Model"]], notes: List[str]
-) -> List[Type["Model"]]:
+def _dependency_order(
+    keys: Sequence[str], targets: Callable[[str], List[str]]
+) -> Tuple[List[str], List[List[str]]]:
     """
-    The missing tables in an order that creates a table after the tables
-    it points at. Models are walked in declaration order and each one's
-    targets before itself, so the result is the same on every run. A
-    cycle cannot be ordered; it is reported in `notes` and the tables in
-    it keep their declared order.
+    The keys in an order that puts each one after the keys it points at,
+    and every cycle found on the way, as the path around it. Keys are
+    walked in the order given and each one's targets before itself, so
+    the result is the same on every run. The keys in a cycle keep their
+    order. `targets` names the keys one key points at, itself left out.
     """
-    by_key: Dict[str, Type["Model"]] = {
-        (model.tableName or "").lower(): model for model in models
-    }
-    ordered: List[Type["Model"]] = []
+    ordered: List[str] = []
     state: Dict[str, bool] = {}
-    reported: Set[str] = set()
-
-    def report(cycle: str) -> None:
-        if cycle in reported:
-            return
-        reported.add(cycle)
-        notes.append(
-            "tables reference each other in a cycle and cannot be "
-            f"created in dependency order: {cycle}"
-        )
-
-    # The walk carries its own stack. A chain of a thousand tables, each
+    cycles: List[List[str]] = []
+    # The walk keeps its own stack. A chain of a thousand tables, each
     # pointing at the next, is a thousand frames deep on the recursion
     # Python allows, and the diff would end in RecursionError.
-    for start in by_key:
-        # Each entry is (table, the path that reached it, whether the
-        # tables it points at are done). The second visit places it.
+    for start in keys:
+        # Each entry is (key, the path that reached it, whether the keys
+        # it points at are done). The second visit places it.
         stack: List[Tuple[str, List[str], bool]] = [(start, [], False)]
         while stack:
             key, path, placing = stack.pop()
             if placing:
                 state[key] = True
-                ordered.append(by_key[key])
+                ordered.append(key)
                 continue
             finished = state.get(key)
             if finished:
                 continue
             if finished is False:
-                report(" -> ".join(path[path.index(key) :] + [key]))
+                cycle = path[path.index(key) :] + [key]
+                if cycle not in cycles:
+                    cycles.append(cycle)
                 continue
             state[key] = False
             stack.append((key, path, True))
-            targets = [
-                target
-                for target in _foreign_key_targets(by_key[key])
-                if target in by_key and target != key
-            ]
-            for target in reversed(targets):
+            for target in reversed(targets(key)):
                 stack.append((target, path + [key], False))
-    return ordered
+    return ordered, cycles
+
+
+def _ordered_missing_tables(
+    models: List[Type["Model"]], notes: List[str]
+) -> List[Type["Model"]]:
+    """
+    The missing tables in an order that creates a table after the tables
+    it points at. A cycle cannot be ordered; it is reported in `notes`
+    and the tables in it keep their declared order.
+    """
+    by_key: Dict[str, Type["Model"]] = {
+        (model.tableName or "").lower(): model for model in models
+    }
+    ordered, cycles = _dependency_order(
+        list(by_key),
+        lambda key: [
+            target
+            for target in _foreign_key_targets(by_key[key])
+            if target in by_key and target != key
+        ],
+    )
+    for cycle in cycles:
+        notes.append(
+            "tables reference each other in a cycle and cannot be "
+            f"created in dependency order: {' -> '.join(cycle)}"
+        )
+    return [by_key[key] for key in ordered]
+
+
+def _extra_table_drops(
+    compiler: "Compiler", actual: Snapshot, extra_tables: List[str]
+) -> Tuple[List[str], bool]:
+    """
+    The statements that drop the tables no model declares, a table
+    before the tables it points at. The engine refuses to drop a table
+    that another table's foreign key still names. Tables that point at
+    each other in a cycle have no such order. Where the engine can drop
+    a constraint, their keys go first. SQLite cannot, so there the drops
+    run with foreign key enforcement off. The second value says whether
+    they need that, which holds only outside a transaction.
+    """
+    keys = [table.lower() for table in extra_tables]
+    spelled = dict(zip(keys, extra_tables))
+    # The order puts a table after the tables that point at it, so a
+    # table no key names keeps its place in the catalog's order.
+    children: Dict[str, List[str]] = {key: [] for key in keys}
+    for key in keys:
+        for fk in actual[key].foreign_keys.values():
+            target = fk.target_table
+            if target in children and target != key and key not in children[target]:
+                children[target].append(key)
+    ordered, cycles = _dependency_order(keys, lambda key: children[key])
+    drops = [
+        f"DROP TABLE {compiler.quote_fully_qualified_ddl_identifier(spelled[key])}"
+        for key in ordered
+    ]
+    in_cycle = {key for cycle in cycles for key in cycle}
+    if not in_cycle:
+        return drops, False
+    if not compiler.supports_add_constraint():
+        return (
+            compiler.rebuild_setup_sql() + drops + compiler.rebuild_finish_sql(),
+            True,
+        )
+    key_drops = [
+        compiler.compile_drop_foreign_key(
+            compiler.quote_fully_qualified_ddl_identifier(spelled[key]), name
+        )
+        for key in keys
+        if key in in_cycle
+        for name, fk in actual[key].foreign_keys.items()
+        if fk.target_table in in_cycle and fk.target_table != key
+    ]
+    return key_drops + drops, False
 
 
 def _create_table_steps(
@@ -1843,9 +1901,11 @@ def autogenerate(
                 continue
             up_steps.append(compiler.compile_drop_column(table_sql, name))
             reversible = False
-        for table in diff.extra_tables:
-            table_sql = compiler.quote_fully_qualified_ddl_identifier(table)
-            up_steps.append(f"DROP TABLE {table_sql}")
+        if diff.extra_tables:
+            drops, bare = _extra_table_drops(compiler, actual, diff.extra_tables)
+            up_steps.extend(drops)
+            if bare:
+                transactional = False
             reversible = False
 
     # Types created in this migration drop last on the way down, after
