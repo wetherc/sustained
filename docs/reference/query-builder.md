@@ -67,7 +67,7 @@ with_(table_alias, subquery, recursive=False)
 ```
 {: .sig #with_}
 
-Adds a CTE. Raises `TypeError` when `subquery` is not a `QueryBuilder`, and `ValueError` at render time when two different subqueries share an alias. MSSQL always renders plain `WITH`.
+Adds a CTE. Raises `TypeError` when `subquery` is not a `QueryBuilder`, and `ValueError` at render time when two different subqueries share an alias. A `SELECT` renders one top-level `WITH` for its own CTEs and for the CTEs of every subquery it contains. MSSQL always renders plain `WITH`.
 
 ### Aggregates
 

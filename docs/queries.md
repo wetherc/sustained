@@ -307,6 +307,8 @@ big_venues = Venue.query().select('id').where('capacity', '>', 5000)
 
 Sustained quotes the CTE alias the way it quotes a table name. On a dialect where quoted names keep their case, such as Postgres, `from_('Recent')` and `join('Recent', ...)` then find a CTE named `Recent`. An alias takes letters, digits, and underscores, and any other string raises `ValueError`, the same as the alias on `from_()`, a relation join, or a `Subquery`.
 
+A subquery can define its own CTE, such as the query you pass to `whereIn()`, `whereExists()`, a `Subquery`, or a join condition. Sustained moves that CTE into the one `WITH` clause at the top of the outer `SELECT`, because MSSQL refuses a `WITH` inside parentheses. Two different subqueries that define the same alias raise `ValueError`. A subquery inside an `UPDATE` or `DELETE` keeps its own `WITH`.
+
 `recursive=True` renders `WITH RECURSIVE`, except on MSSQL, where T-SQL spells recursive CTEs with plain `WITH`. Sustained does not build the anchor and recursive halves for you, so you write them yourself with `raw()` and a `union()`.
 
 ## Combining queries

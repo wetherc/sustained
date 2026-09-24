@@ -143,7 +143,11 @@ class ColumnExpr:
             subquery = values
 
             def render_sub(ctx: "RenderContext") -> str:
-                return f"{self._quoted(ctx)} {operator} ({subquery._render_sql(ctx)})"
+                from .rendering import render_nested
+
+                return (
+                    f"{self._quoted(ctx)} {operator} ({render_nested(subquery, ctx)})"
+                )
 
             return Predicate(render_sub)
 
@@ -269,9 +273,11 @@ class Subquery:
         Values render through the given context. With no context they
         inline as literals.
         """
+        from .rendering import render_nested
+
         if ctx is None:
             return f"({self.query})"
-        return f"({self.query._render_sql(ctx)})"
+        return f"({render_nested(self.query, ctx)})"
 
     def __str__(self) -> str:
         """

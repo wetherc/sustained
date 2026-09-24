@@ -268,6 +268,20 @@ class QueriesCase(unittest.TestCase):
         )
         self.assertEqual(["bracket", "gear", "strut"], [row.name for row in rows])
 
+    def test_a_cte_inside_a_subquery_moves_to_the_top(self):
+        # MSSQL refuses a WITH inside parentheses.
+        self.seed()
+        big = self.Widget.query().select("id").where("size", ">", 4)
+        big_ids = self.Widget.query().with_("it_big", big).from_("it_big").select("id")
+        rows = (
+            self.Widget.query()
+            .where("maker_id", "=", 1)
+            .whereIn("id", big_ids)
+            .orderBy("id")
+            .run()
+        )
+        self.assertEqual(["bracket"], [row.name for row in rows])
+
     def test_a_recursive_cte_builds_its_own_rows(self):
         self.seed()
         Anon = type("Anon", (Model,), {"_dialect": self.DIALECT})

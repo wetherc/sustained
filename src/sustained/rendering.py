@@ -9,11 +9,12 @@ and collected in order so the caller can pass them to a database driver.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Callable, List, Optional, Sequence, Union
+from typing import TYPE_CHECKING, Any, Callable, List, Optional, Sequence, Union
 
 from sustained.types import Expression, SqlValue
 
 if TYPE_CHECKING:
+    from sustained.builder import QueryBuilder
     from sustained.compilers.base import Compiler
 
 
@@ -31,6 +32,12 @@ class RenderContext:
         self.parameterize = parameterize
         self.params: List[SqlValue] = []
         self._escape_percent = parameterize and compiler.escapes_percent()
+        # True once a SELECT has put every CTE in one WITH clause at the
+        # top, so a subquery renders without its own.
+        self.hoisting = False
+        # Collects the subqueries a render reaches, when a CTE search asks
+        # for them. See QueryBuilder._collect_ctes().
+        self.nested: Optional[List["QueryBuilder[Any]"]] = None
 
     def value(self, value: SqlValue) -> str:
         """
@@ -140,6 +147,28 @@ def bind_raw(sql: str, params: Sequence[SqlValue], ctx: RenderContext) -> str:
         out.append(ctx.value(param))
         out.append(piece)
     return "".join(out)
+
+
+def render_nested(query: "QueryBuilder[Any]", ctx: RenderContext) -> str:
+    """
+    Renders a subquery that sits inside another statement, such as an IN
+    or EXISTS operand, a select-list subquery, or a join condition.
+
+    Inside a SELECT that hoists its CTEs, the subquery leaves its WITH
+    clause out, because the outer WITH already defines those names. MSSQL
+    and other engines refuse a WITH inside parentheses. Elsewhere, such as
+    in the WHERE clause of an UPDATE, the subquery keeps its own WITH.
+    """
+    recorded = ctx.nested
+    if recorded is not None:
+        # Only the direct subqueries are recorded. Each one looks for its
+        # own subqueries when its CTEs are collected.
+        recorded.append(query)
+        ctx.nested = None
+    try:
+        return query._render_sql(ctx, include_ctes=not ctx.hoisting)
+    finally:
+        ctx.nested = recorded
 
 
 def render_part(part: Renderable, ctx: RenderContext) -> str:

@@ -15,7 +15,7 @@ from typing import (
 )
 
 from ..naming import resolve_public_name
-from ..rendering import Renderable, RenderContext, render_part
+from ..rendering import Renderable, RenderContext, render_nested, render_part
 from ..types import BasicJoinMapping, Expression, JoinMappingWithThrough
 
 if TYPE_CHECKING:
@@ -115,7 +115,7 @@ class OnClauseBuilder:
             sub_query = col2
 
             def render(ctx: RenderContext) -> str:
-                return f"{formatted_col1} {op} ({sub_query._render_sql(ctx)})"
+                return f"{formatted_col1} {op} ({render_nested(sub_query, ctx)})"
 
             condition = render
         elif isinstance(col2, Expression):

@@ -481,9 +481,14 @@ class QueryBuilder:
     def _collect_ctes(self) -> List[Tuple[str, "QueryBuilder", bool]]:
         """
         Gathers CTEs from this query, its FROM subquery chain, its own CTE
-        subqueries, and its union members, in dependency order. All of them
-        are rendered in a single top-level WITH clause because WITH cannot
-        appear inside a parenthesized subquery in every dialect.
+        subqueries, its union members, and every subquery inside its
+        clauses, in dependency order. All of them are rendered in a single
+        top-level WITH clause because WITH cannot appear inside a
+        parenthesized subquery in every dialect.
+
+        A subquery in a WHERE, HAVING, ON, or select-list position sits in
+        a render function, so a probe render with a recording context finds
+        it. The probe's text is discarded.
         """
         ctes: List[Tuple[str, "QueryBuilder", bool]] = []
         if isinstance(self._from_source, tuple):
@@ -493,6 +498,12 @@ class QueryBuilder:
             ctes.append((alias, subquery, recursive))
         for _, query in self._union_clauses:
             ctes.extend(query._collect_ctes())
+        probe = RenderContext(self._compiler, parameterize=True)
+        probe.hoisting = True
+        probe.nested = []
+        self._render_select(probe, include_ctes=False)
+        for nested in probe.nested:
+            ctes.extend(nested._collect_ctes())
         return ctes
 
     def _refuse_set_member_clauses(self) -> None:
@@ -525,6 +536,21 @@ class QueryBuilder:
         return self._render_select(ctx, include_ctes)
 
     def _render_select(self, ctx: RenderContext, include_ctes: bool = True) -> str:
+        """
+        Renders the SELECT statement. With include_ctes, every CTE the
+        statement reaches goes into one WITH clause at the top, and the
+        subqueries inside render without their own. The context's hoisting
+        flag is put back afterwards, so a later subquery elsewhere in an
+        UPDATE or DELETE still renders its own WITH.
+        """
+        hoisting = ctx.hoisting
+        ctx.hoisting = hoisting or include_ctes
+        try:
+            return self._render_select_parts(ctx, include_ctes)
+        finally:
+            ctx.hoisting = hoisting
+
+    def _render_select_parts(self, ctx: RenderContext, include_ctes: bool) -> str:
         """Renders the SELECT statement body."""
         query_parts = []
 

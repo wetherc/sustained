@@ -14,7 +14,7 @@ from typing import (
 )
 
 from ..dialects import Dialects
-from ..rendering import Renderable, RenderContext, render_part
+from ..rendering import Renderable, RenderContext, render_nested, render_part
 from ..types import DbReturnValue, Expression, QueryResolvable, SqlValue
 
 if TYPE_CHECKING:
@@ -190,7 +190,7 @@ class ConditionalClauseBuilder(ABC):
 
         def render(ctx: RenderContext) -> str:
             if sub_builder is not None:
-                return f"{actual_op} ({sub_builder._render_sql(ctx)})"
+                return f"{actual_op} ({render_nested(sub_builder, ctx)})"
             return f"{actual_op} ({raw_sql})"
 
         self._clauses.append((conjunction, render))
@@ -386,7 +386,7 @@ class ConditionalClauseBuilder(ABC):
 
         def render_sub(ctx: RenderContext) -> str:
             if sub_builder is not None:
-                return f"{quoted_col} {actual_op} ({sub_builder._render_sql(ctx)})"
+                return f"{quoted_col} {actual_op} ({render_nested(sub_builder, ctx)})"
             return f"{quoted_col} {actual_op} ({raw_sql})"
 
         self._clauses.append((conjunction, render_sub))
