@@ -439,7 +439,6 @@ def main(argv):
             runnable.append(name)
 
     services = services_for(runnable)
-    started = False
     try:
         if services:
             started = start(services)
@@ -453,7 +452,11 @@ def main(argv):
         for name in runnable:
             results.append(emit(run_server(name)))
     finally:
-        if started and not args.keep:
+        # compose up can leave containers and volumes behind when a service
+        # turns unhealthy, when up itself fails part way, or when Ctrl-C
+        # stops the wait, so they are removed whether or not start() says
+        # the services came up.
+        if services and not args.keep:
             stop(services)
 
     if PYTHON in names:
