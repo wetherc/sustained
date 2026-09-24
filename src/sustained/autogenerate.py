@@ -23,8 +23,10 @@ autogenerate() turns the diff into a Migration:
   reversible. Dropping extra indexes also requires allow_drops=True but
   reverses, since the index definition is known.
 - Declared tableConstraints diff by name on engines whose catalog reports
-  constraints. A missing constraint generates ADD CONSTRAINT with the
-  drop as its down step; a changed foreign key generates drop-plus-add
+  constraints, and by content on DuckDB, which renames them. DuckDB
+  cannot change a constraint on a table that exists, so a difference
+  there stays a note. A missing constraint generates ADD CONSTRAINT with
+  the drop as its down step; a changed foreign key generates drop-plus-add
   under allow_drops; SQLite routes constraint changes through the table
   rebuild. A changed check expression on an engine that rewrites
   expressions stays a note, never a drop.
@@ -40,7 +42,20 @@ autogenerate() turns the diff into a Migration:
 from __future__ import annotations
 
 import re
-from typing import TYPE_CHECKING, Dict, List, Optional, Set, Tuple, Type
+from typing import (
+    TYPE_CHECKING,
+    Callable,
+    Dict,
+    List,
+    Mapping,
+    Optional,
+    Sequence,
+    Set,
+    Tuple,
+    Type,
+    TypeVar,
+    Union,
+)
 
 from sustained.analysis import MigrationStatement
 from sustained.dialects import Dialects
@@ -714,6 +729,65 @@ def _implied_constraint_names(
     return check_names, fk_columns
 
 
+_Declared = TypeVar("_Declared")
+_Actual = TypeVar("_Actual")
+# One way of pairing a declared constraint with a catalog one, given the
+# catalog's name for it and what the catalog read.
+_PairTest = Callable[[_Declared, str, _Actual], bool]
+
+
+def _pair_constraints(
+    declared: Sequence[_Declared],
+    actual: Mapping[str, _Actual],
+    tests: Sequence[_PairTest[_Declared, _Actual]],
+) -> Tuple[List[Tuple[_Declared, _Actual]], List[_Declared], List[Tuple[str, _Actual]]]:
+    """
+    Pairs declared constraints with the catalog's, one to one. Each test
+    runs over every constraint still unpaired before the next test runs,
+    so an exact match is never taken by a looser one. Returns the pairs,
+    the declared constraints left without one, and the catalog's.
+    """
+    remaining = dict(actual)
+    unpaired = list(declared)
+    pairs: List[Tuple[_Declared, _Actual]] = []
+    for test in tests:
+        left: List[_Declared] = []
+        for item in unpaired:
+            name = next((n for n, a in remaining.items() if test(item, n, a)), None)
+            if name is None:
+                left.append(item)
+            else:
+                pairs.append((item, remaining.pop(name)))
+        unpaired = left
+    return pairs, unpaired, list(remaining.items())
+
+
+def _named(constraint: Union[ForeignKey, Check], name: str, _: object) -> bool:
+    return constraint.name.lower() == name
+
+
+def _same_fk(fk: ForeignKey, _: str, actual: IntrospectedForeignKey) -> bool:
+    return _fk_matches(fk, actual)
+
+
+def _same_fk_columns(fk: ForeignKey, _: str, actual: IntrospectedForeignKey) -> bool:
+    return tuple(c.lower() for c in fk.columns) == actual.columns
+
+
+def _same_check(check: Check, _: str, expression: str) -> bool:
+    return normalize_check(check.expression) == normalize_check(expression)
+
+
+def _constraints_fixed_at_create(compiler: "Compiler") -> bool:
+    """
+    Whether constraints on a table that exists cannot change at all.
+    DuckDB alters columns in place but refuses both ADD CONSTRAINT and
+    DROP CONSTRAINT, and it has no table rebuild to route them through.
+    SQLite also refuses them, but its rebuild can carry the change.
+    """
+    return not compiler.supports_add_constraint() and compiler.supports_alter_column()
+
+
 def _diff_declared_constraints(
     compiler: "Compiler",
     diff: SchemaDiff,
@@ -725,45 +799,99 @@ def _diff_declared_constraints(
     Compares the model's tableConstraints against the database's named
     constraints, on engines whose catalog reports them. A degraded read
     diffs nothing: an empty mapping is not proof of absence.
+
+    A catalog that keeps constraint names pairs by name. DuckDB names
+    every constraint itself, so there a foreign key pairs by its target
+    or else its columns, and a check by its normalized expression. On
+    DuckDB a difference stays a note, because no statement can change a
+    constraint on a table that exists.
     """
     table_name = model.tableName or ""
     declared = model.tableConstraints or []
-    declared_fks = {c.name.lower(): c for c in declared if isinstance(c, ForeignKey)}
-    declared_checks = {c.name.lower(): c for c in declared if isinstance(c, Check)}
+    declared_fks = [c for c in declared if isinstance(c, ForeignKey)]
+    declared_checks = [c for c in declared if isinstance(c, Check)]
     implied_checks, implied_fk_columns = _implied_constraint_names(compiler, model)
+    by_name = compiler.keeps_constraint_names()
+    fixed = _constraints_fixed_at_create(compiler)
+    recreate = (
+        "The engine cannot change a constraint on a table that exists, so "
+        "recreate the table by hand."
+    )
 
     if snapshot.constraints_read:
-        for name, fk in declared_fks.items():
-            actual_fk = actual_table.foreign_keys.get(name)
-            if actual_fk is None:
+        fk_tests: List[_PairTest[ForeignKey, IntrospectedForeignKey]] = (
+            [_named] if by_name else [_same_fk, _same_fk_columns]
+        )
+        fk_pairs, missing_fks, extra_fks = _pair_constraints(
+            declared_fks, actual_table.foreign_keys, fk_tests
+        )
+        for fk in missing_fks:
+            if fixed:
+                diff.constraint_notes.append(
+                    f"{table_name} declares foreign key '{fk.name}' that the "
+                    f"database does not have. {recreate}"
+                )
+            else:
                 diff.new_foreign_keys.append((model, fk))
-            elif not _fk_matches(fk, actual_fk):
-                diff.changed_foreign_keys.append((model, fk, actual_fk))
-        for name, actual_fk in actual_table.foreign_keys.items():
-            if name in declared_fks or actual_fk.columns in implied_fk_columns:
+        for fk, actual_fk in fk_pairs:
+            if _fk_matches(fk, actual_fk):
                 continue
-            diff.extra_foreign_keys.append((table_name, name, actual_fk))
+            if fixed:
+                diff.constraint_notes.append(
+                    f"{table_name} foreign key '{fk.name}' points at "
+                    f"{actual_fk.target_table}, the model declares "
+                    f"{fk.target_table.lower()}. {recreate}"
+                )
+            else:
+                diff.changed_foreign_keys.append((model, fk, actual_fk))
+        for name, actual_fk in extra_fks:
+            if actual_fk.columns in implied_fk_columns:
+                continue
+            if fixed:
+                diff.constraint_notes.append(
+                    f"{table_name} has foreign key '{name}' on "
+                    f"({', '.join(actual_fk.columns)}) that no model "
+                    f"declares. {recreate}"
+                )
+            else:
+                diff.extra_foreign_keys.append((table_name, name, actual_fk))
 
     if snapshot.checks_read:
-        for name, check in declared_checks.items():
-            actual_expression = actual_table.checks.get(name)
-            if actual_expression is None:
+        check_tests: List[_PairTest[Check, str]] = (
+            [_named] if by_name else [_same_check]
+        )
+        check_pairs, missing_checks, extra_checks = _pair_constraints(
+            declared_checks, actual_table.checks, check_tests
+        )
+        for check in missing_checks:
+            if fixed:
+                diff.constraint_notes.append(
+                    f"{table_name} declares check '{check.name}' that the "
+                    f"database does not have. {recreate}"
+                )
+            else:
                 diff.new_checks.append((model, check))
-            elif normalize_check(check.expression) != normalize_check(
-                actual_expression
-            ):
-                if compiler.supports_alter_column():
-                    # The engine rewrites expressions on the way in, so a
-                    # mismatch here is a doubt, and a doubt never drops.
-                    diff.constraint_notes.append(
-                        f"{table_name} check '{check.name}' reads as "
-                        f"{actual_expression!r}, the model declares "
-                        f"{check.expression!r}"
-                    )
-                else:
-                    diff.changed_checks.append((model, check, actual_expression))
-        for name, expression in actual_table.checks.items():
-            if name in declared_checks or name in implied_checks:
+        for check, actual_expression in check_pairs:
+            if normalize_check(check.expression) == normalize_check(actual_expression):
+                continue
+            if compiler.supports_alter_column():
+                # The engine rewrites expressions on the way in, so a
+                # mismatch here is a doubt, and a doubt never drops.
+                diff.constraint_notes.append(
+                    f"{table_name} check '{check.name}' reads as "
+                    f"{actual_expression!r}, the model declares "
+                    f"{check.expression!r}"
+                )
+            else:
+                diff.changed_checks.append((model, check, actual_expression))
+        for name, expression in extra_checks:
+            if name in implied_checks:
+                continue
+            if fixed:
+                diff.constraint_notes.append(
+                    f"{table_name} has check '{name}' that no model "
+                    f"declares: {expression!r}. {recreate}"
+                )
                 continue
             # An undeclared check is a note, not a drop. Engines rewrite
             # a check expression on the way in, so a check the models do

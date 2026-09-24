@@ -263,6 +263,8 @@ Checks diff on every engine whose catalog reports them: Postgres, MySQL 8.0.16 a
 
 Sustained normalizes check expressions before it compares them, because engines rewrite them: Postgres stores `price > 0` as `((price > 0))`, and keyword case and whitespace vary. A difference that remains after normalization is reported as a constraint note on Postgres rather than generating a drop, so a cosmetic rewrite never costs you a constraint. SQLite cannot add or drop a table constraint in place, so those changes route through the same table rebuild as its column changes.
 
+DuckDB does not keep the name a constraint was created with. It names each constraint after its table and columns, so `fk_parent` on `kids.parent_id` reads back as `kids_parent_id_id_fkey`. On DuckDB, Sustained pairs a declared foreign key with the one that has the same target, or else the same columns. It pairs a declared check with the one whose normalized expression matches. DuckDB also refuses `ADD CONSTRAINT` and `DROP CONSTRAINT` on a table that exists, and it has no rebuild, so a missing, changed, or undeclared constraint there is a constraint note and never a statement. An undeclared foreign key on DuckDB does not block generation. To change a constraint on DuckDB, recreate the table by hand.
+
 Presto and Athena enforce no table constraints and raise `DialectError` when a model declares them there. Primary key set changes stay reported as notes and are never generated, because a safe primary key migration needs a table rebuild on most engines.
 
 ## Generating and running DDL directly

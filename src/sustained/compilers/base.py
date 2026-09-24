@@ -780,6 +780,15 @@ class Compiler:
         """
         return self.supports_constraints() and self.supports_alter_column()
 
+    def keeps_constraint_names(self) -> bool:
+        """
+        Reports whether the catalog returns the name a constraint was
+        created with. DuckDB does not: it names every constraint after
+        its table and columns, such as k_pid_id_fkey, so a diff there
+        pairs declared constraints with the catalog's by content.
+        """
+        return True
+
     def supports_constraints(self) -> bool:
         """
         Reports whether the dialect supports column and table constraints

@@ -1143,6 +1143,42 @@ def _duckdb_index_columns(expressions: str) -> Optional[Tuple[str, ...]]:
     return tuple(part.lower() for part in parts)
 
 
+def _replace_duckdb_constraints(
+    schema: Snapshot, rows: Sequence[Sequence[RowValue]]
+) -> None:
+    """
+    Replaces the foreign keys and checks of the information_schema read
+    with duckdb_constraints() rows. That view reports where a key points,
+    and it reports each check once as its bare expression. The
+    information_schema view reports a two-column check twice, drops a
+    check that names no column, and wraps the rest in CHECK(...), which
+    never compares equal to a declared expression.
+    """
+    foreign_keys: Dict[str, Dict[str, IntrospectedForeignKey]] = {}
+    checks: Dict[str, Dict[str, str]] = {}
+    for table, ctype, name, columns, target, target_columns, expression in rows:
+        key = str(table).lower()
+        if str(ctype) == "CHECK":
+            checks.setdefault(key, {})[str(name).lower()] = str(expression)
+            continue
+        foreign_keys.setdefault(key, {})[str(name).lower()] = IntrospectedForeignKey(
+            columns=tuple(
+                str(c).lower() for c in cast(Sequence[RowValue], columns or ())
+            ),
+            target_table=str(target).lower(),
+            target_columns=tuple(
+                str(c).lower() for c in cast(Sequence[RowValue], target_columns or ())
+            ),
+        )
+    for table, existing in list(schema.items()):
+        schema[table] = existing._replace(
+            foreign_keys=foreign_keys.get(table, {}),
+            checks=checks.get(table, {}),
+        )
+    schema.constraints_read = True
+    schema.checks_read = True
+
+
 def _duckdb_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
     """
     information_schema plus duckdb_indexes(). DuckDB's shared read sees
@@ -1169,6 +1205,18 @@ def _duckdb_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
         _merge_plain_indexes(schema, plain)
     except Exception:
         # No duckdb_indexes() to read; keep the constraint-derived indexes.
+        pass
+    try:
+        constraint_rows = yield (
+            "SELECT table_name, constraint_type, constraint_name, "
+            "constraint_column_names, referenced_table, "
+            "referenced_column_names, expression FROM duckdb_constraints() "
+            "WHERE constraint_type IN ('FOREIGN KEY', 'CHECK') "
+            f"AND {schema_filter}"
+        )
+        _replace_duckdb_constraints(schema, constraint_rows)
+    except Exception:
+        # No duckdb_constraints() to read; keep the information_schema read.
         pass
     try:
         comment_rows = yield (

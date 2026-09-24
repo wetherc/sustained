@@ -44,6 +44,9 @@ class DuckDbCompiler(Compiler):
         # be part of the CREATE TABLE statement.
         return False
 
+    def keeps_constraint_names(self) -> bool:
+        return False
+
     def stores_column_comments(self) -> bool:
         return True
 
