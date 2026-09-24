@@ -224,6 +224,12 @@ class MysqlCompiler(Compiler):
             clause += " NOWAIT"
         return clause
 
+    def compile_rename_table(self, old_sql: str, new_sql: str) -> str:
+        # MySQL moves a table to the database the new name gives, and a
+        # bare name means the connection's database, so the new name
+        # keeps its schema.
+        return f"ALTER TABLE {old_sql} RENAME TO {new_sql}"
+
     def compile_drop_index(self, index_name: str, table_sql: str) -> str:
         # An index name belongs to its table in MySQL, so DROP INDEX names
         # both.

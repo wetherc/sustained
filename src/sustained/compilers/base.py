@@ -54,6 +54,36 @@ _COLUMN_CALL_RE = re.compile(
     re.IGNORECASE,
 )
 
+# The closing character of each identifier quote a dialect writes.
+_QUOTE_CLOSERS = {'"': '"', "`": "`", "[": "]"}
+
+
+def table_qualifier(table_sql: str) -> str:
+    """
+    Everything in front of the last name of a rendered table reference,
+    the final dot included, or '' for a bare name. A dot inside a quoted
+    name is part of the name, and a doubled closing quote stays inside
+    it.
+    """
+    last_dot = -1
+    position = 0
+    while position < len(table_sql):
+        char = table_sql[position]
+        closer = _QUOTE_CLOSERS.get(char)
+        if closer is not None:
+            position += 1
+            while position < len(table_sql):
+                if table_sql[position] == closer:
+                    if table_sql[position + 1 : position + 2] != closer:
+                        break
+                    position += 1
+                position += 1
+        elif char == ".":
+            last_dot = position
+        position += 1
+    return table_sql[: last_dot + 1]
+
+
 # Comparison operators accepted by the conditional clause builders. Anything
 # else must be expressed with QueryBuilder.raw() so that intent is explicit.
 _VALID_OPERATORS = frozenset(
@@ -755,8 +785,13 @@ class Compiler:
         )
 
     def compile_rename_table(self, old_sql: str, new_sql: str) -> str:
-        """Renders a table rename."""
-        return f"ALTER TABLE {old_sql} RENAME TO {new_sql}"
+        """
+        Renders a table rename. RENAME TO takes a bare name on Postgres,
+        DuckDB, and SQLite, and the table keeps its schema, so a schema
+        in front of the new name comes off.
+        """
+        bare_sql = new_sql[len(table_qualifier(new_sql)) :]
+        return f"ALTER TABLE {old_sql} RENAME TO {bare_sql}"
 
     def compile_create_index(
         self,
@@ -772,8 +807,14 @@ class Compiler:
         return f"CREATE {unique_sql}INDEX {name_sql} ON {table_sql} ({columns_sql})"
 
     def compile_drop_index(self, index_name: str, table_sql: str) -> str:
-        """Renders a DROP INDEX statement."""
-        return f"DROP INDEX {self.quote_ddl_identifier(index_name)}"
+        """
+        Renders a DROP INDEX statement. An index lives in the schema of
+        its table, and the statement names no table, so the index takes
+        the table's schema in front of it. Without it, Postgres looks
+        for the index in the schemas on the search path.
+        """
+        name_sql = self.quote_ddl_identifier(index_name)
+        return f"DROP INDEX {table_qualifier(table_sql)}{name_sql}"
 
     def compile_create_table(
         self, table_sql: str, body: str, suffix_sql: str, if_missing: bool

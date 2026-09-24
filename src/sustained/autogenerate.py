@@ -60,6 +60,7 @@ from typing import (
 )
 
 from sustained.analysis import MigrationStatement
+from sustained.compilers.base import table_qualifier
 from sustained.dialects import Dialects
 from sustained.exceptions import DialectError
 from sustained.introspect import (
@@ -1186,6 +1187,36 @@ def _ordered_missing_tables(
     return [by_key[key] for key in ordered]
 
 
+def _snapshot_table_sql(
+    compiler: "Compiler", table: IntrospectedTable, key: str
+) -> str:
+    """
+    The DDL name of a table the snapshot read and no model declares: its
+    schema in front when the read kept one, and the catalog's spelling.
+    """
+    parts = [table.name or key]
+    if table.schema is not None:
+        parts.insert(0, table.schema)
+    return ".".join(compiler.quote_ddl_identifier(part) for part in parts)
+
+
+def _declared_table_sql(
+    compiler: "Compiler",
+    models_by_table: Mapping[str, Type["Model"]],
+    actual: Snapshot,
+    table: str,
+) -> str:
+    """
+    The DDL name of a table the diff reports by name. A table a model
+    declares takes the model's schema and database, and any other table
+    takes what the snapshot read.
+    """
+    model = models_by_table.get(table.lower())
+    if model is not None:
+        return model._qualified_table_sql(compiler)
+    return _snapshot_table_sql(compiler, actual[table.lower()], table)
+
+
 def _extra_table_drops(
     compiler: "Compiler", actual: Snapshot, extra_tables: List[str]
 ) -> Tuple[List[str], bool]:
@@ -1199,7 +1230,7 @@ def _extra_table_drops(
     they need that, which holds only outside a transaction.
     """
     keys = [table.lower() for table in extra_tables]
-    spelled = dict(zip(keys, extra_tables))
+    spelled = {key: _snapshot_table_sql(compiler, actual[key], key) for key in keys}
     # The order puts a table after the tables that point at it, so a
     # table no key names keeps its place in the catalog's order.
     children: Dict[str, List[str]] = {key: [] for key in keys}
@@ -1209,10 +1240,7 @@ def _extra_table_drops(
             if target in children and target != key and key not in children[target]:
                 children[target].append(key)
     ordered, cycles = _dependency_order(keys, lambda key: children[key])
-    drops = [
-        f"DROP TABLE {compiler.quote_fully_qualified_ddl_identifier(spelled[key])}"
-        for key in ordered
-    ]
+    drops = [f"DROP TABLE {spelled[key]}" for key in ordered]
     in_cycle = {key for cycle in cycles for key in cycle}
     if not in_cycle:
         return drops, False
@@ -1222,10 +1250,7 @@ def _extra_table_drops(
             True,
         )
     key_drops = [
-        compiler.compile_drop_foreign_key(
-            compiler.quote_fully_qualified_ddl_identifier(spelled[key]),
-            fk.name or name,
-        )
+        compiler.compile_drop_foreign_key(spelled[key], fk.name or name)
         for key in keys
         if key in in_cycle
         for name, fk in actual[key].foreign_keys.items()
@@ -1430,13 +1455,15 @@ def autogenerate(
 
     # Renames first, so later steps address the new names.
     for old, new in table_renames.items():
-        old_sql = compiler.quote_fully_qualified_ddl_identifier(old)
-        new_sql = compiler.quote_fully_qualified_ddl_identifier(new)
+        # The renamed table keeps its schema, so the old name takes the
+        # schema the model declares for the new one.
+        new_sql = _declared_table_sql(compiler, models_by_table, actual, new)
+        old_sql = table_qualifier(new_sql) + compiler.quote_ddl_identifier(old)
         up_steps.append(compiler.compile_rename_table(old_sql, new_sql))
         down_steps.insert(0, compiler.compile_rename_table(new_sql, old_sql))
     for path, new_name in renames.items():
         table, old_name = path.rsplit(".", 1)
-        table_sql = compiler.quote_fully_qualified_ddl_identifier(table)
+        table_sql = _declared_table_sql(compiler, models_by_table, actual, table)
         up_steps.append(compiler.compile_rename_column(table_sql, old_name, new_name))
         down_steps.insert(
             0, compiler.compile_rename_column(table_sql, new_name, old_name)
@@ -1867,7 +1894,7 @@ def autogenerate(
         for table, name, actual_fk in diff.extra_foreign_keys:
             if table.lower() in rebuild_tables:
                 continue
-            table_sql = compiler.quote_fully_qualified_ddl_identifier(table)
+            table_sql = _declared_table_sql(compiler, models_by_table, actual, table)
             up_steps.append(compiler.compile_drop_foreign_key(table_sql, name))
             restore = _introspected_fk_sql(
                 compiler, table_sql, name, actual_fk, actual, table
@@ -1879,7 +1906,7 @@ def autogenerate(
         for table, name, expression in diff.extra_checks:
             if table.lower() in rebuild_tables:
                 continue
-            table_sql = compiler.quote_fully_qualified_ddl_identifier(table)
+            table_sql = _declared_table_sql(compiler, models_by_table, actual, table)
             up_steps.append(compiler.compile_drop_constraint(table_sql, name))
             down_steps.insert(
                 0, compiler.compile_add_check(table_sql, name, expression)
@@ -1889,7 +1916,7 @@ def autogenerate(
         for table, name, actual_index in diff.extra_indexes:
             if table.lower() in rebuild_tables:
                 continue
-            table_sql = compiler.quote_fully_qualified_ddl_identifier(table)
+            table_sql = _declared_table_sql(compiler, models_by_table, actual, table)
             actual_table = actual[table.lower()]
             if actual_index.constraint:
                 # The index belongs to a UNIQUE constraint, and the engine
@@ -1913,9 +1940,9 @@ def autogenerate(
                 ),
             )
         for table, name in diff.extra_columns:
-            table_sql = compiler.quote_fully_qualified_ddl_identifier(table)
             if table.lower() in rebuild_tables:
                 continue
+            table_sql = _declared_table_sql(compiler, models_by_table, actual, table)
             up_steps.append(compiler.compile_drop_column(table_sql, name))
             reversible = False
         if diff.extra_tables:

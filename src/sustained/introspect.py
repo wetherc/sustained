@@ -153,6 +153,13 @@ class IntrospectedTable(NamedTuple):
     `name` is the table name as the catalog spells it, and `check_names`
     maps each lowercased check name to its spelling. Either is empty
     where a read does not keep it.
+
+    `schema` is the schema the table is in, as the catalog spells it,
+    when that schema is one the models declare. It is None for a table
+    in the schema the connection is on, and for every table on an engine
+    that has no schemas. A statement that names a table outside the
+    connection's schema needs the schema in front of the name, or it
+    names a table that is not there.
     """
 
     columns: Dict[str, IntrospectedColumn]
@@ -164,6 +171,7 @@ class IntrospectedTable(NamedTuple):
     triggers: Tuple[str, ...] = ()
     name: Optional[str] = None
     check_names: Mapping[str, str] = _NO_CHECKS
+    schema: Optional[str] = None
 
     def spelled_column(self, key: str) -> str:
         """A lowercased column key as the catalog spells the column."""
@@ -1079,6 +1087,18 @@ def _one_schema_per_table(seen: Dict[str, str], table: str, schema: str) -> None
         )
 
 
+def _declared_schema(schemas: Tuple[str, ...], value: RowValue) -> Optional[str]:
+    """
+    The schema a row names, when it is one the models declare, or None.
+    A table in the connection's own schema keeps None, so a statement
+    names it the way the models do.
+    """
+    if value is None:
+        return None
+    declared = {name.lower() for name in schemas}
+    return str(value) if str(value).lower() in declared else None
+
+
 def _information_schema_plan(
     catalog: Catalog = ANSI_CATALOG, schemas: Tuple[str, ...] = ()
 ) -> SchemaPlan:
@@ -1101,6 +1121,7 @@ def _information_schema_plan(
 
     columns_by_table: Dict[str, Dict[str, IntrospectedColumn]] = {}
     spelled_tables: Dict[str, str] = {}
+    table_schemas: Dict[str, str] = {}
 
     def columns_query(with_comment: bool) -> str:
         # The join to information_schema.tables keeps views out. A view's
@@ -1142,10 +1163,14 @@ def _information_schema_plan(
         # MySQL reports an uncommented column as '', not NULL.
         raw_comment = row[5] if comments_read and len(row) > 5 else None
         comment = str(raw_comment) if raw_comment not in (None, "") else None
-        if scoped_read and len(row) > schema_index and row[schema_index] is not None:
-            _one_schema_per_table(
-                schema_of_table, str(table).lower(), str(row[schema_index])
-            )
+        if len(row) > schema_index and row[schema_index] is not None:
+            if scoped_read:
+                _one_schema_per_table(
+                    schema_of_table, str(table).lower(), str(row[schema_index])
+                )
+            declared_schema = _declared_schema(schemas, row[schema_index])
+            if declared_schema is not None:
+                table_schemas[str(table).lower()] = declared_schema
         raw_type = str(data_type) if data_type else ""
         default_sql = None
         extra = str(row[schema_index + 1] or "") if len(row) > schema_index + 2 else ""
@@ -1265,6 +1290,7 @@ def _information_schema_plan(
             checks=checks.get(table, {}),
             name=spelled_tables.get(table),
             check_names=check_names.get(table, {}),
+            schema=table_schemas.get(table),
         )
     return schema
 
@@ -1554,6 +1580,7 @@ def _postgres_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
     namespace_filter = _scoped_filter("n.nspname", "current_schema()", schemas)
     columns_by_table: Dict[str, Dict[str, IntrospectedColumn]] = {}
     spelled_tables: Dict[str, str] = {}
+    table_schemas: Dict[str, str] = {}
     column_rows = yield (
         "SELECT c.table_name, c.column_name, c.data_type, c.udt_name, "
         "c.character_maximum_length, c.numeric_precision, c.numeric_scale, "
@@ -1571,6 +1598,9 @@ def _postgres_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
         char_length, precision, scale, is_nullable, default = row[4:9]
         if len(row) > 9 and row[9] is not None:
             _one_schema_per_table(schema_of_table, table.lower(), str(row[9]))
+            declared_schema = _declared_schema(schemas, row[9])
+            if declared_schema is not None:
+                table_schemas[table.lower()] = declared_schema
         spelled_tables.setdefault(table.lower(), table)
         columns_by_table.setdefault(table.lower(), {})[name.lower()] = (
             IntrospectedColumn(
@@ -1781,6 +1811,7 @@ def _postgres_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
             checks=checks.get(table, {}),
             name=spelled_tables.get(table),
             check_names=check_names.get(table, {}),
+            schema=table_schemas.get(table),
         )
     return schema
 
