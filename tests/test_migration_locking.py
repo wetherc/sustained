@@ -43,6 +43,10 @@ class FakeCursor:
         else:
             self._rows = []
 
+    def executemany(self, sql, seq):
+        for params in seq:
+            self.execute(sql, params)
+
     def fetchall(self):
         return self._rows
 

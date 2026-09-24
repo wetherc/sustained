@@ -55,16 +55,17 @@ from sustained.migrations import (
     _check_rehearsable,
     _checked_steps,
     _destructive_in,
-    _destructive_prefix_keys,
     _down_sweep,
     _failed_attempt_problem,
     _is_current,
     _lock_message,
     _migration_state,
     _next_seq,
+    _passed_rehearsal_keys,
     _rehearsal_column_defs,
     _rehearsal_message,
     _rehearsal_results,
+    _rehearsal_writes,
     _render_elements,
     _restore_migration,
     _reversal_provable,
@@ -354,18 +355,21 @@ class AsyncMigrator:
                 f"{REHEARSAL_OVERRIDE!r}."
             )
         self._refuse_open_transaction("record_rehearsal")
+        await self._record_rehearsals([key], outcome)
+
+    async def _record_rehearsals(
+        self, keys: Sequence[str], outcome: str = REHEARSAL_PASSED
+    ) -> None:
+        """
+        Writes one row per key with the same outcome, in one transaction.
+        Mirrors Migrator._record_rehearsals().
+        """
         await self._ensure_rehearsal_table()
-        placeholder = self._compiler.placeholder()
-        table = self._rehearsal_table_sql()
-        await self._execute(
-            f"DELETE FROM {table} WHERE rehearsal_key = {placeholder}", (key,)
+        delete_sql, insert_sql, rows = _rehearsal_writes(
+            self._compiler, self._rehearsal_table_sql(), keys, outcome
         )
-        values = ", ".join([placeholder] * 3)
-        await self._execute(
-            f"INSERT INTO {table} (rehearsal_key, outcome, rehearsed_at) "
-            f"VALUES ({values})",
-            (key, outcome, datetime.now(timezone.utc).isoformat()),
-        )
+        await self._adapter.executemany(delete_sql, [row[:1] for row in rows])
+        await self._adapter.executemany(insert_sql, rows)
         await self._adapter.commit()
 
     async def record_scratch_rehearsal(self, results: Rehearsal) -> Optional[str]:
@@ -380,9 +384,11 @@ class AsyncMigrator:
             results,
             self._compiler,
         )
-        for key in keys:
-            await self.record_rehearsal(key)
-        return keys[0] if keys else None
+        if not keys:
+            return None
+        self._refuse_open_transaction("record_scratch_rehearsal")
+        await self._record_rehearsals(keys)
+        return keys[0]
 
     async def rehearsal_outcome(self, key: str) -> Optional[str]:
         """
@@ -1271,19 +1277,14 @@ class AsyncMigrator:
             passed = not any(rehearsal_failed(r) for r in results)
             recorded = False
             if not scratch:
-                await self.record_rehearsal(
-                    key, REHEARSAL_PASSED if passed else REHEARSAL_FAILED
-                )
-                if passed and has_drift:
-                    # A run without models applies the registered
-                    # migrations and stops there, which this rehearsal
-                    # also proved.
-                    await self.record_rehearsal(rehearsal_key(record_list, pending))
                 if passed:
-                    for prefix_key in _destructive_prefix_keys(
-                        record_list, pending, self._compiler
-                    ):
-                        await self.record_rehearsal(prefix_key)
+                    await self._record_rehearsals(
+                        _passed_rehearsal_keys(
+                            record_list, pending, key, has_drift, self._compiler
+                        )
+                    )
+                else:
+                    await self._record_rehearsals([key], REHEARSAL_FAILED)
                 recorded = True
             return Rehearsal(results, key, recorded)
 

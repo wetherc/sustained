@@ -2073,6 +2073,37 @@ class TestDestructiveGate(MigrationTestCase):
         # ends with the repeatable, the tail the rehearsal ran.
         self.assertEqual(migrator.up(), ["002_trim", "seed"])
 
+    def test_a_rehearsal_writes_every_row_in_one_commit(self):
+        migrations = [
+            Migration(
+                f"00{i}_churn",
+                up=[f"CREATE TABLE churn{i} (id INTEGER)", f"DROP TABLE churn{i}"],
+                down="SELECT 1",
+            )
+            for i in range(1, 4)
+        ]
+        statements = []
+        self.conn.set_trace_callback(statements.append)
+        self.assertTrue(Migrator(self.conn, migrations).rehearse().ok)
+        written = statements[statements.index("ROLLBACK") :]
+        # Every start point and every end point after it removes data, so
+        # three migrations prove six keys, and they commit together.
+        self.assertEqual(written.count("COMMIT"), 1)
+        rows = self.conn.execute(
+            "SELECT outcome, rehearsed_at FROM sustained_rehearsals"
+        ).fetchall()
+        self.assertEqual(len(rows), 6)
+        self.assertEqual(len(set(rows)), 1)
+
+    def test_a_second_rehearsal_replaces_its_rows(self):
+        migrator = Migrator(self.conn, [self.drop])
+        self.assertTrue(migrator.rehearse().ok)
+        self.assertTrue(migrator.rehearse().ok)
+        count = self.conn.execute(
+            "SELECT COUNT(*) FROM sustained_rehearsals"
+        ).fetchone()[0]
+        self.assertEqual(count, 1)
+
     def scratch_rehearsal(self, migrations):
         """A passing rehearsal of the migrations on an empty scratch database."""
         scratch = sqlite3.connect(":memory:")

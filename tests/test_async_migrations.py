@@ -953,6 +953,22 @@ class TestAsyncRehearsalRows(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("gate_old", table_names(self.conn))
         self.assertNotIn("gate_new", table_names(self.conn))
 
+    async def test_a_rehearsal_writes_every_row_with_one_stamp(self):
+        migrations = [
+            Migration(
+                f"00{i}_churn",
+                up=[f"CREATE TABLE churn{i} (id INTEGER)", f"DROP TABLE churn{i}"],
+                down="SELECT 1",
+            )
+            for i in range(1, 4)
+        ]
+        self.assertTrue((await AsyncMigrator(self.adapter, migrations).rehearse()).ok)
+        rows = self.conn.execute(
+            "SELECT outcome, rehearsed_at FROM sustained_rehearsals"
+        ).fetchall()
+        self.assertEqual(len(rows), 6)
+        self.assertEqual(len(set(rows)), 1)
+
     async def test_a_scratch_rehearsal_records_on_the_real_database(self):
         scratch = sqlite3.connect(":memory:", check_same_thread=False)
         self.addCleanup(scratch.close)
