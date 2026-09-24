@@ -124,10 +124,10 @@ class TestCreateTableRendering(unittest.TestCase):
 
     def test_default_dialect(self):
         sql = self.render(Dialects.DEFAULT)
-        self.assertIn("CONSTRAINT ck_pets_age_positive CHECK (age >= 0)", sql)
+        self.assertIn('CONSTRAINT "ck_pets_age_positive" CHECK (age >= 0)', sql)
         self.assertIn(
-            "CONSTRAINT fk_pets_owner FOREIGN KEY (owner_id) "
-            "REFERENCES owners (id) ON DELETE CASCADE",
+            'CONSTRAINT "fk_pets_owner" FOREIGN KEY ("owner_id") '
+            'REFERENCES "owners" ("id") ON DELETE CASCADE',
             sql,
         )
 
@@ -158,7 +158,7 @@ class TestCreateTableRendering(unittest.TestCase):
 
     def test_declared_constraints_render_last(self):
         sql = self.render(Dialects.DEFAULT)
-        self.assertLess(sql.index("owner_id INTEGER"), sql.index("CONSTRAINT"))
+        self.assertLess(sql.index('"owner_id" INTEGER'), sql.index("CONSTRAINT"))
 
     def test_composite_foreign_key(self):
         compiler = Dialects.get_compiler(Dialects.DEFAULT)
@@ -168,7 +168,7 @@ class TestCreateTableRendering(unittest.TestCase):
             {"a": Integer(), "b": Integer()},
             constraints=[ForeignKey("fk_ab", ("a", "b"), ("t.c", "t.d"))],
         )
-        self.assertIn("FOREIGN KEY (a, b) REFERENCES t (c, d)", sql)
+        self.assertIn('FOREIGN KEY ("a", "b") REFERENCES "t" ("c", "d")', sql)
 
     def test_presto_refuses(self):
         with self.assertRaisesRegex(DialectError, "no table\\s+constraints"):
@@ -188,8 +188,8 @@ class TestCreateTableRendering(unittest.TestCase):
 class TestModelIntegration(unittest.TestCase):
     def test_model_passes_constraints_through(self):
         sql = Pet.create_table_sql()
-        self.assertIn("CONSTRAINT ck_pets_age_positive", sql)
-        self.assertIn("CONSTRAINT fk_pets_owner", sql)
+        self.assertIn('CONSTRAINT "ck_pets_age_positive"', sql)
+        self.assertIn('CONSTRAINT "fk_pets_owner"', sql)
 
     def test_sqlite_enforces_check_and_foreign_key(self):
         conn = sqlite3.connect(":memory:")

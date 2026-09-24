@@ -61,10 +61,10 @@ class TestRendering(unittest.TestCase):
     def test_create_table_from_model_renders_table_constraints_indexes(self):
         statements = create_table(Reader).render(ANSI)
         self.assertEqual(len(statements), 2)
-        self.assertIn("CREATE TABLE readers", statements[0])
+        self.assertIn('CREATE TABLE "readers"', statements[0])
         self.assertIn("ck_readers_email", statements[0])
         self.assertIn("ck_readers_status_enum", statements[0])
-        self.assertIn("CREATE INDEX ix_readers_email", statements[1])
+        self.assertIn('CREATE INDEX "ix_readers_email"', statements[1])
 
     def test_create_table_prepends_enum_types_on_native_dialect(self):
         statements = create_table(Reader).render(POSTGRES)
@@ -77,7 +77,7 @@ class TestRendering(unittest.TestCase):
 
     def test_create_table_explicit_columns(self):
         step = create_table("plants", columns={"id": Integer(primary_key=True)})
-        self.assertIn("CREATE TABLE plants", step.render(ANSI)[0])
+        self.assertIn('CREATE TABLE "plants"', step.render(ANSI)[0])
 
     def test_drop_table_from_model_drops_enum_types_on_native_dialect(self):
         statements = drop_table(Reader).render(POSTGRES)
@@ -93,7 +93,7 @@ class TestRendering(unittest.TestCase):
         step = add_column("readers", "bio", String(200))
         self.assertEqual(
             step.render(ANSI),
-            ["ALTER TABLE readers ADD COLUMN bio VARCHAR(200)"],
+            ['ALTER TABLE "readers" ADD COLUMN "bio" VARCHAR(200)'],
         )
 
     def test_add_enum_column_on_check_dialect_adds_the_constraint(self):
@@ -114,11 +114,11 @@ class TestRendering(unittest.TestCase):
     def test_rename_column_and_table(self):
         self.assertEqual(
             rename_column("readers", "email", "address").render(ANSI),
-            ["ALTER TABLE readers RENAME COLUMN email TO address"],
+            ['ALTER TABLE "readers" RENAME COLUMN "email" TO "address"'],
         )
         self.assertEqual(
             rename_table("readers", "subscribers").render(ANSI),
-            ["ALTER TABLE readers RENAME TO subscribers"],
+            ['ALTER TABLE "readers" RENAME TO "subscribers"'],
         )
 
     def test_add_foreign_key_renders_actions(self):
@@ -145,7 +145,7 @@ class TestRendering(unittest.TestCase):
         ).render(ANSI)
         self.assertIn("CREATE UNIQUE INDEX", statements[0])
         self.assertEqual(
-            drop_index("readers", "ix_status").render(ANSI), ["DROP INDEX ix_status"]
+            drop_index("readers", "ix_status").render(ANSI), ['DROP INDEX "ix_status"']
         )
 
     def test_enum_type_steps_on_postgres(self):
@@ -264,8 +264,8 @@ class TestDerivedDown(unittest.TestCase):
         )
         self.assertIsNotNone(migration.down)
         rendered = migration_sql(migration, "down", ANSI)
-        self.assertEqual(rendered[0], "DROP INDEX ix_shelves_id")
-        self.assertEqual(rendered[1], "DROP TABLE shelves")
+        self.assertEqual(rendered[0], 'DROP INDEX "ix_shelves_id"')
+        self.assertEqual(rendered[1], 'DROP TABLE "shelves"')
 
     def test_irreversible_step_refuses_derivation(self):
         with self.assertRaisesRegex(ValueError, "drop_column does not reverse"):
@@ -387,7 +387,7 @@ class TestMigratorIntegration(unittest.TestCase):
         )
         migrator = Migrator(self.connection, [migration], dialect=Dialects.DEFAULT)
         script = migrator.script("up")
-        self.assertIn("CREATE TABLE shelves", script)
+        self.assertIn('CREATE TABLE "shelves"', script)
 
     def test_rehearse_runs_the_derived_down(self):
         migration = Migration(

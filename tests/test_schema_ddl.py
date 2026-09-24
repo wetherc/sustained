@@ -45,10 +45,10 @@ class TestCreateTableSql(unittest.TestCase):
         sql = DdlUser.create_table_sql()
         self.assertEqual(
             sql,
-            "CREATE TABLE users (id INTEGER PRIMARY KEY, "
-            "email VARCHAR(120) NOT NULL UNIQUE, bio TEXT, "
-            "active BOOLEAN DEFAULT TRUE, balance NUMERIC(12, 2) DEFAULT 0, "
-            "meta JSON, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
+            'CREATE TABLE "users" ("id" INTEGER PRIMARY KEY, '
+            '"email" VARCHAR(120) NOT NULL UNIQUE, "bio" TEXT, '
+            '"active" BOOLEAN DEFAULT TRUE, "balance" NUMERIC(12, 2) DEFAULT 0, '
+            '"meta" JSON, "created_at" TIMESTAMP DEFAULT CURRENT_TIMESTAMP)',
         )
 
     def test_postgres_types_and_identity(self):
@@ -80,8 +80,8 @@ class TestCreateTableSql(unittest.TestCase):
             DdlUser.c.nope
 
     def test_drop_table_sql(self):
-        self.assertEqual(DdlUser.drop_table_sql(), "DROP TABLE IF EXISTS users")
-        self.assertEqual(DdlUser.drop_table_sql(if_exists=False), "DROP TABLE users")
+        self.assertEqual(DdlUser.drop_table_sql(), 'DROP TABLE IF EXISTS "users"')
+        self.assertEqual(DdlUser.drop_table_sql(if_exists=False), 'DROP TABLE "users"')
 
 
 class TestConstraints(unittest.TestCase):
@@ -94,8 +94,8 @@ class TestConstraints(unittest.TestCase):
             }
 
         sql = Link.create_table_sql()
-        self.assertIn("a INTEGER NOT NULL REFERENCES users (id)", sql)
-        self.assertIn("PRIMARY KEY (a, b)", sql)
+        self.assertIn('"a" INTEGER NOT NULL REFERENCES "users" ("id")', sql)
+        self.assertIn('PRIMARY KEY ("a", "b")', sql)
 
     def test_composite_pk_with_autoincrement_rejected(self):
         class Bad(Model):
@@ -139,7 +139,7 @@ class TestConstraints(unittest.TestCase):
             tableColumns = {"data": Binary()}
 
         try:
-            self.assertIn("data BLOB", Blobby.create_table_sql())
+            self.assertIn('"data" BLOB', Blobby.create_table_sql())
             Blobby.set_dialect(Dialects.POSTGRES)
             self.assertIn('"data" BYTEA', Blobby.create_table_sql())
             Blobby.set_dialect(Dialects.MSSQL)
@@ -157,8 +157,8 @@ class TestConstraints(unittest.TestCase):
             tableColumns = {"f": Float(), "d": Date()}
 
         sql = Mixed.create_table_sql()
-        self.assertIn("f DOUBLE PRECISION", sql)
-        self.assertIn("d DATE", sql)
+        self.assertIn('"f" DOUBLE PRECISION', sql)
+        self.assertIn('"d" DATE', sql)
 
 
 class TestLiveDdl(unittest.TestCase):

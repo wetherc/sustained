@@ -373,8 +373,8 @@ class TestForeignKeyRestoreWithoutTargetColumns(unittest.TestCase):
         sql = _introspected_fk_sql(compiler, "items", "fk_items_owner", fk)
         self.assertEqual(
             sql,
-            "ALTER TABLE items ADD CONSTRAINT fk_items_owner "
-            "FOREIGN KEY (owner_id) REFERENCES owners",
+            'ALTER TABLE items ADD CONSTRAINT "fk_items_owner" '
+            'FOREIGN KEY ("owner_id") REFERENCES "owners"',
         )
 
     def test_an_unknown_target_table_stays_irreversible(self):

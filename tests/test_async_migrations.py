@@ -1246,9 +1246,9 @@ class TestAsyncModelRuns(unittest.IsolatedAsyncioTestCase):
         stored = json.loads(rows[0][2])
         self.assertEqual(
             stored["up"],
-            ["CREATE TABLE async_run_users (id INTEGER PRIMARY KEY, name TEXT)"],
+            ['CREATE TABLE "async_run_users" ("id" INTEGER PRIMARY KEY, "name" TEXT)'],
         )
-        self.assertEqual(stored["down"], ["DROP TABLE IF EXISTS async_run_users"])
+        self.assertEqual(stored["down"], ['DROP TABLE IF EXISTS "async_run_users"'])
 
     async def test_a_generated_migration_reverts_from_its_row(self):
         migrator = AsyncMigrator(self.adapter, [])

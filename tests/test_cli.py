@@ -453,7 +453,7 @@ class PlanCliTestCase(CliBase):
         code, out, _ = self._run(name, "plan")
         self.assertEqual(code, 2)
         self.assertIn("\n\ndrift\n", out)
-        self.assertIn("CREATE TABLE users", out)
+        self.assertIn('CREATE TABLE "users"', out)
         self.assertIn("2 pending migrations, 1 drift statement", out)
         self.assertIn("run: sustained migrate", out)
         self.assertNotIn("Migrator.sync", out)
@@ -471,7 +471,7 @@ class PlanCliTestCase(CliBase):
         self._run(name, "migrate")
         code, out, _ = self._run(name, "plan")
         self.assertEqual(code, 2)
-        self.assertIn("DROP TABLE flags", out)
+        self.assertIn('DROP TABLE "flags"', out)
         self.assertNotIn("run: sustained migrate", out)
         self.assertIn("migrate does not generate drops", out)
 
@@ -525,7 +525,7 @@ class PlanCliTestCase(CliBase):
         code, out, _ = self._run(name, "plan")
         self.assertEqual(code, 2)
         self.assertIn("drift", out)
-        self.assertIn("CREATE TABLE users", out)
+        self.assertIn('CREATE TABLE "users"', out)
         self.assertIn("run: sustained migrate", out)
 
         # migrate closes the drift it can generate; the drop it will not
@@ -534,7 +534,7 @@ class PlanCliTestCase(CliBase):
         code, out, _ = self._run(name, "plan")
         self.assertEqual(code, 2)
         self.assertNotIn("ADD COLUMN bio", out)
-        self.assertIn("DROP TABLE flags", out)
+        self.assertIn('DROP TABLE "flags"', out)
         self.assertIn("1 drift statement", out)
 
     def test_no_drift_when_models_match(self):
@@ -677,7 +677,7 @@ class JsonOutputTestCase(CliBase):
         self.assertEqual(payload["pending"], [])
         self.assertEqual(len(payload["drift"]), 1)
         self.assertEqual(payload["drift"][0]["destructive"], True)
-        self.assertIn("DROP TABLE flags", payload["drift"][0]["sql"])
+        self.assertIn('DROP TABLE "flags"', payload["drift"][0]["sql"])
         self.assertNotIn("Migrator.sync", stdout.getvalue())
         self.assertEqual(set(payload), {"pending", "problems", "drift"})
 

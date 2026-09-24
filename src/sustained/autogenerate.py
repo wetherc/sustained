@@ -78,6 +78,7 @@ from sustained.introspect import (
 )
 from sustained.migrations import Migration, _ReplayConnection
 from sustained.rebuild import (
+    create_indexes_sql,
     implied_constraint_names,
     rebuild_steps,
     rebuild_turns_foreign_keys_off,
@@ -1040,7 +1041,7 @@ def _create_table_steps(
     from sustained.schema import column_comment_statements
 
     assert model.tableColumns is not None
-    table_sql = model._qualified_table_sql()
+    table_sql = model._qualified_table_sql(compiler)
     statements = [
         build_create_table_sql(
             compiler,
@@ -1054,7 +1055,7 @@ def _create_table_steps(
     statements.extend(
         column_comment_statements(compiler, table_sql, model.tableColumns)
     )
-    statements.extend(model.create_indexes_sql())
+    statements.extend(create_indexes_sql(compiler, model))
     return statements
 
 
@@ -1065,7 +1066,7 @@ def _deferred_foreign_key_steps(
     The (add, drop) statement pairs for every foreign key a new table
     needs, once CREATE TABLE has left them out.
     """
-    table_sql = model._qualified_table_sql()
+    table_sql = model._qualified_table_sql(compiler)
     pairs: List[Tuple[str, str]] = []
     for name, coldef in (model.tableColumns or {}).items():
         if coldef.references is None:
@@ -1270,7 +1271,9 @@ def autogenerate(
     fk_downs: List[str] = []
     for model in diff.missing_tables:
         up_steps.extend(_create_table_steps(compiler, model, defer_foreign_keys))
-        table_downs.insert(0, model.drop_table_sql())
+        table_downs.insert(
+            0, f"DROP TABLE IF EXISTS {model._qualified_table_sql(compiler)}"
+        )
     if defer_foreign_keys:
         for model in diff.missing_tables:
             for add_sql, drop_sql in _deferred_foreign_key_steps(compiler, model):
@@ -1313,7 +1316,7 @@ def autogenerate(
             if _rebuild_needed(compiler, "change a column"):
                 rebuild_tables[table.lower()] = model
                 continue
-            table_sql = model._qualified_table_sql()
+            table_sql = model._qualified_table_sql(compiler)
             expected_type = compiler.compile_column_type(coldef)
             if _column_type_changed(compiler, coldef, expected_type, actual_col):
                 using = type_casts.get(f"{table}.{name}")
@@ -1413,7 +1416,9 @@ def autogenerate(
             and coldef.default is None
             and coldef.backfill is None
             and not coldef.primary_key
-            and _table_has_rows(connection, compiler, model._qualified_table_sql())
+            and _table_has_rows(
+                connection, compiler, model._qualified_table_sql(compiler)
+            )
         ):
             raise ValueError(
                 f"Cannot add NOT NULL column '{model.tableName}.{name}' "
@@ -1428,7 +1433,7 @@ def autogenerate(
                 "primary key and autoincrement columns need a hand-written "
                 "migration."
             )
-        table_sql = model._qualified_table_sql()
+        table_sql = model._qualified_table_sql(compiler)
         if not coldef.nullable and coldef.default is None:
             if _rebuild_needed(compiler, "add a NOT NULL column"):
                 rebuild_tables[table_key] = model
@@ -1480,7 +1485,7 @@ def autogenerate(
         model = models_by_table[table.lower()]
         assert model.tableColumns is not None
         coldef = model.tableColumns[name]
-        table_sql = model._qualified_table_sql()
+        table_sql = model._qualified_table_sql(compiler)
         state = restated_states.get((table.lower(), name.lower()))
         if state is None:
             state = _introspected_state(actual[table.lower()].columns[name.lower()])
@@ -1550,7 +1555,7 @@ def autogenerate(
 
     # Index changes.
     for model, index in diff.new_indexes:
-        table_sql = model._qualified_table_sql()
+        table_sql = model._qualified_table_sql(compiler)
         up_steps.append(
             compiler.compile_create_index(
                 index.name, table_sql, list(index.columns), index.unique
@@ -1558,7 +1563,7 @@ def autogenerate(
         )
         down_steps.insert(0, compiler.compile_drop_index(index.name, table_sql))
     for model, index, actual_index in diff.changed_indexes:
-        table_sql = model._qualified_table_sql()
+        table_sql = model._qualified_table_sql(compiler)
         up_steps.append(compiler.compile_drop_index(index.name, table_sql))
         up_steps.append(
             compiler.compile_create_index(
@@ -1578,7 +1583,7 @@ def autogenerate(
     for model, check in diff.new_checks:
         if (model.tableName or "").lower() in rebuild_tables:
             continue
-        table_sql = model._qualified_table_sql()
+        table_sql = model._qualified_table_sql(compiler)
         up_steps.append(
             compiler.compile_add_check(table_sql, check.name, check.expression)
         )
@@ -1586,14 +1591,14 @@ def autogenerate(
     for model, fk in diff.new_foreign_keys:
         if (model.tableName or "").lower() in rebuild_tables:
             continue
-        table_sql = model._qualified_table_sql()
+        table_sql = model._qualified_table_sql(compiler)
         up_steps.append(_declared_fk_sql(compiler, table_sql, fk))
         down_steps.insert(0, compiler.compile_drop_foreign_key(table_sql, fk.name))
     if allow_drops:
         for model, fk, actual_fk in diff.changed_foreign_keys:
             if (model.tableName or "").lower() in rebuild_tables:
                 continue
-            table_sql = model._qualified_table_sql()
+            table_sql = model._qualified_table_sql(compiler)
             up_steps.append(compiler.compile_drop_foreign_key(table_sql, fk.name))
             up_steps.append(_declared_fk_sql(compiler, table_sql, fk))
             restore = _introspected_fk_sql(compiler, table_sql, fk.name, actual_fk)

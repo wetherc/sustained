@@ -154,9 +154,10 @@ class TestEnumRendering(unittest.TestCase):
 
     def test_default_dialect_renders_varchar_with_check(self):
         sql = EnumPost.create_table_sql()
-        self.assertIn("status VARCHAR(9) NOT NULL", sql)
+        self.assertIn('"status" VARCHAR(9) NOT NULL', sql)
         self.assertIn(
-            "CONSTRAINT ck_posts_status_enum CHECK (status IN ('draft', 'published'))",
+            'CONSTRAINT "ck_posts_status_enum" '
+            """CHECK ("status" IN ('draft', 'published'))""",
             sql,
         )
 
@@ -507,7 +508,7 @@ class TestEnumTypeDiffing(unittest.TestCase):
             "CREATE TYPE \"post_status\" AS ENUM ('draft', 'published')",
         )
         self.assertIn(
-            'ALTER TABLE posts ALTER COLUMN "status" TYPE "post_status" '
+            'ALTER TABLE "posts" ALTER COLUMN "status" TYPE "post_status" '
             "USING status::post_status",
             migration.up,
         )

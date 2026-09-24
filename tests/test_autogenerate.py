@@ -124,15 +124,15 @@ class TestAutogenerate(AutogenTestCase):
 
     def test_create_table_migration_is_reversible(self):
         migration = autogenerate(self.conn, [self.User], id="m1")
-        self.assertEqual(migration.down, ["DROP TABLE IF EXISTS ag_users"])
+        self.assertEqual(migration.down, ['DROP TABLE IF EXISTS "ag_users"'])
         self.assertIn("CREATE TABLE", migration.up[0])
 
     def test_add_column_migration_is_reversible(self):
         self.User.create_table(self.conn)
         self.User.tableColumns["bio"] = Text()
         migration = autogenerate(self.conn, [self.User], id="m2")
-        self.assertEqual(migration.up, ["ALTER TABLE ag_users ADD COLUMN bio TEXT"])
-        self.assertEqual(migration.down, ["ALTER TABLE ag_users DROP COLUMN bio"])
+        self.assertEqual(migration.up, ['ALTER TABLE "ag_users" ADD COLUMN "bio" TEXT'])
+        self.assertEqual(migration.down, ['ALTER TABLE "ag_users" DROP COLUMN "bio"'])
 
     def test_drops_require_opt_in(self):
         self.User.create_table(self.conn)
@@ -140,7 +140,7 @@ class TestAutogenerate(AutogenTestCase):
         with self.assertRaises(ValueError):
             autogenerate(self.conn, [self.User], id="m3")
         migration = autogenerate(self.conn, [self.User], id="m3", allow_drops=True)
-        self.assertEqual(migration.up, ["ALTER TABLE ag_users DROP COLUMN legacy"])
+        self.assertEqual(migration.up, ['ALTER TABLE "ag_users" DROP COLUMN "legacy"'])
         self.assertIsNone(migration.down)
 
     def test_changed_columns_rebuild_on_sqlite(self):
@@ -283,7 +283,9 @@ class TestIndexDiffing(AutogenTestCase):
 
         model = self._indexed_user(Index("ix_email", "email", unique=True))
         migration = autogenerate(self.conn, [model], id="ix1")
-        self.assertIn("CREATE UNIQUE INDEX ix_email ON ag_users (email)", migration.up)
+        self.assertIn(
+            'CREATE UNIQUE INDEX "ix_email" ON "ag_users" ("email")', migration.up
+        )
 
     def test_new_index_on_existing_table(self):
         from sustained.schema import Index
@@ -292,8 +294,10 @@ class TestIndexDiffing(AutogenTestCase):
         plain.create_table(self.conn)
         indexed = self._indexed_user(Index("ix_email", "email"))
         migration = autogenerate(self.conn, [indexed], id="ix2")
-        self.assertEqual(migration.up, ["CREATE INDEX ix_email ON ag_users (email)"])
-        self.assertEqual(migration.down, ["DROP INDEX ix_email"])
+        self.assertEqual(
+            migration.up, ['CREATE INDEX "ix_email" ON "ag_users" ("email")']
+        )
+        self.assertEqual(migration.down, ['DROP INDEX "ix_email"'])
 
     def test_changed_index_rebuilds(self):
         from sustained.schema import Index
@@ -305,8 +309,8 @@ class TestIndexDiffing(AutogenTestCase):
         self.assertEqual(
             migration.up,
             [
-                "DROP INDEX ix_email",
-                "CREATE UNIQUE INDEX ix_email ON ag_users (email)",
+                'DROP INDEX "ix_email"',
+                'CREATE UNIQUE INDEX "ix_email" ON "ag_users" ("email")',
             ],
         )
 
@@ -317,8 +321,10 @@ class TestIndexDiffing(AutogenTestCase):
         with self.assertRaises(ValueError):
             autogenerate(self.conn, [plain], id="ix4")
         migration = autogenerate(self.conn, [plain], id="ix4", allow_drops=True)
-        self.assertEqual(migration.up, ["DROP INDEX stray_ix"])
-        self.assertEqual(migration.down, ["CREATE INDEX stray_ix ON ag_users (email)"])
+        self.assertEqual(migration.up, ['DROP INDEX "stray_ix"'])
+        self.assertEqual(
+            migration.down, ['CREATE INDEX "stray_ix" ON "ag_users" ("email")']
+        )
 
     def test_unique_column_backing_index_not_extra(self):
         model = make_model(
@@ -353,11 +359,11 @@ class TestRenameHints(AutogenTestCase):
         )
         self.assertEqual(
             migration.up,
-            ["ALTER TABLE ag_users RENAME COLUMN email TO contact_email"],
+            ['ALTER TABLE "ag_users" RENAME COLUMN "email" TO "contact_email"'],
         )
         self.assertEqual(
             migration.down,
-            ["ALTER TABLE ag_users RENAME COLUMN contact_email TO email"],
+            ['ALTER TABLE "ag_users" RENAME COLUMN "contact_email" TO "email"'],
         )
 
     def test_table_rename(self):
@@ -373,8 +379,10 @@ class TestRenameHints(AutogenTestCase):
         migration = autogenerate(
             self.conn, [moved], id="r2", table_renames={"ag_users": "ag_people"}
         )
-        self.assertEqual(migration.up, ["ALTER TABLE ag_users RENAME TO ag_people"])
-        self.assertEqual(migration.down, ["ALTER TABLE ag_people RENAME TO ag_users"])
+        self.assertEqual(migration.up, ['ALTER TABLE "ag_users" RENAME TO "ag_people"'])
+        self.assertEqual(
+            migration.down, ['ALTER TABLE "ag_people" RENAME TO "ag_users"']
+        )
 
     def test_unknown_rename_targets_raise(self):
         self.User.create_table(self.conn)
@@ -895,7 +903,10 @@ class TestMissingTableOrder(unittest.TestCase):
         self.assertTrue(diff_schema(self.conn, self.models()).is_empty())
         self.assertEqual(
             migration.down,
-            ["DROP TABLE IF EXISTS ord_tickets", "DROP TABLE IF EXISTS ord_shows"],
+            [
+                'DROP TABLE IF EXISTS "ord_tickets"',
+                'DROP TABLE IF EXISTS "ord_shows"',
+            ],
         )
 
     def test_a_long_chain_of_tables_orders_without_recursion(self):

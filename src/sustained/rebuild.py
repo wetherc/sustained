@@ -43,6 +43,21 @@ def implied_constraint_names(
     return check_names, fk_columns
 
 
+def create_indexes_sql(compiler: "Compiler", model: Type["Model"]) -> List[str]:
+    """
+    The CREATE INDEX statements for a model's declared indexes, rendered
+    for the dialect a migration is generated for rather than the one the
+    model is bound to.
+    """
+    table_sql = model._qualified_table_sql(compiler)
+    return [
+        compiler.compile_create_index(
+            index.name, table_sql, list(index.columns), index.unique
+        )
+        for index in model.indexes or []
+    ]
+
+
 def rebuild_steps(
     compiler: "Compiler",
     model: Type["Model"],
@@ -58,7 +73,8 @@ def rebuild_steps(
     """
     assert model.tableColumns is not None and model.tableName is not None
     table = model.tableName
-    temp = f"{table}_sustained_new"
+    table_sql = compiler.quote_ddl_identifier(table)
+    temp_sql = compiler.quote_ddl_identifier(f"{table}_sustained_new")
     declared = {name.lower() for name in model.tableColumns}
     undeclared: Dict[str, IntrospectedColumn] = (
         {}
@@ -77,7 +93,7 @@ def rebuild_steps(
         and name.startswith("sqlite_autoindex")
     }
     extras = [
-        _introspected_column_sql(name, col, unique=name in unique_undeclared)
+        _introspected_column_sql(compiler, name, col, unique=name in unique_undeclared)
         for name, col in undeclared.items()
     ]
     if not allow_drops:
@@ -85,7 +101,7 @@ def rebuild_steps(
     steps = [
         build_create_table_sql(
             compiler,
-            temp,
+            temp_sql,
             model.tableColumns,
             extras=extras,
             constraints=model.tableConstraints,
@@ -95,13 +111,14 @@ def rebuild_steps(
     select_parts: List[str] = []
     insert_columns: List[str] = []
     for name, coldef in model.tableColumns.items():
-        insert_columns.append(name)
+        name_sql = compiler.quote_ddl_identifier(name)
+        insert_columns.append(name_sql)
         exists = name.lower() in actual_table.columns
         if exists and not coldef.nullable and coldef.backfill is not None:
             filler = compiler.format_value(coldef.backfill)
-            select_parts.append(f"COALESCE({name}, {filler})")
+            select_parts.append(f"COALESCE({name_sql}, {filler})")
         elif exists:
-            select_parts.append(name)
+            select_parts.append(name_sql)
         elif coldef.backfill is not None:
             select_parts.append(compiler.format_value(coldef.backfill))
         elif coldef.default is not None:
@@ -109,19 +126,19 @@ def rebuild_steps(
         else:
             select_parts.append("NULL")
     for name in undeclared:
-        insert_columns.append(name)
-        select_parts.append(name)
+        insert_columns.append(compiler.quote_ddl_identifier(name))
+        select_parts.append(compiler.quote_ddl_identifier(name))
 
     steps.append(
-        f"INSERT INTO {temp} ({', '.join(insert_columns)}) "
-        f"SELECT {', '.join(select_parts)} FROM {table}"
+        f"INSERT INTO {temp_sql} ({', '.join(insert_columns)}) "
+        f"SELECT {', '.join(select_parts)} FROM {table_sql}"
     )
-    steps.append(f"DROP TABLE {table}")
-    steps.append(compiler.compile_rename_table(temp, table))
-    steps.extend(model.create_indexes_sql())
+    steps.append(f"DROP TABLE {table_sql}")
+    steps.append(compiler.compile_rename_table(temp_sql, table_sql))
+    steps.extend(create_indexes_sql(compiler, model))
     steps.extend(
         _undeclared_index_sql(
-            compiler, table, model, actual_table, declared, undeclared
+            compiler, table_sql, model, actual_table, declared, undeclared
         )
     )
     return steps
@@ -176,10 +193,10 @@ def _carried_constraint_sql(
 
 
 def _introspected_column_sql(
-    name: str, col: IntrospectedColumn, unique: bool = False
+    compiler: "Compiler", name: str, col: IntrospectedColumn, unique: bool = False
 ) -> str:
     """Renders an introspected column back into a CREATE TABLE part."""
-    parts = [name]
+    parts = [compiler.quote_ddl_identifier(name)]
     if col.raw_type:
         parts.append(col.raw_type)
     if not col.nullable:
@@ -193,7 +210,7 @@ def _introspected_column_sql(
 
 def _undeclared_index_sql(
     compiler: "Compiler",
-    table: str,
+    table_sql: str,
     model: Type["Model"],
     actual_table: IntrospectedTable,
     declared_columns: Set[str],
@@ -213,7 +230,6 @@ def _undeclared_index_sql(
             continue
         if not all(column in surviving for column in index.columns):
             continue
-        table_sql = compiler.quote_fully_qualified_ddl_identifier(table)
         statements.append(
             compiler.compile_create_index(
                 name, table_sql, list(index.columns), index.unique

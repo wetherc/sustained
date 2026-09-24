@@ -31,7 +31,7 @@ Async execution wraps a driver in an adapter instead: `AsyncpgAdapter` for async
 
 ## Default (ANSI, SQLite)
 
-The default dialect renders plain ANSI SQL with unquoted identifiers and `?` placeholders. Sustained treats this dialect as executing against SQLite.
+The default dialect renders plain ANSI SQL with `?` placeholders. Sustained treats this dialect as executing against SQLite. Queries write identifiers without quotes, while DDL puts each identifier in double quotes. The DDL covers `CREATE TABLE`, `ALTER TABLE`, `CREATE INDEX`, `DROP INDEX`, and the statements of a table rebuild, so a table or column named after a keyword, such as `order`, creates, rebuilds, and drops like any other name.
 
 ```python
 import sqlite3

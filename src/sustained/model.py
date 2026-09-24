@@ -20,6 +20,7 @@ from sustained.types import Binding, CaseResult, Connection, RelationMapping
 
 if TYPE_CHECKING:
     from sustained.aio import AsyncAdapter
+    from sustained.compilers.base import Compiler
     from sustained.expressions import ColumnExpr
     from sustained.schema import ColumnDef, Index, TableConstraint, TableOptions
 
@@ -364,12 +365,15 @@ class Model(metaclass=ModelMeta):
         return async_transaction(resolved, cls._dialect)
 
     @classmethod
-    def _qualified_table_sql(cls) -> str:
+    def _qualified_table_sql(cls, compiler: Optional["Compiler"] = None) -> str:
         # Only DDL statements use this name, so it quotes with the
         # dialect's DDL rule. Queries quote their own table references.
+        # Migration generation passes the compiler it renders for, which
+        # can differ from the dialect the model is bound to.
         from sustained.dialects import Dialects
 
-        compiler = Dialects.get_compiler(cls._dialect)
+        if compiler is None:
+            compiler = Dialects.get_compiler(cls._dialect)
         parts = []
         if cls.database:
             parts.append(compiler.quote_ddl_identifier(cls.database))
