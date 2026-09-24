@@ -137,17 +137,24 @@ def resolve_model_reference(
     )
 
 
-def _qualified_column(cls: Type["Model"], name: str) -> str:
-    """Builds the fully qualified column string for a model class."""
+def qualified_table_name(cls: Type["Model"]) -> str:
+    """
+    The model's table name with its database and schema in front, such as
+    "sales.orders", unquoted.
+    """
     parts = []
     if cls.database:
         parts.append(cls.database)
     if cls.tableSchema:
         parts.append(cls.tableSchema)
-    assert cls.tableName is not None
+    assert cls.tableName is not None, "Model used in a relation must have a tableName"
     parts.append(cls.tableName)
-    parts.append(name)
     return ".".join(parts)
+
+
+def _qualified_column(cls: Type["Model"], name: str) -> str:
+    """Builds the fully qualified column string for a model class."""
+    return f"{qualified_table_name(cls)}.{name}"
 
 
 def _check_declared_columns(cls: Type["Model"], name: str) -> None:

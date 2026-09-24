@@ -25,6 +25,22 @@ if TYPE_CHECKING:
     from ..model import Model
 
 
+def _column_on(reference: str, model_class: Type["Model"]) -> Optional[str]:
+    """
+    The column a join mapping's "to" reference names on the related model,
+    or None when the reference names another table. The reference may name
+    the table bare, as "orders.id", or qualified, as "sales.orders.id".
+    """
+    from ..model import qualified_table_name
+
+    if "." not in reference:
+        return None
+    table, column = reference.rsplit(".", 1)
+    if table in (model_class.tableName, qualified_table_name(model_class)):
+        return column
+    return None
+
+
 class OnClauseBuilder:
     """
     A helper class for building complex JOIN ... ON clauses.
@@ -329,12 +345,11 @@ class JoinClauseBuilder:
         alias: Optional[str] = None,
     ) -> None:
         """Adds a basic (e.g., one-to-one, one-to-many) join to the query."""
-        final_related_table_name = related_model_class.tableName
-        assert (
-            final_related_table_name is not None
-        ), "Model used in a relation must have a tableName"
+        from ..model import qualified_table_name
+
+        related_table = qualified_table_name(related_model_class)
         quoted_related_table = self._compiler.quote_fully_qualified_identifier(
-            final_related_table_name
+            related_table
         )
 
         from_col = self._compiler.quote_fully_qualified_identifier(join_info["from"])
@@ -346,12 +361,10 @@ class JoinClauseBuilder:
             quoted_alias = self._compiler.quote_alias(alias)
             join_table_part = f"{quoted_related_table} AS {quoted_alias}"
             # If an alias is used, update the `ON` clause to reference it.
-            to_ref = join_info["to"]
-            if "." in to_ref:
-                to_table, to_column = to_ref.split(".", 1)
-                if to_table == final_related_table_name:
-                    quoted_to_column = self._compiler.quote_identifier(to_column)
-                    on_clause = f"{from_col} = {quoted_alias}.{quoted_to_column}"
+            to_column = _column_on(join_info["to"], related_model_class)
+            if to_column is not None:
+                quoted_to_column = self._compiler.quote_identifier(to_column)
+                on_clause = f"{from_col} = {quoted_alias}.{quoted_to_column}"
 
         join_clause = f"{join_type} {join_table_part} ON {on_clause}"
         self._joins.append(join_clause)
@@ -364,12 +377,10 @@ class JoinClauseBuilder:
         alias: Optional[str] = None,
     ) -> None:
         """Adds a many-to-many join using a 'through' table."""
-        related_table_name_from_model = related_model_class.tableName
-        assert (
-            related_table_name_from_model is not None
-        ), "Model used in a relation must have a tableName"
+        from ..model import qualified_table_name
+
         quoted_related_table = self._compiler.quote_fully_qualified_identifier(
-            related_table_name_from_model
+            qualified_table_name(related_model_class)
         )
 
         # First join: from the base model's table to the 'through' table.
@@ -381,11 +392,7 @@ class JoinClauseBuilder:
         if isinstance(through_table_ref, str):
             through_table_name = through_table_ref
         else:
-            table_name = through_table_ref.tableName
-            assert (
-                table_name is not None
-            ), "Model used as a through table must have a tableName"
-            through_table_name = table_name
+            through_table_name = qualified_table_name(through_table_ref)
         quoted_through_table = self._compiler.quote_fully_qualified_identifier(
             through_table_name
         )
@@ -420,12 +427,10 @@ class JoinClauseBuilder:
             quoted_alias = self._compiler.quote_alias(alias)
             join_table_part = f"{quoted_related_table} AS {quoted_alias}"
             # If an alias is used, update the `ON` clause to reference it.
-            to_ref = join_info["to"]
-            if "." in to_ref:
-                to_table, to_column = to_ref.split(".", 1)
-                if to_table == related_table_name_from_model:
-                    quoted_to_column = self._compiler.quote_identifier(to_column)
-                    on_clause2 = f"{quoted_through_table}.{through_to_key} = {quoted_alias}.{quoted_to_column}"
+            to_column = _column_on(join_info["to"], related_model_class)
+            if to_column is not None:
+                quoted_to_column = self._compiler.quote_identifier(to_column)
+                on_clause2 = f"{quoted_through_table}.{through_to_key} = {quoted_alias}.{quoted_to_column}"
 
         second_join_type = "INNER JOIN" if join_type == "JOIN" else join_type
         join_clause2 = f"{second_join_type} {join_table_part} ON {on_clause2}"

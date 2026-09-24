@@ -30,7 +30,7 @@ print(Venue.query())
 # SELECT * FROM analytics.public.venues
 ```
 
-Sustained joins the parts with dots in the order database, schema, table. Both extra attributes default to `None`, and the query leaves out any part that is `None`. Quoting follows the dialect you set, so on Postgres the same class renders `"analytics"."public"."venues"`.
+Sustained joins the parts with dots in the order database, schema, table. Both extra attributes default to `None`, and the query leaves out any part that is `None`. Quoting follows the dialect you set, so on Postgres the same class renders `"analytics"."public"."venues"`. A relation join to the model, and a many-to-many join through a link table model, use the same qualified name.
 
 ## Columns as attributes
 
