@@ -618,7 +618,7 @@ class QueryBuilder:
             A (sql, params) tuple.
         """
         ctx = RenderContext(self._compiler, parameterize=True)
-        sql = self._render_sql(ctx)
+        sql = ctx.finish(self._render_sql(ctx))
         return sql, tuple(ctx.params)
 
     def limit(self, value: int) -> "QueryBuilder":

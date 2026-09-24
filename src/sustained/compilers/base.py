@@ -389,6 +389,14 @@ class Compiler:
     def placeholder(self) -> str:
         return "?"
 
+    def escapes_percent(self) -> bool:
+        """
+        Reports whether the driver reads a % sign in a statement with
+        parameters as the start of a placeholder. to_sql() then writes each
+        literal % sign as %%, which the driver reads back as one.
+        """
+        return False
+
     def prepare_execution(
         self, sql: str, params: "tuple[SqlValue, ...]"
     ) -> "tuple[str, tuple[SqlValue, ...]]":

@@ -43,7 +43,7 @@ class TestWhereRaw(unittest.TestCase):
         Pg = create_model("RawPgUser", "users")
         Pg.set_dialect(Dialects.POSTGRES)
         sql, params = Pg.query().whereRaw("age % ? = ?", [2, 0]).to_sql()
-        self.assertEqual(sql, 'SELECT * FROM "users" WHERE (age % %s = %s)')
+        self.assertEqual(sql, 'SELECT * FROM "users" WHERE (age %% %s = %s)')
         self.assertEqual(params, (2, 0))
 
     def test_snake_alias(self):

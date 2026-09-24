@@ -9,8 +9,8 @@ driver. Three adapters ship with Sustained:
   supports and is the reference implementation.
 - AiosqliteAdapter wraps an aiosqlite connection.
 - AsyncpgAdapter wraps an asyncpg connection and converts the Postgres
-  compiler's %s placeholders to asyncpg's $1..$n style. A literal %s inside
-  raw SQL text would be converted too; avoid it in raw fragments.
+  compiler's %s placeholders to asyncpg's $1..$n style. It reads %% as one
+  literal % sign, the way psycopg does.
 
 Bind an adapter with Model.bind_async(adapter), then use arun(), afirst(),
 and ato_dicts() on queries. async_transaction() gives atomic blocks; the
@@ -20,6 +20,8 @@ pin travels through a ContextVar, so concurrent tasks do not share it.
 from __future__ import annotations
 
 import asyncio
+import itertools
+import re
 import time
 from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
@@ -58,6 +60,9 @@ if TYPE_CHECKING:
     from sustained.types import AnyQuery
 
 _T = TypeVar("_T")
+
+# A %s placeholder or a doubled % sign in a statement for asyncpg.
+_FORMAT_MARKER_RE = re.compile("%%|%s")
 
 
 class AiosqliteConnection(Protocol):
@@ -442,13 +447,14 @@ class AiosqliteAdapter(AsyncAdapter):
 
 
 def convert_format_to_numbered(sql: str) -> str:
-    """Converts %s placeholders to $1..$n for asyncpg."""
-    pieces = sql.split("%s")
-    out = [pieces[0]]
-    for index, piece in enumerate(pieces[1:], start=1):
-        out.append(f"${index}")
-        out.append(piece)
-    return "".join(out)
+    """
+    Converts %s placeholders to $1..$n for asyncpg, and %% to the one %
+    sign that to_sql() doubled.
+    """
+    numbers = itertools.count(1)
+    return _FORMAT_MARKER_RE.sub(
+        lambda m: "%" if m.group() == "%%" else f"${next(numbers)}", sql
+    )
 
 
 class AsyncpgAdapter(AsyncAdapter):

@@ -17,6 +17,12 @@ if TYPE_CHECKING:
     from sustained.compilers.base import Compiler
 
 
+# Stands in for each placeholder while a parameterized statement renders
+# on a dialect whose driver reads % as the start of a placeholder. finish()
+# doubles every other % sign and then writes the real placeholders.
+_PLACEHOLDER_MARK = "\x00"
+
+
 class RenderContext:
     """Carries rendering state through a single render pass."""
 
@@ -24,6 +30,7 @@ class RenderContext:
         self.compiler = compiler
         self.parameterize = parameterize
         self.params: List[SqlValue] = []
+        self._escape_percent = parameterize and compiler.escapes_percent()
 
     def value(self, value: SqlValue) -> str:
         """
@@ -37,8 +44,34 @@ class RenderContext:
             return str(value)
         if self.parameterize:
             self.params.append(value)
+            if self._escape_percent:
+                return _PLACEHOLDER_MARK
             return self.compiler.placeholder()
         return self.compiler.format_value(value)
+
+    def finish(self, sql: str) -> str:
+        """
+        The statement text as the driver reads it.
+
+        psycopg and the MySQL drivers read % in a statement with parameters
+        as the start of a placeholder, so `price % ?` or the literal
+        '100%' would reach them as a broken placeholder. On those dialects
+        every % in the text is doubled and each value's placeholder is
+        written as %s. The text is returned unchanged elsewhere.
+
+        Raises:
+            ValueError: If the text contains a NUL character, which would
+                be read as a placeholder.
+        """
+        if not self._escape_percent:
+            return sql
+        pieces = sql.split(_PLACEHOLDER_MARK)
+        if len(pieces) - 1 != len(self.params):
+            raise ValueError(
+                "The statement text contains a NUL character. Remove it, or "
+                "bind the value that contains it as a parameter."
+            )
+        return self.compiler.placeholder().join(p.replace("%", "%%") for p in pieces)
 
 
 Renderable = Union[str, Callable[[RenderContext], str]]

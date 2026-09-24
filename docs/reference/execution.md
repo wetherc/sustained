@@ -296,7 +296,7 @@ convert_format_to_numbered(sql) -> str
 ```
 {: .sig #convert_format_to_numbered}
 
-Rewrites `%s` markers to `$1..$n`.
+Rewrites `%s` markers to `$1..$n` and each `%%` to one `%` sign.
 
 The transaction pin lives in a `ContextVar`, so it follows the task tree rather than the thread.
 

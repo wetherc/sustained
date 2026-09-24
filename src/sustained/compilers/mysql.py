@@ -27,7 +27,7 @@ class MysqlCompiler(Compiler):
     Compiler for MySQL and MariaDB.
 
     Identifiers quote with backticks and placeholders are `%s`, matching
-    PyMySQL, mysqlclient, and mysql-connector. The type map renders each
+    PyMySQL and mysqlclient. The type map renders each
     logical type in the spelling `information_schema` reports back, so a
     column never drifts against the DDL that created it.
 
@@ -47,8 +47,12 @@ class MysqlCompiler(Compiler):
         return True
 
     def placeholder(self) -> str:
-        # The %s style used by PyMySQL, mysqlclient, and mysql-connector.
+        # The %s style used by PyMySQL and mysqlclient.
         return "%s"
+
+    def escapes_percent(self) -> bool:
+        # PyMySQL and mysqlclient read %% as one literal % sign.
+        return True
 
     def format_value(self, value: SqlValue) -> str:
         if isinstance(value, str):

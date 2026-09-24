@@ -309,6 +309,13 @@ class QueriesCase(unittest.TestCase):
         rows = self.Widget.query().whereIn("maker_id", acme).run()
         self.assertEqual({"hinge", "bracket"}, {row.name for row in rows})
 
+    def test_a_percent_sign_in_raw_sql_reaches_the_server(self):
+        self.seed()
+        odd = self.Widget.query().whereRaw("size % ? = ?", [2, 1]).run()
+        self.assertEqual({1, 2, 3, 5}, {row.id for row in odd})
+        prefixed = self.Widget.query().whereRaw("name LIKE 'h%'").run()
+        self.assertEqual(["hinge"], [row.name for row in prefixed])
+
     # Paging
 
     def test_limit_and_offset_follow_the_dialect(self):

@@ -31,6 +31,10 @@ class PostgresCompiler(Compiler):
         # The %s style used by psycopg and psycopg2.
         return "%s"
 
+    def escapes_percent(self) -> bool:
+        # psycopg and psycopg2 read %% as one literal % sign.
+        return True
+
     def compile_like(self, column_sql: str, pattern_sql: str, operator: str) -> str:
         # Postgres supports ILIKE natively.
         return f"{column_sql} {operator} {pattern_sql}"

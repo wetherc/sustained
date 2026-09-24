@@ -412,6 +412,8 @@ Show.query().select('title').where('id', '=', 1).to_sql()
 # ('SELECT "title" FROM "shows" WHERE "id" = %s', (1,))
 ```
 
+On Postgres and MySQL, `to_sql()` writes every literal `%` sign in the text as `%%`, because psycopg, PyMySQL, and mysqlclient read a bare `%` as the start of a placeholder. The driver reads `%%` back as one `%`, so `whereRaw('price % ? = ?', [10, 0])` and a `Literal('100%')` reach the database as written. `str(query)` keeps the single `%`.
+
 ## Where to go next
 
 | You want to | Read |
