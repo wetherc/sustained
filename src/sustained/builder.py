@@ -335,11 +335,12 @@ class QueryBuilder:
         if isinstance(table, QueryBuilder):
             if not alias:
                 raise ValueError("Subqueries in FROM clause must have an alias.")
+            self._compiler.quote_alias(alias)
             self._from_source = (table, alias)
         elif isinstance(table, str):
             quoted = self._compiler.quote_table_reference(table)
             if alias:
-                quoted += f" AS {self._compiler.quote_identifier(alias)}"
+                quoted += f" AS {self._compiler.quote_alias(alias)}"
             self._from_source = quoted
         else:
             raise TypeError(
@@ -369,6 +370,7 @@ class QueryBuilder:
         """
         if not isinstance(subquery, QueryBuilder):
             raise TypeError("CTE subquery must be a QueryBuilder instance.")
+        self._compiler.quote_alias(table_alias)
         self._with_clauses.append((table_alias, subquery, recursive))
         return self
 
@@ -404,7 +406,7 @@ class QueryBuilder:
         if isinstance(self._from_source, tuple):
             sub_query, sub_alias = self._from_source
             rendered_sub = sub_query._render_sql(ctx, include_ctes=False)
-            quoted_alias = self._compiler.quote_identifier(sub_alias)
+            quoted_alias = self._compiler.quote_alias(sub_alias)
             full_table_name = f"({rendered_sub}) AS {quoted_alias}"
         elif isinstance(self._from_source, str):
             full_table_name = self._from_source
@@ -540,7 +542,7 @@ class QueryBuilder:
                         )
                     unique_ctes[alias] = subquery
                 cte_strs = [
-                    f"{alias} AS ({subquery._render_sql(ctx, include_ctes=False)})"
+                    f"{self._compiler.quote_alias(alias)} AS ({subquery._render_sql(ctx, include_ctes=False)})"
                     for alias, subquery in unique_ctes.items()
                 ]
                 with_keyword = self._compiler.compile_with_keyword(any_recursive)

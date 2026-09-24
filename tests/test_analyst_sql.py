@@ -32,7 +32,7 @@ class TestRecursiveCtes(unittest.TestCase):
         Ms.set_dialect(Dialects.MSSQL)
         base = Ms.query().select("id")
         sql = str(Ms.query().with_("tree", base, recursive=True).from_("tree"))
-        self.assertTrue(sql.startswith("WITH tree AS ("))
+        self.assertTrue(sql.startswith("WITH [tree] AS ("))
 
 
 class TestSetOperations(unittest.TestCase):

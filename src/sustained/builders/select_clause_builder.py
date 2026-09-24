@@ -112,7 +112,7 @@ class SelectClauseBuilder:
             quoted_column = compiler.quote_column_reference(
                 alias_match.group("column").strip()
             )
-            quoted_alias = compiler.quote_identifier(alias_match.group("alias"))
+            quoted_alias = compiler.quote_alias(alias_match.group("alias"))
             return f"{quoted_column} AS {quoted_alias}"
         return compiler.quote_column_reference(column)
 

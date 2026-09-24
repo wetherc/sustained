@@ -255,7 +255,7 @@ class Compiler:
         name would run outside the quotes. Aliases take letters, digits,
         and underscores only.
         """
-        if not _IDENTIFIER_PATH_RE.match(alias):
+        if not _IDENTIFIER_RE.match(alias):
             raise ValueError(
                 f"Alias {alias!r} is not a plain identifier. An alias takes "
                 "letters, digits, and underscores, and starts with a letter "

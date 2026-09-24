@@ -124,6 +124,7 @@ Invalid input the builder can detect. The method you call raises some of these, 
 | A name that is not plain letters, digits, and underscores, on the default dialect | `join`, `on` |
 | A `Predicate` passed with an operator or a value | `where`, `having` |
 | A subquery in `from_()` with no alias | FROM |
+| An alias that is not letters, digits, and underscores | `from_`, `with_`, a relation join's `alias=`, `'column AS alias'` |
 | Rows in a multi-row insert with different columns | `insert` |
 | `merge()` or `ignore()` without `onConflict()` | Upserts |
 | Both `skip_locked` and `nowait` | `for_update` |
@@ -142,6 +143,7 @@ Invalid input the builder can detect. The method you call raises some of these, 
 | `UPDATE` or `DELETE` with no `where()` |
 | A column string that is not a column name, `table.*`, or a call on one column, in `select`, `orderBy`, `groupBy`, `distinctOn`, or `returning` |
 | Two different subqueries sharing a CTE alias |
+| A `Subquery`, `Func`, aggregate, window, or `CASE` alias that is not letters, digits, and underscores |
 | `merge()` where every inserted column is a conflict column |
 | A raw fragment whose `?` count does not match its parameters |
 | An `INSERT` with a `WHERE` clause |

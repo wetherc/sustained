@@ -343,7 +343,7 @@ class JoinClauseBuilder:
 
         join_table_part = quoted_related_table
         if alias:
-            quoted_alias = self._compiler.quote_identifier(alias)
+            quoted_alias = self._compiler.quote_alias(alias)
             join_table_part = f"{quoted_related_table} AS {quoted_alias}"
             # If an alias is used, update the `ON` clause to reference it.
             to_ref = join_info["to"]
@@ -399,7 +399,7 @@ class JoinClauseBuilder:
                     "Pass alias= to join through it again."
                 )
             link_alias = f"{alias}_{through_table_name.rsplit('.', 1)[-1]}"
-            quoted_through_table = self._compiler.quote_identifier(link_alias)
+            quoted_through_table = self._compiler.quote_alias(link_alias)
             through_table_part = f"{through_table_part} AS {quoted_through_table}"
         self._link_tables.add(through_table_name)
 
@@ -417,7 +417,7 @@ class JoinClauseBuilder:
 
         join_table_part = quoted_related_table
         if alias:
-            quoted_alias = self._compiler.quote_identifier(alias)
+            quoted_alias = self._compiler.quote_alias(alias)
             join_table_part = f"{quoted_related_table} AS {quoted_alias}"
             # If an alias is used, update the `ON` clause to reference it.
             to_ref = join_info["to"]

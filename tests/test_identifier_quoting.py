@@ -9,12 +9,13 @@ is refused rather than rendered.
 
 import unittest
 
-from sustained import Model, QueryBuilder
+from sustained import Model, QueryBuilder, RelationType
 from sustained.dialects import Dialects
 from sustained.expressions import (
     AggregateExpression,
     CaseExpression,
     Func,
+    Subquery,
     WindowExpression,
 )
 
@@ -79,6 +80,12 @@ class TestAliasValidation(unittest.TestCase):
     def test_plain_alias_is_quoted(self):
         compiler = Dialects.get_compiler(Dialects.POSTGRES)
         self.assertEqual(compiler.quote_alias("total_count"), '"total_count"')
+
+    def test_dotted_alias_is_refused(self):
+        for dialect in Dialects:
+            with self.subTest(dialect=dialect.name):
+                with self.assertRaisesRegex(ValueError, "not a plain identifier"):
+                    Dialects.get_compiler(dialect).quote_alias("a.b")
 
     def test_error_names_the_alias(self):
         compiler = Dialects.get_compiler(Dialects.DEFAULT)
@@ -245,6 +252,112 @@ class TestBareIdentifiers(unittest.TestCase):
             "SELECT * FROM items JOIN makers ON makers.id = items.maker_id "
             "AND makers.rank > 10",
         )
+
+
+class Maker(Model):
+    tableName = "makers"
+
+
+class Tag(Model):
+    tableName = "tags"
+
+
+class Widget(Model):
+    tableName = "widgets"
+    relationMappings = {
+        "maker": {
+            "relation": RelationType.BelongsToOneRelation,
+            "modelClass": Maker,
+            "join": {"from": "widgets.maker_id", "to": "makers.id"},
+        },
+        "tags": {
+            "relation": RelationType.ManyToManyRelation,
+            "modelClass": Tag,
+            "join": {
+                "from": "widgets.id",
+                "through": {
+                    "from": {"table": "widget_tags", "key": "widget_id"},
+                    "to": {"table": "widget_tags", "key": "tag_id"},
+                },
+                "to": "tags.id",
+            },
+        },
+    }
+
+
+ALIAS_INJECTION = "n) FROM users; DROP TABLE users; --"
+
+
+class TestStatementAliases(unittest.TestCase):
+    """Subquery, CTE, FROM, and join aliases go through quote_alias()."""
+
+    def tearDown(self):
+        Item.set_dialect(Dialects.DEFAULT)
+        Widget.set_dialect(Dialects.DEFAULT)
+
+    def aliased(self, alias):
+        inner = Item.query().select("id")
+        yield "Subquery", lambda: Item.query().select(Subquery(inner, alias))
+        yield "with_", lambda: Item.query().with_(alias, inner)
+        yield "from_ table", lambda: Item.query().from_("items", alias)
+        yield "from_ subquery", lambda: Item.query().from_(inner, alias)
+        yield "joinRelated", lambda: Widget.query().joinRelated("maker", alias=alias)
+        yield "joinRelated through", lambda: Widget.query().joinRelated(
+            "tags", alias=alias
+        )
+        yield "select AS", lambda: Item.query().select(f"id AS {alias}")
+
+    def test_sql_in_an_alias_is_refused_on_every_dialect(self):
+        for dialect in Dialects:
+            Item.set_dialect(dialect)
+            Widget.set_dialect(dialect)
+            for position, build in self.aliased(ALIAS_INJECTION):
+                with self.subTest(dialect=dialect.name, position=position):
+                    with self.assertRaises(ValueError):
+                        str(build())
+
+    def test_plain_aliases_are_quoted_per_dialect(self):
+        Item.set_dialect(Dialects.POSTGRES)
+        Widget.set_dialect(Dialects.POSTGRES)
+        inner = Item.query().select("id")
+        rendered = {
+            position: str(build()) for position, build in self.aliased("Recent")
+        }
+        self.assertEqual(
+            rendered["Subquery"],
+            'SELECT (SELECT "id" FROM "items") AS "Recent" FROM "items"',
+        )
+        self.assertEqual(rendered["from_ table"], 'SELECT * FROM "items" AS "Recent"')
+        self.assertEqual(
+            rendered["from_ subquery"],
+            'SELECT * FROM (SELECT "id" FROM "items") AS "Recent"',
+        )
+        self.assertEqual(
+            rendered["joinRelated"],
+            'SELECT * FROM "widgets" JOIN "makers" AS "Recent" '
+            'ON "widgets"."maker_id" = "Recent"."id"',
+        )
+        self.assertIn('JOIN "tags" AS "Recent"', rendered["joinRelated through"])
+        self.assertEqual(rendered["select AS"], 'SELECT "id" AS "Recent" FROM "items"')
+        cte = Item.query().with_("Recent", inner).from_("Recent")
+        self.assertEqual(
+            str(cte),
+            'WITH "Recent" AS (SELECT "id" FROM "items") SELECT * FROM "Recent"',
+        )
+
+    def test_subquery_str_quotes_the_alias(self):
+        Item.set_dialect(Dialects.MSSQL)
+        sub = Subquery(Item.query().select("id"), "n")
+        self.assertEqual(str(sub), "(SELECT [id] FROM [items]) AS [n]")
+        with self.assertRaises(ValueError):
+            str(Subquery(Item.query(), ALIAS_INJECTION))
+
+    def test_repeated_link_table_alias_is_quoted(self):
+        Widget.set_dialect(Dialects.MYSQL)
+        query = (
+            Widget.query().joinRelated("tags", alias="a").joinRelated("tags", alias="b")
+        )
+        self.assertIn("JOIN `widget_tags` AS `b_widget_tags`", str(query))
 
 
 if __name__ == "__main__":

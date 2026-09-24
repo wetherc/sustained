@@ -258,7 +258,7 @@ class Subquery:
         and join the outer parameter list in the order they appear in the
         SQL text.
         """
-        return f"{self.render_operand(ctx)} AS {self.alias}"
+        return f"{self.render_operand(ctx)} AS {ctx.compiler.quote_alias(self.alias)}"
 
     def render_operand(self, ctx: "Optional[RenderContext]") -> str:
         """
@@ -279,7 +279,7 @@ class Subquery:
         values inlined as literals. Used where no render context is
         available, such as debugging output.
         """
-        return f"({self.query}) AS {self.alias}"
+        return f"({self.query}) AS {self.query._compiler.quote_alias(self.alias)}"
 
 
 class AggregateExpression:
