@@ -157,6 +157,22 @@ class TestDuckdbExpressionParse(unittest.TestCase):
     def test_an_empty_list_reads_as_none(self):
         self.assertIsNone(_duckdb_index_columns("[]"))
 
+    def test_a_quoted_column_parses(self):
+        # DuckDB quotes a keyword, and a name that is not a plain word,
+        # inside a string literal.
+        self.assertEqual(
+            ("colour", "select"), _duckdb_index_columns("""[colour, '"select"']""")
+        )
+        self.assertEqual(
+            ("a,b", 'q"x', "it's"),
+            _duckdb_index_columns("""['"a,b"', '"q""x"', '"it''s"']"""),
+        )
+        self.assertEqual(("plain",), _duckdb_index_columns("['plain']"))
+
+    def test_a_quoted_expression_reads_as_none(self):
+        self.assertIsNone(_duckdb_index_columns("['(lower(colour))']"))
+        self.assertIsNone(_duckdb_index_columns("[a, 'coalesce(a, b)']"))
+
 
 class TestDuckdbIndexRead(unittest.TestCase):
     def setUp(self):
@@ -180,6 +196,12 @@ class TestDuckdbIndexRead(unittest.TestCase):
         self.assertEqual(
             IntrospectedIndex(("b",), True, name="uq_b"), schema["t"].indexes["uq_b"]
         )
+
+    def test_an_index_on_a_keyword_column_is_read_back(self):
+        self.connection.execute('CREATE TABLE t (a INT, "select" INT, label INT)')
+        self.connection.execute('CREATE INDEX ix_sel ON t ("select", label)')
+        schema = introspect_schema(self.connection, Dialects.DUCKDB)
+        self.assertEqual(("select", "label"), schema["t"].indexes["ix_sel"].columns)
 
     def test_a_model_with_an_index_applies_twice(self):
         """The second up() must not recreate an index that already exists."""

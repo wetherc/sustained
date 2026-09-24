@@ -1440,21 +1440,45 @@ def _mssql_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
 
 
 _DUCKDB_IDENTIFIER_RE = re.compile(r"^\w+$")
+# One part of duckdb_indexes()'s expressions list. DuckDB writes a plain
+# column bare, and writes any other part as a string literal: a quoted
+# column such as '"select"', or an expression such as '(lower(name))'.
+_DUCKDB_INDEX_PART_RE = re.compile(r"'((?:[^']|'')*)'|[^,\s]+")
+_DUCKDB_QUOTED_COLUMN_RE = re.compile(r'^"((?:[^"]|"")*)"$')
+
+
+def _duckdb_index_column(part: str) -> Optional[str]:
+    """
+    One part of an index's expressions list as a column name, or None
+    when the part is an expression.
+    """
+    if not part.startswith("'"):
+        return part if _DUCKDB_IDENTIFIER_RE.match(part) else None
+    text = part[1:-1].replace("''", "'")
+    quoted = _DUCKDB_QUOTED_COLUMN_RE.match(text)
+    if quoted is not None:
+        return quoted.group(1).replace('""', '"')
+    return text if _DUCKDB_IDENTIFIER_RE.match(text) else None
 
 
 def _duckdb_index_columns(expressions: str) -> Optional[Tuple[str, ...]]:
     """
     The column list in duckdb_indexes()'s expressions field, spelled
-    '[a, b]'. An expression index has parts that are not bare column
-    names; it cannot be compared against a model's column list, so it
-    reads as None and stays out of the schema.
+    '[a, b]'. DuckDB quotes a column whose name is a keyword or is not a
+    plain word, so a part may arrive as '"select"'. An expression index
+    has parts that are not column names; it cannot be compared against a
+    model's column list, so it reads as None and stays out of the schema.
     """
-    parts = [
-        part.strip() for part in expressions.strip("[]").split(",") if part.strip()
+    body = expressions.strip()
+    if body.startswith("[") and body.endswith("]"):
+        body = body[1:-1]
+    columns = [
+        _duckdb_index_column(match.group(0))
+        for match in _DUCKDB_INDEX_PART_RE.finditer(body)
     ]
-    if not parts or any(not _DUCKDB_IDENTIFIER_RE.match(part) for part in parts):
+    if not columns or any(column is None for column in columns):
         return None
-    return tuple(part.lower() for part in parts)
+    return tuple(cast(str, column).lower() for column in columns)
 
 
 def _replace_duckdb_constraints(
