@@ -587,11 +587,14 @@ $ sustained plan --json
     }
   ],
   "problems": [],
-  "drift": null
+  "drift": null,
+  "error": null
 }
 ```
 
-Every command that reports SQL uses that statement object, `drift` included. `statements` is `null` for a callable step, which renders no SQL. A guard verdict is attached to the statement it flags and appears nowhere else, so there is one place to read what a statement will do. Statements no rule flagged have an empty `guards` list. `drift` is `null`, not `[]`, when the config module names no models, so a caller can tell "nothing was compared" from "compared and found no gap". `status --json` prints `{"migrations": [{"id": ..., "state": ...}]}` and `validate --json` prints `{"ok": ..., "problems": [...]}`. Output is plain in both modes; nothing is coloured.
+Every command that reports SQL uses that statement object, `drift` included. `statements` is `null` for a callable step, which renders no SQL. A guard verdict is attached to the statement it flags and appears nowhere else, so there is one place to read what a statement will do. Statements no rule flagged have an empty `guards` list. `drift` is `null`, not `[]`, when the config module names no models, so a caller can tell "nothing was compared" from "compared and found no gap". `status --json` prints `{"migrations": [{"id": ..., "state": ...}], "error": null}` and `validate --json` prints `{"ok": ..., "problems": [...], "error": null}`. Output is plain in both modes; nothing is coloured.
+
+A command that fails, such as one whose config module will not import or whose connection will not open, still prints one object. Every other key is `null` and `error` contains the message, so a script reads the same keys whatever the outcome.
 
 Releases before 2.13.0 print `statements` as a count, so a script that reads it as a number needs updating.
 
@@ -643,7 +646,7 @@ The `reversed` check compares tables and columns. Indexes, constraints, and colu
 
 `sustained rehearse` passes the config module's `models` when it names any, so the generated migration is rehearsed with the pending ones. It is never registered, and it rolls back with everything else.
 
-`rehearse --json` prints one object: `{"rehearsed": [...], "scratch": false, "key": "...", "recorded": true, "ok": true}`. In each result, `landed` and `reversed` are `null` when the check did not run, `[]` when it passed, and the lines naming the trouble when it failed. `key` and `recorded` describe the rehearsal row, which [Rehearsal logging and tracking](#rehearsal-logging-and-tracking) covers.
+`rehearse --json` prints one object: `{"rehearsed": [...], "scratch": false, "key": "...", "recorded": true, "ok": true, "error": null}`. In each result, `landed` and `reversed` are `null` when the check did not run, `[]` when it passed, and the lines naming the trouble when it failed. `key` and `recorded` describe the rehearsal row, which [Rehearsal logging and tracking](#rehearsal-logging-and-tracking) covers.
 
 The rehearsal creates the tracking table when the database has none, because it reads the applied rows before it opens its transaction. It also creates the rehearsal table and writes one row there after the rollback, described below. Nothing else persists: the tracking rows the rehearsal writes roll back with everything else, and the migrations stay pending. A callable step that commits on its own is the exception, since that commit cannot be taken back.
 

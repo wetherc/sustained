@@ -47,7 +47,7 @@ Guide: [Schema and Migrations](/schema#command-line).
 
 `migrate` exits 4 when the run would remove data and no passing rehearsal covers those statements. The message names the statements and both ways forward, and repeats `--target` when the run had one.
 
-A block or a refusal on the migration generated from the models happens after the registered migrations have applied. The ids of those migrations print on stdout before the error, and the migrations stay applied.
+A `migrate` that fails part way leaves the migrations it already applied in place. Their ids print on stdout as `applied  <id>` lines before the error, whatever stopped the run: a failing statement, a guard block, or a refusal on the migration generated from the models.
 
 `validate` exits 1 when it finds problems, and 0 when it finds none. The exit codes are the same with and without `--json`.
 
@@ -201,7 +201,8 @@ $ sustained plan --json
     }
   ],
   "problems": [],
-  "drift": null
+  "drift": null,
+  "error": null
 }
 ```
 
@@ -225,10 +226,24 @@ $ sustained rehearse --json
   "scratch": false,
   "key": "9c1f...",
   "recorded": true,
-  "ok": true
+  "ok": true,
+  "error": null
 }
 ```
 
 `landed` and `reversed` are `null` when the check did not run, `[]` when the check passed, and the lines naming the trouble when the check failed. `key` names the content the run covered. `recorded` says whether Sustained wrote the row where `migrate` will read it.
 
-`status --json` prints `{"migrations": [{"id": ..., "state": ...}]}`. `validate --json` prints `{"ok": ..., "problems": [...]}`.
+`status --json` prints `{"migrations": [{"id": ..., "state": ...}], "error": null}`. `validate --json` prints `{"ok": ..., "problems": [...], "error": null}`.
+
+A command that fails still prints one object. Every key is `null`, because nothing was evaluated, and `error` contains the message that also goes to stderr. The exit code is the same as without `--json`. For example, a config module that will not import gives:
+
+```console
+$ sustained validate --json --config missing
+{
+  "ok": null,
+  "problems": null,
+  "error": "No module named 'missing'"
+}
+```
+
+The `error` key is present from version 2.25.0 onward. A usage error that `argparse` rejects prints no object, because it exits before the command runs.

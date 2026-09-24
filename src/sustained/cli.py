@@ -35,8 +35,9 @@ rehearsal has covered them, and exits 4. `--unrehearsed` applies them
 anyway and records the override on the database.
 
 `status`, `validate`, `plan`, and `rehearse` take `--json`, which prints
-one JSON object instead of the plain lines. The exit code stays the same
-either way.
+one JSON object instead of the plain lines. A failure prints the object
+too, with every key null and `error` set to the message. The exit code
+stays the same either way.
 """
 
 from __future__ import annotations
@@ -189,8 +190,21 @@ def _build_migrator(config: ModuleType) -> Tuple[Migrator, Connection]:
     return migrator, connection
 
 
-def _print_json(payload: JsonValue) -> None:
-    print(json.dumps(payload, indent=2))
+_JSON_KEYS: Dict[str, Tuple[str, ...]] = {
+    "status": ("migrations",),
+    "plan": ("pending", "problems", "drift"),
+    "rehearse": ("rehearsed", "scratch", "key", "recorded", "ok"),
+    "validate": ("ok", "problems"),
+}
+"""
+The top-level keys each --json command prints besides `error`. A failed
+run prints the same keys, all null, so a caller reads one set of keys
+whatever the outcome.
+"""
+
+
+def _print_json(payload: Mapping[str, JsonValue], error: Optional[str] = None) -> None:
+    print(json.dumps({**payload, "error": error}, indent=2))
 
 
 def _cmd_status(
@@ -851,15 +865,25 @@ _COMMANDS = {
 def _print_applied(error: BaseException) -> None:
     """
     Names the migrations that were already applied when a run stopped.
-
-    A run with models reads the guards and the rehearsal row twice: once before
-    anything runs, and once more against the migration generated from the
-    models, whose statements exist only after the registered migrations
-    have applied. A stop at that second reading leaves work behind, and
-    the operator needs to know what.
+    They stay applied and committed, so the operator needs to know what
+    the run left behind before fixing the failure.
     """
     for migration_id in getattr(error, "applied", None) or []:
         print(f"applied  {migration_id}")
+
+
+def _fail(
+    args: argparse.Namespace, error: BaseException, code: int, where: str = ""
+) -> int:
+    """
+    Reports a failure on stderr and returns the exit code. Under --json,
+    stdout still gets its one object: every key null, since nothing was
+    evaluated, and `error` set to the message.
+    """
+    print(f"error{where}: {error}", file=sys.stderr)
+    if getattr(args, "json", False):
+        _print_json({key: None for key in _JSON_KEYS[args.command]}, str(error))
+    return code
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
@@ -872,32 +896,29 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         # open, a migrations directory that will not load: none of them
         # leave a connection behind, and none should reach the shell as a
         # traceback.
-        print(f"error: {error}", file=sys.stderr)
-        return 1
+        return _fail(args, error, 1)
     try:
         return _COMMANDS[args.command](migrator, args, config)
     except GuardBlocked as error:
         # Exit 3 says a guard blocked the run, which plan reports the same
         # way.
         _print_applied(error)
-        print(f"error: {error}", file=sys.stderr)
-        return 3
+        return _fail(args, error, 3)
     except RehearsalRequired as error:
         # Exit 4 says the run needs a rehearsal it does not have, which is
         # a different thing to do from fixing a failure.
         _print_applied(error)
-        print(f"error: {error}", file=sys.stderr)
-        return 4
+        return _fail(args, error, 4)
     except MigrationError as error:
-        print(f"error: {error}", file=sys.stderr)
-        return 1
+        _print_applied(error)
+        return _fail(args, error, 1)
     except Exception as error:
         # A driver raises its own error class, so a failing statement would
         # otherwise reach the shell as a traceback.
+        _print_applied(error)
         migration_id = getattr(error, "migration_id", None)
         where = f" in '{migration_id}'" if migration_id else ""
-        print(f"error{where}: {error}", file=sys.stderr)
-        return 1
+        return _fail(args, error, 1, where)
     finally:
         _close_quietly(connection)
 

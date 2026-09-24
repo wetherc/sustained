@@ -199,6 +199,27 @@ class CliTestCase(CliBase):
         self.assertEqual(code, 1)
         self.assertIn("checksum mismatch", err)
 
+    def test_a_failed_migrate_names_what_it_applied(self):
+        self._write(
+            os.path.join(self.dir.name, "migrations"), "003_bad.up.sql", "NOT SQL;"
+        )
+        code, out, err = self.run_cli("migrate")
+        self.assertEqual(code, 1)
+        self.assertEqual(out, "applied  001_users\napplied  002_flag\n")
+        self.assertIn("error in '003_bad': ", err)
+        self.assertEqual({"users", "flags"}, self.table_names() & {"users", "flags"})
+
+    def test_a_migration_error_part_way_names_what_applied(self):
+        from sustained.exceptions import MigrationError
+
+        error = MigrationError(["refused"])
+        setattr(error, "applied", ["001_users"])
+        with mock.patch.object(Migrator, "up", side_effect=error):
+            code, out, err = self.run_cli("migrate")
+        self.assertEqual(code, 1)
+        self.assertEqual(out, "applied  001_users\n")
+        self.assertIn("error: ", err)
+
     def test_unknown_target_exits_one(self):
         code, _, err = self.run_cli("migrate", "--target", "nope")
         self.assertEqual(code, 1)
@@ -573,7 +594,8 @@ class JsonOutputTestCase(CliBase):
                 "migrations": [
                     {"id": "001_users", "state": "applied"},
                     {"id": "002_flag", "state": "pending"},
-                ]
+                ],
+                "error": None,
             },
         )
 
@@ -581,7 +603,7 @@ class JsonOutputTestCase(CliBase):
         self.run_cli("migrate")
         code, payload, _ = self._json("validate")
         self.assertEqual(code, 0)
-        self.assertEqual(payload, {"ok": True, "problems": []})
+        self.assertEqual(payload, {"ok": True, "problems": [], "error": None})
 
     def test_validate_reports_problems(self):
         self.run_cli("migrate")
@@ -623,7 +645,9 @@ class JsonOutputTestCase(CliBase):
         self.run_cli("migrate")
         code, payload, _ = self._json("plan")
         self.assertEqual(code, 0)
-        self.assertEqual(payload, {"pending": [], "problems": [], "drift": None})
+        self.assertEqual(
+            payload, {"pending": [], "problems": [], "drift": None, "error": None}
+        )
 
     def test_plan_problems_win(self):
         self.run_cli("migrate")
@@ -679,7 +703,79 @@ class JsonOutputTestCase(CliBase):
         self.assertEqual(payload["drift"][0]["destructive"], True)
         self.assertIn('DROP TABLE "flags"', payload["drift"][0]["sql"])
         self.assertNotIn("Migrator.sync", stdout.getvalue())
-        self.assertEqual(set(payload), {"pending", "problems", "drift"})
+        self.assertEqual(set(payload), {"pending", "problems", "drift", "error"})
+
+
+class JsonFailureTestCase(CliBase):
+    """A --json command that fails still prints its one object."""
+
+    KEYS = {
+        "status": {"migrations"},
+        "plan": {"pending", "problems", "drift"},
+        "rehearse": {"rehearsed", "scratch", "key", "recorded", "ok"},
+        "validate": {"ok", "problems"},
+    }
+
+    def _main(self, *argv):
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            code = main(list(argv))
+        return code, stdout.getvalue(), stderr.getvalue()
+
+    def assert_null_object(self, command, out, message):
+        payload = json.loads(out)
+        self.assertEqual(set(payload), self.KEYS[command] | {"error"})
+        self.assertIn(message, payload.pop("error"))
+        self.assertEqual(set(payload.values()), {None})
+
+    def test_success_prints_the_same_keys_with_a_null_error(self):
+        for command, keys in self.KEYS.items():
+            with self.subTest(command=command):
+                _, out, _ = self.run_cli(command, "--json")
+                payload = json.loads(out)
+                self.assertEqual(set(payload), keys | {"error"})
+                self.assertIsNone(payload["error"])
+
+    def test_a_missing_config_prints_a_null_object(self):
+        for command in self.KEYS:
+            with self.subTest(command=command):
+                code, out, err = self._main(
+                    command, "--json", "--config", "does_not_exist_xyz"
+                )
+                self.assertEqual(code, 1)
+                self.assert_null_object(command, out, "does_not_exist_xyz")
+                self.assertIn("error: ", err)
+
+    def test_a_connection_that_will_not_open_prints_a_null_object(self):
+        name = f"refusing_config_{id(self)}"
+        with open(os.path.join(self.dir.name, f"{name}.py"), "w") as f:
+            f.write("def get_connection():\n    raise OSError('host unreachable')\n")
+        self.addCleanup(sys.modules.pop, name, None)
+        code, out, _ = self._main("plan", "--json", "--config", name)
+        self.assertEqual(code, 1)
+        self.assert_null_object("plan", out, "host unreachable")
+
+    def test_a_driver_error_prints_a_null_object(self):
+        error = sqlite3.OperationalError("disk I/O error")
+        with mock.patch.object(Migrator, "statuses", side_effect=error):
+            code, out, err = self.run_cli("status", "--json")
+        self.assertEqual(code, 1)
+        self.assert_null_object("status", out, "disk I/O error")
+        self.assertIn("error: disk I/O error", err)
+
+    def test_a_migration_error_prints_a_null_object(self):
+        from sustained.exceptions import MigrationError
+
+        error = MigrationError(["checksum mismatch"])
+        with mock.patch.object(Migrator, "validate", side_effect=error):
+            code, out, _ = self.run_cli("validate", "--json")
+        self.assertEqual(code, 1)
+        self.assert_null_object("validate", out, "checksum mismatch")
+
+    def test_a_failure_without_json_prints_nothing_on_stdout(self):
+        code, out, _ = self._main("status", "--config", "does_not_exist_xyz")
+        self.assertEqual(code, 1)
+        self.assertEqual(out, "")
 
 
 class RehearseCliTestCase(CliBase):
@@ -787,7 +883,8 @@ class RehearseCliTestCase(CliBase):
         payload = json.loads(stdout.getvalue())
         self.assertEqual(code, 0)
         self.assertEqual(
-            set(payload), {"rehearsed", "scratch", "key", "recorded", "ok"}
+            set(payload),
+            {"rehearsed", "scratch", "key", "recorded", "ok", "error"},
         )
         self.assertTrue(payload["recorded"])
         self.assertEqual(len(payload["key"]), 64)
