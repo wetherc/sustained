@@ -253,6 +253,26 @@ class Snapshot(Dict[str, IntrospectedTable]):
         # the rename while a view names a table that is not there.
         self.views: Tuple[str, ...] = tuple(views)
 
+    def copy(self) -> "Snapshot":
+        """
+        A copy that a rename can rewrite without changing this snapshot.
+        A rename replaces tables and edits a table's columns mapping in
+        place, so both are copied. Everything else in a table is replaced
+        whole, never edited, and is shared.
+        """
+        return Snapshot(
+            {
+                key: table._replace(columns=dict(table.columns))
+                for key, table in self.items()
+            },
+            self.enum_types,
+            self.enum_types_read,
+            self.constraints_read,
+            self.checks_read,
+            self.comments_read,
+            self.views,
+        )
+
 
 # Engine type spellings mapped to Sustained's logical types. Both sides of
 # a comparison pass through this table, so a model column compared against

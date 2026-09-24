@@ -53,6 +53,7 @@ from typing import (
     Dict,
     List,
     Mapping,
+    NamedTuple,
     Optional,
     Sequence,
     Tuple,
@@ -229,7 +230,35 @@ def _count(number: int, noun: str) -> str:
     return f"{number} {noun}" if number == 1 else f"{number} {noun}s"
 
 
-def _drift_statements(migrator: Migrator, config: ModuleType) -> Optional[List[str]]:
+class _ModelPlans(NamedTuple):
+    """
+    The two migrations plan reads from the config module's models, both
+    diffed against one schema read. `preview` includes the drops, and
+    `run` is what migrate would generate.
+    """
+
+    preview: Optional[Migration]
+    run: Optional[Migration]
+
+
+def _model_plans(migrator: Migrator, config: ModuleType) -> Optional[_ModelPlans]:
+    """
+    Both model plans from one read of the schema, or None when the config
+    module names no models.
+    """
+    models = getattr(config, "models", None)
+    if not models:
+        return None
+    snapshot = migrator.read_schema(list(models))
+    return _ModelPlans(
+        migrator.plan(list(models), allow_drops=True, snapshot=snapshot),
+        migrator.plan(list(models), snapshot=snapshot),
+    )
+
+
+def _drift_statements(
+    migrator: Migrator, plans: Optional[_ModelPlans]
+) -> Optional[List[str]]:
     """
     The statements that would close the gap between the config module's
     models and the database, or None when the module names no models.
@@ -239,17 +268,15 @@ def _drift_statements(migrator: Migrator, config: ModuleType) -> Optional[List[s
     not generate. The statements print in full, so a drop reads as a drop
     without a separate label.
     """
-    models = getattr(config, "models", None)
-    if not models:
+    if plans is None:
         return None
-    migration = migrator.plan(list(models), allow_drops=True)
-    if migration is None:
+    if plans.preview is None:
         return []
-    return migration_sql(migration, "up", migrator.compiler)
+    return migration_sql(plans.preview, "up", migrator.compiler)
 
 
 def _migrate_drift_statements(
-    migrator: Migrator, config: ModuleType
+    migrator: Migrator, plans: Optional[_ModelPlans]
 ) -> Optional[List[str]]:
     """
     The generated statements migrate would actually apply, or None when
@@ -261,10 +288,9 @@ def _migrate_drift_statements(
     statement carries the generated migration's id, so a rule that reads
     migration boundaries sees these as one migration of their own.
     """
-    models = getattr(config, "models", None)
-    if not models:
+    if plans is None:
         return None
-    migration = migrator.plan(list(models))
+    migration = plans.run
     if migration is None:
         return []
     return [
@@ -273,7 +299,7 @@ def _migrate_drift_statements(
     ]
 
 
-def _rehearsal_row_covers(migrator: Migrator, config: ModuleType) -> bool:
+def _rehearsal_row_covers(migrator: Migrator, plans: Optional[_ModelPlans]) -> bool:
     """
     Whether a passing rehearsal already covers the run migrate would make,
     so the plan can point at migrate instead of rehearse.
@@ -292,13 +318,9 @@ def _rehearsal_row_covers(migrator: Migrator, config: ModuleType) -> bool:
     records = migrator.read_applied_records()
     if migrator.run_outcome(records, pending) == REHEARSAL_PASSED:
         return True
-    models = getattr(config, "models", None)
-    if not models:
+    if plans is None or plans.run is None:
         return False
-    generated = migrator.plan(list(models))
-    if generated is None:
-        return False
-    return migrator.run_outcome(records, pending + [generated]) == REHEARSAL_PASSED
+    return migrator.run_outcome(records, pending + [plans.run]) == REHEARSAL_PASSED
 
 
 def _print_pending(summaries: List[PendingSummary]) -> None:
@@ -421,11 +443,12 @@ def _cmd_plan(migrator: Migrator, args: argparse.Namespace, config: ModuleType) 
         for m in migrator.pending()
     ]
     problems = migrator.validate(raise_on_problems=False)
-    drift = _drift_statements(migrator, config)
+    plans = _model_plans(migrator, config)
+    drift = _drift_statements(migrator, plans)
     by_statement = _plan_verdicts(
         config,
         summaries,
-        _migrate_drift_statements(migrator, config),
+        _migrate_drift_statements(migrator, plans),
         migrator.dialect,
     )
     verdicts = [v for group in by_statement.values() for v in group]
@@ -490,7 +513,7 @@ def _cmd_plan(migrator: Migrator, args: argparse.Namespace, config: ModuleType) 
         # nothing else is not work it can do.
         closable = [s for s in drift or [] if not destructive_statements([s])]
         if any(s.destructive for s in summaries) and not _rehearsal_row_covers(
-            migrator, config
+            migrator, plans
         ):
             # migrate refuses these until a rehearsal has proved them.
             print("run: sustained rehearse")

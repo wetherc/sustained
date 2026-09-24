@@ -187,6 +187,15 @@ plan(models, ...) -> Migration | None
 
 The migration that `up(models=[...])` would generate, or `None` when the schema is current. `plan()` records nothing and applies nothing.
 
+`plan()` also takes `snapshot`, a schema that `read_schema()` returned. The plan then diffs that snapshot and does not read the schema again, and the snapshot is left unchanged. The `plan` command reads the schema once this way and diffs it twice: once with drops for the drift section, and once without them for the guards and the rehearsal check. The connection still answers the check for rows in a table that gets a new NOT NULL column.
+
+```python
+read_schema(models) -> dict[str, IntrospectedTable]
+```
+{: .sig #read_schema}
+
+Reads the schema that `plan(models)` compares against: the schema the connection is on, plus every schema the models name in `tableSchema`.
+
 ```python
 up(models=[...], ...) -> list[str]
 ```
@@ -557,11 +566,11 @@ diff_schema(connection, models, dialect=Dialects.DEFAULT, exclude_tables=('susta
 Changes nothing and reports every difference, drops included. Pass `snapshot` to compare against a schema you already read with `introspect_schema()`, and the diff then does not touch the connection. The diff applies the rename hints to that snapshot in place, so the snapshot shows you the same renamed schema the diff compares against.
 
 ```python
-autogenerate(connection, models, id, dialect=..., allow_drops=False, ignore_changed_columns=False, exclude_tables=..., renames=None, table_renames=None, type_casts=None, ignore_undeclared=False) -> Migration | None
+autogenerate(connection, models, id, dialect=..., allow_drops=False, ignore_changed_columns=False, exclude_tables=..., renames=None, table_renames=None, type_casts=None, ignore_undeclared=False, snapshot=None) -> Migration | None
 ```
 {: .sig #autogenerate}
 
-Builds the migration a diff asks for. Refuses to generate the lossy differences, and refuses to run at all while the database contains objects the models do not declare, unless you pass `allow_drops=True` or `ignore_undeclared=True`. The migrator passes `ignore_undeclared=True`. A CHECK constraint that no model declares never causes a refusal. It comes back as a note on the diff instead, because engines rewrite check expressions and the comparison cannot justify a refusal.
+Builds the migration a diff asks for. Pass `snapshot` to build it from a schema you already read with `introspect_schema()`. The rename hints apply to a copy, so the same snapshot can feed several calls. Refuses to generate the lossy differences, and refuses to run at all while the database contains objects the models do not declare, unless you pass `allow_drops=True` or `ignore_undeclared=True`. The migrator passes `ignore_undeclared=True`. A CHECK constraint that no model declares never causes a refusal. It comes back as a note on the diff instead, because engines rewrite check expressions and the comparison cannot justify a refusal.
 
 ```python
 introspect_schema(connection, dialect=Dialects.DEFAULT, schemas=()) -> dict[str, IntrospectedTable]

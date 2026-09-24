@@ -1541,6 +1541,7 @@ def autogenerate(
     table_renames: Optional[Dict[str, str]] = None,
     type_casts: Optional[Dict[str, str]] = None,
     ignore_undeclared: bool = False,
+    snapshot: Optional[Snapshot] = None,
 ) -> Optional[Migration]:
     """
     Diffs the database against the models and builds a Migration for the
@@ -1561,14 +1562,24 @@ def autogenerate(
             declares never refuses: engines rewrite a check expression on
             the way in, so a check the models do write can read as one
             they do not. It comes back as a note on the diff instead.
+        snapshot: A schema already read with introspect_schema(), used
+            instead of reading it again. The function works on a copy,
+            so one read can feed several calls with different options.
+            The connection still answers the row checks that decide
+            whether a table is empty.
     """
     compiler = Dialects.get_compiler(dialect)
     renames = renames or {}
     table_renames = table_renames or {}
     type_casts = type_casts or {}
     # One read of the live schema for both the diff and the steps below.
-    # diff_schema() applies the rename hints to it in place.
-    actual = introspect_schema(connection, dialect, declared_schemas(models))
+    # diff_schema() applies the rename hints to it in place, so a snapshot
+    # from the caller is copied first.
+    actual = (
+        introspect_schema(connection, dialect, declared_schemas(models))
+        if snapshot is None
+        else snapshot.copy()
+    )
     diff = diff_schema(
         connection,
         models,

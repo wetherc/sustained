@@ -558,6 +558,36 @@ class PlanCliTestCase(CliBase):
         self.assertIn('DROP TABLE "flags"', out)
         self.assertIn("1 drift statement", out)
 
+    def test_plan_reads_the_schema_once(self):
+        # A destructive pending migration makes plan look for a rehearsal
+        # row too, which needs the generated migration a third time.
+        self._write(
+            os.path.join(self.dir.name, "migrations"),
+            "003_cleanup.up.sql",
+            "DROP TABLE flags;",
+        )
+        name = self._config(
+            "read_once",
+            "\nfrom sustained import create_model\n"
+            "from sustained.schema import Integer\n"
+            "Kept = create_model('Kept', 'kept')\n"
+            "Kept.tableColumns = {'id': Integer(primary_key=True)}\n"
+            "Kept.columns = ('id',)\n"
+            "models = [Kept]\n",
+        )
+        import sustained.autogenerate as autogenerate
+
+        with mock.patch.object(
+            autogenerate,
+            "introspect_schema",
+            wraps=autogenerate.introspect_schema,
+        ) as read:
+            code, out, _ = self._run(name, "plan")
+        self.assertEqual(code, 2)
+        self.assertIn('CREATE TABLE "kept"', out)
+        self.assertIn("run: sustained rehearse", out)
+        self.assertEqual(read.call_count, 1)
+
     def test_no_drift_when_models_match(self):
         name = self._config(
             "matching",

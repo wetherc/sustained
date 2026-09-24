@@ -1181,11 +1181,13 @@ def plan_migration(
     table_renames: Optional[Dict[str, str]] = None,
     type_casts: Optional[Dict[str, str]] = None,
     ignore_undeclared: bool = True,
+    snapshot: Optional["Snapshot"] = None,
 ) -> Optional[Migration]:
     """
     The migration a diff of the models against the database produces, or
     None when the schema already holds everything the models declare.
-    Both migrators plan through this.
+    Both migrators plan through this. A snapshot already read is used
+    instead of reading the schema again.
     """
     from sustained.autogenerate import autogenerate
 
@@ -1201,6 +1203,7 @@ def plan_migration(
         table_renames=table_renames,
         type_casts=type_casts,
         ignore_undeclared=ignore_undeclared,
+        snapshot=snapshot,
     )
 
 
@@ -3023,6 +3026,7 @@ class Migrator:
         table_renames: Optional[dict[str, str]] = None,
         type_casts: Optional[dict[str, str]] = None,
         ignore_undeclared: bool = True,
+        snapshot: Optional["Snapshot"] = None,
     ) -> Optional[Migration]:
         """
         Diffs the database against the models and returns the migration
@@ -3034,6 +3038,10 @@ class Migrator:
         database may hold tables that hand-written migrations created.
         Pass allow_drops=True to generate the drops instead, or
         ignore_undeclared=False to refuse to generate while they exist.
+
+        Pass a snapshot from read_schema() to plan against it instead of
+        reading the schema again. The snapshot is not changed, so one
+        read can feed several plans.
         """
         return plan_migration(
             self._connection,
@@ -3047,6 +3055,18 @@ class Migrator:
             table_renames=table_renames,
             type_casts=type_casts,
             ignore_undeclared=ignore_undeclared,
+            snapshot=snapshot,
+        )
+
+    def read_schema(self, models: List[Type["Model"]]) -> "Snapshot":
+        """
+        Reads the schema plan() diffs the models against: the
+        connection's own schema plus every schema the models name.
+        """
+        from sustained.autogenerate import declared_schemas, introspect_schema
+
+        return introspect_schema(
+            self._connection, self._dialect, declared_schemas(models)
         )
 
     def sync(

@@ -384,6 +384,62 @@ class TestRenameHints(AutogenTestCase):
             migration.down, ['ALTER TABLE "ag_people" RENAME TO "ag_users"']
         )
 
+    def test_a_snapshot_feeds_several_plans_unchanged(self):
+        self.User.create_table(self.conn)
+        renamed = make_model(
+            "AgRenamedTwice",
+            "ag_users",
+            {
+                "id": Integer(primary_key=True),
+                "contact_email": String(120, nullable=False),
+            },
+        )
+        snapshot = introspect_schema(self.conn)
+        before = snapshot.copy()
+        hints = {"renames": {"ag_users.email": "contact_email"}}
+        first = autogenerate(self.conn, [renamed], id="s1", snapshot=snapshot, **hints)
+        # The rename applied to a copy, so the same hint works a second
+        # time and the snapshot still names the old column.
+        second = autogenerate(self.conn, [renamed], id="s2", snapshot=snapshot, **hints)
+        self.assertEqual(first.up, second.up)
+        self.assertEqual(snapshot, before)
+        self.assertIn("email", snapshot["ag_users"].columns)
+        self.assertEqual(snapshot.checks_read, before.checks_read)
+
+    def test_a_snapshot_copy_keeps_the_read_flags(self):
+        self.User.create_table(self.conn)
+        snapshot = introspect_schema(self.conn)
+        copied = snapshot.copy()
+        copied["ag_users"].columns.pop("email")
+        self.assertIn("email", snapshot["ag_users"].columns)
+        self.assertEqual(
+            (copied.enum_types, copied.views, copied.comments_read),
+            (snapshot.enum_types, snapshot.views, snapshot.comments_read),
+        )
+        self.assertEqual(
+            (copied.enum_types_read, copied.constraints_read),
+            (snapshot.enum_types_read, snapshot.constraints_read),
+        )
+
+    def test_migrator_plans_against_a_schema_it_read(self):
+        self.User.create_table(self.conn)
+        grown = make_model(
+            "AgGrown",
+            "ag_users",
+            {
+                "id": Integer(primary_key=True),
+                "email": String(120, nullable=False),
+                "bio": Text(),
+            },
+        )
+        migrator = Migrator(self.conn, [])
+        snapshot = migrator.read_schema([grown])
+        self.conn.execute("ALTER TABLE ag_users ADD COLUMN bio TEXT")
+        # The plan diffs the snapshot, which predates the new column.
+        migration = migrator.plan([grown], snapshot=snapshot)
+        self.assertEqual(migration.up, ['ALTER TABLE "ag_users" ADD COLUMN "bio" TEXT'])
+        self.assertIsNone(migrator.plan([grown]))
+
     def test_unknown_rename_targets_raise(self):
         self.User.create_table(self.conn)
         with self.assertRaises(ValueError):
