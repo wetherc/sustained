@@ -1352,7 +1352,7 @@ def autogenerate(
             compiler, coldef, type_sql=type_sql, nullable=nullable
         )
         return state._replace(
-            default_sql=actual_col.default,
+            default_sql=actual_col.restated_default(),
             comment=(actual_col.comment if compiler.stores_column_comments() else None),
         )
 

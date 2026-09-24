@@ -8,7 +8,12 @@ import unittest
 from sustained.analysis import destructive_statements
 from sustained.autogenerate import autogenerate, diff_schema
 from sustained.dialects import Dialects
-from sustained.introspect import introspect_schema, normalize_default, normalize_type
+from sustained.introspect import (
+    introspect_schema,
+    mysql_default_sql,
+    normalize_default,
+    normalize_type,
+)
 from sustained.model import Model
 from sustained.schema import (
     BigInteger,
@@ -33,8 +38,13 @@ class FakeCursor:
         checks=None,
         commented_columns=None,
         table_checks=None,
+        extras=None,
+        version="8.0.36",
     ):
         self.columns = list(columns)
+        # EXTRA per (table, column); a column left out reads as ''.
+        self.extras = extras or {}
+        self.version = version
         self.constraints = constraints
         # Rows of the MariaDB json_valid recovery read: (table, clause).
         self.checks = checks
@@ -52,9 +62,14 @@ class FakeCursor:
             if "column_comment" in sql:
                 if self.commented_columns is None:
                     raise RuntimeError("no column_comment here")
-                self._current = self.commented_columns
+                rows = self.commented_columns
             else:
-                self._current = self.columns
+                rows = self.columns
+            # The read selects table_schema, EXTRA, and VERSION() last.
+            self._current = [
+                (*row, "app", self.extras.get(row[:2], ""), self.version)
+                for row in rows
+            ]
         elif "constraint_type = 'CHECK'" in sql:
             if self.table_checks is None:
                 raise RuntimeError("no check view here")
@@ -749,6 +764,155 @@ class TestMysqlDrift(unittest.TestCase):
             migration.down,
             ["ALTER TABLE `users` MODIFY COLUMN `rank` int NOT NULL DEFAULT 5"],
         )
+
+
+class TestMysqlDefaultSql(unittest.TestCase):
+    """
+    MySQL 8 reports a string default without its quotes and an
+    expression default without its parentheses. A restated column must
+    write both back as SQL.
+    """
+
+    def test_a_string_literal_gets_its_quotes_back(self):
+        self.assertEqual(mysql_default_sql("raw", "", "varchar(10)"), "'raw'")
+
+    def test_an_empty_string_stays_a_literal(self):
+        self.assertEqual(mysql_default_sql("", "", "varchar(10)"), "''")
+
+    def test_quotes_and_backslashes_are_escaped(self):
+        self.assertEqual(
+            mysql_default_sql("it's C:\\x", "", "varchar(20)"), "'it''s C:\\\\x'"
+        )
+
+    def test_a_string_default_on_a_date_column_is_quoted(self):
+        self.assertEqual(
+            mysql_default_sql("2020-01-01 00:00:00", "", "datetime"),
+            "'2020-01-01 00:00:00'",
+        )
+
+    def test_an_expression_gets_its_parentheses_back(self):
+        self.assertEqual(
+            mysql_default_sql("uuid()", "DEFAULT_GENERATED", "char(36)"), "(uuid())"
+        )
+
+    def test_the_current_time_stays_bare(self):
+        for default, extra in (
+            ("CURRENT_TIMESTAMP", "DEFAULT_GENERATED"),
+            (
+                "CURRENT_TIMESTAMP(3)",
+                "DEFAULT_GENERATED on update CURRENT_TIMESTAMP(3)",
+            ),
+            ("CURRENT_TIMESTAMP", ""),
+        ):
+            with self.subTest(default=default, extra=extra):
+                self.assertEqual(mysql_default_sql(default, extra, "datetime"), default)
+
+    def test_the_word_current_timestamp_in_a_string_column_is_quoted(self):
+        self.assertEqual(
+            mysql_default_sql("CURRENT_TIMESTAMP", "", "varchar(20)"),
+            "'CURRENT_TIMESTAMP'",
+        )
+
+    def test_numbers_and_bit_literals_stay_bare(self):
+        for default, raw_type in (
+            ("5", "int"),
+            ("-1", "bigint unsigned"),
+            ("1", "tinyint(1)"),
+            ("1.50", "decimal(10,2)"),
+            ("2.5", "double"),
+            ("b'101'", "bit(3)"),
+            ("0x6162", "varbinary(4)"),
+        ):
+            with self.subTest(raw_type=raw_type):
+                self.assertEqual(mysql_default_sql(default, "", raw_type), default)
+
+
+class TestMysqlRestatedDefault(unittest.TestCase):
+    """A widening MODIFY restates the default the catalog reports."""
+
+    def migrate(self, column, extra="", version="8.0.36", model_default="raw"):
+        cursor = FakeCursor(
+            columns=[("users", "id", "int", "NO", None), column],
+            constraints=[("users", "PRIMARY KEY", "PRIMARY", "id")],
+            extras={("users", "code"): extra},
+            version=version,
+        )
+        model = make_model(
+            "MysqlCoded",
+            "users",
+            {
+                "id": Integer(primary_key=True),
+                "code": String(50, default=model_default),
+            },
+        )
+        return autogenerate(
+            FakeConnection(cursor), [model], id="widen", dialect=Dialects.MYSQL
+        )
+
+    def test_a_string_default_is_quoted_both_ways(self):
+        migration = self.migrate(("users", "code", "varchar(10)", "YES", "raw"))
+        self.assertEqual(
+            migration.up,
+            ["ALTER TABLE `users` MODIFY COLUMN `code` VARCHAR(50) DEFAULT 'raw'"],
+        )
+        self.assertEqual(
+            migration.down,
+            ["ALTER TABLE `users` MODIFY COLUMN `code` varchar(10) DEFAULT 'raw'"],
+        )
+
+    def test_an_empty_string_default_is_kept(self):
+        migration = self.migrate(
+            ("users", "code", "varchar(10)", "YES", ""), model_default=""
+        )
+        self.assertEqual(
+            migration.up,
+            ["ALTER TABLE `users` MODIFY COLUMN `code` VARCHAR(50) DEFAULT ''"],
+        )
+
+    def test_an_expression_default_keeps_its_parentheses(self):
+        migration = self.migrate(
+            ("users", "code", "varchar(10)", "YES", "uuid()"),
+            extra="DEFAULT_GENERATED",
+        )
+        self.assertEqual(
+            migration.up,
+            ["ALTER TABLE `users` MODIFY COLUMN `code` VARCHAR(50) DEFAULT (uuid())"],
+        )
+
+    def test_mariadb_defaults_are_sql_already(self):
+        migration = self.migrate(
+            ("users", "code", "varchar(10)", "YES", "'raw'"),
+            version="10.11.6-MariaDB",
+        )
+        self.assertEqual(
+            migration.up,
+            ["ALTER TABLE `users` MODIFY COLUMN `code` VARCHAR(50) DEFAULT 'raw'"],
+        )
+
+    def test_the_default_comparison_reads_the_catalog_report(self):
+        cursor = FakeCursor(
+            columns=[
+                ("users", "id", "int", "NO", None),
+                ("users", "code", "varchar(50)", "YES", "it's"),
+            ],
+            constraints=[("users", "PRIMARY KEY", "PRIMARY", "id")],
+        )
+        model = make_model(
+            "MysqlQuoted",
+            "users",
+            {"id": Integer(primary_key=True), "code": String(50, default="it's")},
+        )
+        diff = diff_schema(FakeConnection(cursor), [model], dialect=Dialects.MYSQL)
+        self.assertEqual(diff.constraint_notes, [])
+        column = introspect_schema(FakeConnection(cursor), Dialects.MYSQL)["users"]
+        self.assertEqual(column.columns["code"].restated_default(), "'it''s'")
+
+    def test_a_read_without_extra_restates_the_report(self):
+        # A catalog that does not select EXTRA leaves default_sql unset.
+        from sustained.introspect import IntrospectedColumn
+
+        column = IntrospectedColumn("int", True, False, default="5")
+        self.assertEqual(column.restated_default(), "5")
 
 
 class TestMariadbPrecisionDrift(unittest.TestCase):

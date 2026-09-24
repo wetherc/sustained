@@ -56,7 +56,15 @@ class SchemaRecorder(Protocol):
 
 
 class IntrospectedColumn(NamedTuple):
-    """One column as reported by the database."""
+    """
+    One column as reported by the database.
+
+    `default` is the catalog's report, which is what a diff compares.
+    `default_sql` is the same default written as SQL that a DEFAULT
+    clause accepts. It is None when `default` is already SQL, which is
+    the case everywhere except MySQL: its catalog reports the literal
+    raw for 'raw' and the expression uuid() for (uuid()).
+    """
 
     raw_type: str
     nullable: bool
@@ -65,6 +73,11 @@ class IntrospectedColumn(NamedTuple):
     enum_name: Optional[str] = None
     enum_values: Tuple[str, ...] = ()
     comment: Optional[str] = None
+    default_sql: Optional[str] = None
+
+    def restated_default(self) -> Optional[str]:
+        """The default as SQL text for a DEFAULT clause, or None."""
+        return self.default if self.default_sql is None else self.default_sql
 
 
 class IntrospectedIndex(NamedTuple):
@@ -786,6 +799,9 @@ class Catalog(NamedTuple):
             information_schema.check_constraints. Presto and Athena have
             no CHECK constraints at all, so their snapshots must leave
             checks_read False rather than report an empty mapping.
+        reads_default_sql: Whether the read also selects MySQL's EXTRA
+            column and VERSION(), which mysql_default_sql() needs to
+            write a MySQL default back as SQL.
     """
 
     schema_filter: str
@@ -793,6 +809,7 @@ class Catalog(NamedTuple):
     current_schema_sql: Optional[str] = None
     comment_column: Optional[str] = None
     reads_checks: bool = True
+    reads_default_sql: bool = False
 
 
 ANSI_CATALOG = Catalog(
@@ -811,6 +828,7 @@ MYSQL_CATALOG = ANSI_CATALOG._replace(
     # emits, so a column never drifts against its own DDL.
     type_column="column_type",
     comment_column="column_comment",
+    reads_default_sql=True,
 )
 
 # Presto and Trino put the comment straight on information_schema.columns.
@@ -898,9 +916,10 @@ def _information_schema_plan(
         # view in the database is enough to make every plan report drift,
         # and allow_drops would emit a DROP TABLE the engine refuses.
         comment = f", c.{catalog.comment_column}" if with_comment else ""
+        extra = ", c.extra, VERSION()" if catalog.reads_default_sql else ""
         return (
             f"SELECT c.table_name, c.column_name, c.{catalog.type_column}, "
-            f"c.is_nullable, c.column_default{comment}, c.table_schema "
+            f"c.is_nullable, c.column_default{comment}, c.table_schema{extra} "
             "FROM information_schema.columns c "
             "JOIN information_schema.tables t "
             "ON t.table_schema = c.table_schema AND t.table_name = c.table_name "
@@ -935,13 +954,25 @@ def _information_schema_plan(
             _one_schema_per_table(
                 schema_of_table, str(table).lower(), str(row[schema_index])
             )
+        raw_type = str(data_type) if data_type else ""
+        default_sql = None
+        # MariaDB reports its defaults as SQL already, quotes included.
+        if (
+            len(row) > schema_index + 2
+            and default is not None
+            and "MARIADB" not in str(row[schema_index + 2]).upper()
+        ):
+            default_sql = mysql_default_sql(
+                str(default), str(row[schema_index + 1] or ""), raw_type
+            )
         columns_by_table.setdefault(str(table).lower(), {})[str(name).lower()] = (
             IntrospectedColumn(
-                raw_type=str(data_type) if data_type else "",
+                raw_type=raw_type,
                 nullable=str(is_nullable).upper() == "YES",
                 primary_key=False,
                 default=default,
                 comment=comment,
+                default_sql=default_sql,
             )
         )
 
@@ -1439,6 +1470,46 @@ _JSON_VALID_RE = re.compile(
 
 _MYSQL_ENUM_RE = re.compile(r"^\s*enum\s*\((.*)\)\s*$", re.IGNORECASE | re.DOTALL)
 _MYSQL_ENUM_VALUE_RE = re.compile(r"'((?:[^']|'')*)'")
+
+
+# Types whose MySQL default the catalog reports in a form that is
+# already SQL: a number, a bit literal b'101', or a hex literal 0x6162.
+_MYSQL_BARE_DEFAULT_TYPES_RE = re.compile(
+    r"^\s*(?:(?:tiny|small|medium|big)?int|integer|decimal|numeric|float"
+    r"|double|real|bit|binary|varbinary)\b",
+    re.IGNORECASE,
+)
+_MYSQL_TIME_TYPES_RE = re.compile(r"^\s*(?:datetime|timestamp)\b", re.IGNORECASE)
+_MYSQL_NOW_RE = re.compile(
+    r"^\s*(?:current_timestamp|now|localtime|localtimestamp)"
+    r"(?:\s*\(\s*\d*\s*\))?\s*$",
+    re.IGNORECASE,
+)
+
+
+def mysql_default_sql(default: str, extra: str, raw_type: str) -> str:
+    """
+    A MySQL catalog default written as SQL for a DEFAULT clause.
+
+    MySQL 8 reports a string literal without its quotes, so 'raw' comes
+    back as raw and '' as an empty string. An expression default comes
+    back without its parentheses and with DEFAULT_GENERATED in the EXTRA
+    column, so (uuid()) comes back as uuid(). MySQL refuses either one
+    restated as reported. CURRENT_TIMESTAMP on a datetime or timestamp
+    column needs no parentheses, and MySQL 5.7 reports it without the
+    DEFAULT_GENERATED mark.
+    """
+    generated = "DEFAULT_GENERATED" in extra.upper()
+    if _MYSQL_NOW_RE.match(default) and (
+        generated or _MYSQL_TIME_TYPES_RE.match(raw_type)
+    ):
+        return default
+    if generated:
+        return f"({default})"
+    if _MYSQL_BARE_DEFAULT_TYPES_RE.match(raw_type):
+        return default
+    escaped = default.replace("\\", "\\\\").replace("'", "''")
+    return f"'{escaped}'"
 
 
 def parse_inline_enum(raw_type: str) -> Tuple[str, ...]:

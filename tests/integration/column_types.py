@@ -14,6 +14,7 @@ the `migrations` cover runs these tests.
 import datetime
 import decimal
 
+from sustained.dialects import Dialects
 from sustained.introspect import diff_snapshots
 from sustained.model import Model
 from sustained.schema import (
@@ -76,13 +77,13 @@ def as_decimal(value):
 class ColumnTypeTests:
     """Mixed into lifecycle.ServerCase; uses its helpers and fixtures."""
 
-    def typed_model(self):
+    def typed_model(self, **overrides):
         return type(
             "WidgetTyped",
             (Model,),
             {
                 "tableName": "it_widgets",
-                "tableColumns": typed_columns(),
+                "tableColumns": {**typed_columns(), **overrides},
                 "indexes": [Index("it_widgets_born_idx", "born")],
                 "_dialect": self.DIALECT,
             },
@@ -125,3 +126,29 @@ class ColumnTypeTests:
             self.assertEqual([], diff_snapshots(first, self.tables()))
         finally:
             model.unbind()
+
+    def test_a_widened_column_keeps_its_server_default(self):
+        # MySQL and SQL Server restate the whole column to change its type.
+        # The restated DEFAULT comes from the catalog, and MySQL reports
+        # a string default without its quotes. SQLite rebuilds the table,
+        # which counts as a drop and has no down step. DuckDB keeps no
+        # varchar length, so it has nothing to widen.
+        model = self.typed_model()
+        wider = self.typed_model(grade=String(40, nullable=False, default="raw"))
+        wider.bind(self.connection)
+        try:
+            migrator = self.migrator()
+            migrator.up(models=[model])
+            widened = migrator.up(models=[wider], unrehearsed=True)
+            self.assertIsNone(migrator.plan([wider]))
+            wider.query().insert([ROW]).run()
+
+            rows = [ROW]
+            if Dialects.get_compiler(self.DIALECT).rebuild_strategy() == "alter":
+                migrator.down(len(widened))
+                rows.append({**ROW, "id": 2, "name": "latch"})
+                wider.query().insert(rows[1:]).run()
+            grades = wider.query().select("grade").orderBy("id").run()
+            self.assertEqual(["raw"] * len(rows), [row.grade for row in grades])
+        finally:
+            wider.unbind()
