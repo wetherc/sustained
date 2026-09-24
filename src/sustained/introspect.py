@@ -68,6 +68,10 @@ class IntrospectedColumn(NamedTuple):
     `autoincrement` is True where the catalog reports the column as an
     identity column. Only the MySQL read sets it, from the EXTRA column,
     because only MySQL restates a whole column to change its comment.
+
+    `collation` is the collating sequence the column was declared with,
+    or None when it names none. The SQLite read takes it from the stored
+    CREATE TABLE statement, so a table rebuild can write it back.
     """
 
     raw_type: str
@@ -79,6 +83,7 @@ class IntrospectedColumn(NamedTuple):
     comment: Optional[str] = None
     default_sql: Optional[str] = None
     autoincrement: bool = False
+    collation: Optional[str] = None
 
     def restated_default(self) -> Optional[str]:
         """The default as SQL text for a DEFAULT clause, or None."""
@@ -116,13 +121,23 @@ _NO_CHECKS: Mapping[str, str] = MappingProxyType({})
 
 
 class IntrospectedTable(NamedTuple):
-    """One table as reported by the database."""
+    """
+    One table as reported by the database.
+
+    `unnamed_checks` and `triggers` are read on SQLite only, where a
+    table rebuild has to write them back. An unnamed check is the
+    expression of a CHECK written without a CONSTRAINT name, at the
+    column or at the table level. A trigger is its CREATE TRIGGER
+    statement as SQLite stored it.
+    """
 
     columns: Dict[str, IntrospectedColumn]
     primary_key: Tuple[str, ...] = ()
     foreign_keys: Mapping[str, IntrospectedForeignKey] = _NO_FOREIGN_KEYS
     indexes: Mapping[str, IntrospectedIndex] = _NO_INDEXES
     checks: Mapping[str, str] = _NO_CHECKS
+    unnamed_checks: Tuple[str, ...] = ()
+    triggers: Tuple[str, ...] = ()
 
     @property
     def foreign_key_targets(self) -> Dict[str, str]:
@@ -158,6 +173,7 @@ class Snapshot(Dict[str, IntrospectedTable]):
         constraints_read: bool = False,
         checks_read: bool = False,
         comments_read: bool = False,
+        views: Sequence[str] = (),
     ) -> None:
         super().__init__(tables or {})
         self.enum_types: Dict[str, Tuple[str, ...]] = dict(enum_types or {})
@@ -176,6 +192,10 @@ class Snapshot(Dict[str, IntrospectedTable]):
         # and a degraded read leaves the flag False, so a diff must not
         # take an absent comment as proof the database holds none.
         self.comments_read = comments_read
+        # The names of the views in the schema, read on SQLite only. A
+        # table rebuild renames its copy into place, and SQLite refuses
+        # the rename while a view names a table that is not there.
+        self.views: Tuple[str, ...] = tuple(views)
 
 
 # Engine type spellings mapped to Sustained's logical types. Both sides of
@@ -620,15 +640,21 @@ def _strip_identifier(name: str) -> str:
     return name.strip().strip('"`[]').lower()
 
 
+# The quote that closes each quoting character SQLite takes: a string
+# literal, and the three ways to quote an identifier.
+_SQLITE_QUOTES = {"'": "'", '"': '"', "`": "`", "[": "]"}
+# One constraint or column name as SQLite takes it: quoted any of three
+# ways, or bare.
+_SQLITE_NAME = r"(\"(?:[^\"]|\"\")*\"|`[^`]*`|\[[^\]]*\]|\w+)"
 # A named constraint in a CREATE TABLE statement. Checks are read by
-# name; a CHECK written without a CONSTRAINT name stays unread. Foreign
-# keys match their pragma rows by column list.
+# name, and _sqlite_unnamed_checks() reads a CHECK written without a
+# CONSTRAINT name. Foreign keys match their pragma rows by column list.
 _SQLITE_CHECK_RE = re.compile(
-    r"CONSTRAINT\s+[\"`\[]?(\w+)[\"`\]]?\s+CHECK\s*\(",
+    rf"CONSTRAINT\s+{_SQLITE_NAME}\s+CHECK\s*\(",
     re.IGNORECASE,
 )
 _SQLITE_FK_NAME_RE = re.compile(
-    r"CONSTRAINT\s+[\"`\[]?(\w+)[\"`\]]?\s+FOREIGN\s+KEY\s*\(([^)]*)\)",
+    rf"CONSTRAINT\s+{_SQLITE_NAME}\s+FOREIGN\s+KEY\s*\(([^)]*)\)",
     re.IGNORECASE,
 )
 
@@ -658,17 +684,26 @@ def _balanced_paren_body(text: str, start: int) -> Optional[str]:
     return None
 
 
+def _sqlite_unquote(name: str) -> str:
+    """A name from a CREATE TABLE statement, unquoted and lowercased."""
+    closer = _SQLITE_QUOTES.get(name[0])
+    if closer is not None and name.endswith(closer):
+        name = name[1:-1].replace(closer * 2, closer)
+    return name.lower()
+
+
 def _sqlite_table_checks(create_sql: str) -> Dict[str, str]:
     """
     The named check constraints in a CREATE TABLE statement. SQLite has
     no catalog view for checks, so they are read back out of the stored
-    CREATE TABLE SQL. A CHECK with no CONSTRAINT name stays unread.
+    CREATE TABLE SQL. A CHECK with no CONSTRAINT name has no name to key
+    it by, and _sqlite_unnamed_checks() reads it instead.
     """
     checks: Dict[str, str] = {}
     for match in _SQLITE_CHECK_RE.finditer(create_sql):
         body = _balanced_paren_body(create_sql, match.end() - 1)
         if body is not None:
-            checks[match.group(1).lower()] = body.strip()
+            checks[_sqlite_unquote(match.group(1))] = body.strip()
     return checks
 
 
@@ -681,8 +716,107 @@ def _sqlite_fk_names(create_sql: str) -> Dict[Tuple[str, ...], str]:
             for part in match.group(2).split(",")
             if part.strip()
         )
-        names[columns] = match.group(1).lower()
+        names[columns] = _sqlite_unquote(match.group(1))
     return names
+
+
+def _unquoted(text: str) -> List[Tuple[int, str]]:
+    """
+    Every character of `text` that sits outside a string literal and a
+    quoted identifier, with its position. A doubled quote closes the
+    span and opens it again, which leaves it inside.
+    """
+    found: List[Tuple[int, str]] = []
+    closer: Optional[str] = None
+    for position, char in enumerate(text):
+        if closer is not None:
+            if char == closer:
+                closer = None
+        elif char in _SQLITE_QUOTES:
+            closer = _SQLITE_QUOTES[char]
+        else:
+            found.append((position, char))
+    return found
+
+
+def _sqlite_table_parts(create_sql: str) -> List[str]:
+    """
+    The column definitions and table constraints of a CREATE TABLE
+    statement, split at the commas between them. A comma inside
+    parentheses or quotes belongs to its part.
+    """
+    parts: List[str] = []
+    depth = 0
+    start = 0
+    for position, char in _unquoted(create_sql):
+        if char == "(":
+            depth += 1
+            if depth == 1:
+                start = position + 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                parts.append(create_sql[start:position])
+                break
+        elif char == "," and depth == 1:
+            parts.append(create_sql[start:position])
+            start = position + 1
+    return [part.strip() for part in parts if part.strip()]
+
+
+# The words that open a table constraint rather than a column definition.
+_SQLITE_TABLE_CONSTRAINT_RE = re.compile(
+    r"^(?:CONSTRAINT|PRIMARY|UNIQUE|CHECK|FOREIGN)\b", re.IGNORECASE
+)
+_SQLITE_COLLATE_RE = re.compile(
+    r"\bCOLLATE\s+(\"(?:[^\"]|\"\")+\"|`[^`]+`|\[[^\]]+\]|\w+)", re.IGNORECASE
+)
+_SQLITE_CHECK_START_RE = re.compile(r"\bCHECK\s*\(", re.IGNORECASE)
+# A CONSTRAINT name right before a CHECK, which makes that check named.
+_SQLITE_NAMED_BEFORE_RE = re.compile(
+    rf"\bCONSTRAINT\s+{_SQLITE_NAME}\s*$", re.IGNORECASE
+)
+
+
+def _sqlite_column_name(part: str) -> str:
+    """The column a column definition names, unquoted and lowercased."""
+    match = re.match(_SQLITE_NAME, part)
+    return _sqlite_unquote(match.group(1) if match else part.split()[0])
+
+
+def _sqlite_collations(create_sql: str) -> Dict[str, str]:
+    """
+    The collating sequence each column of a CREATE TABLE statement
+    names, keyed by lowercased column name. PRAGMA table_info does not
+    report it, so it is read from the stored statement.
+    """
+    collations: Dict[str, str] = {}
+    for part in _sqlite_table_parts(create_sql):
+        if _SQLITE_TABLE_CONSTRAINT_RE.match(part):
+            continue
+        match = _SQLITE_COLLATE_RE.search(part)
+        if match is not None:
+            collations[_sqlite_column_name(part)] = match.group(1)
+    return collations
+
+
+def _sqlite_unnamed_checks(create_sql: str) -> Tuple[str, ...]:
+    """
+    The expressions of the CHECK constraints a CREATE TABLE statement
+    writes without a CONSTRAINT name, in the order they appear. They
+    have no name to diff by, so a rebuild carries them as they are.
+    """
+    unquoted = {position for position, _ in _unquoted(create_sql)}
+    found: List[str] = []
+    for match in _SQLITE_CHECK_START_RE.finditer(create_sql):
+        if match.start() not in unquoted:
+            continue
+        if _SQLITE_NAMED_BEFORE_RE.search(create_sql[: match.start()]):
+            continue
+        body = _balanced_paren_body(create_sql, match.end() - 1)
+        if body is not None:
+            found.append(body.strip())
+    return tuple(found)
 
 
 def _sqlite_quote(name: str) -> str:
@@ -699,14 +833,24 @@ def _sqlite_quote(name: str) -> str:
 
 def _sqlite_plan() -> SchemaPlan:
     rows = yield (
-        "SELECT name, sql FROM sqlite_master WHERE type = 'table' "
+        "SELECT type, name, tbl_name, sql FROM sqlite_master "
+        "WHERE type IN ('table', 'trigger', 'view') "
         "AND name NOT LIKE 'sqlite_%'"
     )
-    tables = [(row[0], row[1]) for row in rows]
-    schema = Snapshot(constraints_read=True, checks_read=True)
+    tables = [(str(row[1]), str(row[3] or "")) for row in rows if row[0] == "table"]
+    triggers: Dict[str, List[str]] = {}
+    for kind, _, table_name, sql in rows:
+        if kind == "trigger" and sql:
+            triggers.setdefault(str(table_name).lower(), []).append(str(sql))
+    schema = Snapshot(
+        constraints_read=True,
+        checks_read=True,
+        views=[str(row[1]) for row in rows if row[0] == "view"],
+    )
     for table, create_sql in tables:
         columns: Dict[str, IntrospectedColumn] = {}
         primary_key: List[str] = []
+        collations = _sqlite_collations(create_sql)
         for _, name, raw_type, notnull, default, pk in (
             yield f"PRAGMA table_info({_sqlite_quote(table)})"
         ):
@@ -715,6 +859,7 @@ def _sqlite_plan() -> SchemaPlan:
                 nullable=not notnull,
                 primary_key=bool(pk),
                 default=default,
+                collation=collations.get(name.lower()),
             )
             if pk:
                 primary_key.append(name.lower())
@@ -727,7 +872,7 @@ def _sqlite_plan() -> SchemaPlan:
         for row in fk_rows:
             rows_by_key.setdefault(int(cast(int, row[0])), []).append(row)
 
-        declared_fk_names = _sqlite_fk_names(create_sql or "")
+        declared_fk_names = _sqlite_fk_names(create_sql)
         foreign_keys: Dict[str, IntrospectedForeignKey] = {}
         for fk_id, key_rows in rows_by_key.items():
             first = key_rows[0]
@@ -764,7 +909,9 @@ def _sqlite_plan() -> SchemaPlan:
             primary_key=tuple(primary_key),
             foreign_keys=foreign_keys,
             indexes=indexes,
-            checks=_sqlite_table_checks(create_sql or ""),
+            checks=_sqlite_table_checks(create_sql),
+            unnamed_checks=_sqlite_unnamed_checks(create_sql),
+            triggers=tuple(triggers.get(table.lower(), ())),
         )
     return schema
 

@@ -7,7 +7,12 @@ the PRAGMA tables with the CREATE TABLE statements in sqlite_master.
 import sqlite3
 import unittest
 
-from sustained.introspect import introspect_schema
+from sustained.introspect import (
+    _sqlite_collations,
+    _sqlite_table_parts,
+    _sqlite_unnamed_checks,
+    introspect_schema,
+)
 
 
 class TestSqliteForeignKeys(unittest.TestCase):
@@ -160,6 +165,68 @@ class TestSqlitePragmaQuoting(unittest.TestCase):
         self.conn.execute('CREATE TABLE "o""clock" (id INTEGER PRIMARY KEY)')
         schema = introspect_schema(self.conn)
         self.assertIn("id", schema['o"clock'].columns)
+
+
+class TestSqliteTableParts(unittest.TestCase):
+    """What a rebuild needs to write back and PRAGMA does not report."""
+
+    def setUp(self):
+        self.conn = sqlite3.connect(":memory:")
+        self.addCleanup(self.conn.close)
+        self.conn.executescript("""
+            CREATE TABLE parts (
+                id INTEGER PRIMARY KEY,
+                "full name" TEXT COLLATE NOCASE CHECK (length("full name") < 9),
+                [code] INT CONSTRAINT ck_code CHECK (code <> 3),
+                note TEXT collate "RTRIM" DEFAULT 'a, b (c)',
+                CHECK (code > 0),
+                CONSTRAINT "odd name" CHECK (code < 99),
+                CONSTRAINT `fk parts` FOREIGN KEY (code) REFERENCES parts (id)
+            );
+            CREATE VIEW part_names AS SELECT "full name" FROM parts;
+            CREATE TRIGGER parts_seen AFTER INSERT ON parts BEGIN SELECT 1; END;
+            """)
+        self.schema = introspect_schema(self.conn)
+        self.table = self.schema["parts"]
+
+    def test_collations_are_read_per_column(self):
+        collations = {n: c.collation for n, c in self.table.columns.items()}
+        self.assertEqual(
+            collations,
+            {"id": None, "full name": "NOCASE", "code": None, "note": '"RTRIM"'},
+        )
+
+    def test_named_checks_take_quoted_names(self):
+        self.assertEqual(
+            self.table.checks, {"ck_code": "code <> 3", "odd name": "code < 99"}
+        )
+        self.assertIn("fk parts", self.table.foreign_keys)
+
+    def test_unnamed_checks_are_read_in_order(self):
+        self.assertEqual(
+            self.table.unnamed_checks, ('length("full name") < 9', "code > 0")
+        )
+
+    def test_triggers_and_views_are_read(self):
+        self.assertEqual(len(self.table.triggers), 1)
+        self.assertIn("CREATE TRIGGER parts_seen", self.table.triggers[0])
+        self.assertEqual(self.schema.views, ("part_names",))
+
+
+class TestSqliteStatementParsing(unittest.TestCase):
+    def test_a_check_inside_a_literal_is_not_a_check(self):
+        sql = "CREATE TABLE t (a TEXT DEFAULT 'CHECK (x)', CHECK (a <> ''))"
+        self.assertEqual(_sqlite_unnamed_checks(sql), ("a <> ''",))
+
+    def test_an_unclosed_statement_reads_what_it_can(self):
+        self.assertEqual(_sqlite_unnamed_checks("CREATE TABLE t (a, CHECK (a"), ())
+        self.assertEqual(_sqlite_table_parts("CREATE TABLE t (a, b"), ["a"])
+
+    def test_an_unusual_bare_column_name(self):
+        self.assertEqual(
+            _sqlite_collations("CREATE TABLE t ($a TEXT COLLATE NOCASE)"),
+            {"$a": "NOCASE"},
+        )
 
 
 if __name__ == "__main__":

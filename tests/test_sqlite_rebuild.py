@@ -194,5 +194,146 @@ class TestAddColumnSqliteRefuses(RebuildTestCase):
                 self.assertIn("ADD COLUMN", migration.up[0])
 
 
+class TestRebuildKeepsUndeclared(RebuildTestCase):
+    def test_undeclared_columns_and_keys_keep_their_definitions(self):
+        self.conn.execute("CREATE TABLE rb_owners (id INTEGER PRIMARY KEY)")
+        self.conn.execute("INSERT INTO rb_owners VALUES (1)")
+        self.conn.execute(
+            "ALTER TABLE rb_items ADD COLUMN owner_id INTEGER "
+            "CONSTRAINT fk_rb_owner REFERENCES rb_owners (id) "
+            "ON DELETE CASCADE ON UPDATE SET NULL"
+        )
+        self.conn.execute(
+            "ALTER TABLE rb_items ADD COLUMN tag TEXT NOT NULL DEFAULT 'none'"
+        )
+        model = model_of(
+            {"id": Integer(primary_key=True), "code": String(10), "note": Text()}
+        )
+        owners = model_of({"id": Integer(primary_key=True)}, table="rb_owners")
+        migration = autogenerate(
+            self.conn, [model, owners], id="m", ignore_undeclared=True
+        )
+        self.apply(migration)
+        (sql,) = self.conn.execute(
+            "SELECT sql FROM sqlite_master WHERE name = 'rb_items'"
+        ).fetchone()
+        self.assertIn("\"tag\" TEXT NOT NULL DEFAULT 'none'", sql)
+        self.assertIn("ON DELETE CASCADE ON UPDATE SET NULL", sql)
+
+
+class TestRebuildCarriesWhatModelsCannotDeclare(unittest.TestCase):
+    def setUp(self):
+        self.conn = sqlite3.connect(":memory:")
+        self.addCleanup(self.conn.close)
+        self.conn.executescript("""
+            CREATE TABLE rb_items (
+                id INTEGER PRIMARY KEY,
+                code INTEGER,
+                name TEXT COLLATE NOCASE CHECK (length(name) < 10),
+                legacy TEXT COLLATE RTRIM,
+                CHECK (code > 0),
+                UNIQUE (code, name)
+            );
+            CREATE TABLE rb_log (msg TEXT);
+            CREATE TABLE rb_other (id INTEGER);
+            CREATE VIEW rb_named AS SELECT name FROM rb_items;
+            CREATE VIEW rb_upper AS SELECT upper(name) AS name FROM rb_named;
+            CREATE TRIGGER rb_logged AFTER INSERT ON rb_items
+            BEGIN INSERT INTO rb_log VALUES (new.name); END;
+            CREATE TRIGGER rb_mirror AFTER INSERT ON rb_other
+            BEGIN INSERT INTO rb_items (code, name) VALUES (new.id, 'mirror'); END;
+            INSERT INTO rb_items (id, code, name, legacy) VALUES (1, 5, 'Ada', 'x');
+            """)
+
+    def model(self, **columns):
+        return model_of(
+            {
+                "id": Integer(primary_key=True),
+                "code": String(10),
+                "name": Text(),
+                **columns,
+            }
+        )
+
+    def rebuild(self, model):
+        migration = autogenerate(
+            self.conn, [model], id="m", exclude_tables=("rb_log", "rb_other")
+        )
+        self.assertIn("PRAGMA legacy_alter_table = ON", migration.up)
+        for statement in migration.up:
+            self.conn.execute(statement)
+
+    def refused(self, sql):
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.conn.execute(sql)
+
+    def test_views_read_the_rebuilt_table(self):
+        self.rebuild(self.model(legacy=Text()))
+        self.assertEqual(
+            self.conn.execute("SELECT name FROM rb_upper").fetchall(), [("ADA",)]
+        )
+
+    def test_triggers_come_back(self):
+        self.rebuild(self.model(legacy=Text()))
+        self.conn.execute("INSERT INTO rb_items (code, name) VALUES (6, 'Bo')")
+        self.conn.execute("INSERT INTO rb_other VALUES (7)")
+        self.assertEqual(
+            self.conn.execute("SELECT msg FROM rb_log").fetchall(),
+            [("Ada",), ("Bo",), ("mirror",)],
+        )
+
+    def test_unnamed_checks_and_unique_come_back(self):
+        self.rebuild(self.model(legacy=Text()))
+        self.refused("INSERT INTO rb_items (code, name) VALUES (0, 'Cy')")
+        self.refused("INSERT INTO rb_items (code, name) VALUES (8, 'much too long')")
+        self.refused("INSERT INTO rb_items (code, name) VALUES (5, 'Ada')")
+
+    def test_collations_come_back(self):
+        self.rebuild(self.model(legacy=Text()))
+        rows = self.conn.execute("SELECT id FROM rb_items WHERE name = 'ADA'")
+        self.assertEqual(rows.fetchall(), [(1,)])
+        (sql,) = self.conn.execute(
+            "SELECT sql FROM sqlite_master WHERE name = 'rb_items'"
+        ).fetchone()
+        self.assertIn("COLLATE RTRIM", sql)
+
+    def test_a_carried_check_goes_with_its_dropped_column(self):
+        self.conn.execute("DROP VIEW rb_upper")
+        self.conn.execute("DROP VIEW rb_named")
+        self.conn.execute("DROP TRIGGER rb_logged")
+        self.conn.execute("DROP TRIGGER rb_mirror")
+        model = model_of({"id": Integer(primary_key=True), "code": String(10)})
+        migration = autogenerate(self.conn, [model], id="m", allow_drops=True)
+        self.assertNotIn("PRAGMA legacy_alter_table = ON", migration.up)
+        for statement in migration.up:
+            self.conn.execute(statement)
+        self.refused("INSERT INTO rb_items (code) VALUES (0)")
+        self.conn.execute("INSERT INTO rb_items (code) VALUES (5)")
+
+    def test_a_renamed_column_is_renamed_in_what_is_carried(self):
+        self.conn.execute("DROP VIEW rb_upper")
+        self.conn.execute("DROP VIEW rb_named")
+        model = model_of(
+            {
+                "id": Integer(primary_key=True),
+                "code": String(10),
+                "label": Text(),
+                "legacy": Text(),
+            }
+        )
+        migration = autogenerate(
+            self.conn,
+            [model],
+            id="m",
+            renames={"rb_items.name": "label"},
+            exclude_tables=("rb_log", "rb_other"),
+        )
+        for statement in migration.up:
+            self.conn.execute(statement)
+        self.refused("INSERT INTO rb_items (code, label) VALUES (8, 'much too long')")
+        self.conn.execute("INSERT INTO rb_items (code, label) VALUES (9, 'Di')")
+        self.assertIn(("Di",), self.conn.execute("SELECT msg FROM rb_log").fetchall())
+
+
 if __name__ == "__main__":
     unittest.main()

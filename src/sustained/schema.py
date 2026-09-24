@@ -15,6 +15,7 @@ from typing import (
     Any,
     Dict,
     List,
+    Mapping,
     NamedTuple,
     Optional,
     Sequence,
@@ -639,13 +640,16 @@ def build_create_table_sql(
     extras: Optional[List[str]] = None,
     constraints: Optional[Sequence[TableConstraint]] = None,
     defer_foreign_keys: bool = False,
+    collations: Optional[Mapping[str, str]] = None,
 ) -> str:
     """
     Renders a CREATE TABLE statement from typed column definitions using
     the given dialect compiler. `extras` are pre-rendered column parts
     appended after the declared columns. `constraints` are declared
     Check and ForeignKey table constraints, rendered after the
-    constraints the columns themselves imply.
+    constraints the columns themselves imply. `collations` maps a
+    lowercased column name to the collating sequence written after its
+    definition, which a SQLite rebuild reads off the old table.
 
     With defer_foreign_keys, no foreign key is rendered at all: neither
     the REFERENCES shorthand on a column nor a declared ForeignKey. The
@@ -669,15 +673,17 @@ def build_create_table_sql(
     inline_pk = len(primary_keys) == 1
 
     for name, col in columns.items():
-        column_parts.append(
-            render_column_sql(
-                compiler,
-                name,
-                col,
-                inline_pk,
-                include_references=not defer_foreign_keys,
-            )
+        column_sql = render_column_sql(
+            compiler,
+            name,
+            col,
+            inline_pk,
+            include_references=not defer_foreign_keys,
         )
+        collation = (collations or {}).get(name.lower())
+        if collation is not None:
+            column_sql += f" COLLATE {collation}"
+        column_parts.append(column_sql)
 
     if len(primary_keys) > 1:
         pk_sql = ", ".join(compiler.quote_ddl_identifier(c) for c in primary_keys)

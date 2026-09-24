@@ -81,6 +81,7 @@ from sustained.rebuild import (
     add_column_needs_rebuild,
     create_indexes_sql,
     implied_constraint_names,
+    rebuild_renames_under_legacy,
     rebuild_steps,
     rebuild_turns_foreign_keys_off,
 )
@@ -418,6 +419,16 @@ def _apply_renames(
         if old_key not in actual:
             raise ValueError(f"Cannot rename unknown table '{old}'.")
         actual[new_key] = actual.pop(old_key)
+        # A SQLite rebuild writes the stored triggers back, and the
+        # rename that runs first has rewritten them in the database.
+        for key, other in actual.items():
+            if other.triggers:
+                actual[key] = other._replace(
+                    triggers=tuple(
+                        _rename_in_expression(sql, old_key, new_key)
+                        for sql in other.triggers
+                    )
+                )
     for path, new_name in renames.items():
         if "." not in path:
             raise ValueError(
@@ -450,6 +461,13 @@ def _apply_renames(
             name: _rename_in_expression(expression, old_key, new_key)
             for name, expression in old_table.checks.items()
         }
+        renamed_unnamed = tuple(
+            _rename_in_expression(expression, old_key, new_key)
+            for expression in old_table.unnamed_checks
+        )
+        renamed_triggers = tuple(
+            _rename_in_expression(sql, old_key, new_key) for sql in old_table.triggers
+        )
         actual[table_key] = old_table._replace(
             primary_key=tuple(
                 new_key if c == old_key else c for c in old_table.primary_key
@@ -457,6 +475,8 @@ def _apply_renames(
             foreign_keys=renamed_fks,
             indexes=renamed_indexes,
             checks=renamed_checks,
+            unnamed_checks=renamed_unnamed,
+            triggers=renamed_triggers,
         )
 
 
@@ -1545,9 +1565,12 @@ def autogenerate(
         guarded = rebuild_turns_foreign_keys_off(actual, rebuild_tables)
         if guarded:
             up_steps.extend(compiler.rebuild_setup_sql())
+        legacy_rename = rebuild_renames_under_legacy(actual)
         for table_key, model in rebuild_tables.items():
             up_steps.extend(
-                rebuild_steps(compiler, model, actual[table_key], allow_drops)
+                rebuild_steps(
+                    compiler, model, actual[table_key], allow_drops, legacy_rename
+                )
             )
         if guarded:
             up_steps.extend(compiler.rebuild_finish_sql())

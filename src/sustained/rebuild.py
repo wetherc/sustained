@@ -101,14 +101,26 @@ def rebuild_steps(
     model: Type["Model"],
     actual_table: IntrospectedTable,
     allow_drops: bool = False,
+    legacy_rename: bool = False,
 ) -> List[str]:
     """
     Rebuilds a SQLite table to match the model: create a new table from the
     declaration, copy rows across, replace the old table, and recreate the
-    indexes. Columns, indexes, and constraints the model does not declare
-    survive the rebuild unless allow_drops is True; a drop is never a
-    side effect of a column change. With allow_drops they go with the old
-    table, so the generator emits no separate drop for them.
+    indexes and triggers. Columns, indexes, and constraints the model does
+    not declare survive the rebuild unless allow_drops is True; a drop is
+    never a side effect of a column change. With allow_drops they go with
+    the old table, so the generator emits no separate drop for them.
+
+    A model cannot declare a collation, an unnamed CHECK, a multi-column
+    UNIQUE constraint, or a trigger, so the rebuild carries each one from
+    the old table whatever allow_drops says. A carried constraint that
+    names a column the rebuild drops goes with that column.
+
+    With legacy_rename, the rename of the copy into place runs under
+    PRAGMA legacy_alter_table. SQLite checks every view and trigger when
+    it renames a table, and the view or trigger that names the old table
+    fails that check while the old table is gone. The legacy rename skips
+    the check, and the view reads the new table under the old name.
     """
     assert model.tableColumns is not None and model.tableName is not None
     table = model.tableName
@@ -137,6 +149,13 @@ def rebuild_steps(
     ]
     if not allow_drops:
         extras.extend(_carried_constraint_sql(compiler, model, actual_table))
+    kept = declared | set(undeclared)
+    extras.extend(_carried_table_parts(compiler, actual_table, kept))
+    collations = {
+        name: col.collation
+        for name, col in actual_table.columns.items()
+        if name in declared and col.collation is not None
+    }
     steps = [
         build_create_table_sql(
             compiler,
@@ -144,6 +163,7 @@ def rebuild_steps(
             model.tableColumns,
             extras=extras,
             constraints=model.tableConstraints,
+            collations=collations,
         )
     ]
 
@@ -180,11 +200,60 @@ def rebuild_steps(
         f"SELECT {', '.join(select_parts)} FROM {table_sql}"
     )
     steps.append(f"DROP TABLE {table_sql}")
+    if legacy_rename:
+        steps.append("PRAGMA legacy_alter_table = ON")
     steps.append(compiler.compile_rename_table(temp_sql, table_sql))
+    if legacy_rename:
+        steps.append("PRAGMA legacy_alter_table = OFF")
     steps.extend(create_indexes_sql(compiler, model))
     if not allow_drops:
         steps.extend(_undeclared_index_sql(compiler, table_sql, model, actual_table))
+    steps.extend(actual_table.triggers)
     return steps
+
+
+def rebuild_renames_under_legacy(snapshot: Snapshot) -> bool:
+    """
+    Whether a rebuild renames its copy under PRAGMA legacy_alter_table:
+    the schema has a view, or a trigger that could name the table.
+    """
+    return bool(snapshot.views) or any(table.triggers for table in snapshot.values())
+
+
+def _names_any(expression: str, columns: Set[str]) -> bool:
+    """Whether an expression names one of the columns, outside literals."""
+    unquoted = re.sub(r"'(?:[^']|'')*'", "''", expression).lower()
+    return bool(set(re.findall(r"\w+", unquoted)) & columns)
+
+
+def _carried_table_parts(
+    compiler: "Compiler", actual_table: IntrospectedTable, kept: Set[str]
+) -> List[str]:
+    """
+    The table constraints a model has no way to declare, rendered back
+    into CREATE TABLE parts: each unnamed CHECK, and each UNIQUE
+    constraint over more than one column, which SQLite keeps as an
+    automatic index. One that names a column outside `kept` is left
+    behind with that column.
+    """
+    dropped = set(actual_table.columns) - kept
+    parts = [
+        f"CHECK ({expression})"
+        for expression in actual_table.unnamed_checks
+        if not _names_any(expression, dropped)
+    ]
+    for name, index in actual_table.indexes.items():
+        if (
+            name.startswith("sqlite_autoindex")
+            and index.unique
+            and len(index.columns) > 1
+            and all(column in kept for column in index.columns)
+        ):
+            columns_sql = ", ".join(
+                compiler.quote_ddl_identifier(c) for c in index.columns
+            )
+            parts.append(f"UNIQUE ({columns_sql})")
+    return parts
 
 
 def _tightens(coldef: "ColumnDef", actual_col: IntrospectedColumn) -> bool:
@@ -261,6 +330,8 @@ def _introspected_column_sql(
         parts.append("UNIQUE")
     if col.default is not None:
         parts.append(f"DEFAULT {col.default}")
+    if col.collation is not None:
+        parts.append(f"COLLATE {col.collation}")
     return " ".join(parts)
 
 
