@@ -7,6 +7,74 @@ Every released version of Sustained, newest first. The same text lives in `CHANG
 
 Version numbers follow semantic versioning. A major version marks a change that can break working code. A minor version adds new features. A patch version fixes a defect without changing public API signatures or introducing new functionality.
 
+## 2.25.0
+
+### Changed
+
+- A column or table name string is an identifier path, `*`, `table.*`, or a call on one column such as `COUNT(*)` or `SUM(tickets.price)`. Every identifier in it is quoted for the dialect. Any other string raises `ValueError`, so `orderBy(request.args["sort"])` can no longer put SQL into the statement. This covers `select()`, `where()`, `having()`, `orderBy()`, `groupBy()`, `distinctOn()`, `returning()`, `from_()`, and the columns inside aggregates and windows. A call such as `orderBy("LOWER(name)")` needs `QueryBuilder.raw()`. On the default dialect, `quote_identifier()` refuses a name that is not letters, digits, underscores, and dollar signs.
+- `whereIn()`, `havingIn()`, `whereExists()`, `havingExists()`, and their NOT and OR forms raise `ValueError` for a string argument. They rendered the string as a subquery, so `whereIn("id", "0) OR (1=1")` matched every row. A subquery written as SQL needs `QueryBuilder.raw()`. The `QueryResolvable` alias takes an `Expression` in place of `str`.
+- `ColumnExpr.in_()` and `not_in()` raise `ValueError` for a `str` or `bytes` argument. `col("status").in_("active")` rendered one value per character.
+- An INSERT, UPDATE, or DELETE raises `ValueError` when the builder has a clause the write does not render, such as `orderBy()`, `limit()`, a join, or a CTE. `where(...).orderBy("id").limit(1).delete()` deleted every matching row. Use `whereIn("id", query)` to pick a capped or ordered set of rows.
+- Every alias goes through `quote_alias()`: a `Subquery` alias, a CTE name, the `from_()` aliases, the `joinRelated()` aliases, and the `column AS alias` shorthand. A CTE name is now quoted, so raw SQL that names a mixed-case CTE bare no longer matches it on Postgres. A dotted alias raises `ValueError` on every dialect.
+- `Migrator.up()`, `down()`, `down_to()`, `baseline()`, `repair()`, and `record_rehearsal()` raise `ValueError` inside an open `transaction()` block. Their commits also committed the caller's statements, so a rollback of the block took nothing back. `AsyncMigrator` refuses the same calls inside an open `async_transaction()` block.
+- `down()` raises `MigrationError` while any failed attempt is on record. A down step that fails with nothing to roll it back marks the migration's row as failed, so validation reports it and the next `down()` does not run the half-reverted step again. `on_error` now fires when `down()` fails. The docs describe the recovery through `repair()`.
+- A tracking table read that fails for a reason other than a missing table raises the driver's error. A closed connection or a role without SELECT on the table read as a database with no history, so `status` showed every migration pending. The new `sustained.driver_errors.is_missing_table()` decides from the SQLSTATE, the driver's error code, and the message text.
+- The migration checksum frames each statement by kind and length, so splitting one statement into two, or joining two into one, counts as an edit. A tracking row or a rehearsal row written by an earlier release still matches. `repair()` rewrites a legacy row, a repeatable's row included, in the current format and reports `updated the checksum format of '<id>'`.
+- A type change from the diff that narrows the type, such as `numeric(18,6)` to `numeric(18,2)` or `double` to `int`, is labelled destructive, so `migrate` asks for a rehearsal first. The column-drop and DELETE patterns also match `ADD x int, DROP y`, `DROP COLUMN IF EXISTS`, `DELETE t WHERE`, and a DELETE after a CTE or in a MERGE branch. The diff refuses to remove a value from a MySQL enum column, a change of case included.
+- The default dialect quotes identifiers in DDL, so a table or column named `order` or `group` no longer breaks CREATE TABLE or the SQLite rebuild. Queries keep writing identifiers bare. The generated SQL text changes, so a rehearsal row recorded for a generated migration no longer matches.
+- The asyncpg adapter reads `%%` in a statement as one `%` sign, as psycopg does.
+
+### Added
+
+- `Migrator.record_scratch_rehearsal(results)` and the async form write every row a passing `rehearse(scratch=True)` proved onto the real database, including the rows targeted runs read.
+- `Migrator.run_outcome(applied, run)` and the async form return the rehearsal outcome recorded for a run, the lookup `up()` makes.
+- `Migrator.read_schema(models)` reads the schema once, and `plan()` and `autogenerate()` take a `snapshot` argument in place of their own read. `sustained plan` reads the schema once instead of up to three times.
+- The `--json` commands print one object on stdout when the run fails, with every top-level key null and an `error` key. A successful run prints `"error": null`. A failed `migrate` prints the migrations it applied for any error, and `up()` tags every error after the first applied migration with them.
+- A SQL migration file honours `DELIMITER <token>` lines, so a MySQL trigger or procedure body loads from a file.
+- `AsyncAdapter.session()` keeps every statement of a block on one database session, and `AsyncAdapter.autocommit_scope()` runs a non-transactional migration with the driver's transaction control off. A custom adapter that opens a new session per statement has to override `session()`, or its transactions commit their work. `aio.pinned_async_transaction()` registers an async rehearsal as an open transaction.
+- `MigrationStatement` gains a `destructive` attribute. `SchemaDiff` gains `changed_enum_checks` and `extra_enum_types`.
+- `sustained.types.ColumnReference` is `str` or `Expression`. The stubs accept `raw()` columns in `where()`, `having()`, `select()`, `orderBy()`, and `groupBy()`, and a nested `where()` group accepts a `Predicate` and a `None` value.
+- The schema read records more of the catalog: each object's own spelling, a table's schema, a foreign key's target schema, collations, `ON UPDATE`, MySQL defaults as SQL, `AUTO_INCREMENT`, the index behind a UNIQUE constraint, and SQLite's unnamed checks, triggers, and views.
+
+### Fixed
+
+- The package imports on Python 3.9 to 3.11. An f-string in `autogenerate.py` split a string across lines inside a replacement field, so `up(models=...)`, `plan`, `drift`, and the async migrator raised `SyntaxError` there.
+- An async transaction stays on one DuckDB session. Each cursor was its own session, so the work committed at once and an async rehearsal on DuckDB applied its migrations for real.
+- An async rehearsal counts as an open transaction, so a callable step's `arun()` skips its commit and a nested `async_transaction()` takes a savepoint. On SQLite the commit made earlier tables in the rehearsal permanent.
+- A failed commit in `async_transaction()` rolls the block back. A write that raises outside a transaction block rolls the connection back. `transaction()` drives the block with BEGIN, COMMIT, and ROLLBACK statements on a connection in autocommit, where the driver's `rollback()` did nothing.
+- `AsyncMigrator` runs a non-transactional migration with the driver's transaction control off, so the SQLite rebuild's `PRAGMA foreign_keys` takes effect.
+- The migration lock scope rolls the session back before it unlocks. A failed non-transactional migration on Postgres left the session aborted, the unlock was refused, and every other migrator blocked until the connection closed. A refused unlock now raises or prints on stderr.
+- `baseline()` refuses to record a migration with a failed row and rolls back a partial write.
+- `AsyncMigrator.status()`, `statuses()`, and `validate()` read the tracking table without creating it or adding columns.
+- A cancelled `AsyncConnectionPool.release()` or `acquire()` keeps the pool slot. `DbApiAsyncAdapter` keeps its lock until a cancelled call's thread ends, and undoes a cursor or autocommit switch that the cancelled call left behind. Both pools wake a waiter when a slot frees, so a waiter no longer times out beside a free slot. A release that races `close()` closes the connection. `AsyncConnectionPool` runs its factory outside any lock and wakes every waiter on `close()`.
+- `to_sql()` doubles literal `%` signs on Postgres and MySQL, so `whereRaw("price % ? = ?", [10, 0])` runs on psycopg and PyMySQL.
+- `joinRelated()` names the related table and a through model with their schema and database.
+- `where(column, "IS", True)` renders `IS TRUE`, `IS NOT DISTINCT FROM TRUE` on Presto and Athena, and a NULL-aware comparison with 1 on MSSQL.
+- `first()` caps the query with `TOP 1` on MSSQL when it has no ORDER BY.
+- A CTE inside a subquery given to `whereIn()`, `whereExists()`, a select-list `Subquery`, `in_()`, or a join condition moves into the top-level WITH clause, which MSSQL requires.
+- Dates, timestamps, decimals, and bytes render as SQL literals in each dialect's form. They raised `TypeError`.
+- MSSQL string literals take the `N` prefix, so characters outside the database's code page are kept.
+- `top()` and `offset()` refuse each other, since the pair has no form that runs.
+- `MOD(a, b)` renders as `(a % b)` on MSSQL.
+- A many-to-many `leftJoinRelated()` or full join uses LEFT JOIN at the link table, so a row with no link row stays in the result.
+- The SQLite rebuild quotes every name, fills NULLs from the default when it tightens a column, and keeps collations, unnamed checks, multi-column UNIQUE constraints, and triggers. A view or trigger that names the table no longer breaks the rename. A column that `ADD COLUMN` refuses, such as a UNIQUE column or one with a non-constant default, goes through the rebuild. A rebuilt table gets no separate index statements.
+- A removed UNIQUE constraint drops with DROP CONSTRAINT on Postgres and SQL Server and through the rebuild on SQLite.
+- An enum CHECK on SQLite and SQL Server is diffed, so an added or removed value generates a migration.
+- Foreign key targets and actions are read on MySQL, MariaDB, and SQL Server. A table or column rename hint also points child foreign keys at the new name, and a key to a table in another schema matches by its target's schema.
+- Postgres checks are read from `pg_constraint` by table, so two tables with a check of one name no longer read each other's expression.
+- Undeclared tables drop after the tables that point at them, and the keys in a cycle drop first.
+- Generated drops use the catalog's spelling of a name and name the schema of a table outside the connection's schema.
+- A column change lifts the indexes and defaults that DuckDB and SQL Server refuse to keep across it, and puts them back after.
+- A MySQL column change restates the catalog's default as SQL, `ON UPDATE`, the collation, and `AUTO_INCREMENT`. A comment change restates the column as the catalog reports it rather than as the model declares it. A SQL Server column change restates the collation.
+- DuckDB constraints pair with the models by content, and DuckDB reads TEXT as VARCHAR, so plans converge. A DuckDB index on a keyword column reads back.
+- SQL Server reads column lengths and precision, so a widened String or a changed Numeric generates a migration.
+- MySQL enum values compare with their case intact.
+- A generated migration drops a named enum type together with the last table or column that uses it.
+- The SQL file splitter keeps line-ending semicolons inside strings, quoted identifiers, block comments, and dollar-quoted bodies, and reads strings with and without backslash escapes.
+- A rehearsal records the key for an untargeted run that follows targeted runs, repeatables included. Its rows go in one transaction, so 400 destructive migrations record in 0.4 seconds where they took 25.
+- `script("down")` renders a generated migration from its tracking row, as `down()` reverts it.
+- A multi-row insert renders its template from a shallow copy, which halves the time of a 200,000-row insert on SQLite.
+
 ## 2.24.2
 
 ### Fixed
