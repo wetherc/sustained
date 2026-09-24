@@ -71,7 +71,14 @@ class IntrospectedColumn(NamedTuple):
 
     `collation` is the collating sequence the column was declared with,
     or None when it names none. The SQLite read takes it from the stored
-    CREATE TABLE statement, so a table rebuild can write it back.
+    CREATE TABLE statement, so a table rebuild can write it back. The
+    MySQL read takes it from COLLATION_NAME, so a MODIFY COLUMN can
+    restate it: MySQL gives a restated column the table's collation
+    unless the statement names one.
+
+    `on_update` is the expression of MySQL's ON UPDATE clause, such as
+    CURRENT_TIMESTAMP(3), read from the EXTRA column. MODIFY COLUMN drops
+    the clause unless it restates it. It is None everywhere else.
 
     `name` is the column's name as the catalog spells it. A snapshot
     keys every name in lower case, and Postgres takes a quoted name as
@@ -90,6 +97,7 @@ class IntrospectedColumn(NamedTuple):
     autoincrement: bool = False
     collation: Optional[str] = None
     name: Optional[str] = None
+    on_update: Optional[str] = None
 
     def restated_default(self) -> Optional[str]:
         """The default as SQL text for a DEFAULT clause, or None."""
@@ -1008,7 +1016,8 @@ class Catalog(NamedTuple):
             checks_read False rather than report an empty mapping.
         reads_default_sql: Whether the read also selects MySQL's EXTRA
             column and VERSION(), which mysql_default_sql() needs to
-            write a MySQL default back as SQL.
+            write a MySQL default back as SQL, and COLLATION_NAME, which
+            a MODIFY COLUMN restates.
     """
 
     schema_filter: str
@@ -1095,6 +1104,11 @@ def _one_schema_per_table(seen: Dict[str, str], table: str, schema: str) -> None
         )
 
 
+# The ON UPDATE clause MySQL reports in EXTRA, as in "DEFAULT_GENERATED
+# on update CURRENT_TIMESTAMP(3)". MariaDB spells the call in lower case.
+_MYSQL_ON_UPDATE_RE = re.compile(r"\bon update\s+(\S+)", re.IGNORECASE)
+
+
 def _declared_schema(schemas: Tuple[str, ...], value: RowValue) -> Optional[str]:
     """
     The schema a row names, when it is one the models declare, or None.
@@ -1137,7 +1151,11 @@ def _information_schema_plan(
         # view in the database is enough to make every plan report drift,
         # and allow_drops would emit a DROP TABLE the engine refuses.
         comment = f", c.{catalog.comment_column}" if with_comment else ""
-        extra = ", c.extra, VERSION()" if catalog.reads_default_sql else ""
+        extra = (
+            ", c.extra, VERSION(), c.collation_name"
+            if catalog.reads_default_sql
+            else ""
+        )
         return (
             f"SELECT c.table_name, c.column_name, c.{catalog.type_column}, "
             f"c.is_nullable, c.column_default{comment}, c.table_schema{extra} "
@@ -1189,6 +1207,8 @@ def _information_schema_plan(
             and "MARIADB" not in str(row[schema_index + 2]).upper()
         ):
             default_sql = mysql_default_sql(str(default), extra, raw_type)
+        collation = _row_text(row, schema_index + 3)
+        on_update = _MYSQL_ON_UPDATE_RE.search(extra)
         spelled_tables.setdefault(str(table).lower(), str(table))
         columns_by_table.setdefault(str(table).lower(), {})[str(name).lower()] = (
             IntrospectedColumn(
@@ -1199,7 +1219,9 @@ def _information_schema_plan(
                 comment=comment,
                 default_sql=default_sql,
                 autoincrement="AUTO_INCREMENT" in extra.upper(),
+                collation=collation,
                 name=str(name),
+                on_update=None if on_update is None else on_update.group(1),
             )
         )
 
@@ -1303,8 +1325,8 @@ def _information_schema_plan(
     return schema
 
 
-def _row_schema(row: Sequence[RowValue], index: int) -> Optional[str]:
-    """The schema a row names at `index`, or None when it names none."""
+def _row_text(row: Sequence[RowValue], index: int) -> Optional[str]:
+    """The text a row has at `index`, or None when it has none there."""
     if len(row) <= index or row[index] is None:
         return None
     return str(row[index])
@@ -1334,7 +1356,7 @@ def _replace_foreign_keys(schema: Snapshot, rows: Sequence[Sequence[RowValue]]) 
             on_delete=str(first[5]).replace("_", " ").upper(),
             on_update=str(first[6]).replace("_", " ").upper(),
             name=str(first[1]),
-            target_schema=_row_schema(first, 7),
+            target_schema=_row_text(first, 7),
         )
     for table, existing in list(schema.items()):
         schema[table] = existing._replace(foreign_keys=foreign_keys.get(table, {}))
@@ -1725,7 +1747,7 @@ def _postgres_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
                 on_delete=_pg_fk_action(first[5]),
                 on_update=_pg_fk_action(first[6]),
                 name=str(first[1]),
-                target_schema=_row_schema(first, 7),
+                target_schema=_row_text(first, 7),
             )
         constraints_read = True
     except Exception:

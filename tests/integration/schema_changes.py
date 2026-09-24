@@ -256,3 +256,37 @@ class SchemaChangeTests:
             return
         migrator.down()
         self.assertIsNone(migrator.plan([widget(Integer)]))
+
+    def test_a_mysql_restatement_keeps_on_update_and_collation(self):
+        # MODIFY COLUMN drops an ON UPDATE clause and resets the collation
+        # to the table's own unless the statement restates them.
+        if self.DIALECT != Dialects.MYSQL:
+            self.skipTest("only MySQL restates a whole column")
+        from sustained.schema import Timestamp
+
+        self.execute(
+            "CREATE TABLE it_widgets (id INT PRIMARY KEY, "
+            "seen DATETIME NULL ON UPDATE CURRENT_TIMESTAMP COMMENT 'old', "
+            "code VARCHAR(10) CHARACTER SET latin1 COLLATE latin1_bin NULL)"
+        )
+        widget = type(
+            "WidgetRestated",
+            (Model,),
+            {
+                "tableName": "it_widgets",
+                "tableColumns": {
+                    "id": Integer(primary_key=True),
+                    "seen": Timestamp(comment="new"),
+                    "code": String(20),
+                },
+                "_dialect": self.DIALECT,
+            },
+        )
+        migrator = self.migrator()
+        migrator.up(models=[widget], unrehearsed=True)
+        self.assertIsNone(migrator.plan([widget]))
+        columns = self.tables()["it_widgets"].columns
+        self.assertTrue(
+            columns["seen"].on_update.upper().startswith("CURRENT_TIMESTAMP")
+        )
+        self.assertEqual(columns["code"].collation, "latin1_bin")

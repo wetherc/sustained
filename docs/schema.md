@@ -347,6 +347,8 @@ Upserts (`onConflict().merge()`), `UPDATE`, `DELETE`, and `down()` reverts all d
 
 For the same reason, `rehearse` refuses MySQL against the real database and asks for [a scratch one](#rehearsing-on-a-scratch-database) instead.
 
+MySQL changes a column by restating it with `MODIFY COLUMN`, and drops every part the statement leaves off. A generated type, nullability, or comment change therefore restates the column as the catalog reports it: its nullability, default, identity, and comment, the `ON UPDATE` clause read from `EXTRA`, and, for a text or enum type, the collation read from `COLLATION_NAME`. Without the collation, the column would take the table's collation. A model has no way to declare either one, so a column keeps what it has.
+
 [SQL Dialects](./dialects#mysql-and-mariadb) has the type mapping, the MariaDB divergences, and the column definitions MySQL will not accept.
 
 ## Hand-written migrations

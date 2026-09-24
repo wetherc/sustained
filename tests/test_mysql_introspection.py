@@ -41,8 +41,11 @@ class FakeCursor:
         extras=None,
         version="8.0.36",
         foreign_keys=None,
+        collations=None,
     ):
         self.columns = list(columns)
+        # COLLATION_NAME per (table, column); a column left out reads NULL.
+        self.collations = collations or {}
         # Rows of the referential read; None means the view is missing.
         self.foreign_keys = foreign_keys
         # EXTRA per (table, column); a column left out reads as ''.
@@ -68,9 +71,16 @@ class FakeCursor:
                 rows = self.commented_columns
             else:
                 rows = self.columns
-            # The read selects table_schema, EXTRA, and VERSION() last.
+            # The read selects table_schema, EXTRA, VERSION(), and
+            # COLLATION_NAME last.
             self._current = [
-                (*row, "app", self.extras.get(row[:2], ""), self.version)
+                (
+                    *row,
+                    "app",
+                    self.extras.get(row[:2], ""),
+                    self.version,
+                    self.collations.get(row[:2]),
+                )
                 for row in rows
             ]
         elif "referential_constraints" in sql:
@@ -1258,6 +1268,103 @@ class TestTwoSchemasOneTableName(unittest.TestCase):
                     ("users", "email", "varchar(120)", "YES", None, "public"),
                 ]
             )
+
+
+class TestMysqlRestatesCollationAndOnUpdate(unittest.TestCase):
+    """
+    MODIFY COLUMN gives a column the table's collation and drops its ON
+    UPDATE clause unless the statement restates them, so a type or a
+    comment change writes both back as the catalog reports them.
+    """
+
+    def migrate(self, rows, columns, extras=None, collations=None):
+        cursor = FakeCursor(
+            columns=[row[:5] for row in rows],
+            commented_columns=rows,
+            constraints=[("users", "PRIMARY KEY", "PRIMARY", "id")],
+            extras=extras,
+            collations=collations,
+        )
+        model = make_model("MysqlRestated", "users", columns)
+        return autogenerate(
+            FakeConnection(cursor), [model], id="m", dialect=Dialects.MYSQL
+        )
+
+    def test_the_read_takes_both(self):
+        cursor = FakeCursor(
+            columns=[
+                ("users", "seen", "datetime(3)", "NO", "CURRENT_TIMESTAMP(3)"),
+                ("users", "code", "varchar(10)", "YES", None),
+            ],
+            extras={
+                ("users", "seen"): "DEFAULT_GENERATED on update CURRENT_TIMESTAMP(3)"
+            },
+            collations={("users", "code"): "latin1_bin"},
+        )
+        table = introspect_schema(FakeConnection(cursor), Dialects.MYSQL)["users"]
+        self.assertEqual(table.columns["seen"].on_update, "CURRENT_TIMESTAMP(3)")
+        self.assertIsNone(table.columns["seen"].collation)
+        self.assertEqual(table.columns["code"].collation, "latin1_bin")
+        self.assertIsNone(table.columns["code"].on_update)
+
+    def test_a_type_change_keeps_the_collation(self):
+        migration = self.migrate(
+            [
+                ("users", "id", "int", "NO", None, ""),
+                ("users", "code", "varchar(10)", "YES", None, ""),
+            ],
+            {"id": Integer(primary_key=True), "code": String(20)},
+            collations={("users", "code"): "latin1_bin"},
+        )
+        self.assertEqual(
+            migration.up,
+            ["ALTER TABLE `users` MODIFY COLUMN `code` VARCHAR(20) COLLATE latin1_bin"],
+        )
+        self.assertEqual(
+            migration.down,
+            ["ALTER TABLE `users` MODIFY COLUMN `code` varchar(10) COLLATE latin1_bin"],
+        )
+
+    def test_a_new_type_without_a_collation_drops_it(self):
+        migration = self.migrate(
+            [
+                ("users", "id", "int", "NO", None, ""),
+                ("users", "code", "varchar(10)", "YES", None, ""),
+            ],
+            {"id": Integer(primary_key=True), "code": BigInteger()},
+            collations={("users", "code"): "latin1_bin"},
+        )
+        self.assertEqual(
+            migration.up, ["ALTER TABLE `users` MODIFY COLUMN `code` BIGINT"]
+        )
+
+    def test_a_comment_change_keeps_on_update(self):
+        migration = self.migrate(
+            [
+                ("users", "id", "int", "NO", None, ""),
+                (
+                    "users",
+                    "seen",
+                    "timestamp",
+                    "YES",
+                    "CURRENT_TIMESTAMP",
+                    "old",
+                ),
+            ],
+            {
+                "id": Integer(primary_key=True),
+                "seen": Timestamp(comment="new"),
+            },
+            extras={("users", "seen"): "on update current_timestamp()"},
+        )
+        self.assertEqual(
+            migration.up,
+            [
+                "ALTER TABLE `users` MODIFY COLUMN `seen` timestamp "
+                "DEFAULT CURRENT_TIMESTAMP ON UPDATE current_timestamp() "
+                "COMMENT 'new'"
+            ],
+        )
 
 
 if __name__ == "__main__":

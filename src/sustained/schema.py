@@ -47,6 +47,12 @@ class ColumnState(NamedTuple):
             default.
         comment: The catalog comment, on dialects that store one.
         autoincrement: Whether the column generates identity values.
+        collation: The column's collation, which MySQL resets to the
+            table's own when a restatement leaves it off. Only a text
+            type restates it.
+        on_update: The expression of MySQL's ON UPDATE clause, such as
+            CURRENT_TIMESTAMP, which a restatement drops when it leaves
+            the clause off.
     """
 
     type_sql: str
@@ -54,6 +60,8 @@ class ColumnState(NamedTuple):
     default_sql: Optional[str] = None
     comment: Optional[str] = None
     autoincrement: bool = False
+    collation: Optional[str] = None
+    on_update: Optional[str] = None
 
     @classmethod
     def from_column(

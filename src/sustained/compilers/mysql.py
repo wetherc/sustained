@@ -1,3 +1,4 @@
+import re
 from typing import TYPE_CHECKING, Optional, Sequence
 
 from sustained.exceptions import DialectError
@@ -16,6 +17,12 @@ _ALL_ROWS = 18446744073709551615
 # Types that MySQL stores off the row, which it will not index whole and
 # will not take a literal DEFAULT for.
 _OFF_ROW_TYPES = ("TEXT", "JSON", "BINARY")
+
+# The column types that carry a collation. A collation left on another
+# type would name one the column does not have.
+_TEXT_TYPE_RE = re.compile(
+    r"^\s*(?:(?:var)?char|(?:tiny|medium|long)?text|enum|set)\b", re.IGNORECASE
+)
 
 # How long a migrator waits for the advisory lock. Both servers accept a
 # year; neither reads it as anything but a long wait.
@@ -99,15 +106,21 @@ class MysqlCompiler(Compiler):
         The MODIFY COLUMN clause that restates one whole column.
 
         MySQL drops every part the statement leaves off, so nullability,
-        default, identity, and comment come back each time. UNIQUE is
-        restated nowhere on purpose: MODIFY with a UNIQUE clause adds a
-        second index every time it runs.
+        default, ON UPDATE, identity, and comment come back each time. A
+        text column takes the table's collation unless the statement
+        names one, so its collation comes back too. UNIQUE is restated
+        nowhere on purpose: MODIFY with a UNIQUE clause adds a second
+        index every time it runs.
         """
         parts = [self.quote_identifier(column_name), state.type_sql]
+        if state.collation is not None and _TEXT_TYPE_RE.match(state.type_sql):
+            parts.append(f"COLLATE {state.collation}")
         if not state.nullable:
             parts.append("NOT NULL")
         if state.default_sql is not None:
             parts.append(f"DEFAULT {state.default_sql}")
+        if state.on_update is not None:
+            parts.append(f"ON UPDATE {state.on_update}")
         if state.autoincrement:
             parts.append("AUTO_INCREMENT")
         if state.comment is not None:

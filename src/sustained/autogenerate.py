@@ -635,6 +635,8 @@ def _introspected_state(column: IntrospectedColumn) -> ColumnState:
         default_sql=column.restated_default(),
         comment=column.comment,
         autoincrement=column.autoincrement,
+        collation=column.collation,
+        on_update=column.on_update,
     )
 
 
@@ -1631,6 +1633,8 @@ def autogenerate(
         return state._replace(
             default_sql=actual_col.restated_default(),
             comment=(actual_col.comment if compiler.stores_column_comments() else None),
+            collation=actual_col.collation,
+            on_update=actual_col.on_update,
         )
 
     # An engine that refuses ALTER COLUMN while an index depends on the
