@@ -129,7 +129,7 @@ down(steps=1) -> list[str]
 ```
 {: .sig #down}
 
-Reverts newest first, and never touches repeatables.
+Reverts newest first, and never touches repeatables. A failed attempt on record makes `down` raise `MigrationError` before it reverts anything. A down step that fails where nothing rolls it back, on an engine without transactional DDL or in a migration with `transactional=False`, marks that migration's row failed, so validation blocks the next run until you finish the revert and run `repair()`.
 
 ```python
 down_to(target) -> list[str]
@@ -382,7 +382,7 @@ Callbacks(before_migrate=None, after_migrate=None, on_error=None)
 ```
 {: .sig}
 
-`Callbacks` is a NamedTuple of optional functions that you pass to either migrator. `before_migrate(connection)` runs before validation and before the advisory lock. `after_migrate(connection, applied)` runs only when at least one migration applied. `on_error(connection, migration_id, error)` runs after a failure, and its `migration_id` argument is `None` when the run failed before it reached a migration. When `on_error` itself raises, its error prints on stderr, and the run's error still propagates. A `before_migrate` or `after_migrate` that raises stops the caller.
+`Callbacks` is a NamedTuple of optional functions that you pass to either migrator. `before_migrate(connection)` runs before validation and before the advisory lock of an `up`. `after_migrate(connection, applied)` runs only when at least one migration applied. `on_error(connection, migration_id, error)` runs after a failed `up` or `down`, and its `migration_id` argument is `None` when the run failed before it reached a migration. When `on_error` itself raises, its error prints on stderr, and the run's error still propagates. A `before_migrate` or `after_migrate` that raises stops the caller.
 
 ## Guards
 

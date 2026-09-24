@@ -101,7 +101,7 @@ No flag skips a guard for one run. Fix the statement, or take the rule out of th
 
 ### Callbacks
 
-Only `migrate` calls the callbacks, and `rehearse` does not, because it rolls everything back. The CLI collects the callbacks into a `Callbacks` object and hands that object to the migrator, and the migrator makes the calls, so the same hooks are available through the API.
+Only `migrate` calls `before_migrate` and `after_migrate`. `on_error` also runs when `down` fails. `rehearse` calls none of them, because it rolls everything back. The CLI collects the callbacks into a `Callbacks` object and hands that object to the migrator, and the migrator makes the calls, so the same hooks are available through the API.
 
 `before_migrate` runs before the run starts, ahead of validation and the advisory lock. `after_migrate` runs only when at least one migration applied, so a run with nothing to do calls nothing. `on_error` runs after a failure and before the failure reaches the shell. Its `migration_id` argument is `None` when the run failed before it reached a migration, as it does after a guard block or a validation problem.
 

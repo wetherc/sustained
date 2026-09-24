@@ -608,7 +608,7 @@ def on_error(connection, migration_id, error):
     page_someone(f'{migration_id} failed: {error}')
 ```
 
-`after_migrate` runs only when something applied, so a no-op run stays quiet. `migration_id` is `None` when the run failed before reaching a migration. Only `migrate` calls them, and `rehearse` skips them because a rehearsal leaves the real database unchanged.
+`after_migrate` runs only when something applied, so a no-op run stays quiet. `migration_id` is `None` when the run failed before reaching a migration. Only `migrate` calls `before_migrate` and `after_migrate`. `on_error` also runs when `down` fails. `rehearse` skips all three because a rehearsal leaves the real database unchanged.
 
 ## Recover from a failed migration
 
@@ -628,6 +628,8 @@ repaired removed the failed attempt of '004_trim'
 ```
 
 `repair` fixes only the tracking rows, so it does not undo half-applied schema changes or tell you which ones there were. Fix the schema by hand and check it before you run `repair`.
+
+A failed `down` is recorded the same way when nothing rolled it back, on an engine without transactional DDL such as MySQL or in a migration with `transactional=False`. `down` then refuses to run until the row is cleared. Finish the revert by hand, then run `repair`, and the migration is pending again. If you instead restore the migration's changes by hand, run `repair` and then `baseline` with that migration's id, so it is recorded as applied.
 
 ## Accept an edit to a migration that already ran
 

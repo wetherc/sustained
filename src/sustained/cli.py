@@ -22,7 +22,7 @@ The config module names the pieces the migrator needs:
   sustained.guards (optional)
 - `before_migrate(connection)`, `after_migrate(connection, applied)`, and
   `on_error(connection, migration_id, error)`: callbacks around the
-  `migrate` command (optional)
+  `migrate` command; `on_error` also runs when `down` fails (optional)
 
 Commands: status, plan, migrate, rehearse, down, validate, repair,
 script, baseline. Every command exits 0 on success and 1 on failure.

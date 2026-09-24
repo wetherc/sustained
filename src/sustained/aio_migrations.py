@@ -56,6 +56,7 @@ from sustained.migrations import (
     _destructive_in,
     _destructive_prefix_keys,
     _down_sweep,
+    _failed_attempt_problem,
     _is_current,
     _lock_message,
     _migration_state,
@@ -1443,15 +1444,29 @@ class AsyncMigrator:
         revert it with the down step as it stands now.
 
         Every migration in the window is read and checked first, so a
-        refusal reverts nothing.
+        refusal reverts nothing. A failed attempt on record refuses the
+        run, and a down step that fails where nothing rolls it back marks
+        the migration's row failed, as Migrator.down() does. The
+        migrator's on_error callback fires for a failed run.
         """
-        from sustained.exceptions import MigrationError
-
         _checked_steps(steps)
         self._refuse_open_transaction("down")
+        try:
+            return await self._run_down(steps, allow_changed)
+        except Exception as error:
+            await self._fire_on_error(error)
+            raise
+
+    async def _run_down(self, steps: int, allow_changed: bool) -> List[str]:
+        """The run itself, without the callback down() wraps it in."""
+        from sustained.exceptions import MigrationError
+
         async with self._lock_scope():
             await self._ensure_tracking_table()
             records = await self.applied_records()
+            failed = [_failed_attempt_problem(r.id) for r in records if not r.success]
+            if failed:
+                raise MigrationError(failed)
             by_record = {r.id: r for r in records}
             repeatable_ids = {m.id for m in self._repeatables()}
             applied = [
@@ -1481,16 +1496,43 @@ class AsyncMigrator:
                     raise ValueError(f"Migration '{migration_id}' has no down step.")
                 window.append((migration_id, migration, migration.down))
             for migration_id, migration, down_step in window:
-                async with self._migration_scope(migration.transactional):
-                    await self._run_step(down_step)
-                    await self._execute(
-                        f"DELETE FROM {self._table_sql()} WHERE "
-                        f"{self._compiler.quote_identifier('id')} = "
-                        f"{placeholder}",
-                        (migration_id,),
-                    )
+                try:
+                    async with self._migration_scope(migration.transactional):
+                        await self._run_step(down_step)
+                        await self._execute(
+                            f"DELETE FROM {self._table_sql()} WHERE "
+                            f"{self._compiler.quote_identifier('id')} = "
+                            f"{placeholder}",
+                            (migration_id,),
+                        )
+                except Exception as error:
+                    await self._record_down_failure(migration)
+                    _tag_migration(error, migration_id)
+                    raise
                 reverted.append(migration_id)
             return reverted
+
+    async def _record_down_failure(self, migration: Migration) -> None:
+        """
+        Marks a migration's row failed after its down step raised where
+        nothing rolled the step back. Mirrors
+        Migrator._record_down_failure().
+        """
+        if self._rehearsing or (
+            migration.transactional and self._compiler.supports_transactional_ddl()
+        ):
+            return
+        column = self._compiler.quote_identifier
+        placeholder = self._compiler.placeholder()
+        try:
+            await self._execute(
+                f"UPDATE {self._table_sql()} SET {column('success')} = "
+                f"{placeholder} WHERE {column('id')} = {placeholder}",
+                (False, migration.id),
+            )
+            await self._adapter.commit()
+        except Exception:
+            pass
 
     async def down_to(self, target: str, allow_changed: bool = False) -> List[str]:
         """

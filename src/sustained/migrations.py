@@ -166,7 +166,9 @@ class Callbacks(NamedTuple):
     applied at least one migration, and receives the applied ids; a run
     that applied nothing does not call it. `on_error` receives the failed
     migration's id, or None when the run failed before any migration ran,
-    and the error, which then propagates.
+    and the error, which then propagates. before_migrate and
+    after_migrate fire around up() only. on_error also fires when down()
+    fails.
 
     The first argument of each is the connection the migrator runs on, or
     the adapter for AsyncMigrator. An async migrator awaits a callback
@@ -636,6 +638,14 @@ def check_guards(
         warned = [v for v in warned if v not in reported]
         reported.update(warned)
     _report_warnings(warned)
+
+
+def _failed_attempt_problem(migration_id: str) -> str:
+    """The validation problem for a row a failed up or down step left."""
+    return (
+        f"migration '{migration_id}' has a failed attempt on record; "
+        "clean up any partial changes, then run repair() and retry"
+    )
 
 
 def _call_on_error(
@@ -1413,10 +1423,7 @@ def _validation_problems(
 
     for record in records:
         if not record.success:
-            problems.append(
-                f"migration '{record.id}' has a failed attempt on record; "
-                "clean up any partial changes, then run repair() and retry"
-            )
+            problems.append(_failed_attempt_problem(record.id))
     for record in records:
         if not record.success:
             continue
@@ -2990,15 +2997,35 @@ class Migrator:
         revert it with the down step as it stands now.
 
         Every migration in the window is read and checked first, so a
-        refusal reverts nothing.
-        """
-        from sustained.exceptions import MigrationError
+        refusal reverts nothing. A failed attempt on record refuses the
+        run, because the window would skip that migration and revert the
+        one before it.
 
+        A down step that fails where nothing rolls it back, on an engine
+        without transactional DDL or in a migration with
+        transactional=False, marks the migration's row failed. Validation
+        then blocks the next run until the revert is finished by hand and
+        repair() removes the row. The migrator's on_error callback fires
+        for a failed run.
+        """
         _checked_steps(steps)
         self._refuse_open_transaction("down")
+        try:
+            return self._run_down(steps, allow_changed)
+        except Exception as error:
+            _call_on_error(self._callbacks, self._connection, error)
+            raise
+
+    def _run_down(self, steps: int, allow_changed: bool) -> List[str]:
+        """The run itself, without the callback down() wraps it in."""
+        from sustained.exceptions import MigrationError
+
         with self._lock_scope():
             self._ensure_tracking_table()
             records = self._read_records()
+            failed = [_failed_attempt_problem(r.id) for r in records if not r.success]
+            if failed:
+                raise MigrationError(failed)
             by_record = {r.id: r for r in records}
             applied = self._applied_versioned([r.id for r in records if r.success])
             by_id = {m.id: m for m in self._migrations}
@@ -3025,16 +3052,45 @@ class Migrator:
                     raise ValueError(f"Migration '{migration_id}' has no down step.")
                 window.append((migration_id, migration, migration.down))
             for migration_id, migration, down_step in window:
-                with self._migration_scope(migration.transactional):
-                    _run_step(self._connection, down_step, self._compiler)
-                    self._write_tracking_row(
-                        f"DELETE FROM {self._table_sql()} WHERE "
-                        f"{self._compiler.quote_identifier('id')} = "
-                        f"{placeholder}",
-                        (migration_id,),
-                    )
+                try:
+                    with self._migration_scope(migration.transactional):
+                        _run_step(self._connection, down_step, self._compiler)
+                        self._write_tracking_row(
+                            f"DELETE FROM {self._table_sql()} WHERE "
+                            f"{self._compiler.quote_identifier('id')} = "
+                            f"{placeholder}",
+                            (migration_id,),
+                        )
+                except Exception as error:
+                    self._record_down_failure(migration)
+                    _tag_migration(error, migration_id)
+                    raise
                 reverted.append(migration_id)
             return reverted
+
+    def _record_down_failure(self, migration: Migration) -> None:
+        """
+        Marks a migration's row failed after its down step raised where
+        nothing rolled the step back, so partial changes may remain. The
+        row keeps its checksum and stored steps. A failure to write the
+        mark never masks the original error, and a transaction that rolled
+        the step back leaves the row as it was.
+        """
+        if self._rehearsing or (
+            migration.transactional and self._compiler.supports_transactional_ddl()
+        ):
+            return
+        column = self._compiler.quote_identifier
+        placeholder = self._compiler.placeholder()
+        try:
+            self._run_sql(
+                f"UPDATE {self._table_sql()} SET {column('success')} = "
+                f"{placeholder} WHERE {column('id')} = {placeholder}",
+                (False, migration.id),
+            )
+            self._commit_quietly()
+        except Exception:
+            pass
 
 
 # The old names for the rehearsal row and its key, kept so code written
