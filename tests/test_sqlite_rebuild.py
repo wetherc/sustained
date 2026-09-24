@@ -1,0 +1,102 @@
+"""
+The SQLite table rebuild, run against in-memory SQLite: each generated
+migration is applied, and the schema it leaves is read back.
+"""
+
+import sqlite3
+import unittest
+
+from sustained import create_model
+from sustained.autogenerate import autogenerate, diff_schema
+from sustained.schema import Index, Integer, String, Text
+
+
+def model_of(columns, indexes=None, table="rb_items"):
+    model = create_model(f"Rebuild_{table}", table)
+    model.tableColumns = columns
+    model.columns = tuple(columns)
+    model.indexes = indexes or []
+    return model
+
+
+class RebuildTestCase(unittest.TestCase):
+    def setUp(self):
+        self.conn = sqlite3.connect(":memory:")
+        self.addCleanup(self.conn.close)
+        self.conn.execute(
+            "CREATE TABLE rb_items (id INTEGER PRIMARY KEY, code INTEGER, note TEXT)"
+        )
+        self.conn.execute("INSERT INTO rb_items VALUES (1, 7, 'first')")
+
+    def apply(self, migration):
+        for statement in migration.up:
+            self.conn.execute(statement)
+
+    def indexes(self):
+        rows = self.conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'index' "
+            "AND tbl_name = 'rb_items' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+        )
+        return [row[0] for row in rows]
+
+    def rows(self):
+        return self.conn.execute("SELECT * FROM rb_items ORDER BY id").fetchall()
+
+
+class TestRebuildWithIndexChanges(RebuildTestCase):
+    def test_a_new_index_is_created_once(self):
+        model = model_of(
+            {"id": Integer(primary_key=True), "code": String(10), "note": Text()},
+            [Index("ix_rb_code", "code")],
+        )
+        migration = autogenerate(self.conn, [model], id="m")
+        creates = [s for s in migration.up if "CREATE INDEX" in s]
+        self.assertEqual(len(creates), 1)
+        self.apply(migration)
+        self.assertEqual(self.indexes(), ["ix_rb_code"])
+        self.assertTrue(diff_schema(self.conn, [model]).is_empty())
+
+    def test_a_changed_index_comes_from_the_rebuild(self):
+        self.conn.execute("CREATE INDEX ix_rb_code ON rb_items (code)")
+        model = model_of(
+            {"id": Integer(primary_key=True), "code": String(10), "note": Text()},
+            [Index("ix_rb_code", "code", unique=True)],
+        )
+        migration = autogenerate(self.conn, [model], id="m")
+        self.assertFalse(any(s.startswith("DROP INDEX") for s in migration.up))
+        self.apply(migration)
+        self.assertTrue(diff_schema(self.conn, [model]).is_empty())
+
+
+class TestRebuildWithDrops(RebuildTestCase):
+    def test_an_index_on_a_dropped_column_goes_with_the_table(self):
+        self.conn.execute("CREATE INDEX ix_rb_note ON rb_items (note)")
+        model = model_of({"id": Integer(primary_key=True), "code": String(10)})
+        migration = autogenerate(self.conn, [model], id="m", allow_drops=True)
+        self.assertFalse(any(s.startswith("DROP INDEX") for s in migration.up))
+        self.apply(migration)
+        self.assertEqual(self.indexes(), [])
+        self.assertTrue(diff_schema(self.conn, [model]).is_empty())
+
+    def test_an_undeclared_index_on_a_kept_column_is_dropped(self):
+        self.conn.execute("CREATE INDEX ix_rb_code ON rb_items (code)")
+        model = model_of(
+            {"id": Integer(primary_key=True), "code": String(10), "note": Text()}
+        )
+        migration = autogenerate(self.conn, [model], id="m", allow_drops=True)
+        self.apply(migration)
+        self.assertEqual(self.indexes(), [])
+        self.assertEqual(self.rows(), [(1, "7", "first")])
+
+    def test_without_drops_the_undeclared_index_is_kept(self):
+        self.conn.execute("CREATE INDEX ix_rb_code ON rb_items (code)")
+        model = model_of(
+            {"id": Integer(primary_key=True), "code": String(10), "note": Text()}
+        )
+        migration = autogenerate(self.conn, [model], id="m", ignore_undeclared=True)
+        self.apply(migration)
+        self.assertEqual(self.indexes(), ["ix_rb_code"])
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -1553,8 +1553,12 @@ def autogenerate(
             transactional = False
         reversible = False
 
-    # Index changes.
+    # Index changes. A rebuilt table takes its declared indexes from the
+    # rebuild, and its old indexes went with the old table, so none of
+    # these statements apply to it.
     for model, index in diff.new_indexes:
+        if (model.tableName or "").lower() in rebuild_tables:
+            continue
         table_sql = model._qualified_table_sql(compiler)
         up_steps.append(
             compiler.compile_create_index(
@@ -1563,6 +1567,8 @@ def autogenerate(
         )
         down_steps.insert(0, compiler.compile_drop_index(index.name, table_sql))
     for model, index, actual_index in diff.changed_indexes:
+        if (model.tableName or "").lower() in rebuild_tables:
+            continue
         table_sql = model._qualified_table_sql(compiler)
         up_steps.append(compiler.compile_drop_index(index.name, table_sql))
         up_steps.append(
@@ -1630,6 +1636,8 @@ def autogenerate(
 
     if allow_drops:
         for table, name, actual_index in diff.extra_indexes:
+            if table.lower() in rebuild_tables:
+                continue
             table_sql = compiler.quote_fully_qualified_ddl_identifier(table)
             up_steps.append(compiler.compile_drop_index(name, table_sql))
             down_steps.insert(

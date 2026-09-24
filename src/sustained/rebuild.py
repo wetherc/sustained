@@ -67,9 +67,10 @@ def rebuild_steps(
     """
     Rebuilds a SQLite table to match the model: create a new table from the
     declaration, copy rows across, replace the old table, and recreate the
-    indexes. Columns and indexes the model does not declare survive the
-    rebuild unless allow_drops is True; a drop is never a side effect of a
-    column change.
+    indexes. Columns, indexes, and constraints the model does not declare
+    survive the rebuild unless allow_drops is True; a drop is never a
+    side effect of a column change. With allow_drops they go with the old
+    table, so the generator emits no separate drop for them.
     """
     assert model.tableColumns is not None and model.tableName is not None
     table = model.tableName
@@ -136,11 +137,8 @@ def rebuild_steps(
     steps.append(f"DROP TABLE {table_sql}")
     steps.append(compiler.compile_rename_table(temp_sql, table_sql))
     steps.extend(create_indexes_sql(compiler, model))
-    steps.extend(
-        _undeclared_index_sql(
-            compiler, table_sql, model, actual_table, declared, undeclared
-        )
-    )
+    if not allow_drops:
+        steps.extend(_undeclared_index_sql(compiler, table_sql, model, actual_table))
     return steps
 
 
@@ -213,29 +211,21 @@ def _undeclared_index_sql(
     table_sql: str,
     model: Type["Model"],
     actual_table: IntrospectedTable,
-    declared_columns: Set[str],
-    undeclared_columns: Dict[str, IntrospectedColumn],
 ) -> List[str]:
     """
     CREATE INDEX statements for the table's indexes that the model does not
     declare, so a rebuild does not quietly discard them. SQLite's automatic
     indexes are skipped: the column constraints that made them recreate
-    them. An index on a column the rebuild dropped is skipped too.
+    them.
     """
     declared_indexes = {i.name.lower() for i in model.indexes or []}
-    surviving = declared_columns | set(undeclared_columns)
-    statements: List[str] = []
-    for name, index in actual_table.indexes.items():
-        if name in declared_indexes or name.startswith("sqlite_autoindex"):
-            continue
-        if not all(column in surviving for column in index.columns):
-            continue
-        statements.append(
-            compiler.compile_create_index(
-                name, table_sql, list(index.columns), index.unique
-            )
+    return [
+        compiler.compile_create_index(
+            name, table_sql, list(index.columns), index.unique
         )
-    return statements
+        for name, index in actual_table.indexes.items()
+        if name not in declared_indexes and not name.startswith("sqlite_autoindex")
+    ]
 
 
 def rebuild_turns_foreign_keys_off(
