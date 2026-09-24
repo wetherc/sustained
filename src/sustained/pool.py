@@ -9,10 +9,11 @@ thread so all statements in the block share the same transaction.
 
 from __future__ import annotations
 
-import queue
 import threading
+import time
+from collections import deque
 from contextlib import contextmanager
-from typing import Callable, Dict, Iterator, List
+from typing import Callable, Deque, Dict, Iterator, List
 
 from sustained.types import Connection
 
@@ -38,9 +39,12 @@ class ConnectionPool:
         self._factory = factory
         self._max_size = max_size
         self._timeout = timeout
-        self._idle: "queue.Queue[Connection]" = queue.Queue()
+        self._idle: Deque[Connection] = deque()
         self._created = 0
-        self._lock = threading.Lock()
+        # Guards the idle queue, the counters and the checked-out map.
+        # Every release, discard and close notifies it, so a waiter wakes
+        # for a freed slot as well as for a returned connection.
+        self._lock = threading.Condition()
         self._closed = False
         self._checked_out: Dict[int, Connection] = {}
 
@@ -54,31 +58,39 @@ class ConnectionPool:
         Checks out a connection without a context manager. The caller must
         release() it; prefer connection() which guarantees the release.
         """
+        deadline = time.monotonic() + self._timeout
         with self._lock:
-            if self._closed:
-                raise RuntimeError("The connection pool is closed.")
+            # A discarded connection frees a slot without putting anything
+            # in the idle queue, so every wake-up checks both again. A
+            # waiter that watched the queue alone would time out while the
+            # pool had room to open a new connection.
+            while True:
+                if self._closed:
+                    raise RuntimeError("The connection pool is closed.")
+                if self._idle:
+                    connection = self._idle.popleft()
+                    self._checked_out[id(connection)] = connection
+                    return connection
+                if self._created < self._max_size:
+                    self._created += 1
+                    break
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise PoolTimeout(
+                        f"No connection available within {self._timeout} "
+                        f"seconds (pool size {self._max_size})."
+                    )
+                self._lock.wait(remaining)
         try:
-            return self._check_out(self._idle.get_nowait())
-        except queue.Empty:
-            pass
+            connection = self._factory()
+        except BaseException:
+            with self._lock:
+                self._created -= 1
+                self._lock.notify()
+            raise
         with self._lock:
-            can_create = self._created < self._max_size
-            if can_create:
-                self._created += 1
-        if can_create:
-            try:
-                return self._check_out(self._factory())
-            except BaseException:
-                with self._lock:
-                    self._created -= 1
-                raise
-        try:
-            return self._check_out(self._idle.get(timeout=self._timeout))
-        except queue.Empty:
-            raise PoolTimeout(
-                f"No connection available within {self._timeout} seconds "
-                f"(pool size {self._max_size})."
-            ) from None
+            self._checked_out[id(connection)] = connection
+        return connection
 
     def release(self, connection: Connection) -> None:
         """
@@ -99,12 +111,14 @@ class ConnectionPool:
         if closed or not self._reset(connection):
             self._discard(connection)
             return
-        self._idle.put(connection)
-
-    def _check_out(self, connection: Connection) -> Connection:
         with self._lock:
-            self._checked_out[id(connection)] = connection
-        return connection
+            # close() may have run during the reset. A connection put in
+            # the idle queue after it drained would stay open for good.
+            if not self._closed:
+                self._idle.append(connection)
+                self._lock.notify()
+                return
+        self._discard(connection)
 
     def _reset(self, connection: Connection) -> bool:
         """
@@ -149,6 +163,7 @@ class ConnectionPool:
     def _discard(self, connection: Connection) -> None:
         with self._lock:
             self._created -= 1
+            self._lock.notify()
         try:
             self._close_connection(connection)
         except Exception:
@@ -170,13 +185,11 @@ class ConnectionPool:
         """
         with self._lock:
             self._closed = True
-            drained: List[Connection] = []
-            while True:
-                try:
-                    drained.append(self._idle.get_nowait())
-                except queue.Empty:
-                    break
+            drained: List[Connection] = list(self._idle)
+            self._idle.clear()
             self._created -= len(drained)
+            # Every waiting thread wakes to find the pool closed and raises.
+            self._lock.notify_all()
         for conn in drained:
             self._close_connection(conn)
 

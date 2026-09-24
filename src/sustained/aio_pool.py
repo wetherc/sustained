@@ -14,11 +14,13 @@ how concurrent async queries reach the database in parallel.
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 from contextlib import asynccontextmanager
 from typing import (
     AsyncIterator,
     Awaitable,
     Callable,
+    Deque,
     Dict,
     List,
     Sequence,
@@ -56,9 +58,12 @@ class AsyncConnectionPool(AsyncAdapter):
         self._factory = factory
         self._max_size = max_size
         self._timeout = timeout
-        self._idle: "asyncio.Queue[AsyncAdapter]" = asyncio.Queue()
+        # The pool runs on one event loop and never awaits between reading
+        # its counters and updating them, so it needs no lock.
+        self._idle: Deque[AsyncAdapter] = deque()
+        # Tasks waiting for an adapter or a free slot, oldest first.
+        self._waiters: "Deque[asyncio.Future[None]]" = deque()
         self._created = 0
-        self._lock = asyncio.Lock()
         self._closed = False
         self._checked_out: Dict[int, AsyncAdapter] = {}
         # Releases still running after their caller was cancelled. The set
@@ -79,30 +84,71 @@ class AsyncConnectionPool(AsyncAdapter):
             PoolTimeout: If no adapter becomes free within the timeout.
         """
         adapter = await self._take()
-        # No await between the take and the record: a cancellation at a
-        # lock wait here would lose the adapter with its slot still counted.
+        # No await between the take and the record: a cancellation there
+        # would lose the adapter with its slot still counted.
         self._checked_out[id(adapter)] = adapter
         return adapter
 
     async def _take(self) -> AsyncAdapter:
-        """An idle adapter, a new one, or one another task gives back."""
-        async with self._lock:
+        """
+        An idle adapter, a new one, or one another task gives back.
+
+        The loop checks both again after every wake-up. A discarded
+        adapter frees a slot without putting anything in the idle queue,
+        so a waiter that watched the queue alone would time out while
+        the pool had room to open a new adapter.
+        """
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self._timeout
+        while True:
             if self._closed:
                 raise RuntimeError("The connection pool is closed.")
-            if not self._idle.empty():
-                return self._idle.get_nowait()
+            if self._idle:
+                return self._idle.popleft()
             if self._created < self._max_size:
-                # Opening under the lock keeps two tasks from both deciding
-                # there is room and taking the pool past max_size.
-                adapter = await self._factory()
-                self._created += 1
-                return adapter
+                break
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                raise PoolTimeout(
+                    f"No adapter became free within {self._timeout} seconds."
+                )
+            await self._wait(loop, remaining)
+        # The slot is reserved before the factory runs, so two tasks cannot
+        # both see room and take the pool past max_size. The factory runs
+        # with nothing held, so a slow connect does not stop releases.
+        self._created += 1
         try:
-            return await asyncio.wait_for(self._idle.get(), self._timeout)
+            return await self._factory()
+        except BaseException:
+            self._created -= 1
+            self._wake_one()
+            raise
+
+    async def _wait(self, loop: asyncio.AbstractEventLoop, timeout: float) -> None:
+        """Waits until a release or a discard wakes this task, or times out."""
+        waiter: "asyncio.Future[None]" = loop.create_future()
+        self._waiters.append(waiter)
+        try:
+            await asyncio.wait_for(waiter, timeout)
         except asyncio.TimeoutError:
-            raise PoolTimeout(
-                f"No adapter became free within {self._timeout} seconds."
-            ) from None
+            pass
+        except BaseException:
+            # A wake-up that reached a cancelled task goes to the next one,
+            # or the adapter it announced would sit idle beside a waiter.
+            if waiter.done() and not waiter.cancelled():
+                self._wake_one()
+            raise
+        finally:
+            if waiter in self._waiters:
+                self._waiters.remove(waiter)
+
+    def _wake_one(self) -> None:
+        """Wakes the oldest waiting task, if one is still waiting."""
+        while self._waiters:
+            waiter = self._waiters.popleft()
+            if not waiter.done():
+                waiter.set_result(None)
+                return
 
     async def release(self, adapter: AsyncAdapter) -> None:
         """
@@ -139,12 +185,12 @@ class AsyncConnectionPool(AsyncAdapter):
             if not await self._responds(adapter):
                 await self._discard(adapter)
                 return
-        async with self._lock:
-            if self._closed:
-                await adapter.close()
-                self._created -= 1
-                return
-            self._idle.put_nowait(adapter)
+        if self._closed:
+            self._created -= 1
+            await adapter.close()
+            return
+        self._idle.append(adapter)
+        self._wake_one()
 
     @staticmethod
     async def _responds(adapter: AsyncAdapter) -> bool:
@@ -157,12 +203,12 @@ class AsyncConnectionPool(AsyncAdapter):
 
     async def _discard(self, adapter: AsyncAdapter) -> None:
         """Drops a broken adapter and frees its slot for a new one."""
+        self._created -= 1
+        self._wake_one()
         try:
             await adapter.close()
         except Exception:
             pass
-        async with self._lock:
-            self._created -= 1
 
     @asynccontextmanager
     async def scope(self) -> AsyncIterator[AsyncAdapter]:
@@ -178,12 +224,13 @@ class AsyncConnectionPool(AsyncAdapter):
         Closes every idle adapter and refuses new checkouts. Adapters still
         checked out are closed when they are released.
         """
-        async with self._lock:
-            self._closed = True
-            idle: List[AsyncAdapter] = []
-            while not self._idle.empty():
-                idle.append(self._idle.get_nowait())
-            self._created -= len(idle)
+        self._closed = True
+        idle: List[AsyncAdapter] = list(self._idle)
+        self._idle.clear()
+        self._created -= len(idle)
+        # Every waiting task wakes to find the pool closed and raises.
+        while self._waiters:
+            self._wake_one()
         for adapter in idle:
             try:
                 await adapter.close()
