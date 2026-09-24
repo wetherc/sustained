@@ -48,6 +48,22 @@ class NoDropsTest(unittest.TestCase):
         )
         self.assertEqual([v.rule for v in verdicts], ["no_drops"] * 4)
 
+    def test_blocks_hidden_column_drops(self):
+        statements = [
+            "ALTER TABLE t ADD x int, DROP y",
+            "ALTER TABLE IF EXISTS t DROP y",
+            "ALTER TABLE ONLY t DROP y",
+            "ALTER TABLE t COMMENT = 'it\\'s', DROP y, COMMENT 'z'",
+        ]
+        verdicts = self.run_on(statements)
+        self.assertEqual([v.rule for v in verdicts], ["no_drops"] * 4)
+
+    def test_passes_a_narrowing_type_change(self):
+        statement = MigrationStatement(
+            "ALTER TABLE t ALTER COLUMN p TYPE int", destructive=True
+        )
+        self.assertEqual(self.run_on([statement]), [])
+
     def test_passes_a_drop_named_in_a_string_literal(self):
         statements = [
             "INSERT INTO audit (note) VALUES ('DROP TABLE users')",

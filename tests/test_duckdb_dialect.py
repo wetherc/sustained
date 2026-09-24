@@ -6,6 +6,9 @@ import unittest
 
 from sustained import create_model
 from sustained.dialects import Dialects
+from sustained.exceptions import RehearsalRequired
+from sustained.migrations import Migrator
+from sustained.schema import Integer, Numeric
 
 try:
     import duckdb
@@ -77,6 +80,44 @@ class TestDuckDbExecution(unittest.TestCase):
         finally:
             Duck.unbind()
             conn.close()
+
+
+@unittest.skipUnless(HAS_DUCKDB, "duckdb not installed")
+class TestDuckDbNarrowingGate(unittest.TestCase):
+    """A narrowing type change from the models asks for a rehearsal."""
+
+    def setUp(self):
+        self.conn = duckdb.connect(":memory:")
+        self.conn.execute(
+            "CREATE TABLE prices (id INTEGER PRIMARY KEY, p DECIMAL(18,6))"
+        )
+        self.conn.execute("INSERT INTO prices VALUES (1, 1.234567)")
+
+    def tearDown(self):
+        self.conn.close()
+
+    def model(self, precision, scale):
+        model = create_model(f"Price{precision}_{scale}", "prices")
+        model.tableColumns = {
+            "id": Integer(primary_key=True),
+            "p": Numeric(precision, scale),
+        }
+        model.columns = tuple(model.tableColumns)
+        return model
+
+    def test_a_narrowing_change_is_labelled_and_gated(self):
+        migrator = Migrator(self.conn, [], dialect=Dialects.DUCKDB)
+        with self.assertRaises(RehearsalRequired) as caught:
+            migrator.up(models=[self.model(18, 2)])
+        self.assertIn("NUMERIC(18, 2)", str(caught.exception))
+        row = self.conn.execute("SELECT p FROM prices").fetchone()
+        self.assertEqual(str(row[0]), "1.234567")
+
+    def test_a_widening_change_runs_without_a_rehearsal(self):
+        migrator = Migrator(self.conn, [], dialect=Dialects.DUCKDB)
+        migrator.up(models=[self.model(20, 6)])
+        row = self.conn.execute("SELECT typeof(p) FROM prices").fetchone()
+        self.assertEqual(row[0], "DECIMAL(20,6)")
 
 
 class TestDuckDbCapabilities(unittest.TestCase):

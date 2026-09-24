@@ -534,7 +534,11 @@ drift
 run: sustained rehearse
 ```
 
-A statement that removes data or an object that contains it is labelled `destructive`: `DROP TABLE`, `DROP COLUMN`, `DROP TYPE`, `DROP VIEW`, `DROP MATERIALIZED VIEW`, `DROP DATABASE`, `DROP SCHEMA ... CASCADE`, a constraint drop, `TRUNCATE`, and `DELETE FROM`. A column drop written without the `COLUMN` keyword, as MySQL allows, is labelled as well. A plain `DROP SCHEMA` refuses a non-empty schema, so only the `CASCADE` form is labelled. The scan is textual, but it ignores comments and quoted text, so a drop named inside a string literal is not labelled.
+A statement that removes data or an object that contains it is labelled `destructive`: `DROP TABLE`, `DROP COLUMN`, `DROP TYPE`, `DROP VIEW`, `DROP MATERIALIZED VIEW`, `DROP DATABASE`, `DROP SCHEMA ... CASCADE`, a constraint drop, `TRUNCATE`, and `DELETE`. A column drop written without the `COLUMN` keyword, as MySQL allows, is labelled as well, also after `IF EXISTS` or `ONLY` and as any action in a list such as `ALTER TABLE t ADD x int, DROP y`. A `DELETE` counts with or without `FROM`, so the MSSQL `DELETE t WHERE ...` and the MySQL `DELETE t1 FROM t1 JOIN ...` forms are labelled, and so is a `MERGE` branch that deletes. A plain `DROP SCHEMA` refuses a non-empty schema, so only the `CASCADE` form is labelled. The scan is textual, but it ignores comments and quoted text, so a drop named inside a string literal is not labelled. MySQL reads a backslash inside a literal as an escape, so a statement with a backslash is scanned both with and without that reading, and a drop that either reading finds is labelled.
+
+A column type change from the diff against your models is labelled when the new type can lose data the column has. Such a change narrows the type (`numeric(18,6)` to `numeric(18,2)`, `bigint` to `int`, `varchar(100)` to `varchar(50)`, MySQL `text` to `varchar(10)`) or moves the column to another type family (`double` to `int`, `timestamp` to `date`). The down step gives the old type back but not the digits, times, or characters the conversion cut, so the rehearsal's `reversed` check passes such a change. Only a change the diff recognizes as a widening, such as `int` to `bigint` or `varchar(50)` to `text`, goes unlabelled. A type spelling it does not recognize counts as one that can lose data. A type change you write by hand is read by its text like any other statement, and a text scan cannot tell a narrowing from a widening, so it is not labelled.
+
+On MySQL the diff refuses to remove a value from an enum column. MySQL rewrites a row that holds a removed value to `''`, or refuses the change in strict mode, so no generated statement removes the value safely. Move those rows to a kept value and change the column in a migration you write. Adding a value is generated and not labelled.
 
 The footer points at `rehearse` rather than `migrate` when a pending migration has one of these labels, because `migrate` will refuse it until a rehearsal has proved it. The footer reads `run: sustained migrate` when nothing destructive is waiting, or once a rehearsal has recorded a row for that run.
 
@@ -633,7 +637,7 @@ Only databases whose schema changes roll back can rehearse: SQLite, Postgres, an
 
 A rehearsal that passes writes one row into a second table, `sustained_rehearsals`, created on first use like the tracking table. The row records a key, whether the run passed, and when it ran.
 
-`migrate` reads that table and stops a run that would remove data unless a passing rehearsal row covers it. It decides what removes data from the same list the `destructive` labels use, `DELETE FROM` included:
+`migrate` reads that table and stops a run that would remove data unless a passing rehearsal row covers it. It decides what removes data from the same list the `destructive` labels use, `DELETE` and narrowing type changes included:
 
 ```console
 $ sustained migrate
@@ -673,7 +677,7 @@ A refused run exits 4, which a pipeline can tell apart from a failure. A targete
 The gate shares its limits with the `destructive` labels in `plan`:
 
 - A callable step has no SQL to read, so it never triggers the gate. A callable that drops a table applies without a rehearsal row.
-- The scan is textual and reads the words in a statement rather than its structure, so a `DELETE FROM` that removes one row gates the run the same way as one that removes every row.
+- The scan is textual and reads the words in a statement rather than its structure, so a `DELETE` that removes one row gates the run the same way as one that removes every row.
 
 In Python the same rules apply through the API. `rehearse()` returns a `Rehearsal`, which is a list of results with `key`, `recorded`, and `ok` attributes:
 
@@ -767,6 +771,8 @@ Both commands exit 3. There is no `--force` flag, so to run the statement you fi
 
 Every one is a factory, so they all read the same at the call site. `no_table_rewrite()` warns where the others block, because whether a change rewrites the table depends on the engine, its version, and whether the two types coerce. Read it against your own engine rather than trusting it.
 
+`no_drops()` passes a column type change, even one that narrows the type, because the change drops no object. The `destructive` label and the rehearsal gate still catch a narrowing change the diff generated.
+
 `index_must_be_concurrent()` and `no_lock_without_timeout()` are silent on every dialect but Postgres, the only one with the keyword and the setting they are about.
 
 `CONCURRENTLY` needs a migration of its own with `transactional=False`, because Postgres refuses that form inside a transaction block. See [Migrations without a transaction](#migrations-without-a-transaction).
@@ -779,7 +785,7 @@ Guards do not check down runs, because a down undoes work the rules already pass
 
 A rule reads the run in order, and each statement it reads names the migration it came from. Both facts affect `no_lock_without_timeout()`. A plain `SET lock_timeout`, with or without `SESSION`, sets the timeout for the session, so it covers every statement after it in the run. A `SET LOCAL lock_timeout` ends at the commit that ends its migration, so it covers only the statements after it in that same migration, and the next migration starts uncovered. In a migration with `transactional=False` there is no transaction block for a `LOCAL` setting to live in, so Postgres ignores it and so does the rule; write the plain `SET lock_timeout` there.
 
-The statements a guard receives are strings, so a rule written as a function over strings needs no change to read them.
+The statements a guard receives are strings, so a rule written as a function over strings needs no change to read them. Each one is a `MigrationStatement` with three attributes: `migration_id`, `transactional`, and `destructive`, which is true for a statement the diff marked as one that can lose data, such as a narrowing type change.
 
 `migrate` checks twice. The registered migrations are checked before anything runs. The migrator cannot generate the diff against the models until those have run, so it checks the diff's statements the moment they exist. It checks them together with the registered statements from the same run, so a rule about the whole run counts the whole run. A warning already printed is not printed again.
 

@@ -42,6 +42,7 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING, Dict, List, Optional, Set, Tuple, Type
 
+from sustained.analysis import MigrationStatement
 from sustained.dialects import Dialects
 from sustained.exceptions import DialectError
 from sustained.introspect import (
@@ -72,6 +73,7 @@ from sustained.schema import (
     enum_check_constraint_sql,
     render_column_sql,
 )
+from sustained.type_changes import removed_enum_values, type_change_loses_data
 from sustained.types import Connection
 
 if TYPE_CHECKING:
@@ -1150,6 +1152,33 @@ def _deferred_foreign_key_steps(
     return pairs
 
 
+def _refuse_enum_value_removal(
+    compiler: "Compiler",
+    table: str,
+    name: str,
+    coldef: "ColumnDef",
+    actual_col: IntrospectedColumn,
+) -> None:
+    """
+    Raises ValueError when a MySQL enum column would lose values. MySQL
+    rewrites a row that holds a removed value to '' outside strict mode,
+    and refuses the MODIFY in strict mode, so no generated statement
+    removes a value safely.
+    """
+    if compiler.enum_strategy() != "inline":
+        return
+    removed = removed_enum_values(coldef, actual_col.raw_type)
+    if removed:
+        values = ", ".join(f"'{value}'" for value in removed)
+        raise ValueError(
+            f"The model removes {values} from the enum column "
+            f"'{table}.{name}'. MySQL rewrites rows holding a removed value "
+            "to '' or refuses the change, so it is not generated. Move those "
+            "rows to a kept value and change the column in a migration "
+            "you write, or keep the values in the model."
+        )
+
+
 def _rebuild_needed(compiler: "Compiler", change: str) -> bool:
     """
     Whether a change the dialect cannot make with ALTER TABLE has to go
@@ -1340,12 +1369,20 @@ def autogenerate(
             expected_type = compiler.compile_column_type(coldef)
             if _column_type_changed(compiler, coldef, expected_type, actual_col):
                 using = type_casts.get(f"{table}.{name}")
+                _refuse_enum_value_removal(compiler, table, name, coldef, actual_col)
+                # A narrowing change converts every value, and the down
+                # step gives back the type but not what the conversion
+                # cut, so the statements carry the destructive mark.
+                lossy = type_change_loses_data(
+                    compiler, coldef, expected_type, actual_col.raw_type
+                )
                 # A type change keeps the nullability the table has now.
                 # Tightening to NOT NULL is a separate step that runs
                 # after the backfill, and on MySQL and SQL Server the
                 # restated definition would otherwise apply it early.
                 up_steps.extend(
-                    compiler.compile_alter_column_type(
+                    MigrationStatement(statement, destructive=lossy)
+                    for statement in compiler.compile_alter_column_type(
                         table_sql,
                         name,
                         preserving_state(

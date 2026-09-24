@@ -40,8 +40,10 @@ import re
 from typing import Callable, List, NamedTuple, Optional, Sequence
 
 from sustained.analysis import (
+    _ALTER_DROP_RE,
     MigrationStatement,
     normalize_statement,
+    scannable_forms,
     scannable_statement,
     statement_scope,
 )
@@ -107,13 +109,6 @@ _DROP_RE = re.compile(
     r"|CONSTRAINT|CHECK|FOREIGN\s+KEY)\b",
     re.IGNORECASE,
 )
-# MySQL lets a column drop omit the COLUMN keyword.
-_ALTER_DROP_RE = re.compile(
-    r"\bALTER\s+TABLE\s+\S+\s+DROP\s+"
-    r"(?!CONSTRAINT\b|INDEX\b|KEY\b|FOREIGN\b|PRIMARY\b|CHECK\b|PARTITION\b)"
-    r"[A-Za-z_`\"\[]",
-    re.IGNORECASE,
-)
 _CREATE_INDEX_RE = re.compile(r"\bCREATE\s+(UNIQUE\s+)?INDEX\b", re.IGNORECASE)
 _CONCURRENTLY_RE = re.compile(r"\bCONCURRENTLY\b", re.IGNORECASE)
 _TYPE_CHANGE_RE = re.compile(
@@ -140,13 +135,19 @@ def no_drops() -> Guard:
     constraint. A dropped constraint removes no rows, but putting it back
     needs the data to still satisfy it, so the drop is not freely
     reversible. Drops of indexes and keys pass.
+
+    A column type change that narrows the type drops no object, so this
+    rule passes it. The destructive label and the rehearsal gate in
+    `migrate` still catch it.
     """
 
     def guard(statements: Sequence[str], dialect: Dialects) -> List[Verdict]:
         found = []
         for statement in statements:
-            scanned = scannable_statement(statement)
-            if _DROP_RE.search(scanned) or _ALTER_DROP_RE.search(scanned):
+            if any(
+                _DROP_RE.search(form) or _ALTER_DROP_RE.search(form)
+                for form in scannable_forms(statement)
+            ):
                 found.append(Verdict("no_drops", BLOCK, normalize_statement(statement)))
         return found
 

@@ -5,6 +5,7 @@ diffs against a model.
 
 import unittest
 
+from sustained.analysis import destructive_statements
 from sustained.autogenerate import autogenerate, diff_schema
 from sustained.dialects import Dialects
 from sustained.introspect import introspect_schema, normalize_default, normalize_type
@@ -13,6 +14,7 @@ from sustained.schema import (
     BigInteger,
     Boolean,
     Check,
+    Enum,
     Integer,
     Json,
     String,
@@ -603,6 +605,85 @@ class TestMysqlDrift(unittest.TestCase):
         self.assertEqual(
             migration.down, ["ALTER TABLE `users` MODIFY COLUMN `id` bigint NOT NULL"]
         )
+
+    def test_a_narrowing_type_change_is_labelled_destructive(self):
+        cursor = self.catalog()
+        cursor.columns = [
+            ("users", "id", "int", "NO", None),
+            ("users", "bio", "text", "YES", None),
+        ]
+        model = make_model(
+            "MysqlShortBio",
+            "users",
+            {"id": Integer(primary_key=True), "bio": String(10)},
+        )
+        migration = autogenerate(
+            FakeConnection(cursor), [model], id="trim", dialect=Dialects.MYSQL
+        )
+        self.assertEqual(
+            destructive_statements(migration.up),
+            ["ALTER TABLE `users` MODIFY COLUMN `bio` VARCHAR(10)"],
+        )
+
+    def test_a_widening_type_change_is_not_labelled(self):
+        cursor = self.catalog()
+        cursor.columns = [
+            ("users", "id", "int", "NO", None),
+            ("users", "bio", "varchar(10)", "YES", None),
+        ]
+        model = make_model(
+            "MysqlLongBio", "users", {"id": Integer(primary_key=True), "bio": Text()}
+        )
+        migration = autogenerate(
+            FakeConnection(cursor), [model], id="grow", dialect=Dialects.MYSQL
+        )
+        self.assertEqual(len(migration.up), 1)
+        self.assertEqual(destructive_statements(migration.up), [])
+
+    def enum_catalog(self, live_type):
+        cursor = self.catalog()
+        cursor.columns = [
+            ("users", "id", "int", "NO", None),
+            ("users", "status", live_type, "YES", None),
+        ]
+        return cursor
+
+    def test_an_appended_enum_value_is_not_labelled(self):
+        model = make_model(
+            "MysqlMoreStatus",
+            "users",
+            {
+                "id": Integer(primary_key=True),
+                "status": Enum("open", "closed", "held", name="status"),
+            },
+        )
+        migration = autogenerate(
+            FakeConnection(self.enum_catalog("enum('open','closed')")),
+            [model],
+            id="more",
+            dialect=Dialects.MYSQL,
+        )
+        self.assertEqual(len(migration.up), 1)
+        self.assertEqual(destructive_statements(migration.up), [])
+
+    def test_a_removed_enum_value_is_refused(self):
+        model = make_model(
+            "MysqlLessStatus",
+            "users",
+            {
+                "id": Integer(primary_key=True),
+                "status": Enum("open", name="status"),
+            },
+        )
+        with self.assertRaises(ValueError) as caught:
+            autogenerate(
+                FakeConnection(self.enum_catalog("enum('open','closed','held')")),
+                [model],
+                id="less",
+                dialect=Dialects.MYSQL,
+            )
+        self.assertIn("'closed', 'held'", str(caught.exception))
+        self.assertIn("'users.status'", str(caught.exception))
 
     def test_a_type_change_keeps_the_default_and_the_comment(self):
         cursor = self.catalog()

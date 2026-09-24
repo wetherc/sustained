@@ -34,30 +34,44 @@ if TYPE_CHECKING:
 # One pass over a statement finds string literals, quoted identifiers and
 # comments. A comment inside a literal is part of the literal, so the
 # literal alternatives come first and a '--' inside quotes survives.
-_TOKEN_RE = re.compile(
-    r"'(?:[^']|'')*'"  # string literal, '' is an escaped quote
+_NON_LITERAL_TOKENS = (
     r'|"(?:[^"]|"")*"'  # quoted identifier
     r"|`[^`]*`"  # MySQL quoted identifier
     r"|--[^\n]*"  # line comment
-    r"|/\*.*?\*/",  # block comment
-    re.DOTALL,
+    r"|/\*.*?\*/"  # block comment
+)
+# '' is an escaped quote inside a string literal.
+_TOKEN_RE = re.compile(r"'(?:[^']|'')*'" + _NON_LITERAL_TOKENS, re.DOTALL)
+# MySQL also reads a backslash inside a literal as an escape. There
+# 'it\'s' is one literal, and a scan with the standard reading ends the
+# literal at the backslash, so a quote later in the statement opens a
+# literal that hides a real DROP. A statement with a backslash is
+# scanned with both readings.
+_BACKSLASH_TOKEN_RE = re.compile(
+    r"'(?:[^'\\]|''|\\.)*'" + _NON_LITERAL_TOKENS, re.DOTALL
 )
 _WHITESPACE_RE = re.compile(r"\s+")
 # DROP DATABASE always takes the data with it. DROP SCHEMA needs CASCADE
 # to do so, since a plain DROP SCHEMA refuses a schema that holds
-# anything.
+# anything. A DELETE at the start of a statement, after a CTE, or in a
+# MERGE branch removes rows without the FROM keyword on MSSQL and MySQL
+# (`DELETE t WHERE ...`, `DELETE t1 FROM t1 JOIN ...`).
 _DESTRUCTIVE_RE = re.compile(
     r"\bDROP\s+TABLE\b|\bDROP\s+COLUMN\b|\bDROP\s+TYPE\b|\bTRUNCATE\b"
     r"|\bDROP\s+CONSTRAINT\b|\bDROP\s+CHECK\b|\bDROP\s+FOREIGN\s+KEY\b"
-    r"|\bDELETE\s+FROM\b|\bDROP\s+(?:MATERIALIZED\s+)?VIEW\b"
+    r"|\bDELETE\s+FROM\b|^DELETE\b|\)\s*DELETE\b|\bTHEN\s+DELETE\b"
+    r"|\bDROP\s+(?:MATERIALIZED\s+)?VIEW\b"
     r"|\bDROP\s+DATABASE\b|\bDROP\s+SCHEMA\b[^;]*\bCASCADE\b",
     re.IGNORECASE,
 )
 # MySQL lets a column drop omit the COLUMN keyword. This matches
 # `ALTER TABLE <name> DROP <identifier>` while it skips drops of other
-# schema objects, such as a constraint, an index, or a key.
+# schema objects, such as a constraint, an index, or a key. The table
+# name may follow IF EXISTS or ONLY, and the drop may be any action in a
+# comma-separated list (`ALTER TABLE t ADD x int, DROP y`).
 _ALTER_DROP_RE = re.compile(
-    r"\bALTER\s+TABLE\s+\S+\s+DROP\s+"
+    r"\bALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?(?:ONLY\s+)?\S+\s+(?:[^;]*?,\s*)?"
+    r"DROP\s+"
     r"(?!CONSTRAINT\b|INDEX\b|KEY\b|FOREIGN\b|PRIMARY\b|CHECK\b|PARTITION\b)"
     r"[A-Za-z_`\"\[]",
     re.IGNORECASE,
@@ -79,20 +93,34 @@ class MigrationStatement(str):
     migration around it. Statements that carry the same id in a row
     belong to one migration, so None statements next to each other read
     as one group.
+
+    `destructive` marks a statement that removes data although its text
+    names no drop, such as a column type change that narrows the type.
+    The diff against the models sets it, because only the diff knows the
+    type the column has today. `destructive_statements()` labels such a
+    statement whatever its text says. When `destructive` is not given, a
+    statement wrapped again keeps the mark of the statement it wraps.
     """
 
     migration_id: Optional[str]
     transactional: bool
+    destructive: bool
 
     def __new__(
         cls,
         statement: str,
         migration_id: Optional[str] = None,
         transactional: bool = True,
+        destructive: Optional[bool] = None,
     ) -> "MigrationStatement":
         instance = super().__new__(cls, statement)
         instance.migration_id = migration_id
         instance.transactional = transactional
+        if destructive is None:
+            destructive = (
+                isinstance(statement, MigrationStatement) and statement.destructive
+            )
+        instance.destructive = destructive
         return instance
 
 
@@ -107,7 +135,9 @@ def statement_scope(statement: str) -> Tuple[Optional[str], bool]:
     return None, True
 
 
-def _rewrite_tokens(statement: str, blank_literals: bool) -> str:
+def _rewrite_tokens(
+    statement: str, blank_literals: bool, tokens: "re.Pattern[str]" = _TOKEN_RE
+) -> str:
     """
     Removes the comments from a statement. When `blank_literals` is true,
     it also empties every string literal and quoted identifier, so words
@@ -123,7 +153,7 @@ def _rewrite_tokens(statement: str, blank_literals: bool) -> str:
             return token
         return token[0] + token[-1]
 
-    return _TOKEN_RE.sub(replace, statement)
+    return tokens.sub(replace, statement)
 
 
 def normalize_statement(statement: str) -> str:
@@ -145,17 +175,49 @@ def scannable_statement(statement: str) -> str:
     return _WHITESPACE_RE.sub(" ", _rewrite_tokens(statement, True)).strip()
 
 
+def scannable_forms(statement: str) -> Tuple[str, ...]:
+    """
+    Every form a scan for a drop reads: `scannable_statement()`, and for
+    a statement with a backslash also the form in which a backslash
+    escapes the next character of a literal, as MySQL reads it. A drop
+    found in either form counts, so a literal that one reading ends early
+    cannot hide a drop from the scan.
+    """
+    forms = (scannable_statement(statement),)
+    if "\\" not in statement:
+        return forms
+    backslash = _rewrite_tokens(statement, True, _BACKSLASH_TOKEN_RE)
+    return forms + (_WHITESPACE_RE.sub(" ", backslash).strip(),)
+
+
+def _removes_data(statement: str) -> bool:
+    """
+    Whether one statement removes something the schema cannot give back,
+    by the rules `destructive_statements()` gives.
+    """
+    if isinstance(statement, MigrationStatement) and statement.destructive:
+        return True
+    return any(
+        _DESTRUCTIVE_RE.search(form) or _ALTER_DROP_RE.search(form)
+        for form in scannable_forms(statement)
+    )
+
+
 def destructive_statements(statements: Union[str, Sequence[str]]) -> List[str]:
     """
     Returns the statements that remove something the schema cannot give
     back: DROP TABLE, DROP COLUMN, DROP TYPE, DROP VIEW, DROP
     MATERIALIZED VIEW, DROP DATABASE, DROP SCHEMA ... CASCADE, TRUNCATE,
-    DELETE FROM, a MySQL-style column drop that omits the COLUMN keyword
-    (`ALTER TABLE t DROP col`), and constraint drops (DROP CONSTRAINT,
-    DROP CHECK, DROP FOREIGN KEY). A dropped constraint removes no rows,
-    but re-adding it needs the data to still satisfy it. A plain DROP
-    SCHEMA refuses a schema that holds anything, so only the CASCADE form
-    is labelled. Drops of indexes and keys are not labelled.
+    DELETE (with or without FROM, and in a MERGE branch), a MySQL-style
+    column drop that omits the COLUMN keyword (`ALTER TABLE t DROP col`),
+    and constraint drops (DROP CONSTRAINT, DROP CHECK, DROP FOREIGN KEY).
+    A dropped constraint removes no rows, but re-adding it needs the data
+    to still satisfy it. A plain DROP SCHEMA refuses a schema that holds
+    anything, so only the CASCADE form is labelled. Drops of indexes and
+    keys are not labelled.
+
+    A MigrationStatement marked `destructive`, such as a narrowing type
+    change the diff generated, is labelled whatever its text says.
 
     Comments are removed and whitespace is collapsed, so each statement
     comes back on one line and a commented-out drop is not labelled. Both
@@ -165,12 +227,7 @@ def destructive_statements(statements: Union[str, Sequence[str]]) -> List[str]:
     """
     if isinstance(statements, str):
         statements = [statements]
-    found = []
-    for statement in statements:
-        scanned = scannable_statement(statement)
-        if _DESTRUCTIVE_RE.search(scanned) or _ALTER_DROP_RE.search(scanned):
-            found.append(normalize_statement(statement))
-    return found
+    return [normalize_statement(s) for s in statements if _removes_data(s)]
 
 
 class PendingSummary(NamedTuple):

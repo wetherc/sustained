@@ -3,9 +3,11 @@
 import unittest
 
 from sustained.analysis import (
+    MigrationStatement,
     PendingSummary,
     destructive_statements,
     normalize_statement,
+    scannable_forms,
     scannable_statement,
     summarize,
 )
@@ -145,6 +147,100 @@ class RemovesDataTestCase(unittest.TestCase):
         for statement in self.passed:
             with self.subTest(statement=statement):
                 self.assertEqual(destructive_statements([statement]), [])
+
+
+class HiddenDropsTestCase(unittest.TestCase):
+    """Drops and deletes that do not open their statement."""
+
+    def test_a_drop_after_another_action_is_labelled(self):
+        statements = [
+            "ALTER TABLE t ADD x int, DROP y",
+            "ALTER TABLE t ALTER x TYPE bigint, DROP COLUMN y",
+            "ALTER TABLE t ALTER COLUMN x DROP DEFAULT, DROP y",
+        ]
+        self.assertEqual(destructive_statements(statements), statements)
+
+    def test_a_drop_after_if_exists_or_only_is_labelled(self):
+        statements = [
+            "ALTER TABLE IF EXISTS t DROP y",
+            "ALTER TABLE ONLY t DROP y",
+            "ALTER TABLE IF EXISTS ONLY t DROP y",
+        ]
+        self.assertEqual(destructive_statements(statements), statements)
+
+    def test_other_drops_in_an_action_list_are_not_labelled(self):
+        statements = [
+            "ALTER TABLE t ADD x int, DROP INDEX i",
+            "ALTER TABLE t ALTER COLUMN x DROP DEFAULT",
+            "ALTER TABLE t ADD x int, ALTER COLUMN y DROP NOT NULL",
+        ]
+        self.assertEqual(destructive_statements(statements), [])
+
+    def test_a_delete_without_from_is_labelled(self):
+        statements = [
+            "DELETE t WHERE id = 1",
+            "DELETE t1 FROM t1 JOIN t2 ON t1.id = t2.id",
+            "DELETE TOP (10) FROM t",
+            "WITH old AS (SELECT id FROM t) DELETE old",
+            "MERGE INTO t USING s ON t.id = s.id WHEN MATCHED THEN DELETE",
+        ]
+        self.assertEqual(destructive_statements(statements), statements)
+
+    def test_a_referential_action_is_not_a_delete(self):
+        statement = (
+            "ALTER TABLE c ADD CONSTRAINT fk FOREIGN KEY (p) "
+            "REFERENCES p (id) ON DELETE CASCADE"
+        )
+        self.assertEqual(destructive_statements([statement]), [])
+
+    def test_a_drop_after_a_backslash_escape_is_labelled(self):
+        # MySQL reads 'it\'s' as one literal, so the DROP is real there.
+        statement = "ALTER TABLE t COMMENT = 'it\\'s', DROP y, COMMENT 'z'"
+        self.assertEqual(destructive_statements([statement]), [statement])
+
+    def test_a_backslash_ending_a_standard_literal_hides_nothing(self):
+        # Postgres reads 'C:\' as one literal, so the DROP is real there.
+        statement = "UPDATE t SET p = 'C:\\'; ALTER TABLE t DROP y; SELECT 'x'"
+        self.assertEqual(destructive_statements([statement]), [statement])
+
+    def test_only_a_statement_with_a_backslash_is_read_twice(self):
+        self.assertEqual(scannable_forms("SELECT 'a'"), ("SELECT ''",))
+        self.assertEqual(
+            scannable_forms("SELECT 'a\\'' , 'b'"),
+            ("SELECT ''b'", "SELECT '' , ''"),
+        )
+
+
+class MarkedStatementTestCase(unittest.TestCase):
+    def test_a_marked_statement_is_labelled_whatever_its_text(self):
+        statement = MigrationStatement(
+            "ALTER TABLE t ALTER COLUMN p TYPE NUMERIC(18, 2)", destructive=True
+        )
+        self.assertEqual(
+            destructive_statements([statement]),
+            ["ALTER TABLE t ALTER COLUMN p TYPE NUMERIC(18, 2)"],
+        )
+
+    def test_an_unmarked_statement_reads_by_its_text(self):
+        statement = MigrationStatement("ALTER TABLE t ALTER COLUMN p TYPE bigint")
+        self.assertFalse(statement.destructive)
+        self.assertEqual(destructive_statements([statement]), [])
+
+    def test_a_wrapped_statement_keeps_its_mark(self):
+        inner = MigrationStatement("ALTER TABLE t ALTER p TYPE int", destructive=True)
+        self.assertTrue(MigrationStatement(inner, "002").destructive)
+        self.assertFalse(
+            MigrationStatement(inner, "002", destructive=False).destructive
+        )
+
+    def test_summarize_keeps_the_mark(self):
+        statement = MigrationStatement(
+            "ALTER TABLE t ALTER p TYPE int", destructive=True
+        )
+        migration = Migration("auto_1", up=[statement], down=None)
+        summary = summarize(migration, "pending")
+        self.assertEqual(summary.destructive, ["ALTER TABLE t ALTER p TYPE int"])
+        self.assertEqual(summary.sql[0].migration_id, "auto_1")
 
 
 class QuotedTextTestCase(unittest.TestCase):
