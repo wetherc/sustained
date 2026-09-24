@@ -663,7 +663,13 @@ class AsyncMigrator:
         The target must name a versioned migration. Every repeatable is
         recorded at its current checksum, so the first migrate after
         adoption does not re-run objects the schema already holds.
+
+        Raises MigrationError before it writes a row when a migration it
+        would record has a failed attempt on record; run repair() first.
+        A failure part way rolls back every row this call inserted.
         """
+        from sustained.exceptions import MigrationError
+
         self._refuse_open_transaction("baseline")
         versioned = self._versioned()
         ids = [m.id for m in versioned]
@@ -677,28 +683,43 @@ class AsyncMigrator:
         async with self._lock_scope():
             records = await self.applied_records()
             already_applied = {r.id for r in records if r.success}
+            candidates = versioned[: ids.index(target) + 1] + self._repeatables()
+            # A failed row keeps the id, so a second row for it breaks the
+            # table's primary key part way through the run.
+            failed_ids = {r.id for r in records if not r.success}
+            failed = [
+                _failed_attempt_problem(m.id) for m in candidates if m.id in failed_ids
+            ]
+            if failed:
+                raise MigrationError(failed)
             next_seq = _next_seq(records)
             recorded: List[str] = []
-            for migration in versioned[: ids.index(target) + 1] + self._repeatables():
-                if migration.id in already_applied:
-                    continue
-                timestamp = datetime.now(timezone.utc).isoformat()
-                await self._execute(
-                    self._insert_sql(),
-                    (
-                        migration.id,
-                        next_seq,
-                        migration_checksum(migration),
-                        timestamp,
-                        None,
-                        True,
-                        False,
-                        None,
-                    ),
-                )
-                next_seq += 1
-                recorded.append(migration.id)
-            await self._adapter.commit()
+            try:
+                for migration in candidates:
+                    if migration.id in already_applied:
+                        continue
+                    timestamp = datetime.now(timezone.utc).isoformat()
+                    await self._execute(
+                        self._insert_sql(),
+                        (
+                            migration.id,
+                            next_seq,
+                            migration_checksum(migration),
+                            timestamp,
+                            None,
+                            True,
+                            False,
+                            None,
+                        ),
+                    )
+                    next_seq += 1
+                    recorded.append(migration.id)
+                await self._adapter.commit()
+            except BaseException:
+                # Without an advisory lock no scope rolls back, and rows
+                # already inserted would be written by the next commit.
+                await self._rollback_quietly()
+                raise
             return recorded
 
     async def _record_failure(

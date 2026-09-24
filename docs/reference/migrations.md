@@ -143,7 +143,7 @@ baseline(target) -> list[str]
 ```
 {: .sig #baseline}
 
-Records migrations up to and including `target` as applied, without running them. Also records every repeatable at its current checksum.
+Records migrations up to and including `target` as applied, without running them. Also records every repeatable at its current checksum. Raises `MigrationError` before it writes a row when a migration it would record has a failed attempt on record, so run `repair()` first. A write that fails part way rolls back every row the call inserted.
 
 `up` raises `MigrationError` when validation finds problems, `RehearsalRequired` when the run would remove data and no passing rehearsal row covers it, and `ValueError` for an unknown target or a target that names a repeatable. `down` and `down_to` raise `ValueError` when an applied migration is not registered, and when it has no down step.
 
