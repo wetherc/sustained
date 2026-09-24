@@ -181,7 +181,7 @@ DbApiAsyncAdapter(connection)
 ```
 {: .sig #dbapiasyncadapter}
 
-Wraps any synchronous DB-API connection. Runs each call in a worker thread under a lock. The connection has to permit cross-thread use, as in `sqlite3.connect(..., check_same_thread=False)`.
+Wraps any synchronous DB-API connection. Runs each call in a worker thread under a lock. A cancelled call cannot stop its thread, so the lock stays held until the thread ends, and only then does the `CancelledError` reach the caller. The connection has to permit cross-thread use, as in `sqlite3.connect(..., check_same_thread=False)`.
 
 ```python
 AiosqliteAdapter(connection)

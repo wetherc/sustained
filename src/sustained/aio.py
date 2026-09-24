@@ -244,6 +244,33 @@ class DbApiAsyncAdapter(AsyncAdapter):
         # The cursor an open session() block runs every statement on.
         self._session_cursor: Optional[Cursor] = None
 
+    async def _call(self, fn: Callable[..., _T], *args: object) -> _T:
+        """
+        Runs one driver call in a worker thread under the adapter lock.
+
+        A cancelled task cannot stop the thread. The lock stays held until
+        the thread ends, and only then does the CancelledError propagate.
+        Released at the cancellation, the lock would let the next call,
+        such as a pool's rollback, run on the connection at the same time
+        as the unfinished one.
+        """
+        async with self._lock:
+            future = asyncio.ensure_future(asyncio.to_thread(fn, *args))
+            try:
+                return await asyncio.shield(future)
+            except asyncio.CancelledError:
+                # wait() never cancels the future it waits on, so a second
+                # cancellation lands here and the wait starts again.
+                while not future.done():
+                    try:
+                        await asyncio.wait({future})
+                    except asyncio.CancelledError:
+                        pass
+                # The thread's own error is dropped for the cancellation.
+                if not future.cancelled():
+                    future.exception()
+                raise
+
     @contextmanager
     def _cursor(self) -> Iterator[Cursor]:
         """
@@ -286,55 +313,45 @@ class DbApiAsyncAdapter(AsyncAdapter):
         if self._session_cursor is not None:
             yield
             return
-        async with self._lock:
-            cursor = await asyncio.to_thread(self._connection.cursor)
-            self._session_cursor = cursor
+        cursor = await self._call(self._connection.cursor)
+        self._session_cursor = cursor
         try:
             yield
         finally:
             # The pin drops before the lock wait, so a cancellation during
             # that wait cannot leave later statements on a closed cursor.
             self._session_cursor = None
-            async with self._lock:
-                await asyncio.to_thread(cursor.close)
+            await self._call(cursor.close)
 
     @asynccontextmanager
     async def autocommit_scope(self) -> AsyncIterator[None]:
-        async with self._lock:
-            restore = await asyncio.to_thread(enter_autocommit, self._connection)
+        restore = await self._call(enter_autocommit, self._connection)
         try:
             yield
         finally:
-            async with self._lock:
-                await asyncio.to_thread(restore)
+            await self._call(restore)
 
     async def fetch(
         self, sql: str, params: Tuple[SqlValue, ...]
     ) -> Tuple[List[str], List[Sequence[RowValue]]]:
-        async with self._lock:
-            return await asyncio.to_thread(self._fetch_sync, sql, params)
+        return await self._call(self._fetch_sync, sql, params)
 
     async def execute(self, sql: str, params: Tuple[SqlValue, ...]) -> int:
-        async with self._lock:
-            return await asyncio.to_thread(self._execute_sync, sql, params)
+        return await self._call(self._execute_sync, sql, params)
 
     async def executemany(
         self, sql: str, seq_of_params: List[Tuple[SqlValue, ...]]
     ) -> int:
-        async with self._lock:
-            return await asyncio.to_thread(self._executemany_sync, sql, seq_of_params)
+        return await self._call(self._executemany_sync, sql, seq_of_params)
 
     async def commit(self) -> None:
-        async with self._lock:
-            await asyncio.to_thread(self._connection.commit)
+        await self._call(self._connection.commit)
 
     async def rollback(self) -> None:
-        async with self._lock:
-            await asyncio.to_thread(self._connection.rollback)
+        await self._call(self._connection.rollback)
 
     async def close(self) -> None:
-        async with self._lock:
-            await asyncio.to_thread(self._connection.close)
+        await self._call(self._connection.close)
 
     def driver_transaction_control(self) -> bool:
         # A DB-API 2.0 connection opens its transaction itself and ends it
