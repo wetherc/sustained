@@ -58,7 +58,10 @@ class TestKeywordNamesOnSqlite(unittest.TestCase):
         self.conn.execute('ALTER TABLE "group" ADD COLUMN "from" TEXT')
         self.conn.execute("""UPDATE "group" SET "from" = 'kept'""")
         narrowed = keyword_model(
-            {"id": Integer(primary_key=True), "order": String(20, nullable=False)},
+            {
+                "id": Integer(primary_key=True),
+                "order": String(20, nullable=False, backfill=""),
+            },
             [Index("select", "order")],
         )
         migration = autogenerate(self.conn, [narrowed], id="b", ignore_undeclared=True)

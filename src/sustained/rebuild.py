@@ -20,6 +20,7 @@ from sustained.schema import bare_table_name, build_create_table_sql
 if TYPE_CHECKING:
     from sustained.compilers.base import Compiler
     from sustained.model import Model
+    from sustained.schema import ColumnDef
 
 
 def implied_constraint_names(
@@ -114,18 +115,25 @@ def rebuild_steps(
     for name, coldef in model.tableColumns.items():
         name_sql = compiler.quote_ddl_identifier(name)
         insert_columns.append(name_sql)
-        exists = name.lower() in actual_table.columns
-        if exists and not coldef.nullable and coldef.backfill is not None:
-            filler = compiler.format_value(coldef.backfill)
-            select_parts.append(f"COALESCE({name_sql}, {filler})")
-        elif exists:
-            select_parts.append(name_sql)
-        elif coldef.backfill is not None:
-            select_parts.append(compiler.format_value(coldef.backfill))
-        elif coldef.default is not None:
-            select_parts.append(compiler.format_value(coldef.default))
+        actual_col = actual_table.columns.get(name.lower())
+        filler = coldef.backfill if coldef.backfill is not None else coldef.default
+        if actual_col is None:
+            select_parts.append(
+                "NULL" if filler is None else compiler.format_value(filler)
+            )
+        elif _tightens(coldef, actual_col):
+            # The copy would put each NULL into a NOT NULL column. The
+            # ALTER path fills them the same way before it tightens.
+            if filler is None:
+                raise ValueError(
+                    f"Tightening '{table}.{name}' to NOT NULL needs a "
+                    "backfill or default value for existing NULLs."
+                )
+            select_parts.append(
+                f"COALESCE({name_sql}, {compiler.format_value(filler)})"
+            )
         else:
-            select_parts.append("NULL")
+            select_parts.append(name_sql)
     for name in undeclared:
         insert_columns.append(compiler.quote_ddl_identifier(name))
         select_parts.append(compiler.quote_ddl_identifier(name))
@@ -140,6 +148,19 @@ def rebuild_steps(
     if not allow_drops:
         steps.extend(_undeclared_index_sql(compiler, table_sql, model, actual_table))
     return steps
+
+
+def _tightens(coldef: "ColumnDef", actual_col: IntrospectedColumn) -> bool:
+    """
+    Whether the model makes a nullable column NOT NULL. SQLite reports an
+    INTEGER PRIMARY KEY as nullable, so a key column never counts.
+    """
+    return (
+        actual_col.nullable
+        and not coldef.nullable
+        and not coldef.primary_key
+        and not actual_col.primary_key
+    )
 
 
 def _carried_constraint_sql(

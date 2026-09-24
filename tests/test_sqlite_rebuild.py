@@ -98,5 +98,44 @@ class TestRebuildWithDrops(RebuildTestCase):
         self.assertEqual(self.indexes(), ["ix_rb_code"])
 
 
+class TestRebuildTightensToNotNull(RebuildTestCase):
+    def setUp(self):
+        super().setUp()
+        self.conn.execute("INSERT INTO rb_items VALUES (2, 8, NULL)")
+
+    def test_the_default_fills_the_nulls(self):
+        model = model_of(
+            {
+                "id": Integer(primary_key=True),
+                "code": String(10),
+                "note": Text(nullable=False, default="none"),
+            }
+        )
+        self.apply(autogenerate(self.conn, [model], id="m"))
+        self.assertEqual(self.rows(), [(1, "7", "first"), (2, "8", "none")])
+
+    def test_the_backfill_wins_over_the_default(self):
+        model = model_of(
+            {
+                "id": Integer(primary_key=True),
+                "code": String(10),
+                "note": Text(nullable=False, default="none", backfill="old"),
+            }
+        )
+        self.apply(autogenerate(self.conn, [model], id="m"))
+        self.assertEqual(self.rows()[1], (2, "8", "old"))
+
+    def test_no_filler_refuses_before_any_statement(self):
+        model = model_of(
+            {
+                "id": Integer(primary_key=True),
+                "code": String(10),
+                "note": Text(nullable=False),
+            }
+        )
+        with self.assertRaisesRegex(ValueError, "rb_items.note' to NOT NULL"):
+            autogenerate(self.conn, [model], id="m")
+
+
 if __name__ == "__main__":
     unittest.main()
