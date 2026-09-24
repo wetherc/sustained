@@ -1019,8 +1019,12 @@ class Catalog(NamedTuple):
             column and VERSION(), which mysql_default_sql() needs to
             write a MySQL default back as SQL.
         reads_collation: Whether the read also selects COLLATION_NAME,
-            last, which MySQL and SQL Server restate when they change a
-            column.
+            which MySQL and SQL Server restate when they change a column.
+        reads_type_params: Whether the read also selects
+            CHARACTER_MAXIMUM_LENGTH, NUMERIC_PRECISION, and NUMERIC_SCALE,
+            last, for an engine whose type column carries no parameters.
+            SQL Server reports nvarchar for an nvarchar(100) column, so
+            without them a length or precision change never diffs.
     """
 
     schema_filter: str
@@ -1030,6 +1034,7 @@ class Catalog(NamedTuple):
     reads_checks: bool = True
     reads_default_sql: bool = False
     reads_collation: bool = False
+    reads_type_params: bool = False
 
 
 ANSI_CATALOG = Catalog(
@@ -1065,7 +1070,7 @@ ATHENA_CATALOG = PRESTO_CATALOG._replace(current_schema_sql="current_schema")
 # table with one name would merge. The read covers the connection's own
 # schema, plus every schema the models declare.
 MSSQL_CATALOG = ANSI_CATALOG._replace(
-    current_schema_sql="SCHEMA_NAME()", reads_collation=True
+    current_schema_sql="SCHEMA_NAME()", reads_collation=True, reads_type_params=True
 )
 
 # DuckDB keys on the bare table name the same way, and its own catalog
@@ -1161,6 +1166,10 @@ def _information_schema_plan(
         extra = ", c.extra, VERSION()" if catalog.reads_default_sql else ""
         if catalog.reads_collation:
             extra += ", c.collation_name"
+        if catalog.reads_type_params:
+            extra += (
+                ", c.character_maximum_length, c.numeric_precision, " "c.numeric_scale"
+            )
         return (
             f"SELECT c.table_name, c.column_name, c.{catalog.type_column}, "
             f"c.is_nullable, c.column_default{comment}, c.table_schema{extra} "
@@ -1203,11 +1212,26 @@ def _information_schema_plan(
             if declared_schema is not None:
                 table_schemas[str(table).lower()] = declared_schema
         raw_type = str(data_type) if data_type else ""
+        if catalog.reads_type_params:
+            at = (
+                schema_index
+                + 1
+                + (2 if catalog.reads_default_sql else 0)
+                + (1 if catalog.reads_collation else 0)
+            )
+            length, precision, scale = (
+                row[i] if len(row) > i else None for i in range(at, at + 3)
+            )
+            raw_type = _sized_type(raw_type, length, precision, scale)
         default_sql = None
-        extra = str(row[schema_index + 1] or "") if len(row) > schema_index + 2 else ""
+        # EXTRA and VERSION() follow the schema on MySQL alone; on SQL
+        # Server the columns after the schema are the collation and the
+        # type parameters.
+        mysql_row = catalog.reads_default_sql and len(row) > schema_index + 2
+        extra = str(row[schema_index + 1] or "") if mysql_row else ""
         # MariaDB reports its defaults as SQL already, quotes included.
         if (
-            len(row) > schema_index + 2
+            mysql_row
             and default is not None
             and "MARIADB" not in str(row[schema_index + 2]).upper()
         ):
@@ -1600,6 +1624,36 @@ def _duckdb_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
         # inferring a type's presence from the columns that use it.
         pass
     return schema
+
+
+# The information_schema type names whose length goes back on, and the
+# ones whose precision and scale do.
+_LENGTH_TYPES = frozenset(
+    {"char", "varchar", "nchar", "nvarchar", "binary", "varbinary"}
+)
+_PRECISION_TYPES = frozenset({"decimal", "numeric"})
+
+
+def _sized_type(
+    data_type: str,
+    length: Optional[RowValue],
+    precision: Optional[RowValue],
+    scale: Optional[RowValue],
+) -> str:
+    """
+    The type spelling an information_schema column is compared on, with
+    its length or precision put back: nvarchar(100), varbinary(MAX),
+    decimal(10,2). A length of -1 is SQL Server's MAX. Every other type
+    keeps its bare name, since an integer's numeric_precision is a
+    property of the type rather than a declared parameter.
+    """
+    name = data_type.lower()
+    if name in _LENGTH_TYPES and length is not None:
+        size = "MAX" if int(str(length)) == -1 else str(length)
+        return f"{data_type}({size})"
+    if name in _PRECISION_TYPES and precision is not None:
+        return f"{data_type}({precision},{scale if scale is not None else 0})"
+    return data_type
 
 
 def _postgres_column_type(

@@ -224,11 +224,11 @@ class TestMssqlRestatesTheCollation(unittest.TestCase):
             "ALTER TABLE [widgets] ALTER COLUMN [size] BIGINT NULL", migration.up
         )
 
-    def test_the_read_takes_the_collation_last(self):
+    def test_the_read_takes_the_collation_after_the_schema(self):
         from sustained.introspect import MSSQL_CATALOG, _information_schema_plan
 
         plan = _information_schema_plan(MSSQL_CATALOG)
-        self.assertIn("c.table_schema, c.collation_name FROM", next(plan))
+        self.assertIn("c.table_schema, c.collation_name, ", next(plan))
         try:
             plan.send(
                 [
