@@ -530,6 +530,17 @@ def diff_schema(
     return diff
 
 
+def _introspected_state(column: IntrospectedColumn) -> ColumnState:
+    """The state a column is in today, as the catalog reports it."""
+    return ColumnState(
+        type_sql=column.raw_type,
+        nullable=column.nullable,
+        default_sql=column.restated_default(),
+        comment=column.comment,
+        autoincrement=column.autoincrement,
+    )
+
+
 def _comment_or_none(comment: Optional[str]) -> Optional[str]:
     """An empty comment read as None: MySQL spells no comment as ''."""
     return None if comment is None or comment == "" else comment
@@ -1356,6 +1367,10 @@ def autogenerate(
             comment=(actual_col.comment if compiler.stores_column_comments() else None),
         )
 
+    # The state each changed column is left in by its type and
+    # nullability statements, for a comment statement that restates the
+    # whole column after them.
+    restated_states: Dict[Tuple[str, str], ColumnState] = {}
     if not ignore_changed_columns:
         for table, name, actual_desc, expected_desc in diff.changed_columns:
             model = models_by_table[table.lower()]
@@ -1380,15 +1395,14 @@ def autogenerate(
                 # Tightening to NOT NULL is a separate step that runs
                 # after the backfill, and on MySQL and SQL Server the
                 # restated definition would otherwise apply it early.
+                changed_state = preserving_state(
+                    coldef, actual_col, expected_type, actual_col.nullable
+                )
+                restated_states[(table.lower(), name.lower())] = changed_state
                 up_steps.extend(
                     MigrationStatement(statement, destructive=lossy)
                     for statement in compiler.compile_alter_column_type(
-                        table_sql,
-                        name,
-                        preserving_state(
-                            coldef, actual_col, expected_type, actual_col.nullable
-                        ),
-                        using,
+                        table_sql, name, changed_state, using
                     )
                 )
                 for statement in reversed(
@@ -1424,13 +1438,13 @@ def autogenerate(
                             compiler.format_value(filler),
                         )
                     )
+                changed_state = preserving_state(
+                    coldef, actual_col, expected_type, coldef.nullable
+                )
+                restated_states[(table.lower(), name.lower())] = changed_state
                 up_steps.extend(
                     compiler.compile_alter_column_nullability(
-                        table_sql,
-                        name,
-                        preserving_state(
-                            coldef, actual_col, expected_type, coldef.nullable
-                        ),
+                        table_sql, name, changed_state
                     )
                 )
                 for statement in reversed(
@@ -1524,19 +1538,25 @@ def autogenerate(
         _add_foreign_key(compiler, up_steps, down_steps, table_sql, model, name, coldef)
 
     # Comment changes. The down step writes the database's old comment
-    # back. MySQL restates the whole column, so the model's ColumnDef
-    # rides along on both directions.
+    # back. MySQL restates the whole column, so both directions restate
+    # the column as the table has it: the state the type and nullability
+    # statements above leave, or else the catalog's own report. The
+    # model's declaration would change the type or the default in a
+    # statement meant for the comment, and down would not change it back.
     for table, name, actual_comment, expected_comment in diff.changed_comments:
         model = models_by_table[table.lower()]
         assert model.tableColumns is not None
         coldef = model.tableColumns[name]
         table_sql = model._qualified_table_sql()
+        state = restated_states.get((table.lower(), name.lower()))
+        if state is None:
+            state = _introspected_state(actual[table.lower()].columns[name.lower()])
         try:
             set_new = compiler.compile_set_column_comment(
-                table_sql, name, expected_comment, coldef
+                table_sql, name, expected_comment, coldef, state
             )
             set_old = compiler.compile_set_column_comment(
-                table_sql, name, actual_comment, coldef
+                table_sql, name, actual_comment, coldef, state
             )
         except DialectError as error:
             # Athena reports comments but cannot change one in place.

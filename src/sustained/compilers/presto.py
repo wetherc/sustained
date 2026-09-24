@@ -3,7 +3,7 @@ from typing import TYPE_CHECKING, Optional, Sequence, Union
 from .base import Compiler
 
 if TYPE_CHECKING:
-    from sustained.schema import ColumnDef
+    from sustained.schema import ColumnDef, ColumnState
 
 
 class PrestoCompiler(Compiler):
@@ -57,6 +57,7 @@ class PrestoCompiler(Compiler):
         column_name: str,
         comment: Optional[str],
         column: Optional["ColumnDef"] = None,
+        state: Optional["ColumnState"] = None,
     ) -> "list[str]":
         column_sql = self.quote_identifier(column_name)
         value = "NULL" if comment is None else self.format_value(comment)

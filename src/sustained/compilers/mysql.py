@@ -110,18 +110,22 @@ class MysqlCompiler(Compiler):
         column_name: str,
         comment: Optional[str],
         column: Optional["ColumnDef"] = None,
+        state: Optional["ColumnState"] = None,
     ) -> "list[str]":
-        # The comment rides inside the column definition, so the column's
-        # own declaration must come along to survive the restatement.
+        # The comment sits inside the column definition. MODIFY COLUMN
+        # drops every part it leaves off, so the statement needs the
+        # column's type, nullability, and default as well.
         from sustained.schema import ColumnState
 
-        if column is None:
-            raise DialectError(
-                "MySQL sets a column comment by restating the column with "
-                "MODIFY COLUMN. Pass the ColumnDef as column=... so the "
-                "type, nullability, and default survive the restatement."
-            )
-        state = ColumnState.from_column(self, column)._replace(comment=comment)
+        if state is None:
+            if column is None:
+                raise DialectError(
+                    "MySQL sets a column comment by restating the column with "
+                    "MODIFY COLUMN. Pass the ColumnDef as column=... so the "
+                    "type, nullability, and default stay in the restatement."
+                )
+            state = ColumnState.from_column(self, column)
+        state = state._replace(comment=comment)
         return [
             f"ALTER TABLE {table_sql} MODIFY COLUMN "
             f"{self._modify_column_sql(column_name, state)}"

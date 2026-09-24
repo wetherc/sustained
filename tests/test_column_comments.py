@@ -189,6 +189,24 @@ class TestSetColumnComment(unittest.TestCase):
             ["ALTER TABLE `accounts` MODIFY COLUMN `email` VARCHAR(120) NOT NULL"],
         )
 
+    def test_mysql_restates_a_given_state(self):
+        from sustained.schema import ColumnState
+
+        statements = MYSQL.compile_set_column_comment(
+            "`accounts`",
+            "email",
+            "Login address",
+            column=String(50),
+            state=ColumnState("varchar(120)", False, "'a'", comment="old"),
+        )
+        self.assertEqual(
+            statements,
+            [
+                "ALTER TABLE `accounts` MODIFY COLUMN `email` varchar(120) "
+                "NOT NULL DEFAULT 'a' COMMENT 'Login address'"
+            ],
+        )
+
     def test_mysql_restatement_keeps_the_default(self):
         step = set_column_comment(
             "accounts",

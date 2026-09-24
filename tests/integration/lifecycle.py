@@ -456,12 +456,14 @@ class ServerCase(ColumnTypeTests, FileMigrationTests, unittest.TestCase):
     def test_a_drifted_comment_is_migrated_back(self):
         """
         A comment changed out of band shows up in the plan and one run
-        writes the declared text back.
+        writes the declared text back. MySQL restates the column from
+        the catalog, so the string default goes through the catalog read
+        and back into a DEFAULT clause.
         """
         compiler = Dialects.get_compiler(self.DIALECT)
         if not compiler.stores_column_comments():
             self.skipTest(f"{self.NAME} stores no column comments")
-        coldef = String(80, nullable=False, comment="Display name")
+        coldef = String(80, nullable=False, default="anon", comment="Display name")
         self.Widget.tableColumns["name"] = coldef
         migrator = self.migrator()
         migrator.up(models=[self.Widget])

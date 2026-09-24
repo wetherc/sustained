@@ -573,12 +573,15 @@ class Compiler:
         column_name: str,
         comment: Optional[str],
         column: Optional["ColumnDef"] = None,
+        state: Optional["ColumnState"] = None,
     ) -> "list[str]":
         """
         Renders the statements that set or clear one column's comment on
         an existing table. None clears. MySQL restates the column
-        definition and needs it passed as `column`. Dialects that store
-        no column comments raise.
+        definition and needs it passed, either as the declared `column`
+        or as the `state` the column is in when the statement runs. A
+        `state` wins over `column`; its own comment is replaced by
+        `comment`. Dialects that store no column comments raise.
         """
         from sustained.exceptions import DialectError
 

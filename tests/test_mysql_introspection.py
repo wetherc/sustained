@@ -915,6 +915,122 @@ class TestMysqlRestatedDefault(unittest.TestCase):
         self.assertEqual(column.restated_default(), "5")
 
 
+class TestMysqlCommentRestatement(unittest.TestCase):
+    """
+    A comment change on MySQL restates the whole column. The statement
+    restates the column as the table has it, so the type and the default
+    the model declares never ride in on it.
+    """
+
+    def migrate(self, rows, columns, extras=None, **options):
+        cursor = FakeCursor(
+            columns=[row[:5] for row in rows],
+            commented_columns=rows,
+            constraints=[("users", "PRIMARY KEY", "PRIMARY", "id")],
+            extras=extras,
+        )
+        model = make_model("MysqlCommented", "users", columns)
+        return autogenerate(
+            FakeConnection(cursor),
+            [model],
+            id="note",
+            dialect=Dialects.MYSQL,
+            **options,
+        )
+
+    def test_a_comment_change_keeps_the_type_and_default_the_table_has(self):
+        migration = self.migrate(
+            [
+                ("users", "id", "int", "NO", None, ""),
+                ("users", "code", "varchar(100)", "YES", "x", "old"),
+            ],
+            {
+                "id": Integer(primary_key=True),
+                "code": String(50, default="y", comment="new"),
+            },
+            ignore_changed_columns=True,
+        )
+        self.assertEqual(
+            migration.up,
+            [
+                "ALTER TABLE `users` MODIFY COLUMN `code` varchar(100) "
+                "DEFAULT 'x' COMMENT 'new'"
+            ],
+        )
+        self.assertEqual(
+            migration.down,
+            [
+                "ALTER TABLE `users` MODIFY COLUMN `code` varchar(100) "
+                "DEFAULT 'x' COMMENT 'old'"
+            ],
+        )
+
+    def test_a_comment_change_after_a_type_change_keeps_the_new_type(self):
+        migration = self.migrate(
+            [
+                ("users", "id", "int", "NO", None, ""),
+                ("users", "code", "varchar(10)", "YES", None, "old"),
+            ],
+            {"id": Integer(primary_key=True), "code": String(50, comment="new")},
+        )
+        self.assertEqual(
+            migration.up,
+            [
+                "ALTER TABLE `users` MODIFY COLUMN `code` VARCHAR(50) COMMENT 'old'",
+                "ALTER TABLE `users` MODIFY COLUMN `code` VARCHAR(50) COMMENT 'new'",
+            ],
+        )
+        self.assertEqual(
+            migration.down,
+            [
+                "ALTER TABLE `users` MODIFY COLUMN `code` VARCHAR(50) COMMENT 'old'",
+                "ALTER TABLE `users` MODIFY COLUMN `code` varchar(10) COMMENT 'old'",
+            ],
+        )
+
+    def test_a_comment_change_after_tightening_keeps_not_null(self):
+        migration = self.migrate(
+            [
+                ("users", "id", "int", "NO", None, ""),
+                ("users", "code", "varchar(50)", "YES", None, "old"),
+            ],
+            {
+                "id": Integer(primary_key=True),
+                "code": String(50, nullable=False, backfill="", comment="new"),
+            },
+        )
+        self.assertEqual(
+            migration.up[-1],
+            "ALTER TABLE `users` MODIFY COLUMN `code` VARCHAR(50) NOT NULL "
+            "COMMENT 'new'",
+        )
+        self.assertEqual(
+            migration.down[0],
+            "ALTER TABLE `users` MODIFY COLUMN `code` VARCHAR(50) NOT NULL "
+            "COMMENT 'old'",
+        )
+
+    def test_a_comment_change_keeps_the_identity_the_table_has(self):
+        rows = [("users", "id", "int", "NO", None, "old")]
+        columns = {"id": Integer(primary_key=True, comment="new")}
+        kept = self.migrate(rows, columns, extras={("users", "id"): "auto_increment"})
+        self.assertEqual(
+            kept.up,
+            [
+                "ALTER TABLE `users` MODIFY COLUMN `id` int NOT NULL "
+                "AUTO_INCREMENT COMMENT 'new'"
+            ],
+        )
+        plain = self.migrate(
+            rows,
+            {"id": Integer(primary_key=True, autoincrement=True, comment="new")},
+        )
+        self.assertEqual(
+            plain.up,
+            ["ALTER TABLE `users` MODIFY COLUMN `id` int NOT NULL COMMENT 'new'"],
+        )
+
+
 class TestMariadbPrecisionDrift(unittest.TestCase):
     """
     MariaDB reports a datetime(6) column with its precision, and the

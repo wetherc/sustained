@@ -163,6 +163,7 @@ class AthenaCompiler(PrestoCompiler):
         column_name: str,
         comment: Optional[str],
         column: Optional["ColumnDef"] = None,
+        state: Optional["ColumnState"] = None,
     ) -> "list[str]":
         raise DialectError(
             "Athena cannot change a column comment in place. Declare the "

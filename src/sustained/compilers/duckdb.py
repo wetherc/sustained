@@ -53,6 +53,7 @@ class DuckDbCompiler(Compiler):
         column_name: str,
         comment: Optional[str],
         column: Optional["ColumnDef"] = None,
+        state: Optional["ColumnState"] = None,
     ) -> "list[str]":
         column_sql = self.quote_identifier(column_name)
         value = "NULL" if comment is None else self.format_value(comment)

@@ -64,6 +64,10 @@ class IntrospectedColumn(NamedTuple):
     clause accepts. It is None when `default` is already SQL, which is
     the case everywhere except MySQL: its catalog reports the literal
     raw for 'raw' and the expression uuid() for (uuid()).
+
+    `autoincrement` is True where the catalog reports the column as an
+    identity column. Only the MySQL read sets it, from the EXTRA column,
+    because only MySQL restates a whole column to change its comment.
     """
 
     raw_type: str
@@ -74,6 +78,7 @@ class IntrospectedColumn(NamedTuple):
     enum_values: Tuple[str, ...] = ()
     comment: Optional[str] = None
     default_sql: Optional[str] = None
+    autoincrement: bool = False
 
     def restated_default(self) -> Optional[str]:
         """The default as SQL text for a DEFAULT clause, or None."""
@@ -956,15 +961,14 @@ def _information_schema_plan(
             )
         raw_type = str(data_type) if data_type else ""
         default_sql = None
+        extra = str(row[schema_index + 1] or "") if len(row) > schema_index + 2 else ""
         # MariaDB reports its defaults as SQL already, quotes included.
         if (
             len(row) > schema_index + 2
             and default is not None
             and "MARIADB" not in str(row[schema_index + 2]).upper()
         ):
-            default_sql = mysql_default_sql(
-                str(default), str(row[schema_index + 1] or ""), raw_type
-            )
+            default_sql = mysql_default_sql(str(default), extra, raw_type)
         columns_by_table.setdefault(str(table).lower(), {})[str(name).lower()] = (
             IntrospectedColumn(
                 raw_type=raw_type,
@@ -973,6 +977,7 @@ def _information_schema_plan(
                 default=default,
                 comment=comment,
                 default_sql=default_sql,
+                autoincrement="AUTO_INCREMENT" in extra.upper(),
             )
         )
 
