@@ -716,6 +716,12 @@ def _column_type_changed(
         # differences live on the type itself and are reported in
         # changed_enum_types, not here.
         return not _actual_column_is_enum(actual_col, coldef)
+    if coldef.type_name == "ENUM" and compiler.enum_strategy() == "inline":
+        # type_params() uppercases, which folds 'open' and 'Open' into one
+        # value list, so the values are compared as MySQL reports them.
+        live_values = parse_inline_enum(actual_col.raw_type)
+        if live_values:
+            return live_values != tuple(coldef.enum_values or ())
     if compiler.normalize_diff_type(
         normalize_type(expected_rendered)
     ) != compiler.normalize_diff_type(normalize_type(actual_col.raw_type)):

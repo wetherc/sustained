@@ -760,6 +760,60 @@ class TestMysqlDrift(unittest.TestCase):
         self.assertEqual(len(migration.up), 1)
         self.assertEqual(destructive_statements(migration.up), [])
 
+    def test_a_matching_enum_diffs_clean(self):
+        model = make_model(
+            "MysqlSameStatus",
+            "users",
+            {
+                "id": Integer(primary_key=True),
+                "status": Enum("open", "it's", name="status"),
+            },
+        )
+        migration = autogenerate(
+            FakeConnection(self.enum_catalog("enum('open','it''s')")),
+            [model],
+            id="same",
+            dialect=Dialects.MYSQL,
+        )
+        self.assertIsNone(migration)
+
+    def test_a_value_case_change_is_seen(self):
+        model = make_model(
+            "MysqlCasedStatus",
+            "users",
+            {
+                "id": Integer(primary_key=True),
+                "status": Enum("Open", "closed", name="status"),
+            },
+        )
+        # Rows holding 'open' have no kept value to land on, so the change
+        # is refused rather than passed over.
+        with self.assertRaises(ValueError) as caught:
+            autogenerate(
+                FakeConnection(self.enum_catalog("enum('open','closed')")),
+                [model],
+                id="cased",
+                dialect=Dialects.MYSQL,
+            )
+        self.assertIn("removes 'open'", str(caught.exception))
+
+    def test_a_reordered_enum_is_seen(self):
+        model = make_model(
+            "MysqlReorderedStatus",
+            "users",
+            {
+                "id": Integer(primary_key=True),
+                "status": Enum("closed", "open", name="status"),
+            },
+        )
+        migration = autogenerate(
+            FakeConnection(self.enum_catalog("enum('open','closed')")),
+            [model],
+            id="reordered",
+            dialect=Dialects.MYSQL,
+        )
+        self.assertEqual(len(migration.up), 1)
+
     def test_a_removed_enum_value_is_refused(self):
         model = make_model(
             "MysqlLessStatus",
