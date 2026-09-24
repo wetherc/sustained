@@ -26,6 +26,7 @@ from sustained.migrations import (
     Migration,
     Migrator,
     _destructive_prefix_keys,
+    _legacy_checksum,
     checked_unique_ids,
     create_table_migration,
     migration_checksum,
@@ -278,6 +279,28 @@ class TestChecksums(unittest.TestCase):
         two = Migration("m", up="CREATE TABLE t (id BIGINT)")
         self.assertNotEqual(migration_checksum(one), migration_checksum(two))
 
+    def test_splitting_a_statement_changes_the_checksum(self):
+        joined = Migration("m", up=["CREATE TABLE a (id INTEGER);\nSELECT 1"])
+        split = Migration("m", up=["CREATE TABLE a (id INTEGER);", "SELECT 1"])
+        self.assertNotEqual(migration_checksum(joined), migration_checksum(split))
+        # The newline-joined hash cannot tell the two apart.
+        self.assertEqual(_legacy_checksum(joined), _legacy_checksum(split))
+
+    def test_a_ddl_step_and_its_signature_as_sql_hash_differently(self):
+        step = drop_table("t")
+        as_sql = Migration("m", up=[step.signature()], down=None)
+        self.assertNotEqual(
+            migration_checksum(Migration("m", up=[step], down=None)),
+            migration_checksum(as_sql),
+        )
+
+    def test_the_legacy_checksum_keeps_an_explicit_or_missing_one(self):
+        pinned = Migration("m", up=lambda c: None, checksum="abc123")
+        self.assertEqual(_legacy_checksum(pinned), "abc123")
+        self.assertIsNone(_legacy_checksum(Migration("m", up=lambda c: None)))
+        ddl = Migration("m", up=[drop_table("t")], down=None)
+        self.assertNotEqual(_legacy_checksum(ddl), migration_checksum(ddl))
+
     def test_callable_step_has_no_checksum(self):
         self.assertIsNone(migration_checksum(Migration("m", up=lambda c: None)))
 
@@ -504,6 +527,57 @@ class TestValidateAndRepair(MigrationTestCase):
         error = Frozen("boom")
         _tag_migration(error, "m1")
         self.assertFalse(hasattr(error, "migration_id"))
+
+    def store_legacy_checksum(self, migration):
+        self.conn.execute(
+            "UPDATE sustained_migrations SET checksum = ? WHERE id = ?",
+            (_legacy_checksum(migration), migration.id),
+        )
+        self.conn.commit()
+
+    def test_a_row_with_the_legacy_checksum_still_matches(self):
+        migration = Migration(
+            "a", up=["CREATE TABLE va (x INTEGER)", "SELECT 1"], down="DROP TABLE va"
+        )
+        repeatable = Migration("r", up="CREATE VIEW rv AS SELECT 1", repeatable=True)
+        Migrator(self.conn, [migration, repeatable]).up()
+        self.store_legacy_checksum(migration)
+        self.store_legacy_checksum(repeatable)
+        migrator = Migrator(self.conn, [migration, repeatable])
+        self.assertEqual(migrator.validate(), [])
+        self.assertEqual(migrator.pending(), [])
+        self.assertEqual(migrator.statuses(), [("a", "applied"), ("r", "applied")])
+        self.assertEqual(migrator.down(), ["a"])
+
+    def test_a_split_statement_reads_as_an_edit(self):
+        Migrator(
+            self.conn, [Migration("a", up=["CREATE TABLE va (x INTEGER,\ny INTEGER)"])]
+        ).up()
+        split = Migrator(
+            self.conn,
+            [Migration("a", up=["CREATE TABLE va (x INTEGER,", "y INTEGER)"])],
+        )
+        problems = split.validate(raise_on_problems=False)
+        self.assertEqual(len(problems), 1)
+        self.assertIn("checksum mismatch", problems[0])
+
+    def test_a_legacy_row_still_reads_an_edit(self):
+        migration = Migration("a", up="CREATE TABLE va (x INTEGER)")
+        Migrator(self.conn, [migration]).up()
+        self.store_legacy_checksum(migration)
+        edited = Migrator(self.conn, [Migration("a", up="CREATE TABLE va (x BIGINT)")])
+        self.assertEqual(len(edited.validate(raise_on_problems=False)), 1)
+
+    def test_repair_rewrites_a_legacy_checksum_in_the_current_format(self):
+        migration = Migration("a", up="CREATE TABLE va (x INTEGER)")
+        Migrator(self.conn, [migration]).up()
+        self.store_legacy_checksum(migration)
+        migrator = Migrator(self.conn, [migration])
+        self.assertEqual(migrator.repair(), ["updated the checksum format of 'a'"])
+        self.assertEqual(
+            migrator.applied_records()[0].checksum, migration_checksum(migration)
+        )
+        self.assertEqual(migrator.repair(), [])
 
     def test_repair_adopts_legacy_rows_without_checksums(self):
         self.conn.execute(

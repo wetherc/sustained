@@ -54,6 +54,7 @@ from sustained.migrations import (
     _changed_since_applied,
     _check_rehearsable,
     _checked_steps,
+    _checksum_repair,
     _destructive_in,
     _down_sweep,
     _failed_attempt_problem,
@@ -594,14 +595,12 @@ class AsyncMigrator:
         """
         records = {r.id: r for r in await self.read_applied_records()}
         result = [
-            m
-            for m in self._versioned()
-            if not _is_current(records.get(m.id), migration_checksum(m), False)
+            m for m in self._versioned() if not _is_current(records.get(m.id), m, False)
         ]
         result.extend(
             m
             for m in self._repeatables()
-            if not _is_current(records.get(m.id), migration_checksum(m), True)
+            if not _is_current(records.get(m.id), m, True)
         )
         return result
 
@@ -678,8 +677,9 @@ class AsyncMigrator:
             migration = by_id.get(record.id)
             if migration is None or migration.repeatable:
                 continue
-            current = migration_checksum(migration)
-            if current is not None and current != record.checksum:
+            rewrite = _checksum_repair(record, migration)
+            if rewrite is not None:
+                current, action = rewrite
                 await self._execute(
                     f"UPDATE {self._table_sql()} SET "
                     f"{self._compiler.quote_identifier('checksum')} = "
@@ -687,7 +687,7 @@ class AsyncMigrator:
                     f"{self._compiler.quote_identifier('id')} = {placeholder}",
                     (current, record.id),
                 )
-                actions.append(f"updated the stored checksum of '{record.id}'")
+                actions.append(action)
         await self._adapter.commit()
         return actions
 
@@ -987,7 +987,7 @@ class AsyncMigrator:
             repeatables_now = [
                 m
                 for m in (self._repeatables() if target is None else [])
-                if not _is_current(records_by_id.get(m.id), migration_checksum(m), True)
+                if not _is_current(records_by_id.get(m.id), m, True)
             ]
             # The registered set is checked before anything runs. The
             # order matches pending(), so a rehearsal of the same set

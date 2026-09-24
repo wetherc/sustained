@@ -259,6 +259,23 @@ class TestAsyncMigrator(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(actions, ["updated the stored checksum of 'a'"])
         self.assertEqual(await edited.validate(), [])
 
+    async def test_repair_rewrites_a_legacy_checksum_in_the_current_format(self):
+        from sustained.migrations import _legacy_checksum, migration_checksum
+
+        migration = Migration("a", up="CREATE TABLE va (x INTEGER)")
+        await AsyncMigrator(self.adapter, [migration]).up()
+        self.conn.execute(
+            "UPDATE sustained_migrations SET checksum = ?",
+            (_legacy_checksum(migration),),
+        )
+        migrator = AsyncMigrator(self.adapter, [migration])
+        self.assertEqual(await migrator.validate(), [])
+        self.assertEqual(
+            await migrator.repair(), ["updated the checksum format of 'a'"]
+        )
+        records = await migrator.applied_records()
+        self.assertEqual(records[0].checksum, migration_checksum(migration))
+
     async def test_repair_leaves_a_changed_repeatable_pending(self):
         await AsyncMigrator(
             self.adapter,

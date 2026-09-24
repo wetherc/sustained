@@ -78,7 +78,7 @@ migrator.repair()
 #  "updated the stored checksum of 'create_users'"]
 ```
 
-Checksums are computed on the exact SQL text, so reformatting a migration counts as an edit; run `repair()` to accept it. A callable step has no SQL to hash, so it records a null checksum, which validation skips. To pin one yourself, pass `Migration(..., checksum='...')`. The argument is for callable steps only, and it raises `ValueError` on a SQL step, because there it would replace the hash of the statements and hide every later edit.
+Checksums are computed on the exact SQL text, so reformatting a migration counts as an edit; run `repair()` to accept it. Each statement enters the hash with its length, so splitting one statement into two, or joining two into one, is an edit too. A row written by a release before 2.25.0 stores a hash of the statements joined by newlines. That row still matches its migration, but it cannot see a split or a join. `repair()` rewrites such a row in the current format and reports `updated the checksum format of '<id>'`. A callable step has no SQL to hash, so it records a null checksum, which validation skips. To pin one yourself, pass `Migration(..., checksum='...')`. The argument is for callable steps only, and it raises `ValueError` on a SQL step, because there it would replace the hash of the statements and hide every later edit.
 
 On engines without transactions, a failing step writes a row with the success flag off, so the interrupted run is visible, and validation blocks `up()` until you clean up and run `repair()`.
 

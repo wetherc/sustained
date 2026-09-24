@@ -263,6 +263,34 @@ def migration_checksum(migration: Migration) -> Optional[str]:
     the migration's explicit checksum, or None when it has none. A ddl
     step hashes as its canonical signature rather than its rendered SQL,
     so the checksum stays the same on every dialect.
+
+    Each statement enters the hash with its kind and its length in front
+    of it. A statement list of ["A\nB"] and one of ["A", "B"] therefore
+    hash differently, so splitting an applied SQL file in two reads as an
+    edit.
+    """
+    if migration.checksum is not None:
+        return migration.checksum
+    elements = _step_elements(migration.up)
+    if elements is None:
+        return None
+    digest = hashlib.sha256()
+    for element in elements:
+        if isinstance(element, DdlStep):
+            kind, data = b"d", element.signature().encode("utf-8")
+        else:
+            kind, data = b"s", element.strip().encode("utf-8")
+        digest.update(kind + len(data).to_bytes(8, "big"))
+        digest.update(data)
+    return digest.hexdigest()
+
+
+def _legacy_checksum(migration: Migration) -> Optional[str]:
+    """
+    The checksum releases before 2.25.0 stored: the same statements, each
+    followed by a newline, with no length in front. A tracking row
+    written by one of those releases stores this value, and it still
+    matches its migration.
     """
     if migration.checksum is not None:
         return migration.checksum
@@ -277,6 +305,19 @@ def migration_checksum(migration: Migration) -> Optional[str]:
             digest.update(element.strip().encode("utf-8"))
         digest.update(b"\n")
     return digest.hexdigest()
+
+
+def _checksum_matches(stored: Optional[str], migration: Migration) -> bool:
+    """
+    True when a tracking row's checksum matches the migration as it
+    stands: the current checksum, or for a row written before 2.25.0,
+    the legacy one. A legacy row cannot tell a split statement from the
+    original, which is the one edit it misses; repair() rewrites it in
+    the current format.
+    """
+    if stored == migration_checksum(migration):
+        return True
+    return stored is not None and stored == _legacy_checksum(migration)
 
 
 class AppliedRecord(NamedTuple):
@@ -1229,7 +1270,7 @@ def render_script(
         for migration in repeatables:
             record = records_by_id.get(migration.id)
             checksum = migration_checksum(migration)
-            if _is_current(record, checksum, True):
+            if _is_current(record, migration, True):
                 continue
             lines.append(f"-- repeat: {migration.id}")
             lines.extend(f"{s};" for s in migration_sql(migration, "up", compiler))
@@ -1283,24 +1324,39 @@ def _next_seq(records: List[AppliedRecord]) -> int:
     return 1 + max((r.seq or 0 for r in records), default=0)
 
 
+def _checksum_repair(
+    record: AppliedRecord, migration: Migration
+) -> Optional[Tuple[str, str]]:
+    """
+    The checksum repair() writes on a row and the action it reports, or
+    None when the row stores the current checksum. A row that stores the
+    legacy checksum of the same statements is rewritten in the current
+    format, so a later split of the migration reads as an edit.
+    """
+    current = migration_checksum(migration)
+    if current is None or current == record.checksum:
+        return None
+    if record.checksum is not None and record.checksum == _legacy_checksum(migration):
+        return current, f"updated the checksum format of '{record.id}'"
+    return current, f"updated the stored checksum of '{record.id}'"
+
+
 def _is_current(
-    record: Optional[AppliedRecord],
-    current_checksum: Optional[str],
-    repeatable: bool,
+    record: Optional[AppliedRecord], migration: Migration, repeatable: bool
 ) -> bool:
     """True when the tracking row makes a run unnecessary."""
     if record is None or not record.success:
         return False
     if not repeatable:
         return True
-    return record.checksum == current_checksum
+    return _checksum_matches(record.checksum, migration)
 
 
 def _migration_state(record: Optional[AppliedRecord], migration: Migration) -> str:
     """One migration's state: 'applied', 'pending', or 'changed'."""
     if record is None or not record.success:
         return "pending"
-    if migration.repeatable and record.checksum != migration_checksum(migration):
+    if migration.repeatable and not _checksum_matches(record.checksum, migration):
         return "changed"
     return "applied"
 
@@ -1515,11 +1571,10 @@ def _validation_problems(
         if migration.repeatable:
             # A changed checksum is the re-run signal, not a problem.
             continue
-        current = migration_checksum(migration)
         if (
-            current is not None
+            migration_checksum(migration) is not None
             and record.checksum is not None
-            and current != record.checksum
+            and not _checksum_matches(record.checksum, migration)
         ):
             problems.append(
                 f"checksum mismatch for '{record.id}': the migration "
@@ -1554,8 +1609,9 @@ def _changed_since_applied(
     """
     if record is None or record.checksum is None:
         return False
-    current = migration_checksum(migration)
-    return current is not None and current != record.checksum
+    return migration_checksum(migration) is not None and not _checksum_matches(
+        record.checksum, migration
+    )
 
 
 def _changed_down_message(migration_id: str) -> str:
@@ -2094,14 +2150,12 @@ class Migrator:
         """
         records = {r.id: r for r in self.read_applied_records()}
         result = [
-            m
-            for m in self._versioned()
-            if not _is_current(records.get(m.id), migration_checksum(m), False)
+            m for m in self._versioned() if not _is_current(records.get(m.id), m, False)
         ]
         result.extend(
             m
             for m in self._repeatables()
-            if not _is_current(records.get(m.id), migration_checksum(m), True)
+            if not _is_current(records.get(m.id), m, True)
         )
         return result
 
@@ -2176,8 +2230,9 @@ class Migrator:
             migration = by_id.get(record.id)
             if migration is None or migration.repeatable:
                 continue
-            current = migration_checksum(migration)
-            if current is not None and current != record.checksum:
+            rewrite = _checksum_repair(record, migration)
+            if rewrite is not None:
+                current, action = rewrite
                 self._run_sql(
                     f"UPDATE {self._table_sql()} SET "
                     f"{self._compiler.quote_identifier('checksum')} = "
@@ -2185,7 +2240,7 @@ class Migrator:
                     f"{self._compiler.quote_identifier('id')} = {placeholder}",
                     (current, record.id),
                 )
-                actions.append(f"updated the stored checksum of '{record.id}'")
+                actions.append(action)
         self._commit_quietly()
         return actions
 
@@ -2390,7 +2445,7 @@ class Migrator:
             repeatables_now = [
                 m
                 for m in (self._repeatables() if target is None else [])
-                if not _is_current(records_by_id.get(m.id), migration_checksum(m), True)
+                if not _is_current(records_by_id.get(m.id), m, True)
             ]
             # The registered set is checked before anything runs. The
             # order matches pending(), so a rehearsal of the same set
