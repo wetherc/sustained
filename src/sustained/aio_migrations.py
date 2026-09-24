@@ -72,6 +72,7 @@ from sustained.migrations import (
     _tag_applied,
     _tag_migration,
     _tracking_column_defs,
+    _unlock_message,
     _upgrade_column_def,
     _validation_problems,
     check_guards,
@@ -226,12 +227,38 @@ class AsyncMigrator:
             await self._take_lock(statement)
         try:
             yield
-        finally:
-            for statement in self._compiler.migration_unlock_sql(self._table):
-                try:
-                    await self._adapter.execute(statement, ())
-                except Exception:
-                    pass
+        except BaseException:
+            # A failed statement outside a transaction leaves a Postgres
+            # session aborted. The engine then refuses every statement,
+            # pg_advisory_unlock included, until a rollback.
+            await self._rollback_quietly()
+            await self._release_lock(raising=False)
+            raise
+        await self._release_lock(raising=True)
+
+    async def _release_lock(self, raising: bool) -> None:
+        """
+        Runs the unlock statements. A refused unlock leaves the lock held
+        until the connection closes, and every other migrator waits for
+        it until then. After a run that succeeded, the refusal raises.
+        After a run that failed, it is reported on stderr, so the run's
+        own error is the one the caller sees.
+        """
+        from sustained.exceptions import MigrationError
+
+        failure: Optional[Exception] = None
+        for statement in self._compiler.migration_unlock_sql(self._table):
+            try:
+                await self._adapter.execute(statement, ())
+            except Exception as error:
+                failure = failure or error
+        if failure is None:
+            return
+        message = _unlock_message(self._table, failure)
+        if not raising:
+            print(f"error: {message}", file=sys.stderr)
+            return
+        raise MigrationError([message]) from failure
 
     async def _take_lock(self, statement: str) -> None:
         """

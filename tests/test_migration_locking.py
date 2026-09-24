@@ -2,10 +2,18 @@
 Tests for the advisory lock the migrators hold while they run.
 """
 
+import asyncio
+import io
 import unittest
+from contextlib import redirect_stderr
 
+from sustained.aio import AsyncAdapter
+from sustained.aio_migrations import AsyncMigrator
 from sustained.dialects import Dialects
+from sustained.exceptions import MigrationError
 from sustained.migrations import Migration, Migrator, _lock_row
+
+UNLOCK = "SELECT pg_advisory_unlock(hashtext('sustained_migrations'))"
 
 
 class FakeCursor:
@@ -15,7 +23,14 @@ class FakeCursor:
 
     def execute(self, sql, params=()):
         self._conn.log.append(sql)
+        if self._conn.aborted:
+            raise RuntimeError("current transaction is aborted")
+        if self._conn.refuse_unlock and sql == UNLOCK:
+            raise RuntimeError("unlock refused")
         if self._conn.fail_on and self._conn.fail_on in sql:
+            # Postgres refuses every later statement in the session until
+            # a rollback, the way psycopg's implicit transaction does.
+            self._conn.aborted = True
             raise RuntimeError(f"forced failure on: {sql}")
         if sql.startswith("SELECT") and "checksum" in sql:
             self._rows = [
@@ -42,10 +57,12 @@ class FakeCursor:
 
 
 class FakePostgresConnection:
-    def __init__(self, fail_on=None):
+    def __init__(self, fail_on=None, refuse_unlock=False):
         self.applied = []
         self.log = []
         self.fail_on = fail_on
+        self.refuse_unlock = refuse_unlock
+        self.aborted = False
 
     def cursor(self):
         return FakeCursor(self)
@@ -55,6 +72,7 @@ class FakePostgresConnection:
 
     def rollback(self):
         self.log.append("<rollback>")
+        self.aborted = False
 
 
 class TestLockStatements(unittest.TestCase):
@@ -297,6 +315,121 @@ class TestLockingRun(unittest.TestCase):
             "SELECT pg_advisory_unlock(hashtext('sustained_migrations'))"
         )
         self.assertLess(row_at, unlock_at)
+
+
+class TestLockRelease(unittest.TestCase):
+    """
+    A failed run leaves a Postgres session aborted, and the engine refuses
+    the unlock there. The lock then stays held until the connection
+    closes, and every other migrator waits on it.
+    """
+
+    def _up(self, conn, migration):
+        Migrator(conn, [migration], dialect=Dialects.POSTGRES).up()
+
+    def test_a_failure_outside_a_transaction_rolls_back_before_unlocking(self):
+        conn = FakePostgresConnection(fail_on="CREATE INDEX")
+        migration = Migration(
+            "one", up="CREATE INDEX CONCURRENTLY i ON t (x)", transactional=False
+        )
+        stderr = io.StringIO()
+        with redirect_stderr(stderr), self.assertRaises(RuntimeError) as caught:
+            self._up(conn, migration)
+        self.assertIn("forced failure", str(caught.exception))
+        self.assertLess(conn.log.index("<rollback>"), conn.log.index(UNLOCK))
+        self.assertFalse(conn.aborted)
+        self.assertEqual(stderr.getvalue(), "")
+
+    def test_a_refused_unlock_after_a_run_raises(self):
+        conn = FakePostgresConnection(refuse_unlock=True)
+        with self.assertRaises(MigrationError) as caught:
+            self._up(conn, Migration("one", up="CREATE TABLE t1 (id INTEGER)"))
+        message = str(caught.exception)
+        self.assertIn("migration lock for 'sustained_migrations'", message)
+        self.assertIn("not released", message)
+        self.assertIn("Close the connection", message)
+        self.assertIsInstance(caught.exception.__cause__, RuntimeError)
+        self.assertEqual(conn.applied, ["one"])
+
+    def test_a_refused_unlock_after_a_failed_run_keeps_the_run_error(self):
+        conn = FakePostgresConnection(fail_on="CREATE TABLE", refuse_unlock=True)
+        stderr = io.StringIO()
+        with redirect_stderr(stderr), self.assertRaises(RuntimeError) as caught:
+            self._up(conn, Migration("one", up="CREATE TABLE t1 (id INTEGER)"))
+        self.assertIn("forced failure", str(caught.exception))
+        self.assertIn("error: The migration lock", stderr.getvalue())
+        self.assertIn("not released", stderr.getvalue())
+
+
+class FakePostgresAdapter(AsyncAdapter):
+    """An async adapter that refuses statements in an aborted session."""
+
+    def __init__(self, fail_on=None, refuse_unlock=False):
+        self.log = []
+        self.fail_on = fail_on
+        self.refuse_unlock = refuse_unlock
+        self.aborted = False
+
+    async def fetch(self, sql, params):
+        await self.execute(sql, params)
+        return [], []
+
+    async def execute(self, sql, params):
+        self.log.append(sql)
+        if sql.startswith("ROLLBACK"):
+            self.aborted = False
+        if self.aborted:
+            raise RuntimeError("current transaction is aborted")
+        if self.refuse_unlock and sql == UNLOCK:
+            raise RuntimeError("unlock refused")
+        if self.fail_on and self.fail_on in sql:
+            self.aborted = True
+            raise RuntimeError(f"forced failure on: {sql}")
+        return 0
+
+    async def commit(self):
+        self.log.append("<commit>")
+
+    async def rollback(self):
+        self.log.append("<rollback>")
+        self.aborted = False
+
+
+class TestAsyncLockRelease(unittest.TestCase):
+    """The async migrator releases its lock the same way."""
+
+    def _up(self, adapter, migration):
+        migrator = AsyncMigrator(adapter, [migration], dialect=Dialects.POSTGRES)
+        asyncio.run(migrator.up())
+
+    def test_a_failure_outside_a_transaction_rolls_back_before_unlocking(self):
+        adapter = FakePostgresAdapter(fail_on="CREATE INDEX")
+        migration = Migration(
+            "one", up="CREATE INDEX CONCURRENTLY i ON t (x)", transactional=False
+        )
+        stderr = io.StringIO()
+        with redirect_stderr(stderr), self.assertRaises(RuntimeError):
+            self._up(adapter, migration)
+        failed_at = adapter.log.index("CREATE INDEX CONCURRENTLY i ON t (x)")
+        rollback_at = adapter.log.index("<rollback>", failed_at)
+        self.assertLess(rollback_at, adapter.log.index(UNLOCK))
+        self.assertFalse(adapter.aborted)
+        self.assertEqual(stderr.getvalue(), "")
+
+    def test_a_refused_unlock_after_a_run_raises(self):
+        adapter = FakePostgresAdapter(refuse_unlock=True)
+        with self.assertRaises(MigrationError) as caught:
+            self._up(adapter, Migration("one", up="CREATE TABLE t1 (id INTEGER)"))
+        self.assertIn("not released", str(caught.exception))
+        self.assertIsInstance(caught.exception.__cause__, RuntimeError)
+
+    def test_a_refused_unlock_after_a_failed_run_keeps_the_run_error(self):
+        adapter = FakePostgresAdapter(fail_on="CREATE TABLE t1", refuse_unlock=True)
+        stderr = io.StringIO()
+        with redirect_stderr(stderr), self.assertRaises(RuntimeError) as caught:
+            self._up(adapter, Migration("one", up="CREATE TABLE t1 (id INTEGER)"))
+        self.assertIn("forced failure", str(caught.exception))
+        self.assertIn("not released", stderr.getvalue())
 
 
 if __name__ == "__main__":

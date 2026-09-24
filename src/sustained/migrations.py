@@ -1501,6 +1501,15 @@ def _lock_message(table: str, problem: str) -> str:
     )
 
 
+def _unlock_message(table: str, error: Exception) -> str:
+    """The error for a lock the engine did not release."""
+    return (
+        f"The migration lock for '{table}' was not released: {error!r}. "
+        "The lock stays held until this connection closes, and other "
+        "migrators wait for it until then. Close the connection."
+    )
+
+
 class Migrator:
     """
     Applies and reverts an ordered list of migrations on one connection.
@@ -1744,13 +1753,39 @@ class Migrator:
                 self._check_lock(_lock_row(cursor))
         try:
             yield
-        finally:
-            for statement in self._compiler.migration_unlock_sql(self._table):
-                try:
-                    with closing(self._connection.cursor()) as cursor:
-                        cursor.execute(statement)
-                except Exception:
-                    pass
+        except BaseException:
+            # A failed statement outside a transaction() block leaves a
+            # Postgres session aborted. The engine then refuses every
+            # statement, pg_advisory_unlock included, until a rollback.
+            self._rollback_quietly()
+            self._release_lock(raising=False)
+            raise
+        self._release_lock(raising=True)
+
+    def _release_lock(self, raising: bool) -> None:
+        """
+        Runs the unlock statements. A refused unlock leaves the lock held
+        until the connection closes, and every other migrator waits for
+        it until then. After a run that succeeded, the refusal raises.
+        After a run that failed, it is reported on stderr, so the run's
+        own error is the one the caller sees.
+        """
+        from sustained.exceptions import MigrationError
+
+        failure: Optional[Exception] = None
+        for statement in self._compiler.migration_unlock_sql(self._table):
+            try:
+                with closing(self._connection.cursor()) as cursor:
+                    cursor.execute(statement)
+            except Exception as error:
+                failure = failure or error
+        if failure is None:
+            return
+        message = _unlock_message(self._table, failure)
+        if not raising:
+            print(f"error: {message}", file=sys.stderr)
+            return
+        raise MigrationError([message]) from failure
 
     def _check_lock(self, row: Optional[Sequence[object]]) -> None:
         """
