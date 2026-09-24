@@ -1234,6 +1234,33 @@ def _information_schema_plan(
     return schema
 
 
+def _replace_foreign_keys(schema: Snapshot, rows: Sequence[Sequence[RowValue]]) -> None:
+    """
+    Replaces the foreign keys of the shared information_schema read with
+    rows that say where each key points: the table, the constraint name,
+    one constrained column, the table and column it references, and the
+    delete and update actions, one row per column in key order. The
+    shared read joins no referential view, so its keys point at '?'.
+    SQL Server spells an action with an underscore, as in SET_NULL.
+    """
+    parts: Dict[Tuple[str, str], List[Sequence[RowValue]]] = {}
+    for row in rows:
+        parts.setdefault((str(row[0]).lower(), str(row[1]).lower()), []).append(row)
+    foreign_keys: Dict[str, Dict[str, IntrospectedForeignKey]] = {}
+    for (table, name), key_rows in parts.items():
+        first = key_rows[0]
+        foreign_keys.setdefault(table, {})[name] = IntrospectedForeignKey(
+            columns=tuple(str(r[2]).lower() for r in key_rows),
+            target_table=str(first[3]).lower(),
+            target_columns=tuple(str(r[4]).lower() for r in key_rows),
+            on_delete=str(first[5]).replace("_", " ").upper(),
+            on_update=str(first[6]).replace("_", " ").upper(),
+        )
+    for table, existing in list(schema.items()):
+        schema[table] = existing._replace(foreign_keys=foreign_keys.get(table, {}))
+    schema.constraints_read = True
+
+
 def _merge_plain_indexes(
     schema: Snapshot, plain: Dict[str, Dict[str, IntrospectedIndex]]
 ) -> None:
@@ -1282,6 +1309,27 @@ def _mssql_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
         _merge_plain_indexes(schema, plain)
     except Exception:
         # No sys views to read; keep the constraint-derived indexes.
+        pass
+    try:
+        fk_rows = yield (
+            "SELECT t.name, fk.name, pc.name, rt.name, rc.name, "
+            "fk.delete_referential_action_desc, "
+            "fk.update_referential_action_desc "
+            "FROM sys.foreign_keys fk "
+            "JOIN sys.tables t ON t.object_id = fk.parent_object_id "
+            "JOIN sys.foreign_key_columns fkc "
+            "ON fkc.constraint_object_id = fk.object_id "
+            "JOIN sys.columns pc ON pc.object_id = fkc.parent_object_id "
+            "AND pc.column_id = fkc.parent_column_id "
+            "JOIN sys.tables rt ON rt.object_id = fk.referenced_object_id "
+            "JOIN sys.columns rc ON rc.object_id = fkc.referenced_object_id "
+            "AND rc.column_id = fkc.referenced_column_id "
+            f"WHERE {index_filter} "
+            "ORDER BY t.name, fk.name, fkc.constraint_column_id"
+        )
+        _replace_foreign_keys(schema, fk_rows)
+    except Exception:
+        # No sys views to read; keep the keys without their targets.
         pass
     return schema
 
@@ -1785,6 +1833,24 @@ def _mysql_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
         _merge_plain_indexes(schema, plain)
     except Exception:
         # No statistics view; keep the constraint-derived indexes.
+        pass
+    try:
+        fk_rows = yield (
+            "SELECT kcu.table_name, kcu.constraint_name, kcu.column_name, "
+            "kcu.referenced_table_name, kcu.referenced_column_name, "
+            "rc.delete_rule, rc.update_rule "
+            "FROM information_schema.key_column_usage kcu "
+            "JOIN information_schema.referential_constraints rc "
+            "ON rc.constraint_schema = kcu.constraint_schema "
+            "AND rc.constraint_name = kcu.constraint_name "
+            "AND rc.table_name = kcu.table_name "
+            "WHERE kcu.referenced_table_name IS NOT NULL "
+            f"AND {_scoped_filter('kcu.table_schema', current, schemas)} "
+            "ORDER BY kcu.table_name, kcu.constraint_name, kcu.ordinal_position"
+        )
+        _replace_foreign_keys(schema, fk_rows)
+    except Exception:
+        # No referential_constraints view; keep the keys without targets.
         pass
     for table in schema.values():
         for name, column in table.columns.items():

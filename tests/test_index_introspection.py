@@ -123,6 +123,23 @@ class TestMssqlIndexRead(unittest.TestCase):
         self.assertEqual({}, dict(schema["t"].indexes))
 
 
+class TestMssqlForeignKeyRead(unittest.TestCase):
+    def test_a_key_reads_its_target_and_actions(self):
+        cursor = FakeCursor(
+            {
+                "information_schema.columns": COLUMNS,
+                "sys.foreign_keys": [
+                    ("t", "fk_t_p", "a", "P", "id", "SET_NULL", "NO_ACTION")
+                ],
+            }
+        )
+        schema = introspect_schema(FakeConnection(cursor), Dialects.MSSQL)
+        fk = schema["t"].foreign_keys["fk_t_p"]
+        self.assertEqual((fk.columns, fk.target_table), (("a",), "p"))
+        self.assertEqual((fk.on_delete, fk.on_update), ("SET NULL", "NO ACTION"))
+        self.assertTrue(schema.constraints_read)
+
+
 class TestDuckdbExpressionParse(unittest.TestCase):
     def test_bare_columns_parse(self):
         self.assertEqual(("a", "b"), _duckdb_index_columns("[a, b]"))

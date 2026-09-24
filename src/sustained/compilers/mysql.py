@@ -242,6 +242,12 @@ class MysqlCompiler(Compiler):
             f"{self.quote_identifier(constraint)}"
         )
 
+    def equivalent_fk_action(self, action: str) -> str:
+        # InnoDB runs NO ACTION as RESTRICT, and MariaDB reports a key
+        # declared without an action as RESTRICT, where MySQL reports
+        # NO ACTION. The two compare equal so neither reads as a change.
+        return "NO ACTION" if action == "RESTRICT" else action
+
     def supports_alter_column(self) -> bool:
         return True
 

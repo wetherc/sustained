@@ -732,6 +732,14 @@ class Compiler:
             f"{self.quote_ddl_identifier(constraint)} UNIQUE ({columns_sql})"
         )
 
+    def equivalent_fk_action(self, action: str) -> str:
+        """
+        The referential action a diff compares, given one in upper case.
+        Most engines tell every action apart, so the default returns it
+        as given.
+        """
+        return action
+
     def compile_drop_foreign_key(self, table_sql: str, constraint: str) -> str:
         """Renders the statement that takes back an added foreign key."""
         return (

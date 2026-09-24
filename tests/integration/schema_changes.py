@@ -75,3 +75,50 @@ class SchemaChangeTests:
             wider.query().insert([{**ROW, "mood": "meh"}]).run()
         finally:
             wider.unbind()
+
+    def test_a_foreign_key_reads_its_target_and_its_action(self):
+        # MySQL, MariaDB, and SQL Server reported every key's target as
+        # unknown, so a changed action never diffed.
+        from sustained.schema import ForeignKey, Integer
+
+        maker = type(
+            "MakerTarget",
+            (Model,),
+            {
+                "tableName": "it_makers",
+                "tableColumns": {"id": Integer(primary_key=True)},
+                "_dialect": self.DIALECT,
+            },
+        )
+
+        def widget(on_delete=None):
+            return type(
+                "WidgetKeyed",
+                (Model,),
+                {
+                    "tableName": "it_widgets",
+                    "tableColumns": {
+                        "id": Integer(primary_key=True),
+                        "maker_id": Integer(),
+                    },
+                    "tableConstraints": [
+                        ForeignKey(
+                            "fk_it_widgets_maker",
+                            "maker_id",
+                            "it_makers.id",
+                            on_delete=on_delete,
+                        )
+                    ],
+                    "_dialect": self.DIALECT,
+                },
+            )
+
+        migrator = self.migrator()
+        migrator.up(models=[maker, widget()])
+        self.assertIsNone(migrator.plan([maker, widget()]))
+        key = self.tables()["it_widgets"].foreign_keys
+        (fk,) = key.values()
+        self.assertEqual("it_makers", fk.target_table)
+        if not self.constraints_fixed():
+            changed = migrator.plan([maker, widget("CASCADE")], allow_drops=True)
+            self.assertIsNotNone(changed)

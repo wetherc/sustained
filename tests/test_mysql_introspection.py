@@ -40,8 +40,11 @@ class FakeCursor:
         table_checks=None,
         extras=None,
         version="8.0.36",
+        foreign_keys=None,
     ):
         self.columns = list(columns)
+        # Rows of the referential read; None means the view is missing.
+        self.foreign_keys = foreign_keys
         # EXTRA per (table, column); a column left out reads as ''.
         self.extras = extras or {}
         self.version = version
@@ -70,6 +73,10 @@ class FakeCursor:
                 (*row, "app", self.extras.get(row[:2], ""), self.version)
                 for row in rows
             ]
+        elif "referential_constraints" in sql:
+            if self.foreign_keys is None:
+                raise RuntimeError("no referential_constraints here")
+            self._current = self.foreign_keys
         elif "constraint_type = 'CHECK'" in sql:
             if self.table_checks is None:
                 raise RuntimeError("no check view here")
@@ -158,6 +165,68 @@ class TestMysqlCatalogQueries(unittest.TestCase):
         self.assertEqual(fk.columns, ("venue_id",))
         self.assertEqual(fk.target_table, "?")
         self.assertEqual(schema["users"].foreign_key_targets["venue_id"], "?")
+
+    def test_foreign_keys_read_their_targets_and_actions(self):
+        cursor = FakeCursor(
+            columns=[
+                ("users", "venue_id", "int", "YES", None),
+                ("users", "org", "int", "YES", None),
+                ("venues", "id", "int", "NO", None),
+            ],
+            constraints=[("users", "FOREIGN KEY", "fk_venue", "venue_id")],
+            foreign_keys=[
+                (
+                    "users",
+                    "fk_venue",
+                    "venue_id",
+                    "Venues",
+                    "id",
+                    "CASCADE",
+                    "RESTRICT",
+                ),
+                ("users", "fk_venue", "org", "Venues", "org", "CASCADE", "RESTRICT"),
+            ],
+        )
+        schema = self.read(cursor)
+        fk = schema["users"].foreign_keys["fk_venue"]
+        self.assertEqual(fk.columns, ("venue_id", "org"))
+        self.assertEqual(fk.target_table, "venues")
+        self.assertEqual(fk.target_columns, ("id", "org"))
+        self.assertEqual((fk.on_delete, fk.on_update), ("CASCADE", "RESTRICT"))
+        self.assertEqual(schema["venues"].foreign_keys, {})
+
+    def test_restrict_and_no_action_compare_equal(self):
+        from sustained.schema import ForeignKey
+
+        model = make_model(
+            "RestrictUser",
+            "users",
+            {"id": Integer(primary_key=True), "venue_id": Integer()},
+        )
+        model.tableConstraints = [ForeignKey("fk_venue", "venue_id", "venues.id")]
+        cursor = FakeCursor(
+            columns=[
+                ("users", "id", "int", "NO", None),
+                ("users", "venue_id", "int", "YES", None),
+            ],
+            constraints=[
+                ("users", "PRIMARY KEY", "PRIMARY", "id"),
+                ("users", "FOREIGN KEY", "fk_venue", "venue_id"),
+            ],
+            foreign_keys=[
+                (
+                    "users",
+                    "fk_venue",
+                    "venue_id",
+                    "venues",
+                    "id",
+                    "RESTRICT",
+                    "RESTRICT",
+                )
+            ],
+        )
+        diff = diff_schema(FakeConnection(cursor), [model], dialect=Dialects.MYSQL)
+        self.assertEqual(diff.changed_foreign_keys, [])
 
     def test_an_enum_column_reports_its_values(self):
         cursor = FakeCursor(

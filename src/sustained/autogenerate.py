@@ -757,16 +757,25 @@ def _diff_indexes(
         diff.extra_indexes.append((model.tableName or "", name, actual_index))
 
 
-def _fk_action(action: Optional[str]) -> str:
-    """An action name compared with the engine's implied NO ACTION."""
-    return "NO ACTION" if action is None else action.upper()
+def _fk_action(action: Optional[str], compiler: Optional["Compiler"] = None) -> str:
+    """
+    An action name compared with the engine's implied NO ACTION, folded
+    the way the engine folds it.
+    """
+    name = "NO ACTION" if action is None else action.upper()
+    return name if compiler is None else compiler.equivalent_fk_action(name)
 
 
-def _fk_matches(declared: ForeignKey, actual: IntrospectedForeignKey) -> bool:
+def _fk_matches(
+    declared: ForeignKey,
+    actual: IntrospectedForeignKey,
+    compiler: Optional["Compiler"] = None,
+) -> bool:
     """
     Whether a declared foreign key and the database's row agree. The
     target and the actions only count when the engine's catalog reports
     them: a '?' target says the read cannot tell, not that they differ.
+    The compiler, when given, folds actions its engine treats as one.
     """
     if tuple(c.lower() for c in declared.columns) != actual.columns:
         return False
@@ -778,8 +787,10 @@ def _fk_matches(declared: ForeignKey, actual: IntrospectedForeignKey) -> bool:
         tuple(c.lower() for c in declared.target_columns) != actual.target_columns
     ):
         return False
-    return _fk_action(declared.on_delete) == _fk_action(actual.on_delete) and (
-        _fk_action(declared.on_update) == _fk_action(actual.on_update)
+    return _fk_action(declared.on_delete, compiler) == _fk_action(
+        actual.on_delete, compiler
+    ) and _fk_action(declared.on_update, compiler) == _fk_action(
+        actual.on_update, compiler
     )
 
 
@@ -888,7 +899,7 @@ def _diff_declared_constraints(
             else:
                 diff.new_foreign_keys.append((model, fk))
         for fk, actual_fk in fk_pairs:
-            if _fk_matches(fk, actual_fk):
+            if _fk_matches(fk, actual_fk, compiler):
                 continue
             if fixed:
                 diff.constraint_notes.append(
