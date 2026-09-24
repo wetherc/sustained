@@ -617,7 +617,7 @@ def on_error(connection, migration_id, error):
 
 ## Recover from a failed migration
 
-Sustained records a failed attempt, and validation then blocks the next run.
+A failed migration leaves partial changes behind only when nothing rolled them back. On an engine with transactional DDL, such as SQLite, Postgres, DuckDB, or SQL Server, a failed migration rolls back as a whole and Sustained writes no row, so you fix the migration and run `migrate` again. Sustained writes a failed-attempt row when the migration has `transactional=False` or the engine commits each DDL statement as it runs, as MySQL and Athena do. Validation then blocks the next run.
 
 ```console
 $ sustained validate

@@ -61,7 +61,7 @@ The tracking table records the migration id, a sequence number that fixes the ap
 - An applied migration was edited after it ran (its checksum changed).
 - An applied id is not registered with this migrator.
 - A pending migration is ordered before an applied one.
-- A failed attempt is on record. A failed `up` writes that row, and so does a failed `down` that nothing rolled back. `down()` refuses to run while such a row exists.
+- A failed attempt is on record. A failed `up` or `down` writes that row only when nothing rolled it back: in a migration with `transactional=False`, or on an engine without transactional DDL such as MySQL or Athena. `down()` refuses to run while such a row exists.
 
 ```python
 migrator.validate()                     # same checks, on demand
