@@ -23,6 +23,14 @@ class PrestoCompiler(Compiler):
     def parenthesized_set_members(self) -> bool:
         return True
 
+    def compile_is_boolean(self, column_sql: str, operator: str, value: bool) -> str:
+        # Trino has no IS TRUE. IS NOT DISTINCT FROM gives the same answer,
+        # a NULL column included.
+        distinct = (
+            "IS DISTINCT FROM" if operator == "IS NOT" else "IS NOT DISTINCT FROM"
+        )
+        return f"{column_sql} {distinct} {self.compile_boolean(value)}"
+
     def validate_column_def(self, column: "ColumnDef") -> None:
         if column.type_name == "ENUM":
             from sustained.exceptions import DialectError

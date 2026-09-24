@@ -323,6 +323,12 @@ class ConditionalClauseBuilder(ABC):
                         quoted_col, ctx.compiler.format_operand(val, ctx), operator
                     )
 
+            elif operator in ("IS", "IS NOT") and isinstance(val, bool):
+                truth = val
+
+                def render(ctx: RenderContext) -> str:
+                    return ctx.compiler.compile_is_boolean(quoted_col, operator, truth)
+
             else:
 
                 def render(ctx: RenderContext) -> str:

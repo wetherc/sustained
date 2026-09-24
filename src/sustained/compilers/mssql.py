@@ -188,6 +188,14 @@ class MssqlCompiler(Compiler):
         # T-SQL has no boolean literals; BIT columns compare against 1 and 0.
         return "1" if value else "0"
 
+    def compile_is_boolean(self, column_sql: str, operator: str, value: bool) -> str:
+        # T-SQL has no IS TRUE. The NULL test keeps the result two-valued,
+        # as IS is, so NOT around the predicate keeps the NULL rows out.
+        bit = self.compile_boolean(value)
+        if operator == "IS":
+            return f"({column_sql} IS NOT NULL AND {column_sql} = {bit})"
+        return f"({column_sql} IS NULL OR {column_sql} <> {bit})"
+
     def compile_limit_offset(
         self,
         limit: Optional[int],

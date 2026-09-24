@@ -428,6 +428,15 @@ class Compiler:
     def compile_boolean(self, value: bool) -> str:
         return "TRUE" if value else "FALSE"
 
+    def compile_is_boolean(self, column_sql: str, operator: str, value: bool) -> str:
+        """
+        Renders `column IS TRUE`, `IS NOT FALSE`, and the other two forms.
+        The truth value is written as a keyword, because `IS ?` with a
+        bound value is a syntax error on Postgres and DuckDB. A NULL column
+        reads as neither TRUE nor FALSE.
+        """
+        return f"{column_sql} {operator} {self.compile_boolean(value)}"
+
     def compile_upsert_statement(
         self,
         table_sql: str,

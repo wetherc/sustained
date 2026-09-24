@@ -172,7 +172,7 @@ Errors from the `where` family:
 | `IS` or `IS NOT` with a value other than `None`, `True`, or `False` | `ValueError` |
 | A `whereRaw` marker count that does not match the parameter count | `ValueError` |
 
-The operator allowlist is `=`, `!=`, `<>`, `<`, `<=`, `>`, `>=`, `LIKE`, `NOT LIKE`, `ILIKE`, `NOT ILIKE`, `IS`, and `IS NOT`. Comparing to `None` with `=` or `!=` renders `IS NULL` or `IS NOT NULL`. `ILIKE` is native on Postgres and DuckDB and compiles to `LOWER(col) LIKE LOWER(pattern)` everywhere else, so `ILIKE` never raises.
+The operator allowlist is `=`, `!=`, `<>`, `<`, `<=`, `>`, `>=`, `LIKE`, `NOT LIKE`, `ILIKE`, `NOT ILIKE`, `IS`, and `IS NOT`. Comparing to `None` with `=` or `!=` renders `IS NULL` or `IS NOT NULL`. `IS` or `IS NOT` with `True` or `False` writes the truth value into the SQL rather than binding it, because `IS ?` is a syntax error on Postgres and DuckDB. Presto and Athena render `IS NOT DISTINCT FROM TRUE` and `IS DISTINCT FROM TRUE`, because Trino has no `IS TRUE`. MSSQL has no `IS TRUE` either and renders `(col IS NOT NULL AND col = 1)` for `IS True` and `(col IS NULL OR col <> 1)` for `IS NOT True`, so a NULL row reads as neither value on every dialect. `ILIKE` is native on Postgres and DuckDB and compiles to `LOWER(col) LIKE LOWER(pattern)` everywhere else, so `ILIKE` never raises.
 
 ## Grouping and window filters
 

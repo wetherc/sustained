@@ -111,6 +111,36 @@ class ColumnTypeTests:
         finally:
             model.unbind()
 
+    def test_is_true_and_is_false_filter_a_boolean_column(self):
+        model = self.typed_model()
+        model.bind(self.connection)
+        try:
+            self.migrator().up(models=[model])
+            model.query().insert(
+                [
+                    {"id": 1, "name": "on", "active": True},
+                    {"id": 2, "name": "off", "active": False},
+                    {"id": 3, "name": "unset", "active": None},
+                ]
+            ).run()
+            expected = {
+                ("IS", True): [1],
+                ("IS", False): [2],
+                ("IS NOT", True): [2, 3],
+                ("IS NOT", False): [1, 3],
+            }
+            for (operator, value), ids in expected.items():
+                with self.subTest(operator=operator, value=value):
+                    rows = (
+                        model.query()
+                        .where("active", operator, value)
+                        .orderBy("id")
+                        .run()
+                    )
+                    self.assertEqual(ids, [row.id for row in rows])
+        finally:
+            model.unbind()
+
     def test_an_up_down_up_cycle_rebuilds_the_same_schema(self):
         model = self.typed_model()
         model.bind(self.connection)
