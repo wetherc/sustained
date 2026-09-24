@@ -68,6 +68,7 @@ from sustained.migrations import (
     _render_elements,
     _restore_migration,
     _reversal_provable,
+    _scratch_rehearsal_keys,
     _skipped_results,
     _step_elements,
     _stored_steps,
@@ -366,6 +367,22 @@ class AsyncMigrator:
             (key, outcome, datetime.now(timezone.utc).isoformat()),
         )
         await self._adapter.commit()
+
+    async def record_scratch_rehearsal(self, results: Rehearsal) -> Optional[str]:
+        """
+        Writes the rows a passing scratch rehearsal proves on this
+        database and returns the full run's key, or None when nothing was
+        written. Mirrors Migrator.record_scratch_rehearsal().
+        """
+        keys = _scratch_rehearsal_keys(
+            await self.applied_records(),
+            await self.pending(),
+            results,
+            self._compiler,
+        )
+        for key in keys:
+            await self.record_rehearsal(key)
+        return keys[0] if keys else None
 
     async def rehearsal_outcome(self, key: str) -> Optional[str]:
         """

@@ -728,14 +728,13 @@ The scratch database is usually empty, so the rehearsal replays the whole histor
 
 The rehearsal row belongs on the database `migrate` will read, not on the throwaway one, so the CLI writes it there after the scratch run passes. The key is computed against the real database's history and pending set. It is written only when the scratch run applied every migration pending on the real database; otherwise the output says the row was not recorded. Rows go in for the shorter target sets too, the same ones a real rehearsal records, so `migrate --target` reads a row after a scratch run. A scratch rehearsal cannot cover a generated migration, because the diff it runs against the throwaway schema is not the diff the real run will produce.
 
-Through the API, `rehearse(scratch=True)` writes nothing at all. Take the key off the result and record it yourself on a migrator bound to the real database:
+Through the API, `rehearse(scratch=True)` writes nothing at all. Pass the result to `record_scratch_rehearsal()` on a migrator bound to the real database. The CLI makes the same call, so it writes the same rows, the shorter target sets included:
 
 ```python
 rehearsal = scratch_migrator.rehearse(scratch=True)
-if rehearsal.ok:
-    real_migrator.record_rehearsal(rehearsal_key(
-        real_migrator.applied_records(), real_migrator.pending()
-    ))
+key = real_migrator.record_scratch_rehearsal(rehearsal)
+if key is None:
+    ...  # the rehearsal failed or did not cover every pending migration
 ```
 
 In Python, `migrator.rehearse()` returns a `Rehearsal`: a list of `RehearsalResult(id, up_ok, down_ok, error, landed, reversed)` with `key`, `recorded`, and `ok` on it. `up_ok` is `None` for a migration with `transactional=False`, which the rehearsal leaves out. `down_ok` is `None` when nothing was proved, and `error` then says why. `landed` and `reversed` follow the same rule as the JSON output: `None` not checked, `[]` proved, a list of lines when it failed. Pass `rehearse(models=[User, Show])` to rehearse the model diff too, and `rehearse(scratch=True)` for a connection to a database you can throw away. `AsyncMigrator.rehearse()` is the same on an adapter, `models` included.

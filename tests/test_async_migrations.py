@@ -953,6 +953,19 @@ class TestAsyncRehearsalRows(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("gate_old", table_names(self.conn))
         self.assertNotIn("gate_new", table_names(self.conn))
 
+    async def test_a_scratch_rehearsal_records_on_the_real_database(self):
+        scratch = sqlite3.connect(":memory:", check_same_thread=False)
+        self.addCleanup(scratch.close)
+        scratch.execute("CREATE TABLE gate_old (id INTEGER)")
+        scratch_migrator = AsyncMigrator(DbApiAsyncAdapter(scratch), [self.drop])
+        rehearsal = await scratch_migrator.rehearse(scratch=True)
+        self.assertTrue(rehearsal.ok)
+        migrator = AsyncMigrator(self.adapter, [self.drop])
+        key = await migrator.record_scratch_rehearsal(rehearsal)
+        self.assertIsNotNone(key)
+        self.assertEqual(await migrator.up(), ["001_drop"])
+        self.assertIsNone(await migrator.record_scratch_rehearsal(rehearsal))
+
     async def test_a_key_recorded_by_the_sync_migrator_is_accepted(self):
         from sustained.migrations import Migrator, rehearsal_key
 

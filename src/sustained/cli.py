@@ -77,7 +77,6 @@ from sustained.migrations import (
     Migrator,
     Rehearsal,
     RehearsalResult,
-    _destructive_prefix_keys,
     migration_sql,
     rehearsal_failed,
     rehearsal_key,
@@ -589,45 +588,6 @@ def _rehearsal_json(
     )
 
 
-def _record_scratch_rehearsal_row(
-    migrator: Migrator, results: Rehearsal
-) -> Tuple[Optional[str], Optional[str]]:
-    """
-    Writes the row a passing scratch rehearsal earned onto the real
-    database, where migrate will look for it. Returns the key and the
-    line to print about it, either of which may be None.
-
-    The scratch run starts from its own schema, so the key is computed
-    against the real database's applied history and pending set. Nothing
-    is written when the scratch run did not run every pending migration,
-    since the row would then cover statements nothing proved.
-
-    A row also goes in for every destructive prefix of the versioned
-    pending list, the keys a `migrate --target` reads. The scratch run
-    applied each of those prefixes on its way up and took them back on
-    the way down, so it proved them too, and a real rehearsal records
-    them the same way.
-    """
-    pending = migrator.pending()
-    if not pending:
-        return None, None
-    # A skipped migration (up_ok is None) runs outside a transaction and
-    # cannot be rehearsed; it counts as covered here the same way a real
-    # rehearsal's row covers it.
-    proved = {r.id for r in results if r.up_ok is not False}
-    if any(m.id not in proved for m in pending):
-        return None, (
-            "rehearsal row not recorded: the scratch run did not cover every "
-            "pending migration"
-        )
-    records = migrator.applied_records()
-    key = rehearsal_key(records, pending)
-    migrator.record_rehearsal(key)
-    for prefix_key in _destructive_prefix_keys(records, pending, migrator.compiler):
-        migrator.record_rehearsal(prefix_key)
-    return key, "rehearsal row recorded"
-
-
 def _cmd_rehearse(
     migrator: Migrator, args: argparse.Namespace, config: ModuleType
 ) -> int:
@@ -650,9 +610,15 @@ def _cmd_rehearse(
             _close_quietly(connection)
         key, recorded = results.key, False
         if results.ok:
-            target_key, note = _record_scratch_rehearsal_row(migrator, results)
-            if target_key is not None:
-                key, recorded = target_key, True
+            recorded_key = migrator.record_scratch_rehearsal(results)
+            if recorded_key is not None:
+                key, recorded = recorded_key, True
+                note = "rehearsal row recorded"
+            elif migrator.pending():
+                note = (
+                    "rehearsal row not recorded: the scratch run did not cover "
+                    "every pending migration"
+                )
     if args.json:
         _rehearsal_json(results, scratch, recorded, key)
         return 0 if results.ok else 1

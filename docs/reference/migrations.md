@@ -264,7 +264,14 @@ rehearsed(key) -> bool
 
 Whether a passing rehearsal covers the key.
 
-A passing `rehearse()` records its own row and returns the key on the result. It also records a row for each shorter run a `target` would produce that removes data, and for each run without a target that could follow those targeted runs, because the rehearsal applied and reverted those statements on its way through. `rehearse(scratch=True)` records nothing, because the row belongs on the database the next run reads, so record that row there yourself with `record_rehearsal()`.
+```python
+record_scratch_rehearsal(results) -> str | None
+```
+{: .sig #record_scratch_rehearsal}
+
+Writes the rows that a passing `rehearse(scratch=True)` proved onto the database this migrator is bound to, and returns the key of the full run. The keys come from this database's applied history and pending set. They are the same keys a passing `rehearse()` on this database records, so a targeted `up()` reads a row too. It returns `None` and writes nothing when the rehearsal failed, when nothing is pending, or when the scratch run did not run every migration pending here. Added in 2.25.0.
+
+A passing `rehearse()` records its own row and returns the key on the result. It also records a row for each shorter run a `target` would produce that removes data, and for each run without a target that could follow those targeted runs, because the rehearsal applied and reverted those statements on its way through. `rehearse(scratch=True)` records nothing, because the row belongs on the database the next run reads, so pass its result to `record_scratch_rehearsal()` on a migrator bound to that database.
 
 `up()` reads a rehearsal row before it applies any statement that removes data, and raises `RehearsalRequired` when no row covers the content. A callable step renders no SQL, so it never triggers the check.
 
@@ -482,6 +489,7 @@ Every method is a coroutine:
 - `down`
 - `down_to`
 - `record_rehearsal`
+- `record_scratch_rehearsal`
 - `rehearsal_outcome`
 - `rehearsed`
 - `script`

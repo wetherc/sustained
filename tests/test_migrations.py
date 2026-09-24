@@ -2073,6 +2073,50 @@ class TestDestructiveGate(MigrationTestCase):
         # ends with the repeatable, the tail the rehearsal ran.
         self.assertEqual(migrator.up(), ["002_trim", "seed"])
 
+    def scratch_rehearsal(self, migrations):
+        """A passing rehearsal of the migrations on an empty scratch database."""
+        scratch = sqlite3.connect(":memory:")
+        self.addCleanup(scratch.close)
+        scratch.execute("CREATE TABLE gate_old (id INTEGER)")
+        return Migrator(scratch, migrations).rehearse(scratch=True)
+
+    def test_a_scratch_rehearsal_records_on_the_real_database(self):
+        later = Migration("002_add", up="CREATE TABLE gate_new (id INTEGER)")
+        migrations = [self.drop, later]
+        rehearsal = self.scratch_rehearsal(migrations)
+        self.assertTrue(rehearsal.ok)
+        self.assertFalse(rehearsal.recorded)
+        migrator = Migrator(self.conn, migrations)
+        key = migrator.record_scratch_rehearsal(rehearsal)
+        self.assertEqual(key, rehearsal_key([], migrations))
+        self.assertTrue(migrator.rehearsed(key))
+        # The prefix rows go in too, so a targeted run reads its own row.
+        self.assertEqual(migrator.up(target="001_drop"), ["001_drop"])
+        self.assertEqual(migrator.up(), ["002_add"])
+
+    def test_a_failed_scratch_rehearsal_records_nothing(self):
+        broken = Migration("001_drop", up=["DROP TABLE gate_old", "NOT SQL"])
+        rehearsal = self.scratch_rehearsal([broken])
+        self.assertFalse(rehearsal.ok)
+        migrator = Migrator(self.conn, [broken])
+        self.assertIsNone(migrator.record_scratch_rehearsal(rehearsal))
+        with self.assertRaises(RehearsalRequired):
+            migrator.up()
+
+    def test_a_scratch_rehearsal_that_misses_a_pending_migration_records_nothing(
+        self,
+    ):
+        rehearsal = self.scratch_rehearsal([])
+        migrator = Migrator(self.conn, [self.drop])
+        self.assertIsNone(migrator.record_scratch_rehearsal(rehearsal))
+        self.assertIsNone(migrator.rehearsal_outcome(rehearsal_key([], [self.drop])))
+
+    def test_a_scratch_rehearsal_with_nothing_pending_records_nothing(self):
+        migrator = Migrator(self.conn, [])
+        self.assertIsNone(
+            migrator.record_scratch_rehearsal(self.scratch_rehearsal([self.drop]))
+        )
+
     def test_a_rehearsal_with_models_also_covers_the_registered_set(self):
         migrator = Migrator(self.conn, [self.drop])
         rehearsal = migrator.rehearse(models=[MigUser])

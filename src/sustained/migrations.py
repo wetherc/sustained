@@ -575,6 +575,33 @@ def _destructive_prefix_keys(
     return keys
 
 
+def _scratch_rehearsal_keys(
+    applied: Sequence[AppliedRecord],
+    pending: Sequence[Migration],
+    results: "Rehearsal",
+    compiler: Optional["Compiler"] = None,
+) -> List[str]:
+    """
+    The keys a passing scratch rehearsal proves on the real database: the
+    full run's key first, then the destructive prefix keys. Empty when
+    the rehearsal failed, nothing is pending, or the scratch run did not
+    run every pending migration, since a row would then cover statements
+    nothing proved.
+
+    A migration the rehearsal left out (up_ok is None) runs outside a
+    transaction and cannot be rehearsed, so it counts as covered, the
+    same way a real rehearsal's row covers it.
+    """
+    if not results.ok or not pending:
+        return []
+    proved = {r.id for r in results if r.up_ok is not False}
+    if any(m.id not in proved for m in pending):
+        return []
+    key = rehearsal_key(applied, pending)
+    prefixes = _destructive_prefix_keys(applied, pending, compiler)
+    return [key] + [k for k in prefixes if k != key]
+
+
 def run_statements(
     run: Sequence[Migration], compiler: Optional["Compiler"] = None
 ) -> List["MigrationStatement"]:
@@ -1808,8 +1835,9 @@ class Migrator:
         for statements applied with unrehearsed=True.
 
         A rehearsal on a scratch database records nothing on its own: the
-        row belongs on the database the next run will read. Call this
-        on a migrator bound to that database once the scratch run passes.
+        row belongs on the database the next run will read. Pass its
+        result to record_scratch_rehearsal() on a migrator bound to that
+        database.
         """
         if outcome not in (REHEARSAL_PASSED, REHEARSAL_FAILED, REHEARSAL_OVERRIDE):
             raise ValueError(
@@ -1831,6 +1859,27 @@ class Migrator:
             (key, outcome, datetime.now(timezone.utc).isoformat()),
         )
         self._commit_quietly()
+
+    def record_scratch_rehearsal(self, results: Rehearsal) -> Optional[str]:
+        """
+        Writes the rows a passing rehearsal on a scratch database proves,
+        on the database this migrator is bound to, and returns the key of
+        the full run. Returns None and writes nothing when the rehearsal
+        failed, nothing is pending here, or the scratch run did not run
+        every migration pending here.
+
+        The scratch database starts from its own schema, so the keys are
+        computed against this database's applied history and pending set.
+        A row also goes in for each shorter run a `target` would produce
+        that removes data, the same rows a rehearsal on this database
+        records, so a targeted up() finds its row too.
+        """
+        keys = _scratch_rehearsal_keys(
+            self.applied_records(), self.pending(), results, self._compiler
+        )
+        for key in keys:
+            self.record_rehearsal(key)
+        return keys[0] if keys else None
 
     def rehearsal_outcome(self, key: str) -> Optional[str]:
         """
