@@ -159,6 +159,14 @@ class JoinClauseBuilder:
         "fullOuter": "FULL OUTER JOIN",
         "cross": "CROSS JOIN",
     }
+    # The join to the link table of a many-to-many relation, by the join
+    # type asked for. A join type not listed takes an INNER JOIN.
+    _LINK_JOIN_TYPES = {
+        "LEFT JOIN": "LEFT JOIN",
+        "LEFT OUTER JOIN": "LEFT OUTER JOIN",
+        "FULL JOIN": "LEFT JOIN",
+        "FULL OUTER JOIN": "LEFT OUTER JOIN",
+    }
 
     def __init__(
         self, model_class: Type["Model"], compiler: Optional["Compiler"] = None
@@ -411,8 +419,11 @@ class JoinClauseBuilder:
         self._link_tables.add(through_table_name)
 
         on_clause1 = f"{from_col} = {quoted_through_table}.{through_from_key}"
-        # The join to the through table is always an INNER JOIN.
-        join_clause1 = f"INNER JOIN {through_table_part} ON {on_clause1}"
+        # A base row with no link row drops at an INNER JOIN to the link
+        # table, so a left or full join takes a LEFT JOIN there. A right
+        # join keeps every far row at its own hop, so INNER covers it.
+        link_join_type = self._LINK_JOIN_TYPES.get(join_type, "INNER JOIN")
+        join_clause1 = f"{link_join_type} {through_table_part} ON {on_clause1}"
         self._joins.append(join_clause1)
 
         # Second join: from the 'through' table to the final related model's table.

@@ -1,3 +1,4 @@
+import sqlite3
 import unittest
 from typing import Dict
 
@@ -126,8 +127,46 @@ class TestJoinBuilder(unittest.TestCase):
         query = self.Person.query().leftJoinRelated("movies")
         self.assertEqual(
             str(query),
-            "SELECT * FROM persons INNER JOIN persons_movies ON persons.id = persons_movies.personId LEFT JOIN movies ON persons_movies.movieId = movies.id",
+            "SELECT * FROM persons LEFT JOIN persons_movies ON persons.id = persons_movies.personId LEFT JOIN movies ON persons_movies.movieId = movies.id",
         )
+
+    def test_through_join_link_hop_follows_the_join_type(self):
+        cases = {
+            "leftOuterJoinRelated": ("LEFT OUTER JOIN", "LEFT OUTER JOIN"),
+            "fullJoinRelated": ("LEFT JOIN", "FULL JOIN"),
+            "fullOuterJoinRelated": ("LEFT OUTER JOIN", "FULL OUTER JOIN"),
+            "rightJoinRelated": ("INNER JOIN", "RIGHT JOIN"),
+            "joinRelated": ("INNER JOIN", "INNER JOIN"),
+        }
+        for method, (link_join, far_join) in cases.items():
+            with self.subTest(method=method):
+                query = getattr(self.Person.query(), method)("movies")
+                self.assertEqual(
+                    str(query),
+                    f"SELECT * FROM persons {link_join} persons_movies "
+                    "ON persons.id = persons_movies.personId "
+                    f"{far_join} movies ON persons_movies.movieId = movies.id",
+                )
+
+    def test_left_join_through_keeps_rows_with_no_link(self):
+        conn = sqlite3.connect(":memory:")
+        conn.executescript(
+            "CREATE TABLE persons (id INTEGER, name TEXT);"
+            "CREATE TABLE movies (id INTEGER, title TEXT);"
+            'CREATE TABLE persons_movies ("personId" INTEGER, "movieId" INTEGER);'
+            "INSERT INTO persons VALUES (1, 'Ann'), (2, 'Bo');"
+            "INSERT INTO movies VALUES (10, 'Heat');"
+            "INSERT INTO persons_movies VALUES (1, 10);"
+        )
+        query = (
+            self.Person.query()
+            .select("persons.name", "movies.title")
+            .leftJoinRelated("movies")
+            .orderBy("persons.name")
+        )
+        rows = conn.execute(str(query)).fetchall()
+        self.assertEqual(rows, [("Ann", "Heat"), ("Bo", None)])
+        conn.close()
 
     def test_through_join_with_alias(self):
         query = self.Person.query().innerJoinRelated("movies", alias="m")
@@ -147,7 +186,7 @@ class TestJoinBuilder(unittest.TestCase):
             "SELECT * FROM persons "
             "INNER JOIN persons_movies ON persons.id = persons_movies.personId "
             "INNER JOIN movies AS first ON persons_movies.movieId = first.id "
-            "INNER JOIN persons_movies AS second_persons_movies "
+            "LEFT JOIN persons_movies AS second_persons_movies "
             "ON persons.id = second_persons_movies.personId "
             "LEFT JOIN movies AS second ON second_persons_movies.movieId = second.id",
         )

@@ -132,12 +132,12 @@ Show.query().select('shows.title', 'v.name').innerJoinRelated('venue', alias='v'
 
 ### What a through join renders
 
-Joining a `ManyToManyRelation` produces two joins. The hop to the link table is always an `INNER JOIN`, and the join type you asked for applies to the far table:
+Joining a `ManyToManyRelation` produces two joins. The join type you asked for applies to the far table. The hop to the link table is a `LEFT JOIN` for a left or full join, so an artist with no link row stays in the result, and an `INNER JOIN` for every other type:
 
 ```python
 Artist.query().select('artists.name', 'shows.title').leftJoinRelated('shows')
 # SELECT artists.name, shows.title FROM artists
-# INNER JOIN show_artists ON artists.id = show_artists.artist_id
+# LEFT JOIN show_artists ON artists.id = show_artists.artist_id
 # LEFT JOIN shows ON show_artists.show_id = shows.id
 ```
 
@@ -152,7 +152,7 @@ When you join through the same link table a second time, pass an `alias`. The se
 # SELECT * FROM artists
 # INNER JOIN show_artists ON artists.id = show_artists.artist_id
 # INNER JOIN shows AS booked ON show_artists.show_id = booked.id
-# INNER JOIN show_artists AS other_show_artists ON artists.id = other_show_artists.artist_id
+# LEFT JOIN show_artists AS other_show_artists ON artists.id = other_show_artists.artist_id
 # LEFT JOIN shows AS other ON other_show_artists.show_id = other.id
 ```
 

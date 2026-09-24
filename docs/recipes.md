@@ -287,7 +287,7 @@ Artist.query().select('artists.name', 'shows.title').innerJoinRelated('shows')
 # INNER JOIN shows ON show_artists.show_id = shows.id
 ```
 
-The first hop is always an `INNER JOIN`. The join type you name applies to the second hop, which is where it changes the result.
+The join type you name applies to the second hop. A left or full join makes the first hop a `LEFT JOIN`, so an artist with no link row stays in the result. Every other join type makes the first hop an `INNER JOIN`.
 
 ## Join the same table twice
 
