@@ -812,9 +812,7 @@ async def _run_query_on(
         return models
 
     if use_executemany:
-        template = query.clone()
-        template._insert_rows = [query._insert_rows[0]]
-        sql, _ = template.to_sql()
+        sql = query._first_row_sql()
         column_names = list(query._insert_rows[0].keys())
         prepared = [
             query._compiler.prepare_execution(sql, tuple(row[c] for c in column_names))

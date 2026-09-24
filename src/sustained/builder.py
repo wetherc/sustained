@@ -919,6 +919,19 @@ class QueryBuilder:
             for value in row.values()
         )
 
+    def _first_row_sql(self) -> str:
+        """
+        The INSERT statement for the first row alone, which executemany
+        binds once per row. The copy is shallow, since rendering reads the
+        query and never changes it. A deep copy would duplicate every row
+        only to keep the first.
+        """
+        import copy
+
+        template = copy.copy(self)
+        template._insert_rows = self._insert_rows[:1]
+        return template.to_sql()[0]
+
     def insert_from(
         self, columns: Optional[List[str]], query: "QueryBuilder"
     ) -> "QueryBuilder":
@@ -1366,9 +1379,7 @@ class QueryBuilder:
         if use_executemany:
             # Render a single-row template and bind each row's values, so
             # large inserts go through the driver's batch path.
-            template = self.clone()
-            template._insert_rows = [self._insert_rows[0]]
-            sql, _ = template.to_sql()
+            sql = self._first_row_sql()
             columns = list(self._insert_rows[0].keys())
             prepared = [
                 self._compiler.prepare_execution(sql, tuple(row[c] for c in columns))
