@@ -204,9 +204,9 @@ On the dialects with a named type, `CREATE TYPE` renders before the table that u
 
 ### Changing an enum's values
 
-Appending a value to the model generates the change: `ALTER TYPE ... ADD VALUE` on Postgres, a restated value list through `MODIFY COLUMN` on MySQL, and a re-created CHECK constraint on the check-strategy dialects. On Postgres the generated migration is irreversible, because Postgres has no `DROP VALUE`; its `down` is `None`. PostgreSQL 12 and later roll `ADD VALUE` back inside a transaction, so `rehearse` can prove it, and the [support policy](./support) states that floor. DuckDB cannot append to a type in place and refuses.
+Appending a value to the model generates the change: `ALTER TYPE ... ADD VALUE` on Postgres, a restated value list through `MODIFY COLUMN` on MySQL, and a re-created CHECK constraint on the check-strategy dialects. The diff compares the values the check permits with the declared ones, in any order. SQL Server drops the check and adds the new one, around any change to the `VARCHAR` length, and the down step puts the old check back. SQLite rebuilds the table with the new check, which has no down step. On those two dialects a removed value generates the same way, and the new check refuses the migration while a row still holds the value. On Postgres the generated migration is irreversible, because Postgres has no `DROP VALUE`; its `down` is `None`. PostgreSQL 12 and later roll `ADD VALUE` back inside a transaction, so `rehearse` can prove it, and the [support policy](./support) states that floor. DuckDB cannot append to a type in place and refuses.
 
-If you remove or reorder values, generation refuses and gives a recipe instead: create a new type, move the column over with a `USING` cast, then drop the old type. Converting an existing `VARCHAR` column to an enum works through the same `type_casts` hints as any other Postgres type change.
+If you remove or reorder values on Postgres, generation refuses and gives a recipe instead: create a new type, move the column over with a `USING` cast, then drop the old type. Converting an existing `VARCHAR` column to an enum works through the same `type_casts` hints as any other Postgres type change.
 
 ## Column comments
 

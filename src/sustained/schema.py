@@ -641,6 +641,7 @@ def build_create_table_sql(
     constraints: Optional[Sequence[TableConstraint]] = None,
     defer_foreign_keys: bool = False,
     collations: Optional[Mapping[str, str]] = None,
+    name_table: Optional[str] = None,
 ) -> str:
     """
     Renders a CREATE TABLE statement from typed column definitions using
@@ -650,6 +651,9 @@ def build_create_table_sql(
     constraints the columns themselves imply. `collations` maps a
     lowercased column name to the collating sequence written after its
     definition, which a SQLite rebuild reads off the old table.
+    `name_table` is the table that implied constraint names derive from
+    when the statement creates the table under another name, as the copy
+    a rebuild renames into place does.
 
     With defer_foreign_keys, no foreign key is rendered at all: neither
     the REFERENCES shorthand on a column nor a declared ForeignKey. The
@@ -699,7 +703,7 @@ def build_create_table_sql(
             )
 
     if compiler.enum_strategy() == "check":
-        table_name = bare_table_name(table_sql)
+        table_name = name_table or bare_table_name(table_sql)
         for name, col in columns.items():
             if col.type_name == "ENUM":
                 table_constraints.append(

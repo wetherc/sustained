@@ -149,6 +149,13 @@ class SchemaDiff:
         self.extra_foreign_keys: List[Tuple[str, str, IntrospectedForeignKey]] = []
         self.new_checks: List[Tuple[Type["Model"], Check]] = []
         self.changed_checks: List[Tuple[Type["Model"], Check, str]] = []
+        # An enum column on a check-strategy dialect whose CHECK permits
+        # other values than the model declares: the model, the column,
+        # the values the check permits, and its expression, or None
+        # when the check is missing.
+        self.changed_enum_checks: List[
+            Tuple[Type["Model"], str, Tuple[str, ...], Optional[str]]
+        ] = []
         self.extra_checks: List[Tuple[str, str, str]] = []
         self.constraint_notes: List[str] = []
 
@@ -170,6 +177,7 @@ class SchemaDiff:
             or self.extra_foreign_keys
             or self.new_checks
             or self.changed_checks
+            or self.changed_enum_checks
             or self.extra_checks
             or self.constraint_notes
         )
@@ -230,6 +238,12 @@ class SchemaDiff:
             )
         for model, check in self.new_checks:
             lines.append(f"check '{check.name}' on '{model.tableName}' was not added")
+        for model, name, live_values, _ in self.changed_enum_checks:
+            lines.append(
+                f"enum column '{model.tableName}.{name}' permits "
+                f"({', '.join(live_values)}), the models declare "
+                f"({', '.join(_declared_enum_values(model, name))})"
+            )
         return lines
 
     def summary(self) -> str:
@@ -273,6 +287,12 @@ class SchemaDiff:
             )
         for model, check, _ in self.changed_checks:
             lines.append(f"change check {check.name} on {model.tableName}")
+        for model, name, live_values, _ in self.changed_enum_checks:
+            lines.append(
+                f"change the values of enum column {model.tableName}.{name}: "
+                f"database permits ({', '.join(live_values)}), model declares "
+                f"({', '.join(_declared_enum_values(model, name))})"
+            )
         for table, name, _ in self.extra_foreign_keys:
             lines.append(f"drop foreign key {name} on {table} (destructive)")
         for table, name, actual, expected in self.changed_columns:
@@ -288,6 +308,13 @@ class SchemaDiff:
         for note in self.constraint_notes:
             lines.append(f"note: {note} (not auto-migrated)")
         return "\n".join(lines) if lines else "schema up to date"
+
+
+def _declared_enum_values(model: Type["Model"], name: str) -> Tuple[str, ...]:
+    """The values a model's enum column declares."""
+    values = (model.tableColumns or {})[name].enum_values
+    assert values is not None
+    return values
 
 
 def _enum_value_additions(
@@ -932,6 +959,40 @@ def _diff_declared_constraints(
             )
 
 
+def _enum_check_values(expression: str) -> Tuple[str, ...]:
+    """
+    The string literals of an enum column's CHECK expression, in order.
+    Sustained writes the check as column IN ('a', 'b'). SQL Server reads
+    it back as ([column]=N'a' OR [column]=N'b'), and the literals are
+    the values either way.
+    """
+    return tuple(
+        value.replace("''", "'")
+        for value in re.findall(r"'((?:[^']|'')*)'", expression)
+    )
+
+
+def _diff_enum_checks(
+    diff: SchemaDiff, model: Type["Model"], actual_table: IntrospectedTable
+) -> None:
+    """
+    Compares the values each enum column's CHECK permits with the values
+    the model declares, on a dialect where an enum is a checked VARCHAR.
+    A value added to the model only widens the VARCHAR when it is the
+    longest one, so without this an added value would read as no change
+    and every insert of it would fail.
+    """
+    table = bare_table_name(model.tableName or "")
+    for name, coldef in (model.tableColumns or {}).items():
+        if coldef.type_name != "ENUM" or name.lower() not in actual_table.columns:
+            continue
+        assert coldef.enum_values is not None
+        expression = actual_table.checks.get(f"ck_{table}_{name}_enum".lower())
+        live = () if expression is None else _enum_check_values(expression)
+        if expression is None or set(live) != set(coldef.enum_values):
+            diff.changed_enum_checks.append((model, name, live, expression))
+
+
 def _diff_constraints(
     compiler: "Compiler",
     diff: SchemaDiff,
@@ -944,6 +1005,8 @@ def _diff_constraints(
 
     if compiler.supports_constraints():
         _diff_declared_constraints(compiler, diff, model, actual_table, snapshot)
+        if compiler.enum_strategy() == "check" and snapshot.checks_read:
+            _diff_enum_checks(diff, model, actual_table)
 
     expected_pk = tuple(
         sorted(n.lower() for n, c in model.tableColumns.items() if c.primary_key)
@@ -1323,6 +1386,25 @@ def autogenerate(
                 fk_downs.insert(0, drop_sql)
     down_steps[0:0] = fk_downs + table_downs
 
+    # An enum check whose values changed comes off before the column
+    # changes and goes back on after them: SQL Server refuses to alter a
+    # column that a CHECK constraint names, and a longer value widens the
+    # VARCHAR in the same migration. A dialect that cannot alter in place
+    # rebuilds the table, and the rebuilt CREATE TABLE writes the check.
+    enum_check_adds: List[Tuple[Type["Model"], str]] = []
+    for model, name, _, expression in diff.changed_enum_checks:
+        if _rebuild_needed(compiler, "change a constraint"):
+            rebuild_tables[(model.tableName or "").lower()] = model
+            continue
+        if expression is not None:
+            table_sql = model._qualified_table_sql(compiler)
+            constraint = f"ck_{bare_table_name(model.tableName or '')}_{name}_enum"
+            up_steps.append(compiler.compile_drop_constraint(table_sql, constraint))
+            down_steps.insert(
+                0, compiler.compile_add_check(table_sql, constraint, expression)
+            )
+        enum_check_adds.append((model, name))
+
     # Changed columns: ALTER in place where the dialect can, otherwise
     # mark the table for a rebuild.
     def preserving_state(
@@ -1435,6 +1517,18 @@ def autogenerate(
                     )
                 ):
                     down_steps.insert(0, statement)
+
+    for model, name in enum_check_adds:
+        assert model.tableColumns is not None
+        _add_enum_check(
+            compiler,
+            up_steps,
+            down_steps,
+            model._qualified_table_sql(compiler),
+            model,
+            name,
+            model.tableColumns[name],
+        )
 
     # SQLite refuses some columns in ADD COLUMN, and the rebuilt CREATE
     # TABLE takes them. The scan runs before any column is added, so a

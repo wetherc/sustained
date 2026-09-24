@@ -164,6 +164,7 @@ def rebuild_steps(
             extras=extras,
             constraints=model.tableConstraints,
             collations=collations,
+            name_table=table,
         )
     ]
 
