@@ -878,6 +878,55 @@ class Compiler:
         """
         return ["PRAGMA foreign_keys = ON"]
 
+    def alter_column_index_scope(self) -> str:
+        """
+        Which indexes stop an ALTER COLUMN statement, so a migration
+        drops them before the statement and creates them again after.
+        One of:
+
+        - "none": the engine rebuilds its indexes itself, as Postgres
+          and MySQL do.
+        - "column": an index that contains the column, and a UNIQUE
+          constraint on it. SQL Server refuses the statement with
+          error 5074 while one is there.
+        - "table": every index on the table. DuckDB refuses a change to
+          any column of a table that has an index.
+        """
+        return "none"
+
+    def index_drop_waits_for_commit(self) -> bool:
+        """
+        Reports whether an index dropped inside a transaction still stops
+        an ALTER COLUMN statement until the transaction commits. DuckDB
+        works this way, so a migration that drops indexes around a column
+        change runs outside a transaction there.
+        """
+        return False
+
+    def alter_type_keeps_default(self) -> bool:
+        """
+        Reports whether a column keeps its default through a change of
+        its type. SQL Server keeps a default as a constraint of its own
+        and refuses to change the type of a column that has one, so the
+        default comes off before the change and goes back on after it.
+        """
+        return True
+
+    def compile_drop_column_default(self, table_sql: str, column_name: str) -> str:
+        """Renders a statement that takes a column's default off."""
+        column_sql = self.quote_ddl_identifier(column_name)
+        return f"ALTER TABLE {table_sql} ALTER COLUMN {column_sql} DROP DEFAULT"
+
+    def compile_add_column_default(
+        self, table_sql: str, column_name: str, default_sql: str
+    ) -> str:
+        """Renders a statement that gives a column a default."""
+        column_sql = self.quote_ddl_identifier(column_name)
+        return (
+            f"ALTER TABLE {table_sql} ALTER COLUMN {column_sql} "
+            f"SET DEFAULT {default_sql}"
+        )
+
     def supports_add_constraint(self) -> bool:
         """
         Reports whether the dialect can add a named constraint to a table

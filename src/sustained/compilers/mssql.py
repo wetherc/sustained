@@ -183,6 +183,35 @@ class MssqlCompiler(Compiler):
     ) -> "list[str]":
         return [self._alter_column_sql(table_sql, column_name, column)]
 
+    def alter_column_index_scope(self) -> str:
+        return "column"
+
+    def alter_type_keeps_default(self) -> bool:
+        return False
+
+    def compile_drop_column_default(self, table_sql: str, column_name: str) -> str:
+        # The engine names a default constraint itself, so the statement
+        # looks the name up and drops the constraint by it.
+        # EXEC takes a variable or literals, not a call, so the whole
+        # statement is built into the variable first.
+        drop_sql = self.format_value(f"ALTER TABLE {table_sql} DROP CONSTRAINT ")
+        return (
+            "DECLARE @sustained_default nvarchar(max); "
+            f"SELECT @sustained_default = {drop_sql} + QUOTENAME(dc.name) "
+            "FROM sys.default_constraints dc "
+            "JOIN sys.columns c ON c.object_id = dc.parent_object_id "
+            "AND c.column_id = dc.parent_column_id "
+            f"WHERE dc.parent_object_id = OBJECT_ID({self.format_value(table_sql)}) "
+            f"AND c.name = {self.format_value(column_name)}; "
+            "IF @sustained_default IS NOT NULL EXEC(@sustained_default)"
+        )
+
+    def compile_add_column_default(
+        self, table_sql: str, column_name: str, default_sql: str
+    ) -> str:
+        column_sql = self.quote_identifier(column_name)
+        return f"ALTER TABLE {table_sql} ADD DEFAULT {default_sql} FOR {column_sql}"
+
     def compile_with_keyword(self, recursive: bool) -> str:
         # T-SQL uses plain WITH for recursive CTEs.
         return "WITH"

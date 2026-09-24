@@ -99,6 +99,14 @@ class DuckDbCompiler(Compiler):
         action = "DROP NOT NULL" if column.nullable else "SET NOT NULL"
         return [f"ALTER TABLE {table_sql} ALTER COLUMN {column_sql} {action}"]
 
+    def alter_column_index_scope(self) -> str:
+        # "Cannot alter entry because there are entries that depend on
+        # it": any index on the table stops a change to any column.
+        return "table"
+
+    def index_drop_waits_for_commit(self) -> bool:
+        return True
+
     def compile_backfill(
         self,
         table_sql: str,

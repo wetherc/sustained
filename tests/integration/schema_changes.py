@@ -210,3 +210,49 @@ class SchemaChangeTests:
         migrator.up(models=[self.Widget], allow_drops=True, unrehearsed=True)
         self.assertIsNone(migrator.plan([self.Widget], allow_drops=True))
         self.assertNotIn("it_legacy", self.tables())
+
+    def test_an_indexed_column_changes_type_and_back(self):
+        # DuckDB refuses ALTER COLUMN on a table that has an index. SQL
+        # Server refuses it on a column in an index or a UNIQUE
+        # constraint, and refuses a type change on a column that has a
+        # default. The generated migration takes those off and puts them
+        # back, on the way up and on the way down.
+        from sustained.schema import BigInteger, Index
+
+        # DuckDB cannot change the type of a column with a UNIQUE
+        # constraint, and cannot drop the constraint, so that column
+        # stays out there.
+        unique = self.DIALECT != Dialects.DUCKDB
+
+        def widget(kind):
+            columns = {
+                "id": Integer(primary_key=True),
+                "size": kind(nullable=True, default=5),
+                "colour": String(20, nullable=True),
+            }
+            if unique:
+                columns["code"] = kind(nullable=True, unique=True)
+            return type(
+                "WidgetSized",
+                (Model,),
+                {
+                    "tableName": "it_widgets",
+                    "tableColumns": columns,
+                    "indexes": [
+                        Index("ix_it_size", "size"),
+                        Index("ix_it_colour", "colour"),
+                    ],
+                    "_dialect": self.DIALECT,
+                },
+            )
+
+        migrator = self.migrator()
+        migrator.up(models=[widget(Integer)])
+        self.execute("INSERT INTO it_widgets (id, size, colour) VALUES (1, 7, 'a')")
+        migrator.up(models=[widget(BigInteger)], unrehearsed=True)
+        self.assertIsNone(migrator.plan([widget(BigInteger)]))
+        if Dialects.get_compiler(self.DIALECT).rebuild_strategy() == "rebuild":
+            # A SQLite rebuild has no down step.
+            return
+        migrator.down()
+        self.assertIsNone(migrator.plan([widget(Integer)]))

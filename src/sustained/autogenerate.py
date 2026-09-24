@@ -1378,6 +1378,61 @@ def _refuse_enum_value_removal(
         )
 
 
+def _lifted_indexes(
+    compiler: "Compiler",
+    diff: SchemaDiff,
+    actual: Snapshot,
+    ignore_changed_columns: bool,
+) -> List[Tuple[str, str, IntrospectedIndex]]:
+    """
+    The indexes that come off a table while an ALTER COLUMN statement
+    changes it, as (table key, index name, index). Those are the ones
+    the compiler's alter_column_index_scope() names, on the tables whose
+    columns change type or nullability, and on the tables that gain a
+    NOT NULL column through add, backfill, and tighten. A UNIQUE
+    constraint comes off only where the engine can add it back.
+    """
+    scope = compiler.alter_column_index_scope()
+    if scope == "none":
+        return []
+    altered: Dict[str, Set[str]] = {}
+    if not ignore_changed_columns:
+        for table, name, _, _ in diff.changed_columns:
+            altered.setdefault(table.lower(), set()).add(name.lower())
+    for model, name, coldef in diff.new_columns:
+        if not coldef.nullable and coldef.default is None:
+            key = (model.tableName or "").lower()
+            altered.setdefault(key, set()).add(name.lower())
+    lifted: List[Tuple[str, str, IntrospectedIndex]] = []
+    for table_key, columns in altered.items():
+        for name, index in actual[table_key].indexes.items():
+            if index.constraint and not compiler.supports_add_constraint():
+                continue
+            if scope == "table" or columns & set(index.columns):
+                lifted.append((table_key, index.name or name, index))
+    return lifted
+
+
+def _lift_statements(
+    compiler: "Compiler",
+    table_sql: str,
+    table: IntrospectedTable,
+    name: str,
+    index: IntrospectedIndex,
+) -> Tuple[str, str]:
+    """The statements that drop one lifted index and create it again."""
+    columns = _spelled_columns(table, index)
+    if index.constraint:
+        return (
+            compiler.compile_drop_constraint(table_sql, name),
+            compiler.compile_add_unique(table_sql, name, columns),
+        )
+    return (
+        compiler.compile_drop_index(name, table_sql),
+        compiler.compile_create_index(name, table_sql, columns, index.unique),
+    )
+
+
 def _rebuild_needed(compiler: "Compiler", change: str) -> bool:
     """
     Whether a change the dialect cannot make with ALTER TABLE has to go
@@ -1578,6 +1633,29 @@ def autogenerate(
             comment=(actual_col.comment if compiler.stores_column_comments() else None),
         )
 
+    # An engine that refuses ALTER COLUMN while an index depends on the
+    # column, or on the table, gets those indexes dropped before the
+    # column changes and created again after the new columns are in.
+    # The down steps wrap the reversing statements the same way.
+    lift_drops: List[str] = []
+    lift_creates: List[str] = []
+    for table_key, index_name, lifted in _lifted_indexes(
+        compiler, diff, actual, ignore_changed_columns
+    ):
+        drop_sql, create_sql = _lift_statements(
+            compiler,
+            models_by_table[table_key]._qualified_table_sql(compiler),
+            actual[table_key],
+            index_name,
+            lifted,
+        )
+        lift_drops.append(drop_sql)
+        lift_creates.append(create_sql)
+    up_steps.extend(lift_drops)
+    down_steps[0:0] = lift_creates
+    if lift_drops and compiler.index_drop_waits_for_commit():
+        transactional = False
+
     # The state each changed column is left in by its type and
     # nullability statements, for a comment statement that restates the
     # whole column after them.
@@ -1610,12 +1688,29 @@ def autogenerate(
                     coldef, actual_col, expected_type, actual_col.nullable
                 )
                 restated_states[(table.lower(), name.lower())] = changed_state
+                # SQL Server refuses a type change on a column that has a
+                # default, so the default comes off around it both ways.
+                default_sql = actual_col.restated_default()
+                lift_default = (
+                    default_sql is not None and not compiler.alter_type_keeps_default()
+                )
+                if lift_default:
+                    up_steps.append(
+                        compiler.compile_drop_column_default(table_sql, name)
+                    )
                 up_steps.extend(
                     MigrationStatement(statement, destructive=lossy)
                     for statement in compiler.compile_alter_column_type(
                         table_sql, name, changed_state, using
                     )
                 )
+                if lift_default:
+                    assert default_sql is not None
+                    add_default = compiler.compile_add_column_default(
+                        table_sql, name, default_sql
+                    )
+                    up_steps.append(add_default)
+                    down_steps.insert(0, add_default)
                 for statement in reversed(
                     compiler.compile_alter_column_type(
                         table_sql,
@@ -1629,6 +1724,10 @@ def autogenerate(
                     )
                 ):
                     down_steps.insert(0, statement)
+                if lift_default:
+                    down_steps.insert(
+                        0, compiler.compile_drop_column_default(table_sql, name)
+                    )
             if actual_col.nullable != coldef.nullable and not coldef.primary_key:
                 if not coldef.nullable:
                     filler = (
@@ -1761,6 +1860,9 @@ def autogenerate(
         down_steps.insert(0, compiler.compile_drop_column(table_sql, name))
         _add_enum_check(compiler, up_steps, down_steps, table_sql, model, name, coldef)
         _add_foreign_key(compiler, up_steps, down_steps, table_sql, model, name, coldef)
+
+    up_steps.extend(lift_creates)
+    down_steps[0:0] = lift_drops
 
     # Comment changes. The down step writes the database's old comment
     # back. MySQL restates the whole column, so both directions restate

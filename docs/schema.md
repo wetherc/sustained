@@ -145,6 +145,18 @@ Because the guarded rebuild runs outside a transaction, a step that fails leaves
 
 Columns and indexes the models do not declare are kept through the rebuild unless you pass `allow_drops=True`. An index on an expression is invisible to introspection, so a rebuild loses it and you have to recreate it by hand.
 
+### Column changes under an index
+
+DuckDB refuses `ALTER COLUMN` on any column of a table that has an index. SQL Server refuses it on a column that an index or a `UNIQUE` constraint contains, and refuses a type change on a column that has a default. Postgres and MySQL rebuild their indexes themselves.
+
+On DuckDB and SQL Server, a generated migration therefore drops those indexes before the first column change and creates them again after the last one, from the definitions the catalog read. On DuckDB that covers every index on the table, and on SQL Server the indexes and `UNIQUE` constraints that contain a changed column. A new `NOT NULL` column that comes in through add, backfill, and tighten counts as a change on DuckDB too. On SQL Server, a type change on a column with a default drops the default before the change and adds it back after it. The engine names a default constraint itself, so the drop looks the name up in `sys.default_constraints`. The down step wraps the reversing statements the same way.
+
+DuckDB keeps a dropped index in force until the transaction commits, so a DuckDB migration that drops indexes this way is generated with `transactional=False`. A failure partway through leaves the indexes that were dropped before it gone. A rehearsal leaves such a migration out of the run.
+
+A `UNIQUE` constraint that comes off on SQL Server does so through `DROP CONSTRAINT`, so the statement carries the `destructive` label, and `migrate` asks for a rehearsal before it runs. The constraint comes back after the change, and a change that makes two values equal fails there.
+
+DuckDB cannot drop a constraint, and it refuses to change the type of a column that a primary key, a `UNIQUE` constraint, or a foreign key names. It also refuses any column change on a table that another table's foreign key points at. Those changes still fail when the migration runs, and the table has to be rebuilt by hand.
+
 ## Typed columns
 
 `tableColumns` maps column names to typed definitions: `Integer`, `BigInteger`, `String(length)`, `Text`, `Boolean`, `Float`, `Numeric(precision, scale)`, `Date`, `Timestamp`, `Binary`, `Json`, and `Enum(*values, name=...)`.
