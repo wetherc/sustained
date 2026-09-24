@@ -229,6 +229,20 @@ class AsyncAdapter:
         return None
 
 
+async def _wait_out(future: "asyncio.Future[_T]") -> None:
+    """
+    Waits until the future ends, through any number of cancellations.
+    wait() never cancels the future it waits on, so each cancellation
+    lands here and the wait starts again. The future's error, if any, is
+    left for the caller to read.
+    """
+    while not future.done():
+        try:
+            await asyncio.wait({future})
+        except asyncio.CancelledError:
+            pass
+
+
 class DbApiAsyncAdapter(AsyncAdapter):
     """
     Adapts a synchronous DB-API 2.0 connection to the async interface by
@@ -244,7 +258,12 @@ class DbApiAsyncAdapter(AsyncAdapter):
         # The cursor an open session() block runs every statement on.
         self._session_cursor: Optional[Cursor] = None
 
-    async def _call(self, fn: Callable[..., _T], *args: object) -> _T:
+    async def _call(
+        self,
+        fn: Callable[..., _T],
+        *args: object,
+        undo: Optional[Callable[[_T], object]] = None,
+    ) -> _T:
         """
         Runs one driver call in a worker thread under the adapter lock.
 
@@ -253,22 +272,22 @@ class DbApiAsyncAdapter(AsyncAdapter):
         Released at the cancellation, the lock would let the next call,
         such as a pool's rollback, run on the connection at the same time
         as the unfinished one.
+
+        A call that finished although its task was cancelled returns its
+        result to nobody. `undo` receives that result in the worker thread,
+        so a cursor it opened is closed and a switch it set is put back.
         """
         async with self._lock:
             future = asyncio.ensure_future(asyncio.to_thread(fn, *args))
             try:
                 return await asyncio.shield(future)
             except asyncio.CancelledError:
-                # wait() never cancels the future it waits on, so a second
-                # cancellation lands here and the wait starts again.
-                while not future.done():
-                    try:
-                        await asyncio.wait({future})
-                    except asyncio.CancelledError:
-                        pass
+                await _wait_out(future)
                 # The thread's own error is dropped for the cancellation.
-                if not future.cancelled():
-                    future.exception()
+                if future.exception() is None and undo is not None:
+                    await _wait_out(
+                        asyncio.ensure_future(asyncio.to_thread(undo, future.result()))
+                    )
                 raise
 
     @contextmanager
@@ -313,7 +332,7 @@ class DbApiAsyncAdapter(AsyncAdapter):
         if self._session_cursor is not None:
             yield
             return
-        cursor = await self._call(self._connection.cursor)
+        cursor = await self._call(self._connection.cursor, undo=_close_cursor)
         self._session_cursor = cursor
         try:
             yield
@@ -325,7 +344,7 @@ class DbApiAsyncAdapter(AsyncAdapter):
 
     @asynccontextmanager
     async def autocommit_scope(self) -> AsyncIterator[None]:
-        restore = await self._call(enter_autocommit, self._connection)
+        restore = await self._call(enter_autocommit, self._connection, undo=_restore)
         try:
             yield
         finally:
@@ -367,6 +386,14 @@ class DbApiAsyncAdapter(AsyncAdapter):
 
         if needs_explicit_begin(self._connection):
             await self.execute("BEGIN", ())
+
+
+def _close_cursor(cursor: Cursor) -> None:
+    cursor.close()
+
+
+def _restore(restore: Callable[[], None]) -> None:
+    restore()
 
 
 class AiosqliteAdapter(AsyncAdapter):

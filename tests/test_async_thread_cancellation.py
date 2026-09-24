@@ -84,5 +84,61 @@ class TestThreadCancellation(unittest.IsolatedAsyncioTestCase):
         await self.run_cancelled("FAIL", cancels=1)
 
 
+class SlowSetupConnection:
+    """A connection whose cursor() and commit() wait on a threading.Event."""
+
+    def __init__(self):
+        self.started = threading.Event()
+        self.finish = threading.Event()
+        self.cursors = []
+        self.autocommit = False
+
+    def _block(self):
+        self.started.set()
+        self.finish.wait(5)
+
+    def cursor(self):
+        self._block()
+        cursor = ClosableCursor()
+        self.cursors.append(cursor)
+        return cursor
+
+    def commit(self):
+        self._block()
+
+
+class ClosableCursor:
+    closed = False
+
+    def close(self):
+        self.closed = True
+
+
+class TestCancelledSetup(unittest.IsolatedAsyncioTestCase):
+    async def cancel_during(self, conn, block):
+        async def enter():
+            async with block():
+                pass
+
+        task = asyncio.ensure_future(enter())
+        await asyncio.to_thread(conn.started.wait, 5)
+        task.cancel()
+        conn.finish.set()
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+
+    async def test_a_cursor_opened_for_a_cancelled_session_is_closed(self):
+        conn = SlowSetupConnection()
+        adapter = DbApiAsyncAdapter(conn)
+        await self.cancel_during(conn, adapter.session)
+        self.assertTrue(conn.cursors[0].closed)
+
+    async def test_a_switch_set_for_a_cancelled_scope_is_put_back(self):
+        conn = SlowSetupConnection()
+        adapter = DbApiAsyncAdapter(conn)
+        await self.cancel_during(conn, adapter.autocommit_scope)
+        self.assertIs(conn.autocommit, False)
+
+
 if __name__ == "__main__":
     unittest.main()
