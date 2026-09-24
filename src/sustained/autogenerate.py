@@ -20,7 +20,9 @@ autogenerate() turns the diff into a Migration:
   default or a backfill value on the ColumnDef; generation emits
   add-nullable, UPDATE backfill, SET NOT NULL where needed.
 - Dropping extra tables or columns requires allow_drops=True and is not
-  reversible. Dropping extra indexes also requires allow_drops=True but
+  reversible. On Postgres and DuckDB, a named enum type that only the
+  dropped tables and columns used, and that no model declares, is
+  dropped after them. Dropping extra indexes also requires allow_drops=True but
   reverses, since the index definition is known.
 - Declared tableConstraints diff by name on engines whose catalog reports
   constraints, and by content on DuckDB, which renames them. DuckDB
@@ -158,6 +160,10 @@ class SchemaDiff:
             Tuple[Type["Model"], str, Tuple[str, ...], Optional[str]]
         ] = []
         self.extra_checks: List[Tuple[str, str, str]] = []
+        # Named enum types that only extra tables and columns use and no
+        # model declares, spelled as the catalog spells them. They drop
+        # with those tables and columns.
+        self.extra_enum_types: List[str] = []
         self.constraint_notes: List[str] = []
 
     def is_empty(self) -> bool:
@@ -296,6 +302,8 @@ class SchemaDiff:
             )
         for table, name, _ in self.extra_foreign_keys:
             lines.append(f"drop foreign key {name} on {table} (destructive)")
+        for type_name in self.extra_enum_types:
+            lines.append(f"drop enum type {type_name} (destructive)")
         for table, name, actual, expected in self.changed_columns:
             lines.append(
                 f"change column {table}.{name}: database has {actual}, "
@@ -624,7 +632,67 @@ def diff_schema(
         if table_key not in declared and table_key not in excluded:
             diff.extra_tables.append(actual[table_key].name or table_key)
 
+    if compiler.enum_strategy() == "native" and actual.enum_types_read:
+        diff.extra_enum_types = _orphaned_enum_types(
+            actual, diff.extra_tables, diff.extra_columns, declared_types
+        )
+
     return diff
+
+
+def _orphaned_enum_types(
+    actual: Snapshot,
+    extra_tables: List[str],
+    extra_columns: List[Tuple[str, str]],
+    declared_types: Dict[str, Tuple[str, ...]],
+) -> List[str]:
+    """
+    The named enum types that a dropped table or column uses and nothing
+    else does. A type any model declares stays, and so does a type a
+    remaining column may use.
+
+    Postgres names a column's type in the catalog. DuckDB reports only
+    the value list, so a column is matched to a type by its values. A
+    dropped column whose values match two types names neither, and a
+    remaining column whose values match a type keeps it.
+    """
+    dropped_tables = {table.lower() for table in extra_tables}
+    dropped_columns = {(table.lower(), name.lower()) for table, name in extra_columns}
+    by_values: Dict[Tuple[str, ...], List[str]] = {}
+    for key, values in actual.enum_types.items():
+        by_values.setdefault(values, []).append(key)
+
+    def named_type(column: IntrospectedColumn) -> Optional[str]:
+        key = column.enum_name or column.raw_type.lower()
+        return key if key in actual.enum_types else None
+
+    candidates: Dict[str, str] = {}
+    remaining: Set[str] = set()
+    for table_key, table in actual.items():
+        for column_key, column in table.columns.items():
+            named = named_type(column)
+            matches = (
+                [named]
+                if named
+                else by_values.get(parse_inline_enum(column.raw_type), [])
+            )
+            if (
+                table_key in dropped_tables
+                or (table_key, column_key) in dropped_columns
+            ):
+                if len(matches) == 1:
+                    # Postgres keeps the spelling in the column's type.
+                    candidates.setdefault(
+                        matches[0], column.raw_type if named else matches[0]
+                    )
+            else:
+                remaining.update(matches)
+    declared = {name.lower() for name in declared_types}
+    return [
+        spelled
+        for key, spelled in candidates.items()
+        if key not in remaining and key not in declared
+    ]
 
 
 def _introspected_state(column: IntrospectedColumn) -> ColumnState:
@@ -2087,6 +2155,9 @@ def autogenerate(
             if bare:
                 transactional = False
             reversible = False
+        # A type drops after every table and column that used it.
+        for type_name in diff.extra_enum_types:
+            up_steps.append(compiler.compile_drop_enum_type(type_name))
 
     # Types created in this migration drop last on the way down, after
     # every table that referenced them is gone.

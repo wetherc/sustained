@@ -704,5 +704,181 @@ class TestDuckDbEnumDiffing(unittest.TestCase):
         conn.close()
 
 
+class TestOrphanedEnumTypes(unittest.TestCase):
+    """
+    A named enum type that only dropped tables and columns used drops
+    after them, under allow_drops. A type a model declares, or a type a
+    remaining column may use, stays.
+    """
+
+    def _generate(self, models, tables, enum_types, **options):
+        snapshot = Snapshot(tables=tables, enum_types=enum_types, enum_types_read=True)
+        with mock.patch(
+            "sustained.autogenerate.introspect_schema", return_value=snapshot
+        ):
+            return autogenerate(
+                None, models, id="m", dialect=Dialects.POSTGRES, **options
+            )
+
+    @staticmethod
+    def _table(**columns):
+        return IntrospectedTable(
+            columns={
+                "id": IntrospectedColumn("integer", False, True),
+                **{
+                    name: IntrospectedColumn(
+                        raw_type,
+                        True,
+                        False,
+                        enum_name=raw_type.lower() if enum_values else None,
+                        enum_values=enum_values,
+                    )
+                    for name, (raw_type, enum_values) in columns.items()
+                },
+            }
+        )
+
+    def setUp(self):
+        class Keep(Model):
+            tableName = "keep"
+            tableColumns = {"id": Integer(primary_key=True)}
+            _dialect = Dialects.POSTGRES
+
+        self.Keep = Keep
+
+    def test_the_catalog_spelling_is_dropped_after_the_table(self):
+        migration = self._generate(
+            [self.Keep],
+            {
+                "keep": self._table(),
+                "posts": self._table(status=("PostStatus", ("a", "b"))),
+            },
+            {"poststatus": ("a", "b")},
+            allow_drops=True,
+        )
+        self.assertEqual(migration.up, ['DROP TABLE "posts"', 'DROP TYPE "PostStatus"'])
+
+    def test_a_dropped_column_releases_its_type(self):
+        migration = self._generate(
+            [self.Keep],
+            {"keep": self._table(mood=("mood", ("up", "down")))},
+            {"mood": ("up", "down")},
+            allow_drops=True,
+        )
+        self.assertEqual(
+            migration.up, ['ALTER TABLE "keep" DROP COLUMN "mood"', 'DROP TYPE "mood"']
+        )
+
+    def test_a_type_a_remaining_table_uses_stays(self):
+        migration = self._generate(
+            [self.Keep],
+            {
+                "keep": self._table(),
+                "posts": self._table(status=("mood", ("a", "b"))),
+                "hand_made": self._table(status=("mood", ("a", "b"))),
+            },
+            {"mood": ("a", "b")},
+            allow_drops=True,
+            exclude_tables=("hand_made",),
+        )
+        self.assertEqual(migration.up, ['DROP TABLE "posts"'])
+
+    def test_a_declared_type_stays(self):
+        class Post(Model):
+            tableName = "keep"
+            tableColumns = {
+                "id": Integer(primary_key=True),
+                "status": Enum("a", "b", name="mood"),
+            }
+            _dialect = Dialects.POSTGRES
+
+        migration = self._generate(
+            [Post],
+            {
+                "keep": self._table(status=("mood", ("a", "b"))),
+                "posts": self._table(status=("mood", ("a", "b"))),
+            },
+            {"mood": ("a", "b")},
+            allow_drops=True,
+        )
+        self.assertEqual(migration.up, ['DROP TABLE "posts"'])
+
+    def test_values_that_match_two_types_name_neither(self):
+        # A column read without its type name matches types by value.
+        migration = self._generate(
+            [self.Keep],
+            {
+                "keep": self._table(),
+                "posts": self._table(status=("ENUM('a', 'b')", ())),
+            },
+            {"one": ("a", "b"), "two": ("a", "b")},
+            allow_drops=True,
+        )
+        self.assertEqual(migration.up, ['DROP TABLE "posts"'])
+
+    def test_nothing_drops_without_allow_drops(self):
+        migration = self._generate(
+            [self.Keep],
+            {
+                "keep": self._table(),
+                "posts": self._table(status=("mood", ("a", "b"))),
+            },
+            {"mood": ("a", "b")},
+            ignore_undeclared=True,
+        )
+        self.assertIsNone(migration)
+
+    def test_the_summary_labels_the_drop(self):
+        snapshot = Snapshot(
+            tables={
+                "keep": self._table(),
+                "posts": self._table(status=("mood", ("a", "b"))),
+            },
+            enum_types={"mood": ("a", "b")},
+            enum_types_read=True,
+        )
+        diff = diff_schema(None, [self.Keep], Dialects.POSTGRES, snapshot=snapshot)
+        self.assertEqual(diff.extra_enum_types, ["mood"])
+        self.assertIn("drop enum type mood (destructive)", diff.summary())
+
+    def test_no_type_catalog_drops_nothing(self):
+        snapshot = Snapshot(
+            tables={"posts": self._table(status=("mood", ("a", "b")))},
+        )
+        diff = diff_schema(None, [self.Keep], Dialects.POSTGRES, snapshot=snapshot)
+        self.assertEqual(diff.extra_enum_types, [])
+
+    @unittest.skipUnless(HAS_DUCKDB, "duckdb not installed")
+    def test_duckdb_drops_the_type_of_the_last_table(self):
+        class Doc(Model):
+            tableName = "docs"
+            tableColumns = {
+                "id": Integer(primary_key=True),
+                "state": Enum("new", "done", name="doc_state"),
+            }
+            _dialect = Dialects.DUCKDB
+
+        class Other(Model):
+            tableName = "other"
+            tableColumns = {"id": Integer(primary_key=True)}
+            _dialect = Dialects.DUCKDB
+
+        conn = duckdb.connect(":memory:")
+        cursor = conn.cursor()
+        for statement in (
+            Doc.create_table_statements() + Other.create_table_statements()
+        ):
+            cursor.execute(statement)
+        migration = autogenerate(
+            conn, [Other], id="m", dialect=Dialects.DUCKDB, allow_drops=True
+        )
+        self.assertEqual(migration.up, ['DROP TABLE "docs"', 'DROP TYPE "doc_state"'])
+        for statement in migration.up:
+            cursor.execute(statement)
+        self.assertEqual(introspect_schema(conn, Dialects.DUCKDB).enum_types, {})
+        self.assertIsNone(autogenerate(conn, [Other], id="m2", dialect=Dialects.DUCKDB))
+        conn.close()
+
+
 if __name__ == "__main__":
     unittest.main()

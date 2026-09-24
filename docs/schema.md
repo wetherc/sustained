@@ -212,7 +212,7 @@ Pass the values as strings, or pass one Python `enum.Enum` class whose member va
 
 Rendering follows the dialect. Postgres and DuckDB create a named type with `CREATE TYPE ... AS ENUM` and reference it by name. MySQL writes the value list into the column type as `ENUM('draft', 'published', ...)`. ANSI, SQLite, and MSSQL have no enum type, so the column renders as a `VARCHAR` sized to the longest value, constrained to the list by a CHECK constraint named `ck_<table>_<column>_enum`. Presto and Athena refuse the column with `DialectError`, because neither engine can enforce it. [SQL Dialects](./dialects#enum-columns) has the full table.
 
-On the dialects with a named type, `CREATE TYPE` renders before the table that uses it, and dropping the table drops the type with it once no remaining model references it, under the same `allow_drops=True` the table drop needs. `DROP TYPE` is destructive: `plan` labels it, `no_drops()` blocks it, and the rehearsal gate covers it.
+On the dialects with a named type, `CREATE TYPE` renders before the table that uses it. A generated migration that drops a table or column under `allow_drops=True` also drops the enum type that it used, after it, when no model declares the type and no remaining column uses it. DuckDB reports a column's value list but not its type name, so there a column matches a type by its values, and a list that matches two types drops neither. `DROP TYPE` is destructive: `plan` labels it, `no_drops()` blocks it, and the rehearsal gate covers it.
 
 ### Changing an enum's values
 
