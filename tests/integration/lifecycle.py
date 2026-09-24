@@ -227,6 +227,11 @@ class ServerCase(ColumnTypeTests, FileMigrationTests, unittest.TestCase):
 
     # Validation and repair
 
+    def test_a_database_without_the_tracking_table_reads_as_no_history(self):
+        migrator = self.migrator([Migration("0001_t", up="SELECT 1")])
+        self.assertEqual([], migrator.read_applied_records())
+        self.assertEqual([("0001_t", "pending")], migrator.statuses())
+
     def tamper_checksum(self, migration_id):
         """Rewrites a stored checksum as an out-of-band edit would."""
         compiler = Dialects.get_compiler(self.DIALECT)

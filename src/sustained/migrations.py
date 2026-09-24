@@ -53,6 +53,7 @@ from typing import (
 
 from sustained.ddl import DdlStep
 from sustained.dialects import Dialects
+from sustained.driver_errors import is_missing_table
 from sustained.execution import (
     cursor_scope,
     in_transaction,
@@ -2005,21 +2006,29 @@ class Migrator:
         Returns every tracking table row without writing anything.
 
         An empty list means the run has no history to read: either the
-        tracking table does not exist yet, or it still has the shape an
-        earlier version wrote and the read of its columns failed. The
-        paths that only report on a run, such as script() and pending(),
-        read the rows through this, since creating the table would change
-        a database they say they leave alone.
+        tracking table does not exist yet, or it has only the columns an
+        earlier version wrote. Any other failed read, such as a closed
+        connection or a refused SELECT, raises the driver's error, so a
+        report never shows every migration pending on a database it could
+        not read. The paths that only report on a run, such as script()
+        and pending(), read the rows through this, since creating the
+        table would change a database they say they leave alone.
         """
         if self._tracking_ready:
             return self._read_records()
         try:
             return self._read_records()
-        except Exception:
+        except Exception as error:
             # A failed read can poison an open transaction, so clear the
             # slate before the next statement.
             self._rollback_quietly()
-            return []
+            if is_missing_table(error) or self._has_earlier_columns():
+                return []
+            raise
+
+    def _has_earlier_columns(self) -> bool:
+        """True when the tracking table lacks the columns added later."""
+        return self._has_columns(("id",)) and not self._has_columns(_UPGRADE_COLUMNS)
 
     def applied(self) -> List[str]:
         """Returns the applied migration ids in application order."""

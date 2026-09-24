@@ -100,6 +100,10 @@ class AsyncCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(["0001_widgets"], reverted)
         self.assertEqual([("0001_widgets", "pending")], list(await migrator.statuses()))
 
+    async def test_a_database_without_the_tracking_table_reads_as_no_history(self):
+        migrator = self.migrator([self.widget_migration()])
+        self.assertEqual([], await migrator.read_applied_records())
+
     async def test_rehearsal_proves_the_run_and_leaves_nothing(self):
         migrator = self.migrator([self.widget_migration()])
         rehearsal = await migrator.rehearse()
