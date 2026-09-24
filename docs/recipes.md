@@ -554,7 +554,7 @@ esac
 
 ## Read the plan in a pipeline
 
-`status`, `validate`, and `plan` all accept a `--json` flag.
+`status`, `validate`, `plan`, and `rehearse` all accept a `--json` flag.
 
 ```console
 $ sustained plan --json
@@ -562,12 +562,17 @@ $ sustained plan --json
   "pending": [],
   "problems": [],
   "drift": [
-    "ALTER TABLE shows ADD COLUMN support_act VARCHAR(200)"
-  ]
+    {
+      "sql": "ALTER TABLE \"shows\" ADD COLUMN \"support_act\" VARCHAR(200)",
+      "destructive": false,
+      "guards": []
+    }
+  ],
+  "error": null
 }
 ```
 
-`drift` is `null`, not `[]`, when the config module names no models, so a caller can tell "nothing was compared" from "compared and found no gap". `statements` is `null` for a callable step, which has no SQL to count.
+`drift` is `null`, not `[]`, when the config module names no models, so a caller can tell "nothing was compared" from "compared and found no gap". Each statement is an object with its SQL, whether it removes data, and the verdicts of any guards that flagged it. A pending migration lists its statements the same way under `statements`, which is `null` for a callable step because a callable renders no SQL. `error` is `null` unless the command failed.
 
 ## Rehearse where the rollback cannot be trusted
 
