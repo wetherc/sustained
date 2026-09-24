@@ -34,3 +34,8 @@ exclude = [ "build/", "venv/",]
 
 [tool.hatch.build]
 dev-mode-dirs = [ "src",]
+
+# Hatchling reads only .gitignore, so a build in a working tree would pack
+# files excluded some other way, such as through .git/info/exclude.
+[tool.hatch.build.targets.sdist]
+include = [ "/src", "/tests", "/support.json", "/CHANGELOG.md",]

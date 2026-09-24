@@ -94,6 +94,18 @@ The tests live in `tests/integration/`. `harness.py` opens the connections and `
 
 Adding a database means adding a row to `support.json`, a service to the compose file, and a `tests/integration/test_<name>.py` module. `sync_support.py --check` refuses a `runs` row that is missing either one, so the table cannot claim coverage that does not exist.
 
+## Releasing a Version
+
+Write the new version's `## <version>` section at the top of `CHANGELOG.md`, and leave it uncommitted. Then run the release script with the part of the version to increment:
+
+```bash
+python3 deploy.py --version patch
+```
+
+The script stops when the working tree has changes outside `CHANGELOG.md` and `docs/changelog.md`, or when the changelog has no section for the new version. It bumps the version in `pyproject.toml`, commits it with the release notes, and tags the commit `v<version>`. The tag message is `Sustained <version>` followed by the changelog section. The script builds the sdist and wheel from a `git archive` of the tag, so files that only exist in your working tree never reach the package. It runs `twine check --strict`, asks you to confirm, uploads to PyPI, and pushes the commit and the tag.
+
+A failed build, a failed check, or a declined prompt removes the local commit and tag and restores the old version. Your changelog edits stay in the working tree. A failed upload keeps the commit and tag, because PyPI can accept one file of a release before it rejects the next one, and it never accepts that version again.
+
 ## Extending the ORM
 
 ### Adding a New Dialect
