@@ -54,14 +54,14 @@ class FakeCursor:
             # A row may leave off the last column, whether a UNIQUE
             # constraint owns the index, which then reads as no.
             self._current = [tuple(r) + (False,) * (6 - len(r)) for r in self.indexes]
+        elif "pg_get_constraintdef" in sql:
+            if self.checks is None:
+                raise RuntimeError("no check read here")
+            self._current = self.checks
         elif "pg_catalog.pg_constraint" in sql:
             if self.foreign_keys is None:
                 raise RuntimeError("no pg_constraint here")
             self._current = self.foreign_keys
-        elif "check_constraints" in sql:
-            if self.checks is None:
-                raise RuntimeError("no check views here")
-            self._current = self.checks
         elif "pg_enum" in sql:
             if self.enums is None:
                 raise RuntimeError("no pg_enum here")
@@ -362,6 +362,11 @@ class TestPostgresCatalogQueries(unittest.TestCase):
         )
         schema = self.read(cursor)
         self.assertEqual(schema["shows"].checks, {"ck_shows_seats": "((seats > 0))"})
+        # A check name is unique per table only, so the read keys each
+        # check on the table it belongs to rather than on its name.
+        (query,) = [s for s in cursor.statements if "pg_get_constraintdef" in s]
+        self.assertIn("src.oid = con.conrelid", query)
+        self.assertNotIn("check_constraints", query)
 
     def test_system_not_null_checks_are_left_out(self):
         cursor = FakeCursor(

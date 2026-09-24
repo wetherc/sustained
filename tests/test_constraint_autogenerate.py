@@ -482,8 +482,8 @@ def pg_connection(fk_rows=(), check_rows=()):
         {
             "information_schema.columns": columns,
             "pg_catalog.pg_index": [],
+            "pg_get_constraintdef": list(check_rows),
             "pg_catalog.pg_constraint": list(fk_rows),
-            "check_constraints": list(check_rows),
             "pg_catalog.pg_enum": [],
         }
     )

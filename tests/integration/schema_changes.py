@@ -10,7 +10,7 @@ the `migrations` cover runs these tests.
 
 from sustained.dialects import Dialects
 from sustained.model import Model
-from sustained.schema import Enum, String
+from sustained.schema import Check, Enum, Integer, String
 
 from .column_types import ROW, typed_columns
 
@@ -79,7 +79,7 @@ class SchemaChangeTests:
     def test_a_foreign_key_reads_its_target_and_its_action(self):
         # MySQL, MariaDB, and SQL Server reported every key's target as
         # unknown, so a changed action never diffed.
-        from sustained.schema import ForeignKey, Integer
+        from sustained.schema import ForeignKey
 
         maker = type(
             "MakerTarget",
@@ -122,3 +122,36 @@ class SchemaChangeTests:
         if not self.constraints_fixed():
             changed = migrator.plan([maker, widget("CASCADE")], allow_drops=True)
             self.assertIsNotNone(changed)
+
+    def test_two_tables_keep_their_own_same_named_check(self):
+        # A check name is unique per table on Postgres and SQLite. The
+        # Postgres read joined checks on the schema and the name, so one
+        # table could read the other table's expression.
+        if self.DIALECT not in (Dialects.POSTGRES, Dialects.DEFAULT):
+            self.skipTest("the engine keeps check names unique per schema")
+
+        def checked(class_name, table, expression):
+            return type(
+                class_name,
+                (Model,),
+                {
+                    "tableName": table,
+                    "tableColumns": {
+                        "id": Integer(primary_key=True),
+                        "size": Integer(),
+                    },
+                    "tableConstraints": [Check("ck_it_bounds", expression)],
+                    "_dialect": self.DIALECT,
+                },
+            )
+
+        models = [
+            checked("WidgetBounded", "it_widgets", "size > 0"),
+            checked("MakerBounded", "it_makers", "size < 100"),
+        ]
+        migrator = self.migrator()
+        migrator.up(models=models)
+        self.assertIsNone(migrator.plan(models))
+        tables = self.tables()
+        self.assertIn(">", tables["it_widgets"].checks["ck_it_bounds"])
+        self.assertIn("<", tables["it_makers"].checks["ck_it_bounds"])

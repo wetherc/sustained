@@ -439,11 +439,11 @@ def introspect_schema(
     snapshots leave comments_read False. The
     default dialect reads SQLite's PRAGMA tables and the table SQL in
     sqlite_master. Postgres reads information_schema together with
-    pg_index, pg_constraint, pg_enum, and the check view, so every index is
-    visible, varchar lengths and numeric precision survive, enum columns
-    report their type's name and values, foreign keys resolve with their
-    names and actions, and the snapshot carries the database's enum
-    types. MySQL and MariaDB add information_schema.statistics, MSSQL
+    pg_index, pg_constraint, and pg_enum, so every index is visible,
+    varchar lengths and numeric precision survive, enum columns report
+    their type's name and values, foreign keys resolve with their names
+    and actions, each check belongs to its own table, and the snapshot
+    carries the database's enum types. MySQL and MariaDB add information_schema.statistics, MSSQL
     adds sys.indexes, and DuckDB adds duckdb_indexes(), so plain indexes
     are visible on those engines too. Other dialects read plain
     information_schema and degrade to column-only data when constraint
@@ -1513,7 +1513,6 @@ def _postgres_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
     # names a schema that does not exist. _scoped_filter compares it
     # beside the declared schemas, which still match in that case.
     table_filter = _scoped_filter("c.table_schema", "current_schema()", schemas)
-    constraint_filter = _scoped_filter("tc.table_schema", "current_schema()", schemas)
     namespace_filter = _scoped_filter("n.nspname", "current_schema()", schemas)
     columns_by_table: Dict[str, Dict[str, IntrospectedColumn]] = {}
     column_rows = yield (
@@ -1637,14 +1636,19 @@ def _postgres_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
     checks: Dict[str, Dict[str, str]] = {}
     checks_read = False
     try:
+        # The check_constraints view joins on the schema and the name,
+        # but a check name is unique per table only, so a table could
+        # read another table's expression. pg_constraint keys each check
+        # on conrelid. The substring drops the "CHECK " prefix that
+        # pg_get_constraintdef() writes, as the view does.
         check_rows = yield (
-            "SELECT tc.table_name, tc.constraint_name, cc.check_clause "
-            "FROM information_schema.table_constraints tc "
-            "JOIN information_schema.check_constraints cc "
-            "ON cc.constraint_schema = tc.constraint_schema "
-            "AND cc.constraint_name = tc.constraint_name "
-            "WHERE tc.constraint_type = 'CHECK' "
-            f"AND {constraint_filter}"
+            "SELECT src.relname, con.conname, "
+            "substring(pg_get_constraintdef(con.oid) from 7) "
+            "FROM pg_catalog.pg_constraint con "
+            "JOIN pg_catalog.pg_class src ON src.oid = con.conrelid "
+            "JOIN pg_catalog.pg_namespace n ON n.oid = src.relnamespace "
+            "WHERE con.contype = 'c' "
+            f"AND {namespace_filter}"
         )
         for table, cname, clause in check_rows:
             name = str(cname).lower()
@@ -1654,7 +1658,7 @@ def _postgres_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
             checks.setdefault(str(table).lower(), {})[name] = expression
         checks_read = True
     except Exception:
-        # No check views to read; degrade to no checks.
+        # No pg_constraint to read; degrade to no checks.
         pass
 
     comments: Dict[str, Dict[str, str]] = {}
