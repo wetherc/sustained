@@ -515,7 +515,7 @@ load_migrations(directory, placeholders=None) -> list[Migration]
 ```
 {: .sig #load_migrations}
 
-`load_migrations` reads the `<id>.up.sql` files first, each one optionally paired with `<id>.down.sql`, sorted by id. Then it reads the `<id>.repeat.sql` repeatables, also sorted by id. Statements split at line-ending semicolons, with or without a `--` comment after the semicolon. That rule leaves a semicolon inside a string literal intact, but it also splits apart a body with its own statements, such as a trigger or a procedure.
+`load_migrations` reads the `<id>.up.sql` files first, each one optionally paired with `<id>.down.sql`, sorted by id. Then it reads the `<id>.repeat.sql` repeatables, also sorted by id. Statements split at line-ending semicolons, with or without a `--` comment after the semicolon. A semicolon inside a string literal, a quoted identifier, a `/* */` comment, or a Postgres dollar-quoted body (`$$ ... $$` or `$tag$ ... $tag$`) does not split, so a PL/pgSQL function stays one statement. A body with its own statements and no quoting around them, such as a MySQL trigger or procedure, still splits apart.
 
 A `-- sustained: no transaction` line of its own in an up file or a repeat file sets `transactional=False` on that migration. Case does not matter, and the two words may be joined by a space, a hyphen, or an underscore. `declares_no_transaction(text)` reports the same thing for one file's text. Sustained reads the marker from the up file and the repeat file only, because the flag already covers the down step.
 
@@ -535,7 +535,7 @@ split_sql_statements(text) -> list[str]
 ```
 {: .sig #split_sql_statements}
 
-`split_sql_statements` splits on line-ending semicolons, including a semicolon with a `--` comment after it, and drops the pieces that are only whitespace or comments.
+`split_sql_statements` splits on line-ending semicolons, including a semicolon with a `--` comment after it, and drops the pieces that are only whitespace or comments. It skips semicolons inside quotes, `/* */` comments, and dollar-quoted bodies. Inside a quoted string, a doubled quote or a backslash escapes the next character, so both `'it''s'` and MySQL's `'it\'s'` read as one string. A line-ending semicolon inside a `--` comment still splits. If a quote or a comment is still open at the end of the text, the function ignores quoting and splits at every line-ending semicolon, so a quote it misreads cannot merge the whole file into one statement.
 
 ## Autogeneration internals
 

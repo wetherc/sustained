@@ -13,10 +13,13 @@ have no down file, sort after every versioned migration, and an id may
 not have both an up file and a repeat file.
 
 Files split into statements at semicolons that end a line, with or
-without a '--' comment after the semicolon. A body with
-embedded semicolons, such as a trigger or procedure, does not survive
-that; write it as a hand-written Migration with a callable step, or keep
-it as the only statement in its file with no trailing semicolon.
+without a '--' comment after the semicolon. A semicolon inside a string
+literal, a quoted identifier, a /* */ comment, or a Postgres
+dollar-quoted body never splits, so a function written as
+`AS $$ ... $$` stays one statement. A body with embedded semicolons and
+no quoting, such as a MySQL trigger or procedure, still splits apart;
+write it as a hand-written Migration with a callable step, or keep it
+as the only statement in its file with no trailing semicolon.
 
 A file whose first lines hold the marker comment `-- sustained: no
 transaction` runs outside a transaction. Write it as `-- sustained: no
@@ -37,8 +40,9 @@ literal `${`. A malformed marker, such as `${my-key}` or an unclosed
 from __future__ import annotations
 
 import re
+from bisect import bisect_right
 from pathlib import Path
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Optional, Tuple, Union
 
 from sustained.migrations import Migration
 
@@ -46,6 +50,10 @@ from sustained.migrations import Migration
 # comment after the semicolon is part of that line, so it does not glue
 # the next statement onto this one.
 _STATEMENT_END_RE = re.compile(r";[ \t]*(?:--[^\n]*)?\n")
+
+# A Postgres dollar quote opens with $$ or $tag$ and closes with the same
+# text.
+_DOLLAR_TAG_RE = re.compile(r"\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$")
 
 _UP_SUFFIX = ".up.sql"
 _DOWN_SUFFIX = ".down.sql"
@@ -124,15 +132,115 @@ def _ignored_name(name: str) -> bool:
     return name.startswith(".") or name.endswith(_IGNORED_SUFFIXES)
 
 
+def _quote_end(text: str, start: int) -> Optional[int]:
+    """
+    The index just past the quote that closes the one at `start`, or None
+    when the text ends first. A doubled quote stands for itself. A
+    backslash escapes the next character in a string, as MySQL and
+    Postgres E'' strings read it; a standard string that ends in a
+    backslash is the one case this misreads. Backticks take no backslash
+    escape.
+    """
+    quote = text[start]
+    index = start + 1
+    while index < len(text):
+        char = text[index]
+        if char == "\\" and quote != "`":
+            index += 2
+        elif char != quote:
+            index += 1
+        elif text.startswith(quote, index + 1):
+            index += 2
+        else:
+            return index + 1
+    return None
+
+
+def _quoted_spans(text: str) -> Optional[List[Tuple[int, int]]]:
+    """
+    The (start, end) index pairs of every string literal, quoted
+    identifier, /* */ comment, and dollar-quoted body in the text, or
+    None when one of them is still open at the end.
+
+    A '--' comment is skipped so a quote inside it opens nothing, but it
+    is not a span, and a line-ending semicolon in one splits the file. A
+    commented-out statement on a line of its own is then a comment-only
+    piece that drops out. Glued onto the next statement instead, it would
+    change that statement's text and so the checksum of a file already
+    applied.
+    """
+    spans: List[Tuple[int, int]] = []
+    index = 0
+    while index < len(text):
+        char = text[index]
+        end: Optional[int] = None
+        if text.startswith("--", index):
+            newline = text.find("\n", index)
+            index = len(text) if newline < 0 else newline
+            continue
+        if text.startswith("/*", index):
+            close = text.find("*/", index + 2)
+            end = None if close < 0 else close + 2
+        elif char in "'\"`":
+            end = _quote_end(text, index)
+        elif char == "$" and not (index and _identifier_char(text[index - 1])):
+            tag = _DOLLAR_TAG_RE.match(text, index)
+            if tag is None:
+                index += 1
+                continue
+            close = text.find(tag.group(0), tag.end())
+            end = None if close < 0 else close + len(tag.group(0))
+        else:
+            index += 1
+            continue
+        if end is None:
+            return None
+        spans.append((index, end))
+        index = end
+    return spans
+
+
+def _identifier_char(char: str) -> bool:
+    """Whether the character can sit inside an unquoted identifier."""
+    return char.isalnum() or char in "_$"
+
+
+def _statement_ends(text: str) -> List["re.Match[str]"]:
+    """
+    The line-ending semicolons that end a statement: every match of the
+    split rule outside the quoted spans. A file with a quote or comment
+    left open splits at every match instead, the rule without quoting,
+    so a quote the scan misreads cannot merge a file into one statement.
+    """
+    matches = list(_STATEMENT_END_RE.finditer(text))
+    spans = _quoted_spans(text)
+    if not spans:
+        return matches
+    starts = [start for start, _ in spans]
+    kept = []
+    for match in matches:
+        at = bisect_right(starts, match.start()) - 1
+        if at < 0 or match.start() >= spans[at][1]:
+            kept.append(match)
+    return kept
+
+
 def split_sql_statements(text: str) -> List[str]:
     """
     Splits a SQL file's contents into statements at semicolons that end a
-    line, with or without a '--' comment after the semicolon. Pieces
-    holding only whitespace or '--' comments are dropped; a missing final
-    semicolon is fine.
+    line, with or without a '--' comment after the semicolon. A semicolon
+    inside a string literal, a quoted identifier, a /* */ comment, or a
+    dollar-quoted body does not split. Pieces holding only whitespace or
+    '--' comments are dropped; a missing final semicolon is fine.
     """
+    pieces = []
+    previous = 0
+    for match in _statement_ends(text):
+        pieces.append(text[previous : match.start()])
+        previous = match.end()
+    pieces.append(text[previous:])
     statements = []
-    for piece in _STATEMENT_END_RE.split(text):
+    for piece in pieces:
         cleaned = piece.strip()
         if not cleaned:
             continue

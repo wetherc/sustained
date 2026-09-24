@@ -56,6 +56,69 @@ class TestSplitSqlStatements(unittest.TestCase):
             split_sql_statements(text), ["SELECT 1 -- and a; semicolon\nFROM t"]
         )
 
+    def test_a_string_literal_keeps_a_line_ending_semicolon(self):
+        text = "INSERT INTO t VALUES ('a;\nb');\nSELECT 2;\n"
+        self.assertEqual(
+            split_sql_statements(text), ["INSERT INTO t VALUES ('a;\nb')", "SELECT 2"]
+        )
+
+    def test_quoted_identifiers_and_doubled_quotes_keep_their_semicolons(self):
+        text = "SELECT \"a;\nb\", `c;\nd`, 'it''s;\n' FROM t;\n" "SELECT 'x\\';\n';\n"
+        self.assertEqual(
+            split_sql_statements(text),
+            [
+                "SELECT \"a;\nb\", `c;\nd`, 'it''s;\n' FROM t",
+                "SELECT 'x\\';\n'",
+            ],
+        )
+
+    def test_a_block_comment_keeps_its_semicolons(self):
+        text = "/* first;\nsecond; */ SELECT 1;\nSELECT 2;\n"
+        self.assertEqual(
+            split_sql_statements(text),
+            ["/* first;\nsecond; */ SELECT 1", "SELECT 2"],
+        )
+
+    def test_a_dollar_quoted_body_stays_one_statement(self):
+        body = "AS $fn$\nBEGIN\n  RETURN 1;\nEND;\n$fn$ LANGUAGE plpgsql"
+        text = f"CREATE FUNCTION f() RETURNS int {body};\nSELECT $$a;\n$$;\n"
+        self.assertEqual(
+            split_sql_statements(text),
+            [f"CREATE FUNCTION f() RETURNS int {body}", "SELECT $$a;\n$$"],
+        )
+
+    def test_a_dollar_inside_an_identifier_opens_no_quote(self):
+        text = "SELECT price$usd$ FROM t;\nSELECT 2;\n"
+        self.assertEqual(
+            split_sql_statements(text), ["SELECT price$usd$ FROM t", "SELECT 2"]
+        )
+
+    def test_a_backslash_escaped_quote_does_not_merge_statements(self):
+        text = "INSERT INTO t VALUES ('it\\'s');\nINSERT INTO t VALUES ('x');\n"
+        self.assertEqual(
+            split_sql_statements(text),
+            ["INSERT INTO t VALUES ('it\\'s')", "INSERT INTO t VALUES ('x')"],
+        )
+
+    def test_a_quote_in_a_line_comment_opens_nothing(self):
+        text = "-- don't;\nSELECT 1;\n-- it's\nSELECT 2;\n"
+        self.assertEqual(split_sql_statements(text), ["SELECT 1", "-- it's\nSELECT 2"])
+
+    def test_an_open_quote_splits_at_every_line_ending_semicolon(self):
+        cases = {
+            "SELECT 'open;\nSELECT 2;\n": ["SELECT 'open", "SELECT 2"],
+            "SELECT 1;\n/* open;\nSELECT 2": ["SELECT 1", "/* open", "SELECT 2"],
+            "SELECT $$open;\nSELECT 2": ["SELECT $$open", "SELECT 2"],
+        }
+        for text, expected in cases.items():
+            with self.subTest(text=text):
+                self.assertEqual(split_sql_statements(text), expected)
+
+    def test_a_lone_dollar_opens_no_quote(self):
+        self.assertEqual(
+            split_sql_statements("SELECT $1;\nSELECT 2;\n"), ["SELECT $1", "SELECT 2"]
+        )
+
 
 class LoaderTestCase(unittest.TestCase):
     def setUp(self):
