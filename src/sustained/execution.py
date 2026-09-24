@@ -185,6 +185,84 @@ def connection_scope(
         yield binding
 
 
+def legacy_sqlite_control(connection: Connection) -> bool:
+    """
+    Whether this is a sqlite3 connection in legacy transaction control.
+
+    Such a connection opens a transaction of its own before a data
+    statement, and PRAGMA foreign_keys is ignored inside one. Python 3.12
+    and later report legacy control as `autocommit` == -1. Older versions
+    have no `autocommit` attribute, and legacy control is all they have.
+    """
+    try:
+        import sqlite3
+    except ImportError:  # pragma: no cover - sqlite3 ships with Python
+        sqlite3_connection: Optional[type] = None
+    else:
+        sqlite3_connection = sqlite3.Connection
+    if sqlite3_connection is not None and isinstance(connection, sqlite3_connection):
+        # A subclass passed as connect(factory=...) reports its own
+        # module, so the class itself is the test rather than the name.
+        return getattr(connection, "autocommit", -1) == -1
+    if type(connection).__module__.partition(".")[0] not in ("sqlite3", "pysqlite3"):
+        return False
+    return getattr(connection, "autocommit", -1) == -1
+
+
+def enter_autocommit(connection: Connection) -> Callable[[], None]:
+    """
+    Turns the driver's own transaction control off, and returns the call
+    that turns it back on.
+
+    A DB-API driver such as psycopg2 opens a transaction before the first
+    statement of its own accord, so a bare run is still a run inside a
+    transaction block. Setting `autocommit` on the connection is what
+    stops that.
+
+    The sqlite3 driver in legacy transaction control does the same before
+    a data statement, and it reports `autocommit` as -1 or has no such
+    attribute at all. Its switch is `isolation_level`, and None turns the
+    implicit transaction off. PRAGMA foreign_keys is ignored inside that
+    transaction, so a table rebuild that runs one after its INSERT would
+    leave foreign keys off. The returned call puts the level back where it
+    found it.
+
+    A driver with neither switch, or one already in autocommit, runs as it
+    is, and the returned call commits.
+
+    A driver that refuses to switch back leaves the connection in
+    autocommit for the rest of its life. The returned call drops that
+    error, because it runs after a block that may already be raising, and
+    the block's own error is the one worth reporting. Close the connection
+    and open a new one to get transaction control back.
+    """
+    switchable = getattr(connection, "autocommit", None) is False
+    if switchable:
+        # psycopg2 refuses the switch while a transaction is open.
+        _commit_if_supported(connection)
+        setattr(connection, "autocommit", True)
+        return lambda: _set_quietly(connection, "autocommit", False)
+    if legacy_sqlite_control(connection):
+        isolation = getattr(connection, "isolation_level", None)
+        _commit_if_supported(connection)
+        setattr(connection, "isolation_level", None)
+        return lambda: _set_quietly(connection, "isolation_level", isolation)
+    return lambda: _commit_if_supported(connection)
+
+
+def _commit_if_supported(connection: Connection) -> None:
+    if hasattr(connection, "commit"):
+        connection.commit()
+
+
+def _set_quietly(connection: Connection, name: str, value: object) -> None:
+    """Sets a driver switch, dropping a refusal (see enter_autocommit())."""
+    try:
+        setattr(connection, name, value)
+    except Exception:
+        pass
+
+
 def needs_explicit_begin(connection: Connection) -> bool:
     """
     Reports whether a transaction() block must open the transaction with

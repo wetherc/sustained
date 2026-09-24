@@ -56,6 +56,7 @@ from sustained.dialects import Dialects
 from sustained.driver_errors import is_missing_table
 from sustained.execution import (
     cursor_scope,
+    enter_autocommit,
     in_transaction,
     pinned_transaction,
     transaction,
@@ -550,30 +551,6 @@ def _destructive_prefix_keys(
         # has already applied.
         history.update(tokens[start])
     return keys
-
-
-def _legacy_sqlite_control(connection: Connection) -> bool:
-    """
-    Whether this is a sqlite3 connection in legacy transaction control.
-
-    Such a connection opens a transaction of its own before a data
-    statement, and PRAGMA foreign_keys is ignored inside one. Python 3.12
-    and later report legacy control as `autocommit` == -1. Older versions
-    have no `autocommit` attribute, and legacy control is all they have.
-    """
-    try:
-        import sqlite3
-    except ImportError:  # pragma: no cover - sqlite3 ships with Python
-        sqlite3_connection: Optional[type] = None
-    else:
-        sqlite3_connection = sqlite3.Connection
-    if sqlite3_connection is not None and isinstance(connection, sqlite3_connection):
-        # A subclass passed as connect(factory=...) reports its own
-        # module, so the class itself is the test rather than the name.
-        return getattr(connection, "autocommit", -1) == -1
-    if type(connection).__module__.partition(".")[0] not in ("sqlite3", "pysqlite3"):
-        return False
-    return getattr(connection, "autocommit", -1) == -1
 
 
 def run_statements(
@@ -1638,78 +1615,13 @@ class Migrator:
     def _autocommit_scope(self) -> Iterator[None]:
         """
         Runs the block with the driver's own transaction control off, and
-        turns it back on at the end.
-
-        A DB-API driver such as psycopg2 opens a transaction before the
-        first statement of its own accord, so a bare run is still a run
-        inside a transaction block. Setting `autocommit` on the connection
-        is what stops that.
-
-        The sqlite3 driver in legacy transaction control does the same
-        before a data statement, and it reports `autocommit` as -1 or has
-        no such attribute at all. Its switch is `isolation_level`, and
-        None turns the implicit transaction off. The block puts it back
-        where it found it at the end.
-
-        A driver with neither switch, or one already in autocommit, keeps
-        the older behaviour: the block runs as it is and a commit follows
-        it.
-
-        A driver that refuses to switch back leaves the connection in
-        autocommit for the rest of its life. That error is dropped, so
-        the error the block raised is the one the caller sees. Close the
-        connection and open a new one to get transaction control back.
+        turns it back on at the end. See enter_autocommit().
         """
-        connection = self._connection
-        switchable = getattr(connection, "autocommit", None) is False
-        legacy = not switchable and _legacy_sqlite_control(connection)
-        isolation: Optional[str] = None
-        if switchable:
-            # psycopg2 refuses the switch while a transaction is open.
-            self._commit_quietly()
-            setattr(connection, "autocommit", True)
-        elif legacy:
-            isolation = getattr(connection, "isolation_level", None)
-            self._commit_quietly()
-            setattr(connection, "isolation_level", None)
+        restore = enter_autocommit(self._connection)
         try:
             yield
         finally:
-            if switchable:
-                self._restore_autocommit_quietly(connection)
-            elif legacy:
-                self._restore_isolation_quietly(connection, isolation)
-            else:
-                self._commit_quietly()
-
-    @staticmethod
-    def _restore_isolation_quietly(
-        connection: Connection, isolation: Optional[str]
-    ) -> None:
-        """
-        Puts sqlite3's implicit transaction back the way the connection
-        had it. A driver that refuses the switch keeps the connection in
-        autocommit, and the refusal is dropped for the same reason
-        _restore_autocommit_quietly() drops its own.
-        """
-        try:
-            setattr(connection, "isolation_level", isolation)
-        except Exception:
-            pass
-
-    @staticmethod
-    def _restore_autocommit_quietly(connection: Connection) -> None:
-        """
-        Turns the driver's own transaction control back on. A driver that
-        refuses the switch keeps the connection in autocommit, and the
-        refusal is dropped: it runs in the `finally` of a block that may
-        already be raising, and the migration's own error is the one
-        worth reporting.
-        """
-        try:
-            setattr(connection, "autocommit", False)
-        except Exception:
-            pass
+            restore()
 
     def _execute(
         self, cursor: "Cursor", sql: str, params: Tuple[SqlValue, ...]

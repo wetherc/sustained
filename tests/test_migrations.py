@@ -18,6 +18,7 @@ from sustained import Model
 from sustained.ddl import drop_table
 from sustained.dialects import Dialects
 from sustained.exceptions import MigrationError, RehearsalRequired
+from sustained.execution import _set_quietly, legacy_sqlite_control
 from sustained.migrations import (
     REHEARSAL_FAILED,
     REHEARSAL_PASSED,
@@ -25,7 +26,6 @@ from sustained.migrations import (
     Migration,
     Migrator,
     _destructive_prefix_keys,
-    _legacy_sqlite_control,
     checked_unique_ids,
     create_table_migration,
     migration_checksum,
@@ -795,18 +795,18 @@ class TestLegacySqliteDetection(unittest.TestCase):
         conn = sqlite3.connect(":memory:", factory=MyConnection)
         self.addCleanup(conn.close)
         self.assertNotEqual(type(conn).__module__.partition(".")[0], "sqlite3")
-        self.assertTrue(_legacy_sqlite_control(conn))
+        self.assertTrue(legacy_sqlite_control(conn))
 
     def test_a_plain_connection_is_detected(self):
         conn = sqlite3.connect(":memory:")
         self.addCleanup(conn.close)
-        self.assertTrue(_legacy_sqlite_control(conn))
+        self.assertTrue(legacy_sqlite_control(conn))
 
     def test_another_driver_is_left_alone(self):
         class Psycopg2Connection:
             autocommit = False
 
-        self.assertFalse(_legacy_sqlite_control(Psycopg2Connection()))
+        self.assertFalse(legacy_sqlite_control(Psycopg2Connection()))
 
 
 class RefusingIsolationConnection:
@@ -818,7 +818,7 @@ class RefusingIsolationConnection:
 
 class TestIsolationRestore(unittest.TestCase):
     def test_a_refused_restore_is_dropped(self):
-        Migrator._restore_isolation_quietly(RefusingIsolationConnection(), "")
+        _set_quietly(RefusingIsolationConnection(), "isolation_level", "")
 
 
 class TestBaseline(MigrationTestCase):

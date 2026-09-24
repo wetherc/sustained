@@ -26,6 +26,7 @@ from contextvars import ContextVar
 from typing import (
     TYPE_CHECKING,
     AsyncIterator,
+    Callable,
     Dict,
     Iterator,
     List,
@@ -34,11 +35,12 @@ from typing import (
     Sequence,
     Tuple,
     Type,
+    TypeVar,
     Union,
     cast,
 )
 
-from sustained.execution import checked_columns, notify_statement
+from sustained.execution import checked_columns, enter_autocommit, notify_statement
 from sustained.types import (
     ColumnDescription,
     Connection,
@@ -55,9 +57,22 @@ if TYPE_CHECKING:
     from sustained.model import Model
     from sustained.types import AnyQuery
 
+_T = TypeVar("_T")
+
 
 class AiosqliteConnection(Protocol):
-    """What this module calls on an aiosqlite connection."""
+    """
+    What this module calls on an aiosqlite connection.
+
+    `_conn` and `_execute` are aiosqlite internals: the sqlite3 connection
+    and the call that runs a function on the thread that owns it. The
+    public `isolation_level` property touches the sqlite3 connection from
+    the event loop's thread, which sqlite3 refuses by default.
+    """
+
+    _conn: Connection
+
+    async def _execute(self, fn: Callable[..., _T], /, *args: object) -> _T: ...
 
     async def execute(
         self, sql: str, parameters: Sequence[SqlValue] = ..., /
@@ -137,6 +152,22 @@ class AsyncAdapter:
         the ROLLBACK reach different sessions, and the work commits.
         """
         yield
+
+    @asynccontextmanager
+    async def autocommit_scope(self) -> AsyncIterator[None]:
+        """
+        Runs the block with the driver's own transaction control off, for
+        a migration with transactional=False.
+
+        The base runs the block as it is and commits after it, which suits
+        a driver that runs in autocommit already, such as asyncpg. An
+        adapter over a driver that opens transactions of its own, such as
+        sqlite3, overrides it: SQLite ignores PRAGMA foreign_keys inside a
+        transaction, so the pragma that ends a table rebuild would not
+        turn the checks back on.
+        """
+        yield
+        await self.commit()
 
     async def close(self) -> None:
         """
@@ -267,6 +298,16 @@ class DbApiAsyncAdapter(AsyncAdapter):
             async with self._lock:
                 await asyncio.to_thread(cursor.close)
 
+    @asynccontextmanager
+    async def autocommit_scope(self) -> AsyncIterator[None]:
+        async with self._lock:
+            restore = await asyncio.to_thread(enter_autocommit, self._connection)
+        try:
+            yield
+        finally:
+            async with self._lock:
+                await asyncio.to_thread(restore)
+
     async def fetch(
         self, sql: str, params: Tuple[SqlValue, ...]
     ) -> Tuple[List[str], List[Sequence[RowValue]]]:
@@ -340,6 +381,17 @@ class AiosqliteAdapter(AsyncAdapter):
 
     async def rollback(self) -> None:
         await self._connection.rollback()
+
+    @asynccontextmanager
+    async def autocommit_scope(self) -> AsyncIterator[None]:
+        # The switch and its restore run on aiosqlite's own thread, which
+        # owns the sqlite3 connection.
+        connection = self._connection
+        restore = await connection._execute(enter_autocommit, connection._conn)
+        try:
+            yield
+        finally:
+            await connection._execute(restore)
 
     async def close(self) -> None:
         await self._connection.close()

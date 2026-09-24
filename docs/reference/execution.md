@@ -162,6 +162,7 @@ These live in `sustained.aio`. Every adapter has the same methods, so a query do
 | `await close()` | `None` |
 | `async with scope()` | the adapter one call runs on |
 | `async with session()` | `None`; keeps the block's statements on one session |
+| `async with autocommit_scope()` | `None`; runs the block with the driver's own transaction control off |
 | `driver_transaction_control()` | whether the driver opens the transaction |
 | `await begin_where_ddl_autocommits()` | the `BEGIN` such a driver still needs |
 
@@ -172,6 +173,8 @@ A row count of `-1` means the driver reported none. Add `returning()` to the wri
 Every call opens `scope()` before it runs. A plain adapter yields itself; a pool yields one of its adapters and takes it back at the end, so a statement and its commit stay on one connection.
 
 `async_transaction()` and `AsyncMigrator.rehearse()` run inside `session()`, from the `BEGIN` to the `COMMIT` or `ROLLBACK`. The base class does nothing there, because `aiosqlite` and `asyncpg` run every statement on one session. `DbApiAsyncAdapter` opens one cursor for the block and runs every statement on it. On DuckDB each cursor is its own session, so a cursor per statement would commit the work outside the transaction. A custom adapter that opens a new session per statement must override `session()` in the same way, or its transactions do not roll back.
+
+`AsyncMigrator` runs a migration with `transactional=False` inside `autocommit_scope()`. The base class runs the block and then calls `commit()`, which suits a driver that runs in autocommit. `DbApiAsyncAdapter` sets `autocommit` to `True` on a connection that reports `False`, or sets `isolation_level` to `None` on `sqlite3` in legacy transaction control, and puts the value back at the end. `AiosqliteAdapter` does the same on the `sqlite3` connection inside `aiosqlite`, on the thread that owns it. SQLite ignores `PRAGMA foreign_keys` inside a transaction, so without the switch the pragma that ends a table rebuild leaves the checks off. A custom adapter over a driver that opens transactions of its own overrides `autocommit_scope()`.
 
 ```python
 DbApiAsyncAdapter(connection)

@@ -195,6 +195,10 @@ class AsyncMigrator:
             async with async_transaction(self._adapter, self._dialect):
                 yield
             return
+        if not transactional:
+            async with self._adapter.autocommit_scope():
+                yield
+            return
         yield
         await self._adapter.commit()
 
