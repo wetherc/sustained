@@ -40,6 +40,7 @@ from typing import (
     Iterable,
     Iterator,
     List,
+    Mapping,
     NamedTuple,
     Optional,
     Protocol,
@@ -1186,11 +1187,17 @@ def render_script(
     migrations: Sequence[Migration],
     records: Sequence[AppliedRecord],
     direction: str = "up",
+    generated: Optional[Mapping[str, Migration]] = None,
 ) -> str:
     """
     The SQL a run would execute, rendered from the migrations and the
     tracking rows that were read, without touching a database. Both
     migrators call this, so either one renders the same script.
+
+    `generated` maps the id of each migration generated from the models
+    to the migration its tracking row stores. A 'down' script reverts
+    those from the stored statements, the same way down() does, and
+    stops at an applied id found in neither place.
     """
     timestamp = datetime.now(timezone.utc).isoformat()
     format_value = compiler.format_value
@@ -1253,8 +1260,9 @@ def render_script(
         applied_ids = [
             r.id for r in records if r.success and r.id not in repeatable_ids
         ]
+        stored = generated or {}
         for migration_id in reversed(applied_ids):
-            registered = by_id.get(migration_id)
+            registered = by_id.get(migration_id) or stored.get(migration_id)
             if registered is None or registered.down is None:
                 lines.append(
                     f"-- down: {migration_id} has no reversible step; stopping"
@@ -2981,14 +2989,26 @@ class Migrator:
         bookkeeping statements are included.
 
         Nothing is written, not even the tracking table: a database
-        without one reads as a database with no migrations applied.
+        without one reads as a database with no migrations applied. A
+        migration generated from the models renders its down step from
+        the statements its tracking row stores, as down() reverts it.
         """
+        records = self.read_applied_records()
+        generated: Dict[str, Migration] = {}
+        if direction == "down":
+            registered = {m.id for m in self._migrations}
+            for record in records:
+                if record.generated and record.id not in registered:
+                    restored = self._generated_migration(record.id)
+                    if restored is not None:
+                        generated[record.id] = restored
         return render_script(
             self._compiler,
             self._table_sql(),
             self._migrations,
-            self.read_applied_records(),
+            records,
             direction,
+            generated,
         )
 
     def _applied_versioned(self, ids: Optional[List[str]] = None) -> List[str]:

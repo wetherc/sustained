@@ -1332,6 +1332,31 @@ class TestGeneratedRows(MigrationTestCase):
         self.assertNotIn("gen_users", table_names(self.conn))
         self.assertEqual(later.applied(), [])
 
+    def test_a_down_script_reverts_a_generated_migration_from_its_row(self):
+        registered = Migration(
+            "001_base", up="CREATE TABLE base (id INTEGER)", down="DROP TABLE base"
+        )
+        Migrator(self.conn, [registered]).up(models=self.models())
+        later = Migrator(self.conn, [registered])
+        generated_id = later.applied()[-1]
+        script = later.script("down")
+        # The generated migration comes first, newest-first, and the
+        # script carries on past it to the registered one.
+        self.assertIn(f"-- down: {generated_id}\nDROP TABLE", script)
+        self.assertNotIn("stopping", script)
+        self.assertLess(
+            script.index(f"-- down: {generated_id}"), script.index("-- down: 001_base")
+        )
+
+    def test_a_down_script_stops_at_a_generated_row_without_steps(self):
+        Migrator(self.conn, []).up(models=self.models())
+        generated_id = Migrator(self.conn, []).applied()[0]
+        self.conn.execute("UPDATE sustained_migrations SET steps = NULL")
+        self.assertEqual(
+            Migrator(self.conn, []).script("down"),
+            f"-- down: {generated_id} has no reversible step; stopping",
+        )
+
     def test_a_generated_migration_without_a_down_step_still_refuses(self):
         Migrator(self.conn, []).up(models=self.models())
         applied_id = Migrator(self.conn, []).applied()[0]

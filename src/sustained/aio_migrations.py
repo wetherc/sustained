@@ -562,12 +562,22 @@ class AsyncMigrator:
         without one reads as a database with no migrations applied.
         Migrator.script() renders the same text.
         """
+        records = await self.read_applied_records()
+        generated: Dict[str, Migration] = {}
+        if direction == "down":
+            registered = {m.id for m in self._migrations}
+            for record in records:
+                if record.generated and record.id not in registered:
+                    restored = await self._generated_migration(record.id)
+                    if restored is not None:
+                        generated[record.id] = restored
         return render_script(
             self._compiler,
             self._table_sql(),
             self._migrations,
-            await self.read_applied_records(),
+            records,
             direction,
+            generated,
         )
 
     def _versioned(self) -> List[Migration]:

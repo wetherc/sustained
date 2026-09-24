@@ -650,6 +650,24 @@ class TestAsyncGeneratedDown(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("async_gen_users", table_names(self.conn))
         self.assertEqual(await migrator.applied(), [])
 
+    async def test_async_down_script_reverts_a_generated_migration(self):
+        from sustained.migrations import Migrator
+
+        Migrator(self.conn, []).up(models=self.models())
+        migrator = AsyncMigrator(self.adapter, [])
+        applied_id = (await migrator.applied())[0]
+        script = await migrator.script("down")
+        self.assertEqual(script, Migrator(self.conn, []).script("down"))
+        self.assertIn(f"-- down: {applied_id}\nDROP TABLE", script)
+
+    async def test_async_down_script_stops_at_a_generated_row_without_steps(self):
+        from sustained.migrations import Migrator
+
+        Migrator(self.conn, []).up(models=self.models())
+        self.conn.execute("UPDATE sustained_migrations SET steps = NULL")
+        script = await AsyncMigrator(self.adapter, []).script("down")
+        self.assertTrue(script.endswith("has no reversible step; stopping"))
+
 
 class TestAsyncRehearse(unittest.IsolatedAsyncioTestCase):
     """The async mirror of Migrator.rehearse()."""
