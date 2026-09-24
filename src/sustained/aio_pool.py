@@ -15,7 +15,16 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
-from typing import AsyncIterator, Awaitable, Callable, Dict, List, Sequence, Tuple
+from typing import (
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    Dict,
+    List,
+    Sequence,
+    Set,
+    Tuple,
+)
 
 from sustained.aio import AsyncAdapter
 from sustained.pool import PoolTimeout
@@ -52,6 +61,9 @@ class AsyncConnectionPool(AsyncAdapter):
         self._lock = asyncio.Lock()
         self._closed = False
         self._checked_out: Dict[int, AsyncAdapter] = {}
+        # Releases still running after their caller was cancelled. The set
+        # keeps a strong reference, so a pending reset is not collected.
+        self._resets: "Set[asyncio.Task[None]]" = set()
 
     @property
     def size(self) -> int:
@@ -67,8 +79,9 @@ class AsyncConnectionPool(AsyncAdapter):
             PoolTimeout: If no adapter becomes free within the timeout.
         """
         adapter = await self._take()
-        async with self._lock:
-            self._checked_out[id(adapter)] = adapter
+        # No await between the take and the record: a cancellation at a
+        # lock wait here would lose the adapter with its slot still counted.
+        self._checked_out[id(adapter)] = adapter
         return adapter
 
     async def _take(self) -> AsyncAdapter:
@@ -101,9 +114,21 @@ class AsyncConnectionPool(AsyncAdapter):
         Raises:
             ValueError: If the adapter is not checked out of this pool.
         """
-        async with self._lock:
-            if self._checked_out.pop(id(adapter), None) is None:
-                raise ValueError("That adapter is not checked out of this pool.")
+        if self._checked_out.pop(id(adapter), None) is None:
+            raise ValueError("That adapter is not checked out of this pool.")
+        # The reset runs in a task of its own under a shield. A caller
+        # cancelled during the rollback gets its CancelledError at once,
+        # and the reset still ends with the adapter back in the idle queue
+        # or discarded. Cancelled in place, it would lose the adapter with
+        # its slot still counted, and after max_size such cancellations
+        # every acquire would raise PoolTimeout.
+        task = asyncio.ensure_future(self._reset(adapter))
+        self._resets.add(task)
+        task.add_done_callback(self._resets.discard)
+        await asyncio.shield(task)
+
+    async def _reset(self, adapter: AsyncAdapter) -> None:
+        """Rolls a released adapter back and returns it to the idle queue."""
         try:
             await adapter.rollback()
         except Exception:
