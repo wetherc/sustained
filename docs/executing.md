@@ -163,7 +163,7 @@ Ticket.query().delete().whereIn('id', oldest).run()
 
 MySQL refuses `LIMIT` inside an `IN` subquery. On MySQL, wrap the subquery in a second one with `from_()`.
 
-A write commits when it finishes, unless it is inside a transaction, and returns the affected row count.
+A write commits when it finishes, unless it is inside a transaction, and returns the affected row count. A write that raises outside a transaction rolls back before the error reaches you, so the rows that a batch insert sent before the failing row do not stay pending for the next commit. `arun()` does the same. Inside a transaction the rollback belongs to the block.
 
 The count is `-1` when the driver reports none, which `asyncpg` does for a batched multi-row insert and for any statement whose status string ends without a number. If you need an exact count, add `returning()`. The write then returns one row for each row it wrote, so `len()` of that list is the count.
 

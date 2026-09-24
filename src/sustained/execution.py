@@ -263,6 +263,18 @@ def _set_quietly(connection: Connection, name: str, value: object) -> None:
         pass
 
 
+def rollback_quietly(connection: Connection) -> None:
+    """
+    Rolls back after a statement that failed, dropping a rollback error so
+    the statement's own error is the one the caller sees.
+    """
+    try:
+        if hasattr(connection, "rollback"):
+            connection.rollback()
+    except Exception:
+        pass
+
+
 def needs_explicit_begin(connection: Connection) -> bool:
     """
     Reports whether a transaction() block must open the transaction with

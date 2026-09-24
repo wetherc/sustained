@@ -713,7 +713,27 @@ async def run_async(
         AmbiguousColumns: If the result set repeats a column name.
     """
     async with resolve_adapter(adapter, query._model_class).scope() as resolved:
-        return await _run_query_on(query, resolved)
+        try:
+            return await _run_query_on(query, resolved)
+        except BaseException:
+            # A write that raises outside a transaction would leave its
+            # partial work pending, such as the rows an executemany sent
+            # before the failing one, and the next write's commit would
+            # keep them.
+            if query._stmt_type != "select" and not in_async_transaction(resolved):
+                await _rollback_quietly(resolved)
+            raise
+
+
+async def _rollback_quietly(adapter: AsyncAdapter) -> None:
+    """
+    Rolls back after a statement that failed, dropping a rollback error so
+    the statement's own error is the one the caller sees.
+    """
+    try:
+        await adapter.rollback()
+    except Exception:
+        pass
 
 
 async def _run_query_on(

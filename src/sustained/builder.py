@@ -40,6 +40,8 @@ from sustained.rendering import RenderContext
 from sustained.types import (
     Binding,
     CaseResult,
+    Connection,
+    Cursor,
     DbReturnValue,
     Expression,
     RowValue,
@@ -1275,84 +1277,100 @@ class QueryBuilder:
         Raises:
             AmbiguousColumns: If the result set repeats a column name.
         """
-        import time
-
         from sustained.execution import (
-            checked_columns,
             connection_scope,
             cursor_scope,
-            eager_load_paths,
-            fetch_models,
             in_transaction,
-            notify_statement,
+            rollback_quietly,
         )
 
         with (
             connection_scope(connection, self._model_class._connection) as conn,
             cursor_scope(conn) as cursor,
         ):
+            try:
+                return self._run_on(conn, cursor)
+            except BaseException:
+                # A write that raises outside a transaction() block would
+                # leave its partial work pending, such as the rows an
+                # executemany sent before the failing one, and the next
+                # write's commit would keep them. On Postgres the failure
+                # also leaves the session aborted.
+                if self._stmt_type != "select" and not in_transaction(conn):
+                    rollback_quietly(conn)
+                raise
 
-            use_executemany = (
-                self._stmt_type == "insert"
-                and len(self._insert_rows) > 1
-                and not self._returning_columns
-                # An Expression renders as SQL text with no placeholder, so
-                # the row would bind one value too many. Those inserts go
-                # through the one-statement path, which renders every row.
-                and not self._has_expression_values()
+    def _run_on(
+        self, conn: Connection, cursor: Cursor
+    ) -> Union[List["Model"], WriteResult]:
+        """run() itself, on a connection and cursor already open."""
+        import time
+
+        from sustained.execution import (
+            checked_columns,
+            eager_load_paths,
+            fetch_models,
+            in_transaction,
+            notify_statement,
+        )
+
+        use_executemany = (
+            self._stmt_type == "insert"
+            and len(self._insert_rows) > 1
+            and not self._returning_columns
+            # An Expression renders as SQL text with no placeholder, so
+            # the row would bind one value too many. Those inserts go
+            # through the one-statement path, which renders every row.
+            and not self._has_expression_values()
+        )
+        started = time.perf_counter()
+        if use_executemany:
+            # Render a single-row template and bind each row's values, so
+            # large inserts go through the driver's batch path.
+            template = self.clone()
+            template._insert_rows = [self._insert_rows[0]]
+            sql, _ = template.to_sql()
+            columns = list(self._insert_rows[0].keys())
+            prepared = [
+                self._compiler.prepare_execution(sql, tuple(row[c] for c in columns))
+                for row in self._insert_rows
+            ]
+            # A row whose preparation rewrote the statement, such as a
+            # None parameter on Athena, cannot share the batch; those
+            # inserts run one execute per row instead.
+            if all(row_sql == sql for row_sql, _ in prepared):
+                cursor.executemany(sql, [values for _, values in prepared])
+            else:
+                for row_sql, row_values in prepared:
+                    cursor.execute(row_sql, row_values)
+            # The listener sees every row's values, flattened in the
+            # order they were sent, so an audit of a batch insert holds
+            # the same information as an audit of single-row inserts.
+            notify_statement(
+                sql,
+                tuple(v for _, values in prepared for v in values),
+                time.perf_counter() - started,
             )
-            started = time.perf_counter()
-            if use_executemany:
-                # Render a single-row template and bind each row's values, so
-                # large inserts go through the driver's batch path.
-                template = self.clone()
-                template._insert_rows = [self._insert_rows[0]]
-                sql, _ = template.to_sql()
-                columns = list(self._insert_rows[0].keys())
-                prepared = [
-                    self._compiler.prepare_execution(
-                        sql, tuple(row[c] for c in columns)
-                    )
-                    for row in self._insert_rows
-                ]
-                # A row whose preparation rewrote the statement, such as a
-                # None parameter on Athena, cannot share the batch; those
-                # inserts run one execute per row instead.
-                if all(row_sql == sql for row_sql, _ in prepared):
-                    cursor.executemany(sql, [values for _, values in prepared])
-                else:
-                    for row_sql, row_values in prepared:
-                        cursor.execute(row_sql, row_values)
-                # The listener sees every row's values, flattened in the
-                # order they were sent, so an audit of a batch insert holds
-                # the same information as an audit of single-row inserts.
-                notify_statement(
-                    sql,
-                    tuple(v for _, values in prepared for v in values),
-                    time.perf_counter() - started,
-                )
-            else:
-                sql, params = self._compiler.prepare_execution(*self.to_sql())
-                cursor.execute(sql, params)
-                notify_statement(sql, params, time.perf_counter() - started)
+        else:
+            sql, params = self._compiler.prepare_execution(*self.to_sql())
+            cursor.execute(sql, params)
+            notify_statement(sql, params, time.perf_counter() - started)
 
-            if self._stmt_type == "select":
-                models = fetch_models(self._model_class, cursor)
-                eager_load_paths(self._model_class, conn, models, self._eager_relations)
-                return models
+        if self._stmt_type == "select":
+            models = fetch_models(self._model_class, cursor)
+            eager_load_paths(self._model_class, conn, models, self._eager_relations)
+            return models
 
-            if self._returning_columns and cursor.description is not None:
-                columns = checked_columns([desc[0] for desc in cursor.description])
-                result: WriteResult = [
-                    dict(zip(columns, row)) for row in cursor.fetchall()
-                ]
-            else:
-                result = cursor.rowcount
-            # Inside a transaction() context the context manager owns the
-            # commit; committing here would break atomicity.
-            if not in_transaction(conn) and hasattr(conn, "commit"):
-                conn.commit()
-            return result
+        if self._returning_columns and cursor.description is not None:
+            columns = checked_columns([desc[0] for desc in cursor.description])
+            result: WriteResult = [dict(zip(columns, row)) for row in cursor.fetchall()]
+        else:
+            result = cursor.rowcount
+        # Inside a transaction() context the context manager owns the
+        # commit; committing here would break atomicity.
+        if not in_transaction(conn) and hasattr(conn, "commit"):
+            conn.commit()
+        return result
 
     async def arun(
         self, adapter: Optional["AsyncAdapter"] = None
