@@ -61,8 +61,8 @@ class ConditionalClauseBuilder(ABC):
     def _quote_column(self, column: str) -> str:
         """Quotes a column reference through the compiler.
 
-        Anything that is not a plain (optionally dotted) identifier, such as
-        an aggregate call in a HAVING clause, is passed through untouched.
+        The compiler accepts an identifier path or a call on one column, such
+        as an aggregate in a HAVING clause, and raises on any other string.
         """
         return self._compiler.quote_column_reference(column)
 

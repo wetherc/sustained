@@ -1,6 +1,6 @@
 import unittest
 
-from sustained import Model
+from sustained import Model, QueryBuilder
 
 
 class TestLambdaJoinBuilder(unittest.TestCase):
@@ -47,7 +47,7 @@ class TestLambdaJoinBuilder(unittest.TestCase):
         query = self.User.query().join(
             "accounts",
             lambda j: j.on("accounts.id", "=", "users.account_id")
-            .andOn("accounts.enabled", "=", "1")
+            .andOn("accounts.enabled", "=", QueryBuilder.raw("1"))
             .orOn("accounts.owner_id", "=", "users.id"),
         )
         self.assertEqual(

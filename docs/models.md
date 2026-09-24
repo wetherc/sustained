@@ -62,7 +62,7 @@ Venue.citty
 # Declared columns: id, name, city, capacity.
 ```
 
-The check runs on the class and on the `Model.c` namespace below. It does not run on the string arguments to `select()` or `where()`, which Sustained passes through to the SQL as written.
+The check runs on the class and on the `Model.c` namespace below. It does not run on the string arguments to `select()` or `where()`. Sustained quotes those as column names and refuses a string that is not one, as [Filtering](./filtering) describes.
 
 Declaring `tableColumns` sets `columns` for you from the same keys, so a model with a typed schema gets the check without repeating the names:
 

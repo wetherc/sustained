@@ -13,7 +13,14 @@ Show.query().where(Show.c.sold_out == True)
 # SELECT * FROM shows WHERE shows.sold_out = TRUE
 ```
 
-The three-argument form takes a column name, an operator, and a value, and renders the name exactly as written. The typed form uses Python's own comparison operators against `Model.c`, checks the name against the model's declared columns, and qualifies it with the table. Strings are quicker to type and work on any column, including ones not declared on a model. Typed predicates combine with `&`, `|`, and `~`, so they suit compound and nested WHERE clauses.
+The three-argument form takes a column name, an operator, and a value, and quotes the name for the dialect. The typed form uses Python's own comparison operators against `Model.c`, checks the name against the model's declared columns, and qualifies it with the table. Strings are quicker to type and work on any column, including ones not declared on a model. Typed predicates combine with `&`, `|`, and `~`, so they suit compound and nested WHERE clauses.
+
+A column string is a column name such as `'city'` or `'venues.city'`, the star forms `'*'` and `'venues.*'`, or a call on one column such as `'COUNT(id)'` or `'COUNT(DISTINCT city)'`. Sustained quotes every name in it. Any other string raises `ValueError`, because a column name often comes from a request, such as a sort parameter, and SQL inside it would run against your database. The rule applies to `select()`, `where()`, `having()`, `orderBy()`, `groupBy()`, `distinctOn()`, and `returning()`, and `from_()` takes a table name only. Pass any other SQL through `QueryBuilder.raw()`:
+
+```python
+Venue.query().orderBy(QueryBuilder.raw('LOWER(name)'))
+# SELECT * FROM venues ORDER BY LOWER(name) ASC
+```
 
 The examples on this page use the venue booking schema from [Getting Started](./getting-started). You can use either syntax in any of them.
 

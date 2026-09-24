@@ -337,7 +337,7 @@ class QueryBuilder:
                 raise ValueError("Subqueries in FROM clause must have an alias.")
             self._from_source = (table, alias)
         elif isinstance(table, str):
-            quoted = self._compiler.quote_column_reference(table)
+            quoted = self._compiler.quote_table_reference(table)
             if alias:
                 quoted += f" AS {self._compiler.quote_identifier(alias)}"
             self._from_source = quoted

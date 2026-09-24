@@ -36,6 +36,22 @@ _IDENTIFIER_PATH_RE = re.compile(
     r"^[A-Za-z_][A-Za-z0-9_$]*(\.[A-Za-z_][A-Za-z0-9_$]*)*$"
 )
 
+# One plain identifier such as "users".
+_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_$]*$")
+
+# "users.*": every column of one table.
+_TABLE_STAR_RE = re.compile(
+    r"^(?P<table>[A-Za-z_][A-Za-z0-9_$]*(\.[A-Za-z_][A-Za-z0-9_$]*)*)\.\*$"
+)
+
+# A call with one column argument, such as "COUNT(*)", "SUM(tickets.price)",
+# or "COUNT(DISTINCT user_id)". The argument is quoted like any column.
+_COLUMN_CALL_RE = re.compile(
+    r"^(?P<name>[A-Za-z_][A-Za-z0-9_]*)\(\s*(?P<distinct>DISTINCT\s+)?"
+    r"(?P<arg>\*|[A-Za-z_][A-Za-z0-9_$]*(\.[A-Za-z_][A-Za-z0-9_$]*)*)\s*\)$",
+    re.IGNORECASE,
+)
+
 # Comparison operators accepted by the conditional clause builders. Anything
 # else must be expressed with QueryBuilder.raw() so that intent is explicit.
 _VALID_OPERATORS = frozenset(
@@ -198,6 +214,18 @@ class Compiler:
         return self._dialect.name
 
     def quote_identifier(self, identifier: str) -> str:
+        """
+        Quotes one identifier. This dialect writes identifiers bare, so a
+        name that is not letters, digits, underscores and dollar signs
+        would run as SQL, and it raises ValueError instead.
+        """
+        if not _IDENTIFIER_RE.match(identifier):
+            raise ValueError(
+                f"Identifier {identifier!r} is not a plain name. The "
+                f"{self.dialect_name()} dialect writes identifiers without "
+                "quotes, so a name takes letters, digits, underscores, and "
+                "dollar signs, and starts with a letter or an underscore."
+            )
         return identifier
 
     def quote_fully_qualified_identifier(self, identifier: str) -> str:
@@ -235,13 +263,30 @@ class Compiler:
             )
         return self.quote_identifier(alias)
 
+    def quote_table_reference(self, table: str) -> str:
+        """
+        Quotes a table name such as "users" or "sales.orders" that arrives
+        as free text. Any other string raises ValueError, so SQL in a table
+        name does not reach the FROM clause.
+        """
+        if not _IDENTIFIER_PATH_RE.match(table):
+            raise ValueError(
+                f"Table {table!r} is not a table name. A table name takes "
+                "letters, digits, and underscores, with a dot before a "
+                "schema-qualified part."
+            )
+        return self.quote_fully_qualified_identifier(table)
+
     def quote_column_reference(self, column: Union[str, Expression]) -> str:
         """
         Quotes a column reference for use inside a clause.
 
-        Plain identifier paths are quoted per dialect. The star selector and
-        anything more complex, such as a function call in a HAVING clause, is
-        passed through unchanged. Expression objects are raw SQL.
+        A string is an identifier path, "*", "table.*", or a call with one
+        column argument such as "COUNT(*)" or "SUM(tickets.price)". Every
+        identifier in it is quoted per dialect. A string can arrive from a
+        request, such as a sort parameter, so any other string raises
+        ValueError rather than reaching the SQL. Expression objects are raw
+        SQL.
         """
         if isinstance(column, Expression):
             return str(column)
@@ -253,7 +298,20 @@ class Compiler:
             return column
         if _IDENTIFIER_PATH_RE.match(column):
             return self.quote_fully_qualified_identifier(column)
-        return column
+        star = _TABLE_STAR_RE.match(column)
+        if star:
+            return f"{self.quote_fully_qualified_identifier(star['table'])}.*"
+        call = _COLUMN_CALL_RE.match(column)
+        if call:
+            distinct = "DISTINCT " if call["distinct"] else ""
+            arg = self.quote_column_reference(call["arg"])
+            return f"{call['name']}({distinct}{arg})"
+        raise ValueError(
+            f"Column reference {column!r} is not a column name. A string "
+            "names a column, such as 'users.id', 'users.*', or a call on one "
+            "column such as 'COUNT(*)' or 'SUM(price)'. Pass any other SQL "
+            "through QueryBuilder.raw()."
+        )
 
     def validate_operator(self, operator: str) -> str:
         """

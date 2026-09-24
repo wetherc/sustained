@@ -144,7 +144,7 @@ Groups can nest arbitrarily deep. The only limit is what your peers are willing 
 
 ## Filter the result of an aggregate
 
-`having()` takes the aggregate expression as written, because standard SQL does not let `HAVING` refer to column aliases.
+`having()` takes the aggregate call itself, such as `'SUM(tickets.price)'`, because standard SQL does not let `HAVING` refer to column aliases.
 
 ```python
 revenue = (

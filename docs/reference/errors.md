@@ -118,6 +118,9 @@ Invalid input the builder can detect. The method you call raises some of these, 
 | A row count that is negative | `limit`, `top`, `offset`, `page`, `cursor_page` |
 | `limit()` and `top()` in one query, or either one set twice | Paging |
 | An operator outside the allowlist | `where`, `having` |
+| A column string that is not a column name, `table.*`, or a call on one column | `where`, `having`, `join` |
+| A table name that is not a plain dotted name | `from_` |
+| A name that is not plain letters, digits, and underscores, on the default dialect | `join`, `on` |
 | A `Predicate` passed with an operator or a value | `where`, `having` |
 | A subquery in `from_()` with no alias | FROM |
 | Rows in a multi-row insert with different columns | `insert` |
@@ -136,6 +139,7 @@ Invalid input the builder can detect. The method you call raises some of these, 
 | Condition |
 | --- |
 | `UPDATE` or `DELETE` with no `where()` |
+| A column string that is not a column name, `table.*`, or a call on one column, in `select`, `orderBy`, `groupBy`, `distinctOn`, or `returning` |
 | Two different subqueries sharing a CTE alias |
 | `merge()` where every inserted column is a conflict column |
 | A raw fragment whose `?` count does not match its parameters |

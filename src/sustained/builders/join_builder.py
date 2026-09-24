@@ -16,7 +16,7 @@ from typing import (
 
 from ..naming import resolve_public_name
 from ..rendering import Renderable, RenderContext, render_part
-from ..types import BasicJoinMapping, JoinMappingWithThrough
+from ..types import BasicJoinMapping, Expression, JoinMappingWithThrough
 
 if TYPE_CHECKING:
     from ..builder import QueryBuilder
@@ -50,14 +50,16 @@ class OnClauseBuilder:
             )
         return cast(Callable[..., "OnClauseBuilder"], getattr(self, canonical))
 
-    def on(self, col1: str, op: str, col2: Union[str, "AnyQuery"]) -> "OnClauseBuilder":
+    def on(
+        self, col1: str, op: str, col2: Union[str, Expression, "AnyQuery"]
+    ) -> "OnClauseBuilder":
         """Adds an ON condition. If this is not the first condition, it's treated as AND ON."""
         conjunction = "AND" if self._conditions else ""
         self._add_condition(conjunction, col1, op, col2)
         return self
 
     def andOn(
-        self, col1: str, op: str, col2: Union[str, "AnyQuery"]
+        self, col1: str, op: str, col2: Union[str, Expression, "AnyQuery"]
     ) -> "OnClauseBuilder":
         """Adds an AND ON condition."""
         if not self._conditions:
@@ -68,7 +70,7 @@ class OnClauseBuilder:
         return self
 
     def orOn(
-        self, col1: str, op: str, col2: Union[str, "AnyQuery"]
+        self, col1: str, op: str, col2: Union[str, Expression, "AnyQuery"]
     ) -> "OnClauseBuilder":
         """Adds an OR ON condition."""
         if not self._conditions:
@@ -83,7 +85,7 @@ class OnClauseBuilder:
         conjunction: str,
         col1: str,
         op: str,
-        col2: Union[str, "AnyQuery"],
+        col2: Union[str, Expression, "AnyQuery"],
     ) -> None:
         # Late import to avoid circular dependency
         from ..builder import QueryBuilder
@@ -100,6 +102,8 @@ class OnClauseBuilder:
                 return f"{formatted_col1} {op} ({sub_query._render_sql(ctx)})"
 
             condition = render
+        elif isinstance(col2, Expression):
+            condition = f"{formatted_col1} {op} {col2}"
         else:
             formatted_col2 = self._compiler.quote_fully_qualified_identifier(col2)
             condition = f"{formatted_col1} {op} {formatted_col2}"

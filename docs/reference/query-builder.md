@@ -39,7 +39,7 @@ select(*columns)
 ```
 {: .sig #select}
 
-Adds columns to the `SELECT` list. Accepts strings, the `'col AS alias'` form, `Model.column` references, `ColumnExpr`, and any expression object. The `SELECT` list defaults to `*` when you never call `select()`.
+Adds columns to the `SELECT` list. Accepts strings, the `'col AS alias'` form, `Model.column` references, `ColumnExpr`, and any expression object. A string is a column name, `'*'`, `'table.*'`, or a call on one column such as `'COUNT(*)'`, and any other string raises `ValueError` at render time. Pass other SQL through `QueryBuilder.raw()`. The `SELECT` list defaults to `*` when you never call `select()`.
 
 ```python
 distinct()
@@ -181,7 +181,7 @@ groupBy(*columns)
 ```
 {: .sig #groupby}
 
-`GROUP BY`.
+`GROUP BY`. Takes column strings under the same rule as `select()`, or `QueryBuilder.raw()` expressions.
 
 ```python
 groupByRollup(*columns)
@@ -211,7 +211,7 @@ qualify(condition)
 
 Filters on window results. Takes a `Predicate` or a raw string. Raises `DialectError` at render time on every dialect but DuckDB.
 
-The `having` family mirrors the `where` family: the same bases, the same three prefixes, the same arguments, and the same errors. `having`, `andHavingIn`, `orHavingNotBetween`, and `havingRaw` all exist. Filter on the aggregate as written, as in `having('COUNT(id)', '>', 10)`, because standard SQL does not expose `SELECT` aliases to `HAVING`.
+The `having` family mirrors the `where` family: the same bases, the same three prefixes, the same arguments, and the same errors. `having`, `andHavingIn`, `orHavingNotBetween`, and `havingRaw` all exist. Filter on the aggregate call itself, as in `having('COUNT(id)', '>', 10)`, because standard SQL does not expose `SELECT` aliases to `HAVING`.
 
 ## Ordering, paging, and locking
 
@@ -220,7 +220,7 @@ orderBy(column, direction='asc')
 ```
 {: .sig #orderby}
 
-Sorts the result. Chain calls to sort by several columns. Any direction other than `asc` or `desc` raises `ValueError`.
+Sorts the result. Chain calls to sort by several columns. Any direction other than `asc` or `desc` raises `ValueError`. The column follows the same rule as `select()`, so a sort parameter taken from a request cannot carry SQL. Pass an expression through `QueryBuilder.raw()`.
 
 ```python
 limit(value)
