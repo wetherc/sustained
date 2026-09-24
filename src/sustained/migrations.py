@@ -1348,15 +1348,22 @@ def _checksum_repair(
 ) -> Optional[Tuple[str, str]]:
     """
     The checksum repair() writes on a row and the action it reports, or
-    None when the row stores the current checksum. A row that stores the
-    legacy checksum of the same statements is rewritten in the current
-    format, so a later split of the migration reads as an edit.
+    None when the row needs no rewrite. A row that stores the legacy
+    checksum of the same statements is rewritten in the current format,
+    so a later split of the migration reads as an edit.
+
+    A repeatable's row is rewritten only in that case. Its statements
+    match, so no re-run is pending. A repeatable whose statements changed
+    keeps its stored checksum, because rewriting it would cancel the
+    re-run the change scheduled.
     """
     current = migration_checksum(migration)
     if current is None or current == record.checksum:
         return None
     if record.checksum is not None and record.checksum == _legacy_checksum(migration):
         return current, f"updated the checksum format of '{record.id}'"
+    if migration.repeatable:
+        return None
     return current, f"updated the stored checksum of '{record.id}'"
 
 
@@ -2241,10 +2248,12 @@ class Migrator:
         every action taken. Schema changes a failed attempt left behind
         are not touched; clean those up first.
 
-        Repeatables keep their stored checksums. For them a changed
+        A changed repeatable keeps its stored checksum. For it a changed
         checksum schedules a re-run, and rewriting the row here would
         cancel that run without the new contents ever reaching the
-        database.
+        database. A repeatable row that stores the checksum format of a
+        release before 2.25.0 for unchanged statements is rewritten in the
+        current format, like any other row.
         """
         self._refuse_open_transaction("repair")
         records = self.applied_records()
@@ -2263,7 +2272,7 @@ class Migrator:
                 actions.append(f"removed the failed attempt of '{record.id}'")
                 continue
             migration = by_id.get(record.id)
-            if migration is None or migration.repeatable:
+            if migration is None:
                 continue
             rewrite = _checksum_repair(record, migration)
             if rewrite is not None:

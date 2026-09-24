@@ -667,10 +667,12 @@ class AsyncMigrator:
         every action taken. Schema changes a failed attempt left behind
         are not touched; clean those up first.
 
-        Repeatables keep their stored checksums. For them a changed
+        A changed repeatable keeps its stored checksum. For it a changed
         checksum schedules a re-run, and rewriting the row here would
         cancel that run without the new contents ever reaching the
-        database.
+        database. A repeatable row that stores the checksum format of a
+        release before 2.25.0 for unchanged statements is rewritten in the
+        current format, like any other row.
         """
         self._refuse_open_transaction("repair")
         records = await self.applied_records()
@@ -689,7 +691,7 @@ class AsyncMigrator:
                 actions.append(f"removed the failed attempt of '{record.id}'")
                 continue
             migration = by_id.get(record.id)
-            if migration is None or migration.repeatable:
+            if migration is None:
                 continue
             rewrite = _checksum_repair(record, migration)
             if rewrite is not None:

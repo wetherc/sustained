@@ -640,7 +640,7 @@ $ sustained repair
 repaired updated the stored checksum of 'create_venues'
 ```
 
-Repeatables are the exception. For a repeatable, a changed checksum schedules a re-run, so `repair` leaves the checksum alone and the next `migrate` runs the new contents.
+Repeatables are the exception. For a repeatable, a changed checksum schedules a re-run, so `repair` leaves the checksum of a changed repeatable alone and the next `migrate` runs the new contents.
 
 ## Deploy from two machines at once
 

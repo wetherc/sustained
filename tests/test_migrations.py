@@ -580,6 +580,32 @@ class TestValidateAndRepair(MigrationTestCase):
         )
         self.assertEqual(migrator.repair(), [])
 
+    def test_repair_rewrites_a_legacy_repeatable_and_keeps_it_applied(self):
+        repeatable = Migration("r", up="CREATE VIEW rv AS SELECT 1", repeatable=True)
+        Migrator(self.conn, [repeatable]).up()
+        self.store_legacy_checksum(repeatable)
+        migrator = Migrator(self.conn, [repeatable])
+        self.assertEqual(migrator.repair(), ["updated the checksum format of 'r'"])
+        self.assertEqual(
+            migrator.applied_records()[0].checksum, migration_checksum(repeatable)
+        )
+        self.assertEqual(migrator.pending(), [])
+
+    def test_repair_leaves_a_changed_legacy_repeatable_pending(self):
+        Migrator(
+            self.conn,
+            [Migration("r", up="CREATE VIEW rv AS SELECT 1", repeatable=True)],
+        ).up()
+        self.store_legacy_checksum(
+            Migration("r", up="CREATE VIEW rv AS SELECT 1", repeatable=True)
+        )
+        changed = Migrator(
+            self.conn,
+            [Migration("r", up="CREATE VIEW rv2 AS SELECT 2", repeatable=True)],
+        )
+        self.assertEqual(changed.repair(), [])
+        self.assertEqual([m.id for m in changed.pending()], ["r"])
+
     def test_repair_adopts_legacy_rows_without_checksums(self):
         self.conn.execute(
             "CREATE TABLE sustained_migrations "
