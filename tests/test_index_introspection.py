@@ -75,11 +75,15 @@ class TestMysqlIndexRead(unittest.TestCase):
 
     def test_a_plain_index_is_read(self):
         schema = self.read([("t", "idx_a", 1, "a")])
-        self.assertEqual(IntrospectedIndex(("a",), False), schema["t"].indexes["idx_a"])
+        self.assertEqual(
+            IntrospectedIndex(("a",), False, name="idx_a"), schema["t"].indexes["idx_a"]
+        )
 
     def test_a_unique_index_reports_unique(self):
         schema = self.read([("t", "uq_a", 0, "a")])
-        self.assertEqual(IntrospectedIndex(("a",), True), schema["t"].indexes["uq_a"])
+        self.assertEqual(
+            IntrospectedIndex(("a",), True, name="uq_a"), schema["t"].indexes["uq_a"]
+        )
 
     def test_a_multi_column_index_keeps_its_order(self):
         schema = self.read([("t", "idx_ab", 1, "a"), ("t", "idx_ab", 1, "b")])
@@ -110,12 +114,15 @@ class TestMssqlIndexRead(unittest.TestCase):
 
     def test_a_plain_index_is_read(self):
         schema = self.read([("t", "idx_a", False, "a")])
-        self.assertEqual(IntrospectedIndex(("a",), False), schema["t"].indexes["idx_a"])
+        self.assertEqual(
+            IntrospectedIndex(("a",), False, name="idx_a"), schema["t"].indexes["idx_a"]
+        )
 
     def test_a_create_unique_index_reports_unique(self):
         schema = self.read([("t", "uq_ab", True, "a"), ("t", "uq_ab", True, "b")])
         self.assertEqual(
-            IntrospectedIndex(("a", "b"), True), schema["t"].indexes["uq_ab"]
+            IntrospectedIndex(("a", "b"), True, name="uq_ab"),
+            schema["t"].indexes["uq_ab"],
         )
 
     def test_missing_sys_views_degrade_to_no_indexes(self):
@@ -167,8 +174,12 @@ class TestDuckdbIndexRead(unittest.TestCase):
         self.connection.execute("CREATE INDEX idx_a ON t (a)")
         self.connection.execute("CREATE UNIQUE INDEX uq_b ON t (b)")
         schema = introspect_schema(self.connection, Dialects.DUCKDB)
-        self.assertEqual(IntrospectedIndex(("a",), False), schema["t"].indexes["idx_a"])
-        self.assertEqual(IntrospectedIndex(("b",), True), schema["t"].indexes["uq_b"])
+        self.assertEqual(
+            IntrospectedIndex(("a",), False, name="idx_a"), schema["t"].indexes["idx_a"]
+        )
+        self.assertEqual(
+            IntrospectedIndex(("b",), True, name="uq_b"), schema["t"].indexes["uq_b"]
+        )
 
     def test_a_model_with_an_index_applies_twice(self):
         """The second up() must not recreate an index that already exists."""

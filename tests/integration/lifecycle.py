@@ -34,6 +34,7 @@ TABLES = (
     "it_events",
     "it_lock_a",
     "it_lock_b",
+    "It_Legacy",
 )
 TRACKING = ("sustained_migrations", "sustained_rehearsals")
 VIEWS = ("it_widget_names",)

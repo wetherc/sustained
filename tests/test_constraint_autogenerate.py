@@ -11,6 +11,7 @@ from sustained.autogenerate import autogenerate, diff_schema
 from sustained.dialects import Dialects
 from sustained.introspect import (
     IntrospectedForeignKey,
+    Snapshot,
     introspect_schema,
     normalize_check,
 )
@@ -370,7 +371,9 @@ class TestForeignKeyRestoreWithoutTargetColumns(unittest.TestCase):
         fk = IntrospectedForeignKey(
             columns=("owner_id",), target_table="owners", target_columns=()
         )
-        sql = _introspected_fk_sql(compiler, "items", "fk_items_owner", fk)
+        sql = _introspected_fk_sql(
+            compiler, "items", "fk_items_owner", fk, Snapshot(), "items"
+        )
         self.assertEqual(
             sql,
             'ALTER TABLE items ADD CONSTRAINT "fk_items_owner" '
@@ -384,7 +387,11 @@ class TestForeignKeyRestoreWithoutTargetColumns(unittest.TestCase):
         fk = IntrospectedForeignKey(
             columns=("owner_id",), target_table="?", target_columns=()
         )
-        self.assertIsNone(_introspected_fk_sql(compiler, "items", "fk_items_owner", fk))
+        self.assertIsNone(
+            _introspected_fk_sql(
+                compiler, "items", "fk_items_owner", fk, Snapshot(), "items"
+            )
+        )
 
 
 class TestDuplicateConstraintNames(unittest.TestCase):

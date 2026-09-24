@@ -72,6 +72,11 @@ class IntrospectedColumn(NamedTuple):
     `collation` is the collating sequence the column was declared with,
     or None when it names none. The SQLite read takes it from the stored
     CREATE TABLE statement, so a table rebuild can write it back.
+
+    `name` is the column's name as the catalog spells it. A snapshot
+    keys every name in lower case, and Postgres takes a quoted name as
+    written, so a statement that names "Email" as "email" names another
+    column. It is None where a read does not keep it.
     """
 
     raw_type: str
@@ -84,6 +89,7 @@ class IntrospectedColumn(NamedTuple):
     default_sql: Optional[str] = None
     autoincrement: bool = False
     collation: Optional[str] = None
+    name: Optional[str] = None
 
     def restated_default(self) -> Optional[str]:
         """The default as SQL text for a DEFAULT clause, or None."""
@@ -98,11 +104,15 @@ class IntrospectedIndex(NamedTuple):
     engine drops that index with the constraint, through DROP
     CONSTRAINT, and refuses DROP INDEX on it. On SQLite it is an
     automatic index, which only a table rebuild removes.
+
+    `name` is the index name as the catalog spells it, or None where a
+    read does not keep it.
     """
 
     columns: Tuple[str, ...]
     unique: bool
     constraint: bool = False
+    name: Optional[str] = None
 
 
 class IntrospectedForeignKey(NamedTuple):
@@ -110,7 +120,8 @@ class IntrospectedForeignKey(NamedTuple):
     One foreign key constraint as reported by the database. On engines
     whose catalog does not say where a key points, target_table is '?'
     and target_columns is empty. Actions are None when the engine does
-    not report them.
+    not report them. `name` is the constraint name as the catalog spells
+    it, or None where a read does not keep it.
     """
 
     columns: Tuple[str, ...]
@@ -118,6 +129,7 @@ class IntrospectedForeignKey(NamedTuple):
     target_columns: Tuple[str, ...] = ()
     on_delete: Optional[str] = None
     on_update: Optional[str] = None
+    name: Optional[str] = None
 
 
 # Defaults for tables introspected without keys, indexes, or checks. A
@@ -137,6 +149,10 @@ class IntrospectedTable(NamedTuple):
     expression of a CHECK written without a CONSTRAINT name, at the
     column or at the table level. A trigger is its CREATE TRIGGER
     statement as SQLite stored it.
+
+    `name` is the table name as the catalog spells it, and `check_names`
+    maps each lowercased check name to its spelling. Either is empty
+    where a read does not keep it.
     """
 
     columns: Dict[str, IntrospectedColumn]
@@ -146,6 +162,13 @@ class IntrospectedTable(NamedTuple):
     checks: Mapping[str, str] = _NO_CHECKS
     unnamed_checks: Tuple[str, ...] = ()
     triggers: Tuple[str, ...] = ()
+    name: Optional[str] = None
+    check_names: Mapping[str, str] = _NO_CHECKS
+
+    def spelled_column(self, key: str) -> str:
+        """A lowercased column key as the catalog spells the column."""
+        column = self.columns.get(key)
+        return key if column is None or column.name is None else column.name
 
     @property
     def foreign_key_targets(self) -> Dict[str, str]:
@@ -868,6 +891,7 @@ def _sqlite_plan() -> SchemaPlan:
                 primary_key=bool(pk),
                 default=default,
                 collation=collations.get(name.lower()),
+                name=name,
             )
             if pk:
                 primary_key.append(name.lower())
@@ -911,7 +935,7 @@ def _sqlite_plan() -> SchemaPlan:
                 continue
             index_columns = tuple(name.lower() for name in names)
             indexes[index_name.lower()] = IntrospectedIndex(
-                index_columns, unique, constraint=origin == "u"
+                index_columns, unique, constraint=origin == "u", name=index_name
             )
 
         schema[table.lower()] = IntrospectedTable(
@@ -922,6 +946,7 @@ def _sqlite_plan() -> SchemaPlan:
             checks=_sqlite_table_checks(create_sql),
             unnamed_checks=_sqlite_unnamed_checks(create_sql),
             triggers=tuple(triggers.get(table.lower(), ())),
+            name=table,
         )
     return schema
 
@@ -1075,6 +1100,7 @@ def _information_schema_plan(
     scoped_read = catalog.current_schema_sql is not None
 
     columns_by_table: Dict[str, Dict[str, IntrospectedColumn]] = {}
+    spelled_tables: Dict[str, str] = {}
 
     def columns_query(with_comment: bool) -> str:
         # The join to information_schema.tables keeps views out. A view's
@@ -1130,6 +1156,7 @@ def _information_schema_plan(
             and "MARIADB" not in str(row[schema_index + 2]).upper()
         ):
             default_sql = mysql_default_sql(str(default), extra, raw_type)
+        spelled_tables.setdefault(str(table).lower(), str(table))
         columns_by_table.setdefault(str(table).lower(), {})[str(name).lower()] = (
             IntrospectedColumn(
                 raw_type=raw_type,
@@ -1139,6 +1166,7 @@ def _information_schema_plan(
                 comment=comment,
                 default_sql=default_sql,
                 autoincrement="AUTO_INCREMENT" in extra.upper(),
+                name=str(name),
             )
         )
 
@@ -1171,26 +1199,30 @@ def _information_schema_plan(
             # No constraint views, or no table_schema on this one.
             continue
         constraint_columns: Dict[Tuple[str, str, str], List[str]] = {}
+        spelled_constraints: Dict[str, str] = {}
         for table, ctype, cname, column in constraint_rows:
             key = (table.lower(), ctype.upper(), cname.lower())
             constraint_columns.setdefault(key, []).append(column.lower())
+            spelled_constraints.setdefault(cname.lower(), cname)
         for (table, ctype, cname), cols in constraint_columns.items():
+            spelled = spelled_constraints[cname]
             if ctype == "PRIMARY KEY":
                 primary_keys[table] = cols
             elif ctype == "UNIQUE":
                 unique_indexes.setdefault(table, {})[cname] = IntrospectedIndex(
-                    tuple(cols), True, constraint=True
+                    tuple(cols), True, constraint=True, name=spelled
                 )
             elif ctype == "FOREIGN KEY":
                 # The referenced table is engine-specific to resolve;
                 # presence is enough for constraint notes.
                 foreign_keys.setdefault(table, {})[cname] = IntrospectedForeignKey(
-                    columns=tuple(cols), target_table="?"
+                    columns=tuple(cols), target_table="?", name=spelled
                 )
         constraints_read = True
         break
 
     checks: Dict[str, Dict[str, str]] = {}
+    check_names: Dict[str, Dict[str, str]] = {}
     checks_read = False
     if catalog.reads_checks:
         try:
@@ -1209,6 +1241,7 @@ def _information_schema_plan(
                 if _is_generated_not_null_check(name, expression):
                     continue
                 checks.setdefault(str(table).lower(), {})[name] = expression
+                check_names.setdefault(str(table).lower(), {})[name] = str(cname)
             checks_read = True
         except Exception:
             # An engine too old for the check view; degrade to no checks.
@@ -1230,6 +1263,8 @@ def _information_schema_plan(
             foreign_keys=foreign_keys.get(table, {}),
             indexes=unique_indexes.get(table, {}),
             checks=checks.get(table, {}),
+            name=spelled_tables.get(table),
+            check_names=check_names.get(table, {}),
         )
     return schema
 
@@ -1255,6 +1290,7 @@ def _replace_foreign_keys(schema: Snapshot, rows: Sequence[Sequence[RowValue]]) 
             target_columns=tuple(str(r[4]).lower() for r in key_rows),
             on_delete=str(first[5]).replace("_", " ").upper(),
             on_update=str(first[6]).replace("_", " ").upper(),
+            name=str(first[1]),
         )
     for table, existing in list(schema.items()):
         schema[table] = existing._replace(foreign_keys=foreign_keys.get(table, {}))
@@ -1298,13 +1334,15 @@ def _mssql_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
             "ORDER BY t.name, i.name, ic.key_ordinal"
         )
         parts: Dict[Tuple[str, str, bool], List[str]] = {}
+        spelled: Dict[str, str] = {}
         for table, name, is_unique, column in index_rows:
             key = (str(table).lower(), str(name).lower(), bool(is_unique))
             parts.setdefault(key, []).append(str(column).lower())
+            spelled.setdefault(str(name).lower(), str(name))
         plain: Dict[str, Dict[str, IntrospectedIndex]] = {}
         for (table, name, unique), columns in parts.items():
             plain.setdefault(table, {})[name] = IntrospectedIndex(
-                tuple(columns), unique
+                tuple(columns), unique, name=spelled[name]
             )
         _merge_plain_indexes(schema, plain)
     except Exception:
@@ -1409,7 +1447,7 @@ def _duckdb_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
             if columns is None:
                 continue
             plain.setdefault(str(table).lower(), {})[str(name).lower()] = (
-                IntrospectedIndex(columns, bool(is_unique))
+                IntrospectedIndex(columns, bool(is_unique), name=str(name))
             )
         _merge_plain_indexes(schema, plain)
     except Exception:
@@ -1515,6 +1553,7 @@ def _postgres_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
     table_filter = _scoped_filter("c.table_schema", "current_schema()", schemas)
     namespace_filter = _scoped_filter("n.nspname", "current_schema()", schemas)
     columns_by_table: Dict[str, Dict[str, IntrospectedColumn]] = {}
+    spelled_tables: Dict[str, str] = {}
     column_rows = yield (
         "SELECT c.table_name, c.column_name, c.data_type, c.udt_name, "
         "c.character_maximum_length, c.numeric_precision, c.numeric_scale, "
@@ -1532,6 +1571,7 @@ def _postgres_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
         char_length, precision, scale, is_nullable, default = row[4:9]
         if len(row) > 9 and row[9] is not None:
             _one_schema_per_table(schema_of_table, table.lower(), str(row[9]))
+        spelled_tables.setdefault(table.lower(), table)
         columns_by_table.setdefault(table.lower(), {})[name.lower()] = (
             IntrospectedColumn(
                 raw_type=_postgres_column_type(
@@ -1540,6 +1580,7 @@ def _postgres_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
                 nullable=str(is_nullable).upper() == "YES",
                 primary_key=False,
                 default=None if default is None else str(default),
+                name=name,
             )
         )
 
@@ -1562,7 +1603,9 @@ def _postgres_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
             "ORDER BY t.relname, i.relname, k.ord"
         )
         index_columns: Dict[Tuple[str, str, bool, bool, bool], List[Optional[str]]] = {}
+        spelled_indexes: Dict[Tuple[str, str], str] = {}
         for table, index, unique, primary, attname, backs in index_rows:
+            spelled_indexes[(str(table).lower(), str(index).lower())] = str(index)
             key = (
                 str(table).lower(),
                 str(index).lower(),
@@ -1584,7 +1627,10 @@ def _postgres_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
                 primary_keys[table] = key_columns
             else:
                 indexes.setdefault(table, {})[index] = IntrospectedIndex(
-                    key_columns, unique, constraint=backs
+                    key_columns,
+                    unique,
+                    constraint=backs,
+                    name=spelled_indexes[(table, index)],
                 )
     except Exception:
         # No pg_index to read; degrade to columns without keys or indexes.
@@ -1627,6 +1673,7 @@ def _postgres_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
                 target_columns=tuple(str(r[4]).lower() for r in rows),
                 on_delete=_pg_fk_action(first[5]),
                 on_update=_pg_fk_action(first[6]),
+                name=str(first[1]),
             )
         constraints_read = True
     except Exception:
@@ -1634,6 +1681,7 @@ def _postgres_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
         pass
 
     checks: Dict[str, Dict[str, str]] = {}
+    check_names: Dict[str, Dict[str, str]] = {}
     checks_read = False
     try:
         # The check_constraints view joins on the schema and the name,
@@ -1656,6 +1704,7 @@ def _postgres_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
             if _is_generated_not_null_check(name, expression):
                 continue
             checks.setdefault(str(table).lower(), {})[name] = expression
+            check_names.setdefault(str(table).lower(), {})[name] = str(cname)
         checks_read = True
     except Exception:
         # No pg_constraint to read; degrade to no checks.
@@ -1730,6 +1779,8 @@ def _postgres_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
             foreign_keys=foreign_keys.get(table, {}),
             indexes=indexes.get(table, {}),
             checks=checks.get(table, {}),
+            name=spelled_tables.get(table),
+            check_names=check_names.get(table, {}),
         )
     return schema
 
@@ -1818,6 +1869,7 @@ def _mysql_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
             "ORDER BY table_name, index_name, seq_in_index"
         )
         parts: Dict[Tuple[str, str, bool], List[Optional[str]]] = {}
+        spelled: Dict[str, str] = {}
         for table, name, non_unique, column in index_rows:
             if str(name).upper() == "PRIMARY":
                 continue
@@ -1825,6 +1877,7 @@ def _mysql_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
             parts.setdefault(key, []).append(
                 None if column is None else str(column).lower()
             )
+            spelled.setdefault(str(name).lower(), str(name))
         plain: Dict[str, Dict[str, IntrospectedIndex]] = {}
         for (table, name, unique), columns in parts.items():
             if any(column is None for column in columns):
@@ -1832,7 +1885,9 @@ def _mysql_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
                 # be compared against a model's column list.
                 continue
             plain.setdefault(table, {})[name] = IntrospectedIndex(
-                tuple(cast(str, column) for column in columns), unique
+                tuple(cast(str, column) for column in columns),
+                unique,
+                name=spelled[name],
             )
         _merge_plain_indexes(schema, plain)
     except Exception:

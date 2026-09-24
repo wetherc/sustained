@@ -222,7 +222,11 @@ class TestDuckDbConstraintsFallback(DuckDbConstraintTestCase):
         ]
         self.assertEqual(
             list(table.foreign_keys.values()),
-            [IntrospectedForeignKey(("parent_id",), "?")],
+            [
+                IntrospectedForeignKey(
+                    ("parent_id",), "?", name="dc_kids_parent_id_id_fkey"
+                )
+            ],
         )
         self.assertIn("dc_kids_q_check", table.checks)
 

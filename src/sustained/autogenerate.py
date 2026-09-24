@@ -448,7 +448,7 @@ def _apply_renames(
         old_key, new_key = old.lower(), new.lower()
         if old_key not in actual:
             raise ValueError(f"Cannot rename unknown table '{old}'.")
-        actual[new_key] = actual.pop(old_key)
+        actual[new_key] = actual.pop(old_key)._replace(name=new)
         # The engine points a child's foreign keys at the renamed table.
         # A SQLite rebuild writes the stored triggers back, and the
         # rename that runs first has rewritten them in the database.
@@ -479,7 +479,7 @@ def _apply_renames(
             raise ValueError(f"Cannot rename unknown column '{path}'.")
         old_table = actual[table_key]
         columns = old_table.columns
-        columns[new_key] = columns.pop(old_key)
+        columns[new_key] = columns.pop(old_key)._replace(name=new_name)
         # Engines rewrite the column name inside indexes, keys, and
         # constraints on rename; mirror that so nothing diffs as changed.
         renamed_indexes = {
@@ -621,7 +621,7 @@ def diff_schema(
 
     for table_key in actual:
         if table_key not in declared and table_key not in excluded:
-            diff.extra_tables.append(table_key)
+            diff.extra_tables.append(actual[table_key].name or table_key)
 
     return diff
 
@@ -687,7 +687,7 @@ def _diff_columns(
     declared_names = {c.lower() for c in model.tableColumns}
     for name in actual_table.columns:
         if name not in declared_names:
-            diff.extra_columns.append((table_name, name))
+            diff.extra_columns.append((table_name, actual_table.spelled_column(name)))
 
 
 def _column_type_changed(
@@ -779,7 +779,9 @@ def _diff_indexes(
                 "exists, so recreate the table by hand."
             )
             continue
-        diff.extra_indexes.append((model.tableName or "", name, actual_index))
+        diff.extra_indexes.append(
+            (model.tableName or "", actual_index.name or name, actual_index)
+        )
 
 
 def _fk_action(action: Optional[str], compiler: Optional["Compiler"] = None) -> str:
@@ -944,7 +946,9 @@ def _diff_declared_constraints(
                     f"declares. {recreate}"
                 )
             else:
-                diff.extra_foreign_keys.append((table_name, name, actual_fk))
+                diff.extra_foreign_keys.append(
+                    (table_name, actual_fk.name or name, actual_fk)
+                )
 
     if snapshot.checks_read:
         check_tests: List[_PairTest[Check, str]] = (
@@ -988,7 +992,8 @@ def _diff_declared_constraints(
             # write can still read as one they do not, and generation
             # must not refuse a whole diff over that doubt. allow_drops
             # still drops it.
-            diff.extra_checks.append((table_name, name, expression))
+            spelled = actual_table.check_names.get(name, name)
+            diff.extra_checks.append((table_name, spelled, expression))
             diff.constraint_notes.append(
                 f"{table_name} has check '{name}' that no model declares: "
                 f"{expression!r}. Pass allow_drops=True to drop it."
@@ -1218,7 +1223,8 @@ def _extra_table_drops(
         )
     key_drops = [
         compiler.compile_drop_foreign_key(
-            compiler.quote_fully_qualified_ddl_identifier(spelled[key]), name
+            compiler.quote_fully_qualified_ddl_identifier(spelled[key]),
+            fk.name or name,
         )
         for key in keys
         if key in in_cycle
@@ -1817,7 +1823,10 @@ def autogenerate(
         down_steps.insert(
             0,
             compiler.compile_create_index(
-                index.name, table_sql, list(actual_index.columns), actual_index.unique
+                index.name,
+                table_sql,
+                _spelled_columns(actual[(model.tableName or "").lower()], actual_index),
+                actual_index.unique,
             ),
         )
         down_steps.insert(0, compiler.compile_drop_index(index.name, table_sql))
@@ -1845,7 +1854,9 @@ def autogenerate(
             table_sql = model._qualified_table_sql(compiler)
             up_steps.append(compiler.compile_drop_foreign_key(table_sql, fk.name))
             up_steps.append(_declared_fk_sql(compiler, table_sql, fk))
-            restore = _introspected_fk_sql(compiler, table_sql, fk.name, actual_fk)
+            restore = _introspected_fk_sql(
+                compiler, table_sql, fk.name, actual_fk, actual, model.tableName or ""
+            )
             if restore is None:
                 reversible = False
             else:
@@ -1858,7 +1869,9 @@ def autogenerate(
                 continue
             table_sql = compiler.quote_fully_qualified_ddl_identifier(table)
             up_steps.append(compiler.compile_drop_foreign_key(table_sql, name))
-            restore = _introspected_fk_sql(compiler, table_sql, name, actual_fk)
+            restore = _introspected_fk_sql(
+                compiler, table_sql, name, actual_fk, actual, table
+            )
             if restore is None:
                 reversible = False
             else:
@@ -1877,6 +1890,7 @@ def autogenerate(
             if table.lower() in rebuild_tables:
                 continue
             table_sql = compiler.quote_fully_qualified_ddl_identifier(table)
+            actual_table = actual[table.lower()]
             if actual_index.constraint:
                 # The index belongs to a UNIQUE constraint, and the engine
                 # refuses DROP INDEX on it.
@@ -1884,7 +1898,7 @@ def autogenerate(
                 down_steps.insert(
                     0,
                     compiler.compile_add_unique(
-                        table_sql, name, list(actual_index.columns)
+                        table_sql, name, _spelled_columns(actual_table, actual_index)
                     ),
                 )
                 continue
@@ -1892,7 +1906,10 @@ def autogenerate(
             down_steps.insert(
                 0,
                 compiler.compile_create_index(
-                    name, table_sql, list(actual_index.columns), actual_index.unique
+                    name,
+                    table_sql,
+                    _spelled_columns(actual_table, actual_index),
+                    actual_index.unique,
                 ),
             )
         for table, name in diff.extra_columns:
@@ -1982,29 +1999,47 @@ def _declared_fk_sql(compiler: "Compiler", table_sql: str, fk: ForeignKey) -> st
     )
 
 
+def _spelled_columns(table: IntrospectedTable, index: IntrospectedIndex) -> List[str]:
+    """An introspected index's columns as the catalog spells them."""
+    return [table.spelled_column(column) for column in index.columns]
+
+
 def _introspected_fk_sql(
     compiler: "Compiler",
     table_sql: str,
     name: str,
     fk: IntrospectedForeignKey,
+    snapshot: Snapshot,
+    table: str,
 ) -> Optional[str]:
     """
-    Renders an introspected foreign key back into an ADD CONSTRAINT
-    statement, for the down step of a drop. None when the catalog did not
-    say where the key points, which makes the drop irreversible. An empty
-    target column list renders without one: the key references the target
-    table's primary key.
+    Renders an introspected foreign key on `table` back into an ADD
+    CONSTRAINT statement, for the down step of a drop. None when the
+    catalog did not say where the key points, which makes the drop
+    irreversible. An empty target column list renders without one: the
+    key references the target table's primary key. Names are spelled as
+    the snapshot spells them, where it has the table.
     """
     if fk.target_table == "?":
         return None
     on_delete = None if fk.on_delete is None else fk.on_delete.upper()
     on_update = None if fk.on_update is None else fk.on_update.upper()
+    source = snapshot.get(table.lower())
+    target = snapshot.get(fk.target_table)
+    columns = list(fk.columns)
+    target_columns = list(fk.target_columns)
+    target_name = fk.target_table
+    if source is not None:
+        columns = [source.spelled_column(column) for column in columns]
+    if target is not None:
+        target_columns = [target.spelled_column(column) for column in target_columns]
+        target_name = target.name or target_name
     return compiler.compile_add_foreign_key(
         table_sql,
         name,
-        fk.columns,
-        compiler.quote_fully_qualified_ddl_identifier(fk.target_table),
-        fk.target_columns,
+        columns,
+        compiler.quote_fully_qualified_ddl_identifier(target_name),
+        target_columns,
         None if on_delete == "NO ACTION" else on_delete,
         None if on_update == "NO ACTION" else on_update,
     )

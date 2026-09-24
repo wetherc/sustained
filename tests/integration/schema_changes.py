@@ -188,3 +188,25 @@ class SchemaChangeTests:
         self.execute("INSERT INTO it_widgets (id, maker_id) VALUES (1, 1)")
         migrator.up(models=[events], allow_drops=True, unrehearsed=True)
         self.assertIsNone(migrator.plan([events], allow_drops=True))
+
+    def test_mixed_case_names_drop_as_spelled(self):
+        # A read keys every name in lower case. Postgres takes a quoted
+        # name as written, and MySQL on Linux does the same for a table,
+        # so a drop that named the key named nothing there.
+        compiler = Dialects.get_compiler(self.DIALECT)
+        quote = compiler.quote_identifier
+        migrator = self.migrator()
+        migrator.up(models=[self.Widget])
+        self.execute(f"CREATE TABLE {quote('It_Legacy')} ({quote('Id')} INTEGER)")
+        self.execute(
+            compiler.compile_add_column(
+                quote("it_widgets"), f"{quote('Old_Note')} INTEGER"
+            )
+        )
+        self.execute(
+            f"CREATE INDEX {quote('IX_It_Size')} ON {quote('it_widgets')} "
+            f"({quote('size')})"
+        )
+        migrator.up(models=[self.Widget], allow_drops=True, unrehearsed=True)
+        self.assertIsNone(migrator.plan([self.Widget], allow_drops=True))
+        self.assertNotIn("it_legacy", self.tables())
