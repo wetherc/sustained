@@ -145,6 +145,7 @@ Invalid input the builder can detect. The method you call raises some of these, 
 | `merge()` where every inserted column is a conflict column |
 | A raw fragment whose `?` count does not match its parameters |
 | An `INSERT` with a `WHERE` clause |
+| An `INSERT`, `UPDATE`, or `DELETE` with a clause its SQL does not render: `select`, `distinct`, `distinctOn`, `from_`, `with_`, a join, `groupBy`, `having`, `orderBy`, `limit`, `offset`, `top`, `union`, `qualify`, `for_update`, or `withGraphFetched` |
 | A model with no `tableName` in a statement that needs one |
 | A string function argument that is neither a plain column path nor a `Literal` |
 | `for_update()` combined with a union |

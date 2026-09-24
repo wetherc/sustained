@@ -153,6 +153,16 @@ Ticket.query().delete().where('sold_at', 'IS', None).run()
 # DELETE FROM tickets WHERE sold_at IS NULL
 ```
 
+A write renders only its `where()` clauses and `returning()`. Any other clause, such as `orderBy()`, `limit()`, or a join, raises `ValueError` when the statement renders, because the write would touch every matching row and not only the rows that clause selects. To cap a write, pick the rows in a subquery:
+
+```python
+oldest = Ticket.query().select('id').orderBy('sold_at').limit(100)
+Ticket.query().delete().whereIn('id', oldest).run()
+# DELETE FROM tickets WHERE id IN (SELECT id FROM tickets ORDER BY sold_at ASC LIMIT 100)
+```
+
+MySQL refuses `LIMIT` inside an `IN` subquery. On MySQL, wrap the subquery in a second one with `from_()`.
+
 A write commits when it finishes, unless it is inside a transaction, and returns the affected row count.
 
 The count is `-1` when the driver reports none, which `asyncpg` does for a batched multi-row insert and for any statement whose status string ends without a number. If you need an exact count, add `returning()`. The write then returns one row for each row it wrote, so `len()` of that list is the count.

@@ -1009,8 +1009,46 @@ class QueryBuilder:
         self._returning_columns = list(columns) if columns else ["*"]
         return self
 
+    def _refuse_unrendered_write_clauses(self) -> None:
+        """
+        Raises when a write carries a clause that _render_dml does not
+        render. A DELETE that dropped its orderBy() and limit() would
+        remove every matching row instead of the capped set.
+        """
+        dropped = [
+            name
+            for name, present in (
+                ("select()", bool(self._select_clause_builder._selected_columns)),
+                ("distinct()", self._distinct),
+                ("distinctOn()", bool(self._distinct_on_columns)),
+                ("from_()", self._from_source is not None),
+                ("with_()", bool(self._with_clauses)),
+                ("a join", bool(self._join_builder._joins)),
+                ("groupBy()", bool(str(self._group_by_builder))),
+                ("having()", self._having_builder.has_clauses()),
+                ("orderBy()", bool(str(self._order_by_builder))),
+                ("limit()", self._limit_value is not None),
+                ("offset()", self._offset_value is not None),
+                ("top()", self._top_value is not None),
+                ("union()", bool(self._union_clauses)),
+                ("qualify()", self._qualify_condition is not None),
+                ("for_update()", self._locking_clause is not None),
+                ("withGraphFetched()", bool(self._eager_relations)),
+            )
+            if present
+        ]
+        if dropped:
+            verb = "INSERT" if self._stmt_type.startswith("insert") else "UPDATE"
+            verb = "DELETE" if self._stmt_type == "delete" else verb
+            raise ValueError(
+                f"{verb} statements do not render {', '.join(dropped)}. "
+                "Remove the clause, or pick the target rows with where(), "
+                "such as whereIn() on a subquery that has the clause."
+            )
+
     def _render_dml(self, ctx: RenderContext) -> str:
         """Renders an INSERT, UPDATE, or DELETE statement."""
+        self._refuse_unrendered_write_clauses()
         table_sql = self._model_table_sql()
 
         if self._stmt_type == "insert_from":
