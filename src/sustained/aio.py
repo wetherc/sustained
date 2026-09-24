@@ -623,6 +623,16 @@ async def _transaction_on(
                     await adapter.execute(begin_sql, ())
             try:
                 yield adapter
+                # The commit sits inside the try. A deferred constraint
+                # that fails at COMMIT leaves the driver's transaction
+                # open, and the next statement's commit would write the
+                # failed block's rows.
+                if driver_control:
+                    await adapter.commit()
+                else:
+                    commit_sql = compiler.commit_transaction_sql()
+                    if commit_sql is not None:
+                        await adapter.execute(commit_sql, ())
             except BaseException:
                 if driver_control:
                     await adapter.rollback()
@@ -631,12 +641,6 @@ async def _transaction_on(
                     if rollback_sql is not None:
                         await adapter.execute(rollback_sql, ())
                 raise
-            if driver_control:
-                await adapter.commit()
-            else:
-                commit_sql = compiler.commit_transaction_sql()
-                if commit_sql is not None:
-                    await adapter.execute(commit_sql, ())
         finally:
             _pinned_adapter.reset(token)
             del _active_async_transactions[key]
