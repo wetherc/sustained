@@ -72,9 +72,10 @@ class IntrospectedColumn(NamedTuple):
     `collation` is the collating sequence the column was declared with,
     or None when it names none. The SQLite read takes it from the stored
     CREATE TABLE statement, so a table rebuild can write it back. The
-    MySQL read takes it from COLLATION_NAME, so a MODIFY COLUMN can
-    restate it: MySQL gives a restated column the table's collation
-    unless the statement names one.
+    MySQL and SQL Server reads take it from COLLATION_NAME, so a
+    statement that restates the column can restate it too. MySQL gives
+    a restated column the table's collation, and SQL Server the
+    database's, unless the statement names one.
 
     `on_update` is the expression of MySQL's ON UPDATE clause, such as
     CURRENT_TIMESTAMP(3), read from the EXTRA column. MODIFY COLUMN drops
@@ -1016,8 +1017,10 @@ class Catalog(NamedTuple):
             checks_read False rather than report an empty mapping.
         reads_default_sql: Whether the read also selects MySQL's EXTRA
             column and VERSION(), which mysql_default_sql() needs to
-            write a MySQL default back as SQL, and COLLATION_NAME, which
-            a MODIFY COLUMN restates.
+            write a MySQL default back as SQL.
+        reads_collation: Whether the read also selects COLLATION_NAME,
+            last, which MySQL and SQL Server restate when they change a
+            column.
     """
 
     schema_filter: str
@@ -1026,6 +1029,7 @@ class Catalog(NamedTuple):
     comment_column: Optional[str] = None
     reads_checks: bool = True
     reads_default_sql: bool = False
+    reads_collation: bool = False
 
 
 ANSI_CATALOG = Catalog(
@@ -1045,6 +1049,7 @@ MYSQL_CATALOG = ANSI_CATALOG._replace(
     type_column="column_type",
     comment_column="column_comment",
     reads_default_sql=True,
+    reads_collation=True,
 )
 
 # Presto and Trino put the comment straight on information_schema.columns.
@@ -1059,7 +1064,9 @@ ATHENA_CATALOG = PRESTO_CATALOG._replace(current_schema_sql="current_schema")
 # MSSQL keys everything on the bare table name, so two schemas holding a
 # table with one name would merge. The read covers the connection's own
 # schema, plus every schema the models declare.
-MSSQL_CATALOG = ANSI_CATALOG._replace(current_schema_sql="SCHEMA_NAME()")
+MSSQL_CATALOG = ANSI_CATALOG._replace(
+    current_schema_sql="SCHEMA_NAME()", reads_collation=True
+)
 
 # DuckDB keys on the bare table name the same way, and its own catalog
 # functions carry a schema_name column to filter on.
@@ -1151,11 +1158,9 @@ def _information_schema_plan(
         # view in the database is enough to make every plan report drift,
         # and allow_drops would emit a DROP TABLE the engine refuses.
         comment = f", c.{catalog.comment_column}" if with_comment else ""
-        extra = (
-            ", c.extra, VERSION(), c.collation_name"
-            if catalog.reads_default_sql
-            else ""
-        )
+        extra = ", c.extra, VERSION()" if catalog.reads_default_sql else ""
+        if catalog.reads_collation:
+            extra += ", c.collation_name"
         return (
             f"SELECT c.table_name, c.column_name, c.{catalog.type_column}, "
             f"c.is_nullable, c.column_default{comment}, c.table_schema{extra} "
@@ -1207,7 +1212,11 @@ def _information_schema_plan(
             and "MARIADB" not in str(row[schema_index + 2]).upper()
         ):
             default_sql = mysql_default_sql(str(default), extra, raw_type)
-        collation = _row_text(row, schema_index + 3)
+        collation = (
+            _row_text(row, schema_index + (3 if catalog.reads_default_sql else 1))
+            if catalog.reads_collation
+            else None
+        )
         on_update = _MYSQL_ON_UPDATE_RE.search(extra)
         spelled_tables.setdefault(str(table).lower(), str(table))
         columns_by_table.setdefault(str(table).lower(), {})[str(name).lower()] = (

@@ -18,6 +18,10 @@ if TYPE_CHECKING:
 
 # A column path such as [t].[age], or a number, which needs no parentheses
 # as an operand of %.
+# The column types that carry a collation. A COLLATE clause on another
+# type is an error.
+_TEXT_TYPE_RE = re.compile(r"^\s*n?(?:var)?char\b|^\s*n?text\b", re.IGNORECASE)
+
 _SIMPLE_OPERAND_RE = re.compile(r"^(?:[\w.]|\[(?:[^\]]|\]\])*\])+$|^-?\d+(?:\.\d+)?$")
 
 
@@ -156,14 +160,20 @@ class MssqlCompiler(Compiler):
         ALTER COLUMN takes the type and the nullability together. Left
         off, the nullability follows the ANSI_NULL_DFLT setting of the
         session, which turns a NOT NULL column nullable without saying
-        so. A default lives in its own constraint here and survives the
+        so. A text column takes the database's collation unless the
+        statement names one, so its collation comes back too. A default lives in its own constraint here and survives the
         statement, and SQL Server keeps no column comments.
         """
         column_sql = self.quote_identifier(column_name)
         null_sql = "NULL" if state.nullable else "NOT NULL"
+        collate_sql = (
+            f" COLLATE {state.collation}"
+            if state.collation is not None and _TEXT_TYPE_RE.match(state.type_sql)
+            else ""
+        )
         return (
             f"ALTER TABLE {table_sql} ALTER COLUMN {column_sql} "
-            f"{state.type_sql} {null_sql}"
+            f"{state.type_sql}{collate_sql} {null_sql}"
         )
 
     def compile_alter_column_type(

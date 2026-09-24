@@ -290,3 +290,27 @@ class SchemaChangeTests:
             columns["seen"].on_update.upper().startswith("CURRENT_TIMESTAMP")
         )
         self.assertEqual(columns["code"].collation, "latin1_bin")
+
+    def test_a_sql_server_type_change_keeps_the_collation(self):
+        # ALTER COLUMN gives a column the database's collation unless the
+        # statement names one.
+        if self.DIALECT != Dialects.MSSQL:
+            self.skipTest("only SQL Server resets the collation this way")
+        self.execute(
+            "CREATE TABLE it_widgets (id INT PRIMARY KEY, "
+            "code VARCHAR(10) COLLATE Latin1_General_BIN NULL)"
+        )
+        widget = type(
+            "WidgetCollated",
+            (Model,),
+            {
+                "tableName": "it_widgets",
+                "tableColumns": {"id": Integer(primary_key=True), "code": String(20)},
+                "_dialect": self.DIALECT,
+            },
+        )
+        migrator = self.migrator()
+        migrator.up(models=[widget], unrehearsed=True)
+        self.assertIsNone(migrator.plan([widget]))
+        column = self.tables()["it_widgets"].columns["code"]
+        self.assertEqual(column.collation, "Latin1_General_BIN")

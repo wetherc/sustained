@@ -192,6 +192,58 @@ class TestMssqlLiftsWhatDependsOnTheColumn(unittest.TestCase):
         self.assertFalse(any("DEFAULT" in statement for statement in migration.up))
 
 
+class TestMssqlRestatesTheCollation(unittest.TestCase):
+    def test_a_text_column_keeps_its_collation(self):
+        from sustained.schema import String
+
+        schema = snapshot(default=None)
+        columns = schema["widgets"].columns
+        columns["code"] = columns["code"]._replace(
+            raw_type="varchar(10)", collation="Latin1_General_BIN"
+        )
+        model = widgets(size=Integer)
+        model.tableColumns["code"] = String(20, unique=True)
+        migration = generate(model, Dialects.MSSQL, schema)
+        self.assertIn(
+            "ALTER TABLE [widgets] ALTER COLUMN [code] NVARCHAR(20) "
+            "COLLATE Latin1_General_BIN NULL",
+            migration.up,
+        )
+        self.assertIn(
+            "ALTER TABLE [widgets] ALTER COLUMN [code] varchar(10) "
+            "COLLATE Latin1_General_BIN NULL",
+            migration.down,
+        )
+
+    def test_another_type_takes_no_collation(self):
+        schema = snapshot(default=None)
+        columns = schema["widgets"].columns
+        columns["size"] = columns["size"]._replace(collation="Latin1_General_BIN")
+        migration = generate(widgets(), Dialects.MSSQL, schema)
+        self.assertIn(
+            "ALTER TABLE [widgets] ALTER COLUMN [size] BIGINT NULL", migration.up
+        )
+
+    def test_the_read_takes_the_collation_last(self):
+        from sustained.introspect import MSSQL_CATALOG, _information_schema_plan
+
+        plan = _information_schema_plan(MSSQL_CATALOG)
+        self.assertIn("c.table_schema, c.collation_name FROM", next(plan))
+        try:
+            plan.send(
+                [
+                    ("t", "code", "varchar", "YES", None, "dbo", "Latin1_General_BIN"),
+                    ("t", "n", "int", "YES", None, "dbo", None),
+                ]
+            )
+            while True:
+                plan.send([])
+        except StopIteration as stop:
+            columns = stop.value["t"].columns
+        self.assertEqual(columns["code"].collation, "Latin1_General_BIN")
+        self.assertIsNone(columns["n"].collation)
+
+
 class TestPostgresLiftsNothing(unittest.TestCase):
     def test_the_engine_rebuilds_its_own_indexes(self):
         migration = generate(widgets(), Dialects.POSTGRES, snapshot(default="5"))
