@@ -216,7 +216,7 @@ These live in `sustained.types`. Use them to annotate code that accepts what the
 | `DbReturnValue` | <code>str &#124; int &#124; float &#124; bool &#124; datetime &#124; date &#124; Decimal &#124; bytes</code> |
 | `Selectable` | Anything `select()` takes |
 | `CaseResult` | <code>DbReturnValue &#124; Column</code> |
-| `QueryResolvable` | <code>QueryBuilder &#124; Callable[..., QueryBuilder] &#124; str</code> |
+| `QueryResolvable` | <code>QueryBuilder &#124; Callable[..., QueryBuilder] &#124; Expression</code> |
 | `Join` | <code>BasicJoinMapping &#124; JoinMappingWithThrough</code> |
 
 The relation-mapping types are `TypedDict`s: `RelationMapping`, `BasicJoinMapping`, `JoinMappingWithThrough`, `ThroughJoinMapping`, and `ThroughJoinValue`. See [Model](/reference/model#relations).

@@ -148,6 +148,8 @@ Show.query().whereIn('venue_id', Venue.query().select('id').where('capacity', '>
 # SELECT * FROM shows WHERE venue_id IN (SELECT id FROM venues WHERE capacity > 5000)
 ```
 
+A subquery written as SQL goes through `QueryBuilder.raw()`. A plain string raises `ValueError`, so an id that arrives as a string, such as `whereIn('id', request.args['id'])`, fails instead of adding its text to the SQL.
+
 ### LIKE and case-insensitive LIKE
 
 ```python
@@ -179,7 +181,7 @@ Ticket.query().whereBetween('price', 20, 50)
 
 ### EXISTS
 
-`whereExists()` takes a query or a callable that receives one. Reference the outer query's columns with `QueryBuilder.raw()`, which keeps the builder from rendering the name as a string value:
+`whereExists()` takes a query, a callable that receives one, or SQL passed through `QueryBuilder.raw()`. A plain string raises `ValueError`. Reference the outer query's columns with `QueryBuilder.raw()`, which keeps the builder from rendering the name as a string value:
 
 ```python
 from sustained.builder import QueryBuilder

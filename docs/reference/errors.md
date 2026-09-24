@@ -115,6 +115,7 @@ Invalid input the builder can detect. The method you call raises some of these, 
 | Condition | Where |
 | --- | --- |
 | An empty list to `whereIn`, `in_()`, or `insert()` | Filters, writes |
+| A string in place of a value list or a subquery | `whereIn`, `whereExists`, `havingIn`, `havingExists` |
 | A row count that is negative | `limit`, `top`, `offset`, `page`, `cursor_page` |
 | `limit()` and `top()` in one query, or either one set twice | Paging |
 | An operator outside the allowlist | `where`, `having` |

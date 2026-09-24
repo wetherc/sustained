@@ -141,8 +141,8 @@ Selectable = Union[
     "Subquery",
 ]
 CaseResult = Union[DbReturnValue, "Column"]
-QueryResolvable = Union[Callable[..., "AnyQuery"], str, "AnyQuery"]
-"""A subquery in argument position: a builder, a callable returning one, or SQL."""
+QueryResolvable = Union[Callable[..., "AnyQuery"], "Expression", "AnyQuery"]
+"""A subquery in argument position: a builder, a callable returning one, or raw() SQL."""
 
 WriteResult = Union[int, List[Dict[str, RowValue]]]
 """

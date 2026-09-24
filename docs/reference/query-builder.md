@@ -122,7 +122,7 @@ whereIn(col, values_or_query)
 ```
 {: .sig #wherein}
 
-`IN` over a list, a `QueryBuilder`, or a callable. An empty list raises `ValueError`. `whereNotIn` builds the `NOT IN` form.
+`IN` over a list, a `QueryBuilder`, a callable, or SQL passed through `QueryBuilder.raw()`. An empty list or a string raises `ValueError`. `whereNotIn` builds the `NOT IN` form.
 
 ```python
 whereBetween(col, low, high)
@@ -136,7 +136,7 @@ whereExists(query_or_callable)
 ```
 {: .sig #whereexists}
 
-`EXISTS` subquery. `whereNotExists` builds the `NOT EXISTS` form.
+`EXISTS` over a `QueryBuilder`, a callable, or SQL passed through `QueryBuilder.raw()`. A string raises `ValueError`. `whereNotExists` builds the `NOT EXISTS` form.
 
 ```python
 whereLike(col, pattern)

@@ -23,6 +23,14 @@ if TYPE_CHECKING:
     from ..types import AnyQuery
 
 
+def _raw_subquery_message(operator: str, sql: str) -> str:
+    return (
+        f"{operator} takes a list, a query, or a callable, not the string "
+        f"{sql!r}. A string here would go into the SQL as written. Pass a "
+        "subquery as SQL through QueryBuilder.raw()."
+    )
+
+
 class ConditionalClauseBuilder(ABC):
     """An abstract base class for building conditional clauses like WHERE and HAVING."""
 
@@ -171,11 +179,13 @@ class ConditionalClauseBuilder(ABC):
                 self._model_class, dialect=self._compiler._dialect
             )
             query(sub_builder)
+        elif isinstance(query, Expression):
+            raw_sql = query.value
         elif isinstance(query, str):
-            raw_sql = query
+            raise ValueError(_raw_subquery_message("EXISTS", query))
         else:
             raise ValueError(
-                "Argument for exists must be a callable, string, or QueryBuilder instance."
+                "Argument for exists must be a callable, QueryBuilder.raw(), or QueryBuilder instance."
             )
 
         def render(ctx: RenderContext) -> str:
@@ -354,8 +364,10 @@ class ConditionalClauseBuilder(ABC):
         raw_sql: Optional[str] = None
         if isinstance(vals, QueryBuilder):
             sub_builder = vals
+        elif isinstance(vals, Expression):
+            raw_sql = vals.value
         elif isinstance(vals, str):
-            raw_sql = vals
+            raise ValueError(_raw_subquery_message(actual_op, vals))
         elif callable(vals):
             sub_builder = QueryBuilder(
                 self._model_class, dialect=self._compiler._dialect
@@ -363,7 +375,7 @@ class ConditionalClauseBuilder(ABC):
             vals(sub_builder)
         else:
             raise ValueError(
-                "Argument for In/NotIn must be a list, a callable, string, or QueryBuilder instance."
+                "Argument for In/NotIn must be a list, a callable, QueryBuilder.raw(), or QueryBuilder instance."
             )
 
         def render_sub(ctx: RenderContext) -> str:

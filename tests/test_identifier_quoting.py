@@ -181,6 +181,42 @@ class TestColumnStrings(unittest.TestCase):
         )
 
 
+class TestSubqueryStrings(unittest.TestCase):
+    """A string in subquery position is refused; raw() is the SQL path."""
+
+    def clauses(self, text):
+        yield "whereIn", lambda: Item.query().whereIn("id", text)
+        yield "orWhereNotIn", lambda: Item.query().where("id", "=", 1).orWhereNotIn(
+            "id", text
+        )
+        yield "havingIn", lambda: Item.query().groupBy("id").havingIn("id", text)
+        yield "whereExists", lambda: Item.query().whereExists(text)
+        yield "whereNotExists", lambda: Item.query().whereNotExists(text)
+        yield "havingExists", lambda: Item.query().groupBy("id").havingExists(text)
+
+    def test_a_string_is_refused_and_the_error_names_raw(self):
+        for clause, build in self.clauses("0) OR (1=1"):
+            with self.subTest(clause=clause):
+                with self.assertRaises(ValueError) as caught:
+                    build()
+                self.assertIn("'0) OR (1=1'", str(caught.exception))
+                self.assertIn("QueryBuilder.raw()", str(caught.exception))
+
+    def test_raw_sql_renders_as_written(self):
+        raw = QueryBuilder.raw("SELECT maker_id FROM makers")
+        self.assertEqual(
+            str(Item.query().whereIn("id", raw).orWhereNotExists(raw)),
+            "SELECT * FROM items WHERE id IN (SELECT maker_id FROM makers) "
+            "OR NOT EXISTS (SELECT maker_id FROM makers)",
+        )
+
+    def test_other_types_name_the_accepted_forms(self):
+        with self.assertRaisesRegex(ValueError, "QueryBuilder.raw()"):
+            Item.query().whereIn("id", 5)
+        with self.assertRaisesRegex(ValueError, "QueryBuilder.raw()"):
+            Item.query().whereExists(5)
+
+
 class TestBareIdentifiers(unittest.TestCase):
     """The default dialect writes names bare, so it refuses one with SQL."""
 
