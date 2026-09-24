@@ -51,7 +51,9 @@ class FakeCursor:
         elif "pg_catalog.pg_index" in sql:
             if self.indexes is None:
                 raise RuntimeError("no pg_index here")
-            self._current = self.indexes
+            # A row may leave off the last column, whether a UNIQUE
+            # constraint owns the index, which then reads as no.
+            self._current = [tuple(r) + (False,) * (6 - len(r)) for r in self.indexes]
         elif "pg_catalog.pg_constraint" in sql:
             if self.foreign_keys is None:
                 raise RuntimeError("no pg_constraint here")
@@ -211,6 +213,16 @@ class TestPostgresCatalogQueries(unittest.TestCase):
         index = schema["users"].indexes["ix_users_email"]
         self.assertEqual(index.columns, ("email",))
         self.assertFalse(index.unique)
+        self.assertFalse(index.constraint)
+
+    def test_the_index_of_a_unique_constraint_says_so(self):
+        cursor = FakeCursor(
+            columns=[column_row("users", "email", "text")],
+            indexes=[("users", "users_email_key", True, False, "email", True)],
+        )
+        index = self.read(cursor)["users"].indexes["users_email_key"]
+        self.assertTrue(index.unique)
+        self.assertTrue(index.constraint)
 
     def test_the_primary_key_comes_from_its_index(self):
         cursor = FakeCursor(

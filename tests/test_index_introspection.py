@@ -205,6 +205,6 @@ class TestForeignKeyBackingIndexes(unittest.TestCase):
             },
         )
         diff = SchemaDiff()
-        _diff_indexes(diff, model, table)
+        _diff_indexes(Dialects.get_compiler(Dialects.MYSQL), diff, model, table)
         extras = [name for _, name, _ in diff.extra_indexes]
         self.assertEqual(["idx_stray"], extras)

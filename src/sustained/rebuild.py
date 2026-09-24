@@ -276,15 +276,29 @@ def _carried_constraint_sql(
 ) -> List[str]:
     """
     Constraints the model does not declare, rendered back into CREATE
-    TABLE parts so a rebuild carries them across. Declared constraints
-    render from the declaration; the ones a column implies (the enum
-    check, the references shorthand) render with the column. A foreign
-    key whose target the catalog did not report cannot be re-rendered
-    and is left behind.
+    TABLE parts so a rebuild without allow_drops carries them across.
+    Declared constraints render from the declaration; the ones a column
+    implies (the enum check, the references shorthand) render with the
+    column. A foreign key whose target the catalog did not report cannot
+    be re-rendered and is left behind.
     """
     declared_names = {c.name.lower() for c in model.tableConstraints or []}
     implied_checks, implied_fk_columns = implied_constraint_names(compiler, model)
+    declared_columns = {n.lower(): c for n, c in (model.tableColumns or {}).items()}
     fragments: List[str] = []
+    # A UNIQUE constraint on a declared column the model no longer marks
+    # unique. The diff reports it, and only allow_drops drops it.
+    for name, index in actual_table.indexes.items():
+        coldef = declared_columns.get(index.columns[0])
+        if (
+            name.startswith("sqlite_autoindex")
+            and len(index.columns) == 1
+            and coldef is not None
+            and not (coldef.unique or coldef.primary_key)
+        ):
+            fragments.append(
+                f"UNIQUE ({compiler.quote_ddl_identifier(index.columns[0])})"
+            )
     for name, expression in actual_table.checks.items():
         if name in declared_names or name in implied_checks:
             continue

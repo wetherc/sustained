@@ -30,9 +30,11 @@ autogenerate() turns the diff into a Migration:
   under allow_drops; SQLite routes constraint changes through the table
   rebuild. A changed check expression on an engine that rewrites
   expressions stays a note, never a drop.
-- Primary key, column-shorthand foreign key, column-level unique, and
-  default differences are reported in the diff's constraint notes but
-  never auto-migrated.
+- Primary key, column-shorthand foreign key, newly declared
+  column-level unique, and default differences are reported in the
+  diff's constraint notes but never auto-migrated. A UNIQUE constraint
+  a column no longer declares is an extra object, dropped under
+  allow_drops.
 - Column comments diff on engines whose catalog reported them, and a
   drifted comment generates the engine's comment statement with the old
   comment written back on the way down. A degraded comment read diffs
@@ -258,8 +260,9 @@ class SchemaDiff:
             lines.append(f"drop table {table} (destructive)")
         for table, name in self.extra_columns:
             lines.append(f"drop column {table}.{name} (destructive)")
-        for table, name, _ in self.extra_indexes:
-            lines.append(f"drop index {name} on {table}")
+        for table, name, actual_index in self.extra_indexes:
+            kind = "unique constraint" if actual_index.constraint else "index"
+            lines.append(f"drop {kind} {name} on {table}")
         for model, fk in self.new_foreign_keys:
             lines.append(f"add foreign key {fk.name} on {model.tableName}")
         for model, check in self.new_checks:
@@ -445,9 +448,8 @@ def _apply_renames(
         # Engines rewrite the column name inside indexes, keys, and
         # constraints on rename; mirror that so nothing diffs as changed.
         renamed_indexes = {
-            name: IntrospectedIndex(
-                tuple(new_key if c == old_key else c for c in index.columns),
-                index.unique,
+            name: index._replace(
+                columns=tuple(new_key if c == old_key else c for c in index.columns)
             )
             for name, index in old_table.indexes.items()
         }
@@ -554,7 +556,7 @@ def diff_schema(
             diff.missing_tables.append(model)
             continue
         _diff_columns(compiler, diff, model, actual_table, actual)
-        _diff_indexes(diff, model, actual_table)
+        _diff_indexes(compiler, diff, model, actual_table)
         _diff_constraints(compiler, diff, model, actual_table, actual)
 
     if diff.missing_tables:
@@ -673,7 +675,10 @@ def _column_type_changed(
 
 
 def _diff_indexes(
-    diff: SchemaDiff, model: Type["Model"], actual_table: IntrospectedTable
+    compiler: "Compiler",
+    diff: SchemaDiff,
+    model: Type["Model"],
+    actual_table: IntrospectedTable,
 ) -> None:
     declared_indexes = {i.name.lower(): i for i in model.indexes or []}
     # The catalog reports column names lowercased, so the declaration is
@@ -692,7 +697,15 @@ def _diff_indexes(
         ):
             diff.changed_indexes.append((model, index, actual_index))
     for name, actual_index in actual_table.indexes.items():
-        if name in declared_indexes or name.startswith("sqlite_autoindex"):
+        if name in declared_indexes:
+            continue
+        # SQLite names the index behind a UNIQUE constraint itself. One
+        # over several columns has no declaration to diff against, and
+        # one on an undeclared column goes when that column goes.
+        if name.startswith("sqlite_autoindex") and (
+            len(actual_index.columns) != 1
+            or actual_index.columns[0] not in declared_columns
+        ):
             continue
         # An engine that requires an index behind a foreign key creates
         # one named after the constraint. It belongs to the key, not to
@@ -706,6 +719,14 @@ def _diff_indexes(
             coldef = declared_columns.get(column)
             if coldef is not None and (coldef.unique or coldef.primary_key):
                 continue
+        if actual_index.constraint and _constraints_fixed_at_create(compiler):
+            diff.constraint_notes.append(
+                f"{model.tableName} has unique constraint '{name}' on "
+                f"({', '.join(actual_index.columns)}) that no model declares. "
+                "The engine cannot drop a constraint from a table that "
+                "exists, so recreate the table by hand."
+            )
+            continue
         diff.extra_indexes.append((model.tableName or "", name, actual_index))
 
 
@@ -1550,6 +1571,11 @@ def autogenerate(
             constrained_tables += [
                 models_by_table[table.lower()] for table, _, _ in diff.extra_checks
             ]
+            constrained_tables += [
+                models_by_table[table.lower()]
+                for table, _, index in diff.extra_indexes
+                if index.constraint
+            ]
         for model in constrained_tables:
             if _rebuild_needed(compiler, "change a constraint"):
                 rebuild_tables[(model.tableName or "").lower()] = model
@@ -1663,6 +1689,17 @@ def autogenerate(
             if table.lower() in rebuild_tables:
                 continue
             table_sql = compiler.quote_fully_qualified_ddl_identifier(table)
+            if actual_index.constraint:
+                # The index belongs to a UNIQUE constraint, and the engine
+                # refuses DROP INDEX on it.
+                up_steps.append(compiler.compile_drop_constraint(table_sql, name))
+                down_steps.insert(
+                    0,
+                    compiler.compile_add_unique(
+                        table_sql, name, list(actual_index.columns)
+                    ),
+                )
+                continue
             up_steps.append(compiler.compile_drop_index(name, table_sql))
             down_steps.insert(
                 0,

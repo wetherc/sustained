@@ -133,7 +133,7 @@ Autogeneration refuses to guess about anything that loses data or fails on popul
 
 The catalog cannot show a rename, so pass hints: `up(models=models, renames={'users.name': 'full_name'}, table_renames={'old': 'new'})` emits reversible `RENAME` statements instead of a destructive drop-plus-add.
 
-Foreign keys and CHECK constraints declared in `tableConstraints` are diffed and migrated; see [Table constraints](#table-constraints). The diff reports primary key set changes, column-level unique, and default differences as constraint notes, but never migrates them automatically.
+Foreign keys and CHECK constraints declared in `tableConstraints` are diffed and migrated; see [Table constraints](#table-constraints). The diff reports primary key set changes, a column newly marked `unique`, and default differences as constraint notes, but never migrates them automatically. A column that loses `unique=True` is different: the diff lists its UNIQUE constraint as an object the models do not declare, and `allow_drops=True` drops it. Postgres, MySQL, MariaDB, and SQL Server drop it with `DROP CONSTRAINT` or `DROP INDEX`, whichever the engine takes for it, and the down step adds it back. SQLite rebuilds the table without it. DuckDB cannot drop a constraint from a table that exists, so there the diff reports a note.
 
 ### Column changes on SQLite
 

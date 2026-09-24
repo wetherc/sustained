@@ -722,6 +722,16 @@ class Compiler:
             f"{self.quote_ddl_identifier(constraint)} CHECK ({expression})"
         )
 
+    def compile_add_unique(
+        self, table_sql: str, constraint: str, columns: "list[str]"
+    ) -> str:
+        """Renders a named UNIQUE constraint added to an existing table."""
+        columns_sql = ", ".join(self.quote_ddl_identifier(c) for c in columns)
+        return (
+            f"ALTER TABLE {table_sql} ADD CONSTRAINT "
+            f"{self.quote_ddl_identifier(constraint)} UNIQUE ({columns_sql})"
+        )
+
     def compile_drop_foreign_key(self, table_sql: str, constraint: str) -> str:
         """Renders the statement that takes back an added foreign key."""
         return (

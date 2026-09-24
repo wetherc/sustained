@@ -91,10 +91,18 @@ class IntrospectedColumn(NamedTuple):
 
 
 class IntrospectedIndex(NamedTuple):
-    """One index as reported by the database."""
+    """
+    One index as reported by the database.
+
+    `constraint` is True for the index behind a UNIQUE constraint. The
+    engine drops that index with the constraint, through DROP
+    CONSTRAINT, and refuses DROP INDEX on it. On SQLite it is an
+    automatic index, which only a table rebuild removes.
+    """
 
     columns: Tuple[str, ...]
     unique: bool
+    constraint: bool = False
 
 
 class IntrospectedForeignKey(NamedTuple):
@@ -902,7 +910,9 @@ def _sqlite_plan() -> SchemaPlan:
                 # out of the schema rather than crashing the read.
                 continue
             index_columns = tuple(name.lower() for name in names)
-            indexes[index_name.lower()] = IntrospectedIndex(index_columns, unique)
+            indexes[index_name.lower()] = IntrospectedIndex(
+                index_columns, unique, constraint=origin == "u"
+            )
 
         schema[table.lower()] = IntrospectedTable(
             columns=columns,
@@ -1169,7 +1179,7 @@ def _information_schema_plan(
                 primary_keys[table] = cols
             elif ctype == "UNIQUE":
                 unique_indexes.setdefault(table, {})[cname] = IntrospectedIndex(
-                    tuple(cols), True
+                    tuple(cols), True, constraint=True
                 )
             elif ctype == "FOREIGN KEY":
                 # The referenced table is engine-specific to resolve;
@@ -1491,7 +1501,8 @@ def _postgres_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
     try:
         index_rows = yield (
             "SELECT t.relname, i.relname, ix.indisunique, ix.indisprimary, "
-            "a.attname "
+            "a.attname, EXISTS (SELECT 1 FROM pg_catalog.pg_constraint pc "
+            "WHERE pc.conindid = ix.indexrelid AND pc.contype = 'u') "
             "FROM pg_catalog.pg_index ix "
             "JOIN pg_catalog.pg_class t ON t.oid = ix.indrelid "
             "JOIN pg_catalog.pg_class i ON i.oid = ix.indexrelid "
@@ -1503,13 +1514,19 @@ def _postgres_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
             f"AND {namespace_filter} "
             "ORDER BY t.relname, i.relname, k.ord"
         )
-        index_columns: Dict[Tuple[str, str, bool, bool], List[Optional[str]]] = {}
-        for table, index, unique, primary, attname in index_rows:
-            key = (str(table).lower(), str(index).lower(), bool(unique), bool(primary))
+        index_columns: Dict[Tuple[str, str, bool, bool, bool], List[Optional[str]]] = {}
+        for table, index, unique, primary, attname, backs in index_rows:
+            key = (
+                str(table).lower(),
+                str(index).lower(),
+                bool(unique),
+                bool(primary),
+                bool(backs),
+            )
             index_columns.setdefault(key, []).append(
                 None if attname is None else str(attname).lower()
             )
-        for (table, index, unique, primary), names in index_columns.items():
+        for (table, index, unique, primary, backs), names in index_columns.items():
             if any(name is None for name in names):
                 # An expression index has no column name for that key part.
                 # It cannot be compared against a model's column list, so it
@@ -1520,7 +1537,7 @@ def _postgres_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
                 primary_keys[table] = key_columns
             else:
                 indexes.setdefault(table, {})[index] = IntrospectedIndex(
-                    key_columns, unique
+                    key_columns, unique, constraint=backs
                 )
     except Exception:
         # No pg_index to read; degrade to columns without keys or indexes.
