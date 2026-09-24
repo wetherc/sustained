@@ -403,7 +403,7 @@ The checksum of a ddl step hashes its operation name and arguments rather than i
 
 ## Migrations as SQL files
 
-Migrations can live as plain SQL files instead of Python objects. `load_migrations()` reads a directory of `<id>.up.sql` files, each optionally paired with a `<id>.down.sql`, and returns `Migration` objects ordered by id, so file naming fixes the apply order. Statements split at line-ending semicolons, with or without a `--` comment after the semicolon. A semicolon inside a string literal, a quoted identifier, a `/* */` comment, or a Postgres dollar-quoted body never splits, so a function written as `AS $$ ... $$` stays one statement.
+Migrations can live as plain SQL files instead of Python objects. `load_migrations()` reads a directory of `<id>.up.sql` files, each optionally paired with a `<id>.down.sql`, and returns `Migration` objects ordered by id, so file naming fixes the apply order. Statements split at line-ending semicolons, with or without a `--` comment after the semicolon. A semicolon inside a string literal, a quoted identifier, a `/* */` comment, or a Postgres dollar-quoted body never splits, so a function written as `AS $$ ... $$` stays one statement. For a MySQL trigger or procedure, put a `DELIMITER //` line before the body and a `DELIMITER ;` line after it, as you would for the mysql client.
 
 ```
 migrations/

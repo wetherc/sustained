@@ -16,10 +16,10 @@ Files split into statements at semicolons that end a line, with or
 without a '--' comment after the semicolon. A semicolon inside a string
 literal, a quoted identifier, a /* */ comment, or a Postgres
 dollar-quoted body never splits, so a function written as
-`AS $$ ... $$` stays one statement. A body with embedded semicolons and
-no quoting, such as a MySQL trigger or procedure, still splits apart;
-write it as a hand-written Migration with a callable step, or keep it
-as the only statement in its file with no trailing semicolon.
+`AS $$ ... $$` stays one statement. For a MySQL trigger or procedure,
+whose body has bare semicolons, put a `DELIMITER //` line before it and
+`DELIMITER ;` after it, as the mysql client reads them: '//' then ends
+each statement, and the directive lines are dropped.
 
 A file whose first lines hold the marker comment `-- sustained: no
 transaction` runs outside a transaction. Write it as `-- sustained: no
@@ -54,6 +54,13 @@ _STATEMENT_END_RE = re.compile(r";[ \t]*(?:--[^\n]*)?\n")
 # A Postgres dollar quote opens with $$ or $tag$ and closes with the same
 # text.
 _DOLLAR_TAG_RE = re.compile(r"\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$")
+
+# A mysql client DELIMITER line, which sets the text that ends the
+# statements after it. A token with a quote in it is not a directive, so a
+# Postgres COPY option such as DELIMITER ',' on a line of its own stays SQL.
+_DELIMITER_RE = re.compile(
+    r"^[ \t]*DELIMITER[ \t]+([^\s'\"]+)[ \t]*$", re.IGNORECASE | re.MULTILINE
+)
 
 _UP_SUFFIX = ".up.sql"
 _DOWN_SUFFIX = ".down.sql"
@@ -154,12 +161,16 @@ def _quote_end(text: str, start: int, backslash: bool) -> Optional[int]:
     return None
 
 
-def _quoted_spans(text: str, backslash: bool) -> Optional[List[Tuple[int, int]]]:
+def _quoted_spans(
+    text: str, backslash: bool, dollar: bool = True
+) -> Optional[List[Tuple[int, int]]]:
     """
     The (start, end) index pairs of every string literal, quoted
     identifier, /* */ comment, and dollar-quoted body in the text, or
     None when one of them is still open at the end. `backslash` says
-    whether a backslash escapes the next character inside quotes.
+    whether a backslash escapes the next character inside quotes, and
+    `dollar` whether a dollar quote opens a span. MySQL has no dollar
+    quotes, and its files often set $$ as the delimiter.
 
     A '--' comment is skipped so a quote inside it opens nothing, but it
     is not a span, and a line-ending semicolon in one splits the file. A
@@ -182,7 +193,9 @@ def _quoted_spans(text: str, backslash: bool) -> Optional[List[Tuple[int, int]]]
             end = None if close < 0 else close + 2
         elif char in "'\"`":
             end = _quote_end(text, index, backslash)
-        elif char == "$" and not (index and _identifier_char(text[index - 1])):
+        elif (
+            dollar and char == "$" and not (index and _identifier_char(text[index - 1]))
+        ):
             tag = _DOLLAR_TAG_RE.match(text, index)
             if tag is None:
                 index += 1
@@ -213,7 +226,7 @@ def _outside(position: int, starts: List[int], spans: List[Tuple[int, int]]) -> 
     return at < 0 or position >= spans[at][1]
 
 
-def _statement_ends(text: str) -> List["re.Match[str]"]:
+def _statement_ends(text: str) -> List[Tuple[int, int]]:
     """
     The line-ending semicolons that end a statement: every match of the
     split rule outside the quoted spans.
@@ -232,19 +245,64 @@ def _statement_ends(text: str) -> List["re.Match[str]"]:
     backslash escapes nothing. The reading without escapes then ends the
     string early and splits at that semicolon.
     """
-    matches = list(_STATEMENT_END_RE.finditer(text))
+    ends = [(m.start(), m.end()) for m in _STATEMENT_END_RE.finditer(text)]
+    return _unquoted_ends(text, ends, dollar=True)
+
+
+def _unquoted_ends(
+    text: str, ends: List[Tuple[int, int]], dollar: bool
+) -> List[Tuple[int, int]]:
+    """
+    The candidate statement ends, as (start, end) index pairs, that
+    either reading of the quotes puts outside every span, or all of them
+    when both readings leave a quote or comment open.
+    """
     readings = [
         ([start for start, _ in spans], spans)
-        for spans in (_quoted_spans(text, False), _quoted_spans(text, True))
+        for spans in (
+            _quoted_spans(text, False, dollar),
+            _quoted_spans(text, True, dollar),
+        )
         if spans is not None
     ]
     if not readings:
-        return matches
+        return ends
     return [
-        match
-        for match in matches
-        if any(_outside(match.start(), starts, spans) for starts, spans in readings)
+        end
+        for end in ends
+        if any(_outside(end[0], starts, spans) for starts, spans in readings)
     ]
+
+
+def _delimited_ends(text: str, delimiter: str) -> List[Tuple[int, int]]:
+    """
+    Where a statement ends in text that a DELIMITER line set to something
+    other than ';': every occurrence of the delimiter outside quotes and
+    comments, wherever it sits on its line, as the mysql client reads it.
+    """
+    ends = []
+    index = text.find(delimiter)
+    while index >= 0:
+        ends.append((index, index + len(delimiter)))
+        index = text.find(delimiter, index + len(delimiter))
+    return _unquoted_ends(text, ends, dollar=False)
+
+
+def _delimiter_sections(text: str) -> List[Tuple[str, str]]:
+    """
+    The text cut at its DELIMITER lines, each part paired with the
+    delimiter in force for it. The directive lines themselves are not
+    SQL and are dropped.
+    """
+    sections = []
+    delimiter = ";"
+    previous = 0
+    for directive in _DELIMITER_RE.finditer(text):
+        sections.append((text[previous : directive.start()], delimiter))
+        delimiter = directive.group(1)
+        previous = directive.end()
+    sections.append((text[previous:], delimiter))
+    return sections
 
 
 def split_sql_statements(text: str) -> List[str]:
@@ -254,13 +312,23 @@ def split_sql_statements(text: str) -> List[str]:
     inside a string literal, a quoted identifier, a /* */ comment, or a
     dollar-quoted body does not split. Pieces holding only whitespace or
     '--' comments are dropped; a missing final semicolon is fine.
+
+    A 'DELIMITER //' line, as the mysql client reads it, makes '//' end
+    the statements after it, wherever it sits on a line, until a
+    'DELIMITER ;' line. A trigger or procedure body keeps its own
+    semicolons that way.
     """
     pieces = []
-    previous = 0
-    for match in _statement_ends(text):
-        pieces.append(text[previous : match.start()])
-        previous = match.end()
-    pieces.append(text[previous:])
+    for section, delimiter in _delimiter_sections(text):
+        if delimiter == ";":
+            ends = _statement_ends(section)
+        else:
+            ends = _delimited_ends(section, delimiter)
+        previous = 0
+        for start, end in ends:
+            pieces.append(section[previous:start])
+            previous = end
+        pieces.append(section[previous:])
     statements = []
     for piece in pieces:
         cleaned = piece.strip()

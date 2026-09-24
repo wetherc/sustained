@@ -117,6 +117,48 @@ class TestSplitSqlStatements(unittest.TestCase):
         text = "SELECT 'a\\\\;\nb';\nSELECT 2;\n"
         self.assertEqual(split_sql_statements(text), ["SELECT 'a\\\\;\nb'", "SELECT 2"])
 
+    def test_a_delimiter_line_keeps_a_body_whole(self):
+        text = (
+            "CREATE TABLE t (id INT);\n"
+            "DELIMITER //\n"
+            "CREATE TRIGGER tr BEFORE INSERT ON t FOR EACH ROW\n"
+            "BEGIN\n  SET NEW.id = NEW.id + 1;\nEND//\n"
+            "CREATE PROCEDURE p() BEGIN SELECT 'a//b'; SELECT 2; END //\n"
+            "delimiter ;\n"
+            "SELECT 1;\n"
+        )
+        self.assertEqual(
+            split_sql_statements(text),
+            [
+                "CREATE TABLE t (id INT)",
+                "CREATE TRIGGER tr BEFORE INSERT ON t FOR EACH ROW\n"
+                "BEGIN\n  SET NEW.id = NEW.id + 1;\nEND",
+                "CREATE PROCEDURE p() BEGIN SELECT 'a//b'; SELECT 2; END",
+                "SELECT 1",
+            ],
+        )
+
+    def test_a_dollar_delimiter_opens_no_dollar_quote(self):
+        text = "DELIMITER $$\nCREATE PROCEDURE p() BEGIN SELECT 1; END $$\n"
+        self.assertEqual(
+            split_sql_statements(text), ["CREATE PROCEDURE p() BEGIN SELECT 1; END"]
+        )
+
+    def test_the_last_statement_needs_no_delimiter(self):
+        text = "DELIMITER //\nSELECT 1; SELECT 2//\nSELECT 3"
+        self.assertEqual(split_sql_statements(text), ["SELECT 1; SELECT 2", "SELECT 3"])
+
+    def test_an_open_quote_after_a_delimiter_line_splits_everywhere(self):
+        text = "DELIMITER //\nSELECT 'open//\nSELECT 2//\n"
+        self.assertEqual(split_sql_statements(text), ["SELECT 'open", "SELECT 2"])
+
+    def test_a_quoted_delimiter_option_is_sql(self):
+        text = "COPY t FROM STDIN WITH\nDELIMITER ','\nCSV;\nSELECT 1;\n"
+        self.assertEqual(
+            split_sql_statements(text),
+            ["COPY t FROM STDIN WITH\nDELIMITER ','\nCSV", "SELECT 1"],
+        )
+
     def test_a_quote_in_a_line_comment_opens_nothing(self):
         text = "-- don't;\nSELECT 1;\n-- it's\nSELECT 2;\n"
         self.assertEqual(split_sql_statements(text), ["SELECT 1", "-- it's\nSELECT 2"])
