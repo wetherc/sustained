@@ -72,7 +72,7 @@ User.bind(ConnectionPool(lambda: psycopg.connect(DSN), max_size=10))
 
 ## Microsoft SQL Server
 
-MSSQL quotes identifiers with square brackets and uses `?` placeholders. Booleans render as `1`/`0`, `Boolean` columns as `BIT`, strings as `NVARCHAR`, and timestamps as `DATETIME2`. `top(n)` renders `TOP n`. `limit()` and `offset()` compile to `OFFSET ... FETCH` (although T-SQL only allows this after `orderBy()`). Upserts render a `MERGE` statement. `NOW()` translates to `GETDATE()` and `LENGTH()` to `LEN()`.
+MSSQL quotes identifiers with square brackets and uses `?` placeholders. Booleans render as `1`/`0`, `Boolean` columns as `BIT`, strings as `NVARCHAR`, and timestamps as `DATETIME2`. `top(n)` renders `TOP n`. `limit()` and `offset()` compile to `OFFSET ... FETCH` (although T-SQL only allows this after `orderBy()`). `first()` on a query with no `orderBy()` takes `TOP 1`. Upserts render a `MERGE` statement. `NOW()` translates to `GETDATE()` and `LENGTH()` to `LEN()`.
 
 ```python
 import pyodbc

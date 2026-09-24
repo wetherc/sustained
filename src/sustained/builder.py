@@ -1396,10 +1396,7 @@ class QueryBuilder:
         Async first(): executes with LIMIT 1 and returns one instance or
         None. The query itself is left unmodified.
         """
-        query = self.clone()
-        if query._limit_value is None and query._top_value is None:
-            query.limit(1)
-        results = cast(List["Model"], await query.arun(adapter))
+        results = cast(List["Model"], await self._first_query().arun(adapter))
         return results[0] if results else None
 
     async def ato_dicts(
@@ -1439,11 +1436,29 @@ class QueryBuilder:
         Returns:
             The first model instance or None.
         """
-        query = self.clone()
-        if query._limit_value is None and query._top_value is None:
-            query.limit(1)
-        results = cast(List["Model"], query.run(connection))
+        results = cast(List["Model"], self._first_query().run(connection))
         return results[0] if results else None
+
+    def _first_query(self) -> "QueryBuilder":
+        """
+        A copy of the query capped at one row, for first() and afirst().
+
+        MSSQL writes LIMIT as OFFSET ... FETCH, which needs an ORDER BY, so
+        a query there with no ORDER BY, no OFFSET, and no set operation
+        takes TOP 1 instead. TOP on a UNION would cap its first member
+        only, so that query keeps the LIMIT and its DialectError.
+        """
+        query = self.clone()
+        if query._limit_value is not None or query._top_value is not None:
+            return query
+        if (
+            self._compiler.limit_needs_order_by()
+            and not str(query._order_by_builder)
+            and query._offset_value is None
+            and not query._union_clauses
+        ):
+            return query.top(1)
+        return query.limit(1)
 
     def page(self, page: int, page_size: int) -> "QueryBuilder":
         """

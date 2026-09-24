@@ -196,6 +196,9 @@ class MssqlCompiler(Compiler):
             return f"({column_sql} IS NOT NULL AND {column_sql} = {bit})"
         return f"({column_sql} IS NULL OR {column_sql} <> {bit})"
 
+    def limit_needs_order_by(self) -> bool:
+        return True
+
     def compile_limit_offset(
         self,
         limit: Optional[int],

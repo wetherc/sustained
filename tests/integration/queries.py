@@ -334,6 +334,11 @@ class QueriesCase(unittest.TestCase):
         else:
             self.assertEqual(1, len(self.Widget.query().limit(1).run()))
 
+        # first() on a query with no ORDER BY runs on every dialect; MSSQL
+        # takes TOP 1 there.
+        first = self.Widget.query().where("size", ">", 8).first()
+        self.assertEqual(2, first.id)
+
     # Hydration
 
     def test_rows_hydrate_into_every_format(self):

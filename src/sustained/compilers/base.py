@@ -1041,6 +1041,13 @@ class Compiler:
             f"TOP is not supported by the '{self._dialect.name}' dialect. Use limit() instead."
         )
 
+    def limit_needs_order_by(self) -> bool:
+        """
+        Reports whether compile_limit_offset() raises DialectError for a
+        query with no ORDER BY. first() then caps the query with TOP.
+        """
+        return False
+
     def compile_limit_offset(
         self,
         limit: Optional[int],

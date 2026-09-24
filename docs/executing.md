@@ -62,7 +62,7 @@ for show in Show.query().where('venue_id', '=', 1).run():
     print(show.title, show.starts_at)
 ```
 
-`first()` adds `LIMIT 1` and returns one instance, or `None` when nothing matches. It leaves the original query alone, so a builder you keep around is still safe to reuse:
+`first()` adds `LIMIT 1` and returns one instance, or `None` when nothing matches. On MSSQL a query with no `orderBy()` and no `offset()` gets `TOP 1` instead, because T-SQL writes `LIMIT` as `OFFSET ... FETCH`, which needs an `ORDER BY`. It leaves the original query alone, so a builder you keep around is still safe to reuse:
 
 ```python
 show = Show.query().where('title', '=', 'Nightcrawler').first()
