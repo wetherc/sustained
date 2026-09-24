@@ -574,7 +574,7 @@ class AsyncMigrator:
 
     async def status(self) -> List[Tuple[str, bool]]:
         """Returns (id, applied) pairs for every registered migration."""
-        applied = set(await self.applied())
+        applied = set(await self.read_applied())
         return [(m.id, m.id in applied) for m in self._migrations]
 
     async def statuses(self) -> List[Tuple[str, str]]:
@@ -583,7 +583,7 @@ class AsyncMigrator:
         state is 'applied', 'pending', or, for a repeatable whose
         contents changed since its last run, 'changed'.
         """
-        records = {r.id: r for r in await self.applied_records()}
+        records = {r.id: r for r in await self.read_applied_records()}
         return [
             (m.id, _migration_state(records.get(m.id), m)) for m in self._migrations
         ]
@@ -605,7 +605,9 @@ class AsyncMigrator:
         """
         from sustained.exceptions import MigrationError
 
-        problems = _validation_problems(self._migrations, await self.applied_records())
+        problems = _validation_problems(
+            self._migrations, await self.read_applied_records()
+        )
         if problems and raise_on_problems:
             raise MigrationError(problems)
         return problems
