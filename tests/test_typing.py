@@ -169,6 +169,45 @@ class TestFilterValueTypes(unittest.TestCase):
         self.assertNotIn("error:", run_mypy(VALUES))
 
 
+RAW_AND_NESTED = """
+from sustained import Model, QueryBuilder, col
+from sustained.builders import WhereClauseBuilder
+
+class Show(Model):
+    tableName = "shows"
+
+raw = QueryBuilder.raw
+Show.query().update({"sold_out": False}).where(raw("1"), "=", 1).run()
+Show.query().where("id", "=", 1).orWhere(raw("1"), "=", 1).andWhere(raw("2"), "=", 2)
+Show.query().select(raw("1")).orderBy(raw("LOWER(title)")).groupBy(raw("night"))
+Show.query().groupBy("night").having(raw("COUNT(*)"), ">", 1)
+
+def group(w: WhereClauseBuilder) -> None:
+    w.where("cancelled_at", "=", None)
+    w.orWhere(col("night") > "2026-01-01")
+    w.andWhere(raw("1"), "=", 1)
+
+Show.query().where(group).run()
+"""
+
+
+@unittest.skipUnless(
+    importlib.util.find_spec("mypy") is not None, "mypy is not installed"
+)
+class TestRawAndNestedTypes(unittest.TestCase):
+    """
+    raw() SQL in a column slot, None as a value, and a Predicate passed
+    alone each run at runtime, inside a nested group as well as on the
+    query, so the stubs accept them.
+    """
+
+    def test_documented_calls_type_check(self):
+        import os
+
+        os.environ["MYPYPATH"] = SRC
+        self.assertNotIn("error:", run_mypy(RAW_AND_NESTED))
+
+
 GUARDS = """
 from typing import List, Sequence
 

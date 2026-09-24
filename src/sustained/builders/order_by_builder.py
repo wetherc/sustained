@@ -6,6 +6,7 @@ if TYPE_CHECKING:
     from ..compilers import Compiler
     from ..dialects import Dialects
     from ..model import Model
+    from ..types import ColumnReference
 
 
 class OrderByClauseBuilder:
@@ -28,14 +29,16 @@ class OrderByClauseBuilder:
         self._compiler = (
             compiler if compiler else Dialects.get_compiler(Dialects.DEFAULT)
         )
-        self._clauses: List[Tuple[str, str]] = []
+        self._clauses: List[Tuple[ColumnReference, str]] = []
 
-    def orderBy(self, column: str, direction: str = "asc") -> "OrderByClauseBuilder":
+    def orderBy(
+        self, column: ColumnReference, direction: str = "asc"
+    ) -> "OrderByClauseBuilder":
         """
         Adds an ORDER BY clause to the query.
 
         Args:
-            column (str): The column to order by.
+            column: The column to order by, or raw() SQL.
             direction (str, optional): The direction of ordering ('asc' or 'desc').
                                      Defaults to 'asc'.
 

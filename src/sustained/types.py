@@ -132,6 +132,7 @@ that type. `None` is not: the clause methods that accept it say so with
 
 Selectable = Union[
     str,
+    "Expression",
     "AggregateExpression",
     "WindowExpression",
     "CaseExpression",
@@ -141,6 +142,11 @@ Selectable = Union[
     "Subquery",
 ]
 CaseResult = Union[DbReturnValue, "Column"]
+ColumnReference = Union[str, "Expression"]
+"""
+A column in a filter, a sort, or a grouping: a column string, which the
+builder quotes and checks, or raw() SQL, which it renders as written.
+"""
 QueryResolvable = Union[Callable[..., "AnyQuery"], "Expression", "AnyQuery"]
 """A subquery in argument position: a builder, a callable returning one, or raw() SQL."""
 

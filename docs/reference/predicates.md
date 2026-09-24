@@ -218,6 +218,7 @@ These live in `sustained.types`. Use them to annotate code that accepts what the
 | `DbReturnValue` | <code>str &#124; int &#124; float &#124; bool &#124; datetime &#124; date &#124; Decimal &#124; bytes</code> |
 | `Selectable` | Anything `select()` takes |
 | `CaseResult` | <code>DbReturnValue &#124; Column</code> |
+| `ColumnReference` | <code>str &#124; Expression</code>: the column of `where()`, `having()`, `orderBy()`, and `groupBy()` |
 | `QueryResolvable` | <code>QueryBuilder &#124; Callable[..., QueryBuilder] &#124; Expression</code> |
 | `Join` | <code>BasicJoinMapping &#124; JoinMappingWithThrough</code> |
 

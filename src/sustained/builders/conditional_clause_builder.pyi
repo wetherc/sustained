@@ -3,9 +3,10 @@ from __future__ import annotations
 from typing import Callable, Dict, List, Optional, Tuple, Type, Union, overload
 
 from ..compilers import Compiler
+from ..expressions import Predicate
 from ..model import Model
 from ..rendering import RenderContext
-from ..types import DbReturnValue, Expression, QueryResolvable
+from ..types import ColumnReference, DbReturnValue, Expression, QueryResolvable
 
 class ConditionalClauseBuilder:
     _WHERE_METHOD_MAP: Dict[str, str]
@@ -18,36 +19,45 @@ class ConditionalClauseBuilder:
     # Where methods
     @overload
     def where(
-        self, column_or_callable: Callable[[ConditionalClauseBuilder], None]
+        self,
+        column_or_callable: Union[
+            Callable[[ConditionalClauseBuilder], None], Predicate
+        ],
     ) -> ConditionalClauseBuilder: ...
     @overload
     def where(
         self,
-        column_or_callable: str,
+        column_or_callable: ColumnReference,
         op: str,
-        val: Union[Expression, DbReturnValue],
-    ) -> ConditionalClauseBuilder: ...
-    @overload
-    def andWhere(
-        self, column_or_callable: Callable[[ConditionalClauseBuilder], None]
+        val: Optional[Union[Expression, DbReturnValue]],
     ) -> ConditionalClauseBuilder: ...
     @overload
     def andWhere(
         self,
-        column_or_callable: str,
-        op: str,
-        val: Union[Expression, DbReturnValue],
+        column_or_callable: Union[
+            Callable[[ConditionalClauseBuilder], None], Predicate
+        ],
     ) -> ConditionalClauseBuilder: ...
     @overload
-    def orWhere(
-        self, column_or_callable: Callable[[ConditionalClauseBuilder], None]
+    def andWhere(
+        self,
+        column_or_callable: ColumnReference,
+        op: str,
+        val: Optional[Union[Expression, DbReturnValue]],
     ) -> ConditionalClauseBuilder: ...
     @overload
     def orWhere(
         self,
-        column_or_callable: str,
+        column_or_callable: Union[
+            Callable[[ConditionalClauseBuilder], None], Predicate
+        ],
+    ) -> ConditionalClauseBuilder: ...
+    @overload
+    def orWhere(
+        self,
+        column_or_callable: ColumnReference,
         op: str,
-        val: Union[Expression, DbReturnValue],
+        val: Optional[Union[Expression, DbReturnValue]],
     ) -> ConditionalClauseBuilder: ...
     def whereIn(
         self, col: str, vals: Union[List[DbReturnValue], QueryResolvable]
@@ -119,36 +129,45 @@ class ConditionalClauseBuilder:
     # Having methods
     @overload
     def having(
-        self, column_or_callable: Callable[[ConditionalClauseBuilder], None]
+        self,
+        column_or_callable: Union[
+            Callable[[ConditionalClauseBuilder], None], Predicate
+        ],
     ) -> ConditionalClauseBuilder: ...
     @overload
     def having(
         self,
-        column_or_callable: str,
+        column_or_callable: ColumnReference,
         op: str,
-        val: Union[Expression, DbReturnValue],
-    ) -> ConditionalClauseBuilder: ...
-    @overload
-    def andHaving(
-        self, column_or_callable: Callable[[ConditionalClauseBuilder], None]
+        val: Optional[Union[Expression, DbReturnValue]],
     ) -> ConditionalClauseBuilder: ...
     @overload
     def andHaving(
         self,
-        column_or_callable: str,
-        op: str,
-        val: Union[Expression, DbReturnValue],
+        column_or_callable: Union[
+            Callable[[ConditionalClauseBuilder], None], Predicate
+        ],
     ) -> ConditionalClauseBuilder: ...
     @overload
-    def orHaving(
-        self, column_or_callable: Callable[[ConditionalClauseBuilder], None]
+    def andHaving(
+        self,
+        column_or_callable: ColumnReference,
+        op: str,
+        val: Optional[Union[Expression, DbReturnValue]],
     ) -> ConditionalClauseBuilder: ...
     @overload
     def orHaving(
         self,
-        column_or_callable: str,
+        column_or_callable: Union[
+            Callable[[ConditionalClauseBuilder], None], Predicate
+        ],
+    ) -> ConditionalClauseBuilder: ...
+    @overload
+    def orHaving(
+        self,
+        column_or_callable: ColumnReference,
         op: str,
-        val: Union[Expression, DbReturnValue],
+        val: Optional[Union[Expression, DbReturnValue]],
     ) -> ConditionalClauseBuilder: ...
     def havingIn(
         self, col: str, vals: Union[List[DbReturnValue], QueryResolvable]

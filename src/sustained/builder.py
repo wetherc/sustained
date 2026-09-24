@@ -40,6 +40,7 @@ from sustained.rendering import RenderContext
 from sustained.types import (
     Binding,
     CaseResult,
+    ColumnReference,
     Connection,
     Cursor,
     DbReturnValue,
@@ -384,12 +385,12 @@ class QueryBuilder:
         self._with_clauses.append((table_alias, subquery, recursive))
         return self
 
-    def groupBy(self, *columns: str) -> "QueryBuilder":
+    def groupBy(self, *columns: ColumnReference) -> "QueryBuilder":
         """
         Specifies the columns to group the query by.
 
         Args:
-            *columns (str): A list of column names to group by.
+            *columns: Column names, or raw() SQL, to group by.
 
         Returns:
             QueryBuilder: The current QueryBuilder instance for chaining.

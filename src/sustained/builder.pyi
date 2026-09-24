@@ -39,6 +39,7 @@ from .types import (
     AnyQuery,
     Binding,
     CaseResult,
+    ColumnReference,
     DbReturnValue,
     Expression,
     QueryResolvable,
@@ -77,7 +78,7 @@ class _Clauses(Generic[TQuery]):
     @overload
     def where(
         self,
-        column_or_callable: str,
+        column_or_callable: ColumnReference,
         op: str,
         val: Optional[Union[Expression, DbReturnValue]],
     ) -> TQuery: ...
@@ -89,7 +90,7 @@ class _Clauses(Generic[TQuery]):
     @overload
     def andWhere(
         self,
-        column_or_callable: str,
+        column_or_callable: ColumnReference,
         op: str,
         val: Optional[Union[Expression, DbReturnValue]],
     ) -> TQuery: ...
@@ -101,7 +102,7 @@ class _Clauses(Generic[TQuery]):
     @overload
     def orWhere(
         self,
-        column_or_callable: str,
+        column_or_callable: ColumnReference,
         op: str,
         val: Optional[Union[Expression, DbReturnValue]],
     ) -> TQuery: ...
@@ -261,7 +262,7 @@ class QueryBuilder(_Clauses["QueryBuilder[TModel]"], Generic[TModel]):
         subquery: AnyQuery,
         recursive: bool = False,
     ) -> QueryBuilder[TModel]: ...
-    def groupBy(self, *columns: str) -> QueryBuilder[TModel]: ...
+    def groupBy(self, *columns: ColumnReference) -> QueryBuilder[TModel]: ...
     @staticmethod
     def raw(sql: str) -> Expression: ...
     def limit(self, value: int) -> QueryBuilder[TModel]: ...
@@ -429,7 +430,9 @@ class QueryBuilder(_Clauses["QueryBuilder[TModel]"], Generic[TModel]):
     ) -> QueryBuilder[TModel]: ...
 
     # Order By methods
-    def orderBy(self, column: str, direction: str = "ASC") -> QueryBuilder[TModel]: ...
+    def orderBy(
+        self, column: ColumnReference, direction: str = "ASC"
+    ) -> QueryBuilder[TModel]: ...
 
     # Having methods
     @overload
@@ -440,7 +443,7 @@ class QueryBuilder(_Clauses["QueryBuilder[TModel]"], Generic[TModel]):
     @overload
     def having(
         self,
-        column_or_callable: str,
+        column_or_callable: ColumnReference,
         op: str,
         val: Optional[Union[Expression, DbReturnValue]],
     ) -> QueryBuilder[TModel]: ...
@@ -452,7 +455,7 @@ class QueryBuilder(_Clauses["QueryBuilder[TModel]"], Generic[TModel]):
     @overload
     def andHaving(
         self,
-        column_or_callable: str,
+        column_or_callable: ColumnReference,
         op: str,
         val: Optional[Union[Expression, DbReturnValue]],
     ) -> QueryBuilder[TModel]: ...
@@ -464,7 +467,7 @@ class QueryBuilder(_Clauses["QueryBuilder[TModel]"], Generic[TModel]):
     @overload
     def orHaving(
         self,
-        column_or_callable: str,
+        column_or_callable: ColumnReference,
         op: str,
         val: Optional[Union[Expression, DbReturnValue]],
     ) -> QueryBuilder[TModel]: ...

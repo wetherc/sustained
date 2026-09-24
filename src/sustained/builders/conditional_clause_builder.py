@@ -15,10 +15,17 @@ from typing import (
 
 from ..dialects import Dialects
 from ..rendering import Renderable, RenderContext, render_nested, render_part
-from ..types import DbReturnValue, Expression, QueryResolvable, SqlValue
+from ..types import (
+    ColumnReference,
+    DbReturnValue,
+    Expression,
+    QueryResolvable,
+    SqlValue,
+)
 
 if TYPE_CHECKING:
     from ..compilers import Compiler
+    from ..expressions import Predicate
     from ..model import Model
     from ..types import AnyQuery
 
@@ -66,7 +73,7 @@ class ConditionalClauseBuilder(ABC):
     @abstractmethod
     def _clause_type(self) -> str: ...
 
-    def _quote_column(self, column: str) -> str:
+    def _quote_column(self, column: ColumnReference) -> str:
         """Quotes a column reference through the compiler.
 
         The compiler accepts an identifier path or a call on one column, such
@@ -247,7 +254,7 @@ class ConditionalClauseBuilder(ABC):
     def _add_null_internal(
         self,
         conjunction: str,
-        col: str,
+        col: ColumnReference,
         *,
         op_override: bool = False,
         op_like_override: Optional[str] = None,
@@ -260,7 +267,9 @@ class ConditionalClauseBuilder(ABC):
     def _add_internal(
         self,
         conjunction: str,
-        column_or_callable: Union[str, Callable[["ConditionalClauseBuilder"], None]],
+        column_or_callable: Union[
+            ColumnReference, Callable[["ConditionalClauseBuilder"], None], "Predicate"
+        ],
         op: Optional[str] = None,
         val: Optional[Union[Expression, DbReturnValue]] = None,
         *,

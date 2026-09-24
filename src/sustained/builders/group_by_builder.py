@@ -11,6 +11,7 @@ if TYPE_CHECKING:
     from ..compilers import Compiler
     from ..dialects import Dialects
     from ..model import Model
+    from ..types import ColumnReference
 
 
 class GroupByClauseBuilder:
@@ -25,11 +26,11 @@ class GroupByClauseBuilder:
         self._compiler = (
             compiler if compiler else Dialects.get_compiler(Dialects.DEFAULT)
         )
-        self._group_by_columns: List[str] = []
+        self._group_by_columns: List[ColumnReference] = []
         self._mode: Optional[str] = None
         self._grouping_sets: Optional[List[tuple]] = None
 
-    def groupBy(self, *columns: str) -> None:
+    def groupBy(self, *columns: ColumnReference) -> None:
         """Adds columns to the GROUP BY clause."""
         self._group_by_columns.extend(columns)
 
@@ -46,7 +47,7 @@ class GroupByClauseBuilder:
             raise ValueError("GROUPING SETS requires at least one set.")
         self._grouping_sets = sets
 
-    def _quote(self, column: str) -> str:
+    def _quote(self, column: ColumnReference) -> str:
         return self._compiler.quote_column_reference(column)
 
     def __str__(self) -> str:
