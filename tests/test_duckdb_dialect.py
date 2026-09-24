@@ -5,10 +5,11 @@ Tests for the DuckDB dialect.
 import unittest
 
 from sustained import create_model
+from sustained.autogenerate import autogenerate
 from sustained.dialects import Dialects
 from sustained.exceptions import RehearsalRequired
 from sustained.migrations import Migrator
-from sustained.schema import Integer, Numeric
+from sustained.schema import Integer, Numeric, String, Text
 
 try:
     import duckdb
@@ -120,7 +121,40 @@ class TestDuckDbNarrowingGate(unittest.TestCase):
         self.assertEqual(row[0], "DECIMAL(20,6)")
 
 
+@unittest.skipUnless(HAS_DUCKDB, "duckdb not installed")
+class TestDuckDbTextConvergence(unittest.TestCase):
+    def test_a_text_column_does_not_drift(self):
+        """
+        DuckDB reports a TEXT column as VARCHAR, which read as a type
+        change and generated SET DATA TYPE TEXT on every plan.
+        """
+        conn = duckdb.connect(":memory:")
+        model = create_model("DuckNote", "notes")
+        model.tableColumns = {
+            "id": Integer(primary_key=True),
+            "body": Text(),
+            "title": String(40),
+        }
+        model.columns = tuple(model.tableColumns)
+        try:
+            migration = autogenerate(
+                conn, [model], id="create", dialect=Dialects.DUCKDB
+            )
+            for statement in migration.up:
+                conn.execute(statement)
+            self.assertIsNone(
+                autogenerate(conn, [model], id="again", dialect=Dialects.DUCKDB)
+            )
+        finally:
+            conn.close()
+
+
 class TestDuckDbCapabilities(unittest.TestCase):
+    def test_text_folds_into_varchar_for_a_diff(self):
+        compiler = Dialects.get_compiler(Dialects.DUCKDB)
+        self.assertEqual(compiler.normalize_diff_type("TEXT"), "VARCHAR")
+        self.assertEqual(compiler.normalize_diff_type("INTEGER"), "INTEGER")
+
     def test_no_add_constraint(self):
         compiler = Dialects.get_compiler(Dialects.DUCKDB)
         self.assertTrue(compiler.supports_alter_column())

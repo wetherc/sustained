@@ -36,6 +36,13 @@ class DuckDbCompiler(Compiler):
     def compile_distinct_on(self, columns_sql: "list[str]") -> str:
         return f"DISTINCT ON ({', '.join(columns_sql)})"
 
+    def normalize_diff_type(self, type_name: str) -> str:
+        # DuckDB stores TEXT as VARCHAR and reports it back as VARCHAR, so
+        # a Text() column would diff as changed on every plan.
+        if type_name == "TEXT":
+            return "VARCHAR"
+        return type_name
+
     def supports_alter_column(self) -> bool:
         return True
 
