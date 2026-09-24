@@ -16,13 +16,15 @@ tuple, which pyathena's default pyformat style refuses: it takes a dict
 only. Every parameter travels to the service as a string, since the
 Athena API takes nothing else; Athena infers each value's type from the
 spot its placeholder sits in. A None parameter becomes a literal NULL in
-the statement, because NULL has no parameter spelling.
+the statement, because NULL has no parameter spelling. A string the API
+refuses, one that is empty or longer than 1024 characters, becomes an
+escaped string literal in the statement for the same reason.
 
 Upserts, UPDATE, DELETE, and in-place column changes only work on Iceberg
 tables (created with the table_type=ICEBERG property).
 """
 
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Callable, Optional
 
 from sustained.exceptions import DialectError
 
@@ -31,6 +33,10 @@ from .presto import PrestoCompiler
 if TYPE_CHECKING:
     from sustained.schema import ColumnDef, ColumnState, TableOptions
     from sustained.types import SqlValue
+
+# The longest string Athena's StartQueryExecution API accepts as one
+# execution parameter.
+_MAX_PARAMETER_LENGTH = 1024
 
 
 def _execution_parameter(value: "SqlValue") -> str:
@@ -53,14 +59,27 @@ def _execution_parameter(value: "SqlValue") -> str:
     return str(value)
 
 
-def _inline_null_parameters(
-    sql: str, params: "tuple[SqlValue, ...]"
+def _needs_literal(value: "SqlValue") -> bool:
+    """
+    Whether Athena's API would refuse the value as an execution
+    parameter. The API has no spelling for NULL, and it takes a string
+    only when it is 1 to 1024 characters long.
+    """
+    if value is None:
+        return True
+    return isinstance(value, str) and not 0 < len(value) <= _MAX_PARAMETER_LENGTH
+
+
+def _inline_literal_parameters(
+    sql: str,
+    params: "tuple[SqlValue, ...]",
+    literal: "Callable[[SqlValue], str]",
 ) -> "tuple[str, tuple[SqlValue, ...]]":
     """
-    Rewrites each placeholder bound to None as a literal NULL, keeping
-    the rest. Athena's API has no way to pass NULL as a parameter. The
-    scan tracks quoted regions, so a question mark inside a string
-    literal or a quoted identifier stays put.
+    Rewrites each placeholder bound to a value Athena's API would refuse
+    as that value's literal SQL, keeping the rest. The scan tracks quoted
+    regions, so a question mark inside a string literal or a quoted
+    identifier stays put.
     """
     from sustained.rendering import split_value_markers
 
@@ -68,8 +87,8 @@ def _inline_null_parameters(
     kept = []
     out = [pieces[0]]
     for value, piece in zip(params, pieces[1:]):
-        if value is None:
-            out.append("NULL")
+        if _needs_literal(value):
+            out.append(literal(value))
         else:
             out.append("?")
             kept.append(value)
@@ -116,10 +135,11 @@ class AthenaCompiler(PrestoCompiler):
     ) -> "tuple[str, tuple[SqlValue, ...]]":
         # Athena execution parameters travel to the service as strings;
         # boto3 rejects any other type before the query starts. NULL has
-        # no parameter spelling at all, so a None parameter's placeholder
-        # is rewritten to a literal NULL in the statement.
-        if any(value is None for value in params):
-            sql, params = _inline_null_parameters(sql, params)
+        # no parameter spelling at all, and the API refuses a string that
+        # is empty or longer than 1024 characters, so the placeholder of
+        # each such value is rewritten to its literal in the statement.
+        if any(_needs_literal(value) for value in params):
+            sql, params = _inline_literal_parameters(sql, params, self.format_value)
         return sql, tuple(_execution_parameter(value) for value in params)
 
     def normalize_diff_type(self, type_name: str) -> str:
