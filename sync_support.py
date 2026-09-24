@@ -41,6 +41,30 @@ def compose_services(path: Path) -> List[str]:
     return services
 
 
+def exposed_ports(path: Path) -> List[str]:
+    """
+    The published ports in the compose file that do not bind 127.0.0.1. A
+    port given without a host address listens on every interface, which
+    puts a test server and its committed password on the network.
+    """
+    exposed: List[str] = []
+    inside = False
+    for line in path.read_text().splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if stripped == "ports:":
+            inside = True
+            continue
+        if inside and stripped.startswith("- "):
+            port = stripped[2:].strip("\"'")
+            if not port.startswith("127.0.0.1:"):
+                exposed.append(port)
+            continue
+        inside = False
+    return exposed
+
+
 def load(path: Path) -> Dict[str, Any]:
     """
     Read support.json and check that every row is well formed. A row with a
@@ -50,7 +74,14 @@ def load(path: Path) -> Dict[str, Any]:
     """
     root = path.parent
     data: Dict[str, Any] = json.loads(path.read_text())
-    services = compose_services(root / "docker" / "compose.yaml")
+    compose = root / "docker" / "compose.yaml"
+    services = compose_services(compose)
+    exposed = exposed_ports(compose)
+    if exposed:
+        raise ValueError(
+            f"docker/compose.yaml publishes {', '.join(exposed)} on every "
+            "interface. Write each port as 127.0.0.1:<host>:<container>."
+        )
     for row in data["databases"]:
         name = row["name"]
         if row["server"] not in SERVERS:

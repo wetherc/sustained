@@ -82,7 +82,7 @@ python3 matrix.py --check          # what would run, and what is missing
 
 Each container row in `support.json` also contains a `latest` block, which pins the newest release the vendor supports. The runner shows that release as a `-latest` target, which runs the same test module against it.
 
-Servers other than SQLite and DuckDB come from `docker/compose.yaml`, which the runner starts and removes for you. Ports are the usual port plus 50000, or plus 50100 for a `-latest` service, so a server you already run locally is left alone. Set a row's connection variable, for example `SUSTAINED_TEST_POSTGRES_DSN` or `SUSTAINED_TEST_POSTGRES_LATEST_DSN`, to use your own server instead of a container.
+Servers other than SQLite and DuckDB come from `docker/compose.yaml`, which the runner starts and removes for you. Ports are the usual port plus 50000, or plus 50100 for a `-latest` service, so a server you already run locally is left alone. Every port binds `127.0.0.1`, so other machines cannot reach the containers or use their fixed passwords. Set a row's connection variable, for example `SUSTAINED_TEST_POSTGRES_DSN` or `SUSTAINED_TEST_POSTGRES_LATEST_DSN`, to use your own server instead of a container.
 
 Each driver has to match the paramstyle its dialect emits, so SQL Server uses `pyodbc`, which needs the Microsoft ODBC driver installed:
 
