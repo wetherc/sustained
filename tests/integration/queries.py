@@ -13,6 +13,7 @@ import unittest
 from sustained.dialects import Dialects
 from sustained.exceptions import DialectError
 from sustained.execution import set_statement_listener
+from sustained.expressions import Func
 from sustained.migrations import Migrator
 from sustained.model import Model
 from sustained.schema import Integer, String
@@ -335,6 +336,17 @@ class QueriesCase(unittest.TestCase):
             .to_dicts()
         )
         self.assertEqual([{"label": label}], rows)
+
+    def test_mod_gives_the_remainder(self):
+        # T-SQL has no MOD(), so MSSQL renders the % operator.
+        self.seed()
+        rows = (
+            self.Widget.query()
+            .select("id", Func("MOD", "size", 4, alias="rest"))
+            .orderBy("id")
+            .to_dicts()
+        )
+        self.assertEqual([3, 1, 3, 2, 1], [int(row["rest"]) for row in rows])
 
     def test_a_percent_sign_in_raw_sql_reaches_the_server(self):
         self.seed()

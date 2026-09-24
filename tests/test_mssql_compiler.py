@@ -148,3 +148,35 @@ class TestTopWithOffset(unittest.TestCase):
             "SELECT * FROM [person] ORDER BY [id] ASC "
             "OFFSET 10 ROWS FETCH NEXT 5 ROWS ONLY",
         )
+
+
+class TestMssqlModulo(unittest.TestCase):
+    def test_mod_renders_the_percent_operator(self):
+        from sustained.expressions import Column, Func
+
+        query = QueryBuilder(Person, dialect=Dialects.MSSQL).select(
+            Func("MOD", "age", 2, alias="odd"),
+            Func("ABS", Func("mod", Column("[age] - 7"), 3)),
+        )
+        self.assertEqual(
+            str(query),
+            "SELECT ([age] % 2) AS [odd], ABS((([age] - 7) % 3)) FROM [person]",
+        )
+
+    def test_qualified_and_bracketed_names_stay_bare(self):
+        from sustained.expressions import Func
+
+        query = QueryBuilder(Person, dialect=Dialects.MSSQL).select(
+            Func("MOD", "person.age", -2, alias="odd")
+        )
+        self.assertEqual(
+            str(query), "SELECT ([person].[age] % -2) AS [odd] FROM [person]"
+        )
+
+    def test_other_dialects_keep_mod(self):
+        from sustained.expressions import Func
+
+        query = QueryBuilder(Person, dialect=Dialects.POSTGRES).select(
+            Func("MOD", "age", 2, alias="odd")
+        )
+        self.assertEqual(str(query), 'SELECT MOD("age", 2) AS "odd" FROM "person"')

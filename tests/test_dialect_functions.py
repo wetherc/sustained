@@ -108,6 +108,8 @@ class TestDialectFunctions(unittest.TestCase):
                     expected = func_name
                     if func_name == "LENGTH" and dialect == Dialects.MSSQL:
                         expected = "LEN"
+                    if func_name == "MOD" and dialect == Dialects.MSSQL:
+                        expected = "%"
                     self.assertIn(expected, str(query).upper())
 
 

@@ -128,8 +128,8 @@ class _FunctionRegistry:
                 dialect_names={Dialects.MSSQL: "LEN"},
             ),
         )
-        # The MOD function has different syntax across dialects, but we register the name
-        # to allow for future custom renderers.
+        # T-SQL has no MOD(). The MSSQL compiler renders MOD(a, b) as the
+        # (a % b) operator instead.
         self.register("MOD", FunctionMetadata(supported_dialects=all_dialects))
 
     def register(self, name: str, metadata: FunctionMetadata) -> None:

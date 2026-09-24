@@ -2,6 +2,7 @@ import re
 from typing import TYPE_CHECKING, Optional, Sequence
 
 from sustained.exceptions import DialectError
+from sustained.expressions import Func
 from sustained.types import SqlValue
 
 from .base import Compiler
@@ -11,7 +12,13 @@ from .base import Compiler
 _BRACKETED_SEGMENT_RE = re.compile(r"\[((?:[^\]]|\]\])*)\]")
 
 if TYPE_CHECKING:
+    from sustained.rendering import RenderContext
     from sustained.schema import ColumnState
+
+
+# A column path such as [t].[age], or a number, which needs no parentheses
+# as an operand of %.
+_SIMPLE_OPERAND_RE = re.compile(r"^(?:[\w.]|\[(?:[^\]]|\]\])*\])+$|^-?\d+(?:\.\d+)?$")
 
 
 class MssqlCompiler(Compiler):
@@ -184,6 +191,26 @@ class MssqlCompiler(Compiler):
         raise DialectError(
             "MSSQL has no EXPLAIN statement. Use SET SHOWPLAN_XML via raw SQL."
         )
+
+    def compile_function_call(
+        self, func: Func, ctx: "Optional[RenderContext]" = None
+    ) -> str:
+        # T-SQL has no MOD() function. The % operator gives the remainder.
+        if func.function_name.upper() == "MOD" and len(func.args) == 2:
+            left, right = (self._modulo_operand(arg, ctx) for arg in func.args)
+            return f"({left} % {right})"
+        return super().compile_function_call(func, ctx)
+
+    def _modulo_operand(self, arg: SqlValue, ctx: "Optional[RenderContext]") -> str:
+        """
+        One side of the % operator. An operand that is not a single name
+        or number is wrapped in parentheses, so MOD(a - 7, 3) keeps its
+        meaning rather than reading as a - (7 % 3).
+        """
+        operand = self._format_arg(arg, ctx)
+        if _SIMPLE_OPERAND_RE.match(operand):
+            return operand
+        return f"({operand})"
 
     def format_value(self, value: SqlValue) -> str:
         if isinstance(value, str):
