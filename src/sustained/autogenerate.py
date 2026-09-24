@@ -449,16 +449,24 @@ def _apply_renames(
         if old_key not in actual:
             raise ValueError(f"Cannot rename unknown table '{old}'.")
         actual[new_key] = actual.pop(old_key)
+        # The engine points a child's foreign keys at the renamed table.
         # A SQLite rebuild writes the stored triggers back, and the
         # rename that runs first has rewritten them in the database.
         for key, other in actual.items():
-            if other.triggers:
-                actual[key] = other._replace(
-                    triggers=tuple(
-                        _rename_in_expression(sql, old_key, new_key)
-                        for sql in other.triggers
+            actual[key] = other._replace(
+                foreign_keys={
+                    name: (
+                        fk._replace(target_table=new_key)
+                        if fk.target_table == old_key
+                        else fk
                     )
-                )
+                    for name, fk in other.foreign_keys.items()
+                },
+                triggers=tuple(
+                    _rename_in_expression(sql, old_key, new_key)
+                    for sql in other.triggers
+                ),
+            )
     for path, new_name in renames.items():
         if "." not in path:
             raise ValueError(
@@ -507,6 +515,23 @@ def _apply_renames(
             unnamed_checks=renamed_unnamed,
             triggers=renamed_triggers,
         )
+        # A key that points at the renamed column follows it the same way.
+        for key, other in actual.items():
+            actual[key] = other._replace(
+                foreign_keys={
+                    name: (
+                        fk._replace(
+                            target_columns=tuple(
+                                new_key if c == old_key else c
+                                for c in fk.target_columns
+                            )
+                        )
+                        if fk.target_table == table_key
+                        else fk
+                    )
+                    for name, fk in other.foreign_keys.items()
+                }
+            )
 
 
 def declared_schemas(models: List[Type["Model"]]) -> Tuple[str, ...]:
