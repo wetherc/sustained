@@ -35,6 +35,13 @@ class PostgresCompiler(Compiler):
         # psycopg and psycopg2 read %% as one literal % sign.
         return True
 
+    def compile_temporal_literal(self, type_name: str, text: str) -> str:
+        return f"{type_name} '{text}'"
+
+    def compile_binary_literal(self, hex_text: str) -> str:
+        # decode() reads the same whatever standard_conforming_strings says.
+        return f"decode('{hex_text}', 'hex')"
+
     def compile_like(self, column_sql: str, pattern_sql: str, operator: str) -> str:
         # Postgres supports ILIKE natively.
         return f"{column_sql} {operator} {pattern_sql}"

@@ -188,6 +188,20 @@ class MssqlCompiler(Compiler):
         # T-SQL has no boolean literals; BIT columns compare against 1 and 0.
         return "1" if value else "0"
 
+    # T-SQL has no typed literals, so the ISO text is cast to the type the
+    # Timestamp() column maps to, or to DATETIMEOFFSET when it has an offset.
+    _TEMPORAL_TYPES = {
+        "DATE": "DATE",
+        "TIMESTAMP": "DATETIME2",
+        "TIMESTAMPTZ": "DATETIMEOFFSET",
+    }
+
+    def compile_temporal_literal(self, type_name: str, text: str) -> str:
+        return f"CAST('{text}' AS {self._TEMPORAL_TYPES[type_name]})"
+
+    def compile_binary_literal(self, hex_text: str) -> str:
+        return f"0x{hex_text}"
+
     def compile_is_boolean(self, column_sql: str, operator: str, value: bool) -> str:
         # T-SQL has no IS TRUE. The NULL test keeps the result two-valued,
         # as IS is, so NOT around the predicate keeps the NULL rows out.

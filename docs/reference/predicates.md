@@ -82,6 +82,8 @@ query.select_func('COALESCE', 'nickname', 'name', Literal('unknown'), alias='dis
 # COALESCE(nickname, name, 'unknown') AS display
 ```
 
+A literal can be a string, a number, a boolean, `None`, a `Decimal`, a `date`, a `datetime`, or `bytes`. A date or timestamp renders as a typed literal such as `DATE '2024-05-17'`, and a `datetime` with a time zone renders as `TIMESTAMPTZ` on Postgres and DuckDB. On the default dialect a date renders as its ISO text, because SQLite stores dates as text. MSSQL casts the ISO text to `DATE`, `DATETIME2`, or `DATETIMEOFFSET`. `bytes` renders as `X'...'`, as `decode('...', 'hex')` on Postgres, as `from_hex('...')` on DuckDB, and as `0x...` on MSSQL. A `Decimal` that is not finite raises `ValueError`. `str(query)` and CASE results render their values the same way.
+
 A string argument that is not a plain column path raises `ValueError` at render time.
 
 A `col()` reference is a column reference in the same two places: a function argument, and the value side of a comparison. It renders quoted for the active dialect and binds no parameter.

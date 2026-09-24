@@ -54,6 +54,12 @@ class MysqlCompiler(Compiler):
         # PyMySQL and mysqlclient read %% as one literal % sign.
         return True
 
+    def compile_temporal_literal(self, type_name: str, text: str) -> str:
+        # MySQL has no TIMESTAMPTZ. From 8.0.19 a TIMESTAMP literal takes
+        # an offset and converts it to the session time zone.
+        keyword = "TIMESTAMP" if type_name == "TIMESTAMPTZ" else type_name
+        return f"{keyword} '{text}'"
+
     def format_value(self, value: SqlValue) -> str:
         if isinstance(value, str):
             # MySQL reads a backslash inside a string literal as an escape

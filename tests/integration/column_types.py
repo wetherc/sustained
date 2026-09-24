@@ -15,6 +15,7 @@ import datetime
 import decimal
 
 from sustained.dialects import Dialects
+from sustained.expressions import Func, Literal
 from sustained.introspect import diff_snapshots
 from sustained.model import Model
 from sustained.schema import (
@@ -138,6 +139,36 @@ class ColumnTypeTests:
                         .run()
                     )
                     self.assertEqual(ids, [row.id for row in rows])
+        finally:
+            model.unbind()
+
+    def test_date_timestamp_decimal_and_bytes_literals_read_back(self):
+        model = self.typed_model()
+        model.bind(self.connection)
+        try:
+            self.migrator().up(models=[model])
+            model.query().insert([{"id": 1, "name": "empty"}]).run()
+            fills = {
+                "born": datetime.date(2024, 5, 17),
+                "seen": datetime.datetime(2024, 5, 17, 12, 30, 45),
+                "price": decimal.Decimal("199.99"),
+                "payload": b"\x00\x01\xff",
+            }
+            row = (
+                model.query()
+                .select(
+                    *(
+                        Func("COALESCE", name, Literal(value), alias=f"{name}_fill")
+                        for name, value in fills.items()
+                    )
+                )
+                .where("id", "=", 1)
+                .to_dicts()[0]
+            )
+            self.assertEqual(fills["born"], as_date(row["born_fill"]))
+            self.assertEqual(fills["seen"], as_datetime(row["seen_fill"]))
+            self.assertEqual(fills["price"], as_decimal(row["price_fill"]))
+            self.assertEqual(fills["payload"], bytes(row["payload_fill"]))
         finally:
             model.unbind()
 

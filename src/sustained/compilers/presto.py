@@ -23,6 +23,12 @@ class PrestoCompiler(Compiler):
     def parenthesized_set_members(self) -> bool:
         return True
 
+    def compile_temporal_literal(self, type_name: str, text: str) -> str:
+        # Trino has no TIMESTAMPTZ keyword. A TIMESTAMP literal with an
+        # offset reads as a timestamp with time zone.
+        keyword = "TIMESTAMP" if type_name == "TIMESTAMPTZ" else type_name
+        return f"{keyword} '{text}'"
+
     def compile_is_boolean(self, column_sql: str, operator: str, value: bool) -> str:
         # Trino has no IS TRUE. IS NOT DISTINCT FROM gives the same answer,
         # a NULL column included.

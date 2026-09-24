@@ -26,6 +26,13 @@ class DuckDbCompiler(Compiler):
     def supports_qualify(self) -> bool:
         return True
 
+    def compile_temporal_literal(self, type_name: str, text: str) -> str:
+        return f"{type_name} '{text}'"
+
+    def compile_binary_literal(self, hex_text: str) -> str:
+        # DuckDB reads X'...' as a string, not as bytes.
+        return f"from_hex('{hex_text}')"
+
     def parenthesized_set_members(self) -> bool:
         return True
 

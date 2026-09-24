@@ -1,5 +1,7 @@
+import datetime
 import inspect
 import re
+from decimal import Decimal
 from functools import wraps
 from typing import (
     TYPE_CHECKING,
@@ -421,9 +423,40 @@ class Compiler:
         if isinstance(value, str):
             escaped_value = value.replace("'", "''")
             return f"'{escaped_value}'"
+        if isinstance(value, Decimal):
+            if not value.is_finite():
+                raise ValueError(
+                    f"Cannot render {value} as a SQL literal. Bind it as a "
+                    "parameter instead."
+                )
+            # "f" keeps every digit and never writes an exponent.
+            return format(value, "f")
+        # datetime before date, because datetime subclasses date.
+        if isinstance(value, datetime.datetime):
+            type_name = "TIMESTAMP" if value.tzinfo is None else "TIMESTAMPTZ"
+            return self.compile_temporal_literal(type_name, value.isoformat(sep=" "))
+        if isinstance(value, datetime.date):
+            return self.compile_temporal_literal("DATE", value.isoformat())
+        if isinstance(value, bytes):
+            return self.compile_binary_literal(value.hex())
         raise TypeError(
             f"Cannot render a value of type {type(value).__name__} as a SQL literal."
         )
+
+    def compile_temporal_literal(self, type_name: str, text: str) -> str:
+        """
+        Renders a date or timestamp literal from its ISO text. `type_name`
+        is DATE, TIMESTAMP, or TIMESTAMPTZ for a timestamp with an offset.
+
+        SQLite, which the default dialect targets, stores dates as ISO
+        text, the way the sqlite3 module binds them, so the literal is the
+        quoted text alone. A typed dialect writes the type name in front.
+        """
+        return f"'{text}'"
+
+    def compile_binary_literal(self, hex_text: str) -> str:
+        """Renders a bytes literal from its hexadecimal digits."""
+        return f"X'{hex_text}'"
 
     def compile_boolean(self, value: bool) -> str:
         return "TRUE" if value else "FALSE"
