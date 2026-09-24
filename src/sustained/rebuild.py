@@ -12,10 +12,12 @@ tables need it.
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING, Dict, List, Set, Tuple, Type
 
 from sustained.introspect import IntrospectedColumn, IntrospectedTable, Snapshot
 from sustained.schema import bare_table_name, build_create_table_sql
+from sustained.types import Expression
 
 if TYPE_CHECKING:
     from sustained.compilers.base import Compiler
@@ -42,6 +44,41 @@ def implied_constraint_names(
         if coldef.references is not None:
             fk_columns.add((name.lower(),))
     return check_names, fk_columns
+
+
+# A default SQLite takes in ADD COLUMN: a number, a string or blob
+# literal, NULL, TRUE, or FALSE. CURRENT_TIMESTAMP and an expression in
+# parentheses are refused there.
+_CONSTANT_DEFAULT_RE = re.compile(
+    r"^\s*(?:[-+]?\d+(?:\.\d*)?(?:e[-+]?\d+)?|'(?:[^']|'')*'|x'[0-9a-f]*'"
+    r"|null|true|false)\s*$",
+    re.IGNORECASE,
+)
+
+
+def add_column_needs_rebuild(compiler: "Compiler", coldef: "ColumnDef") -> bool:
+    """
+    Whether SQLite refuses to add the column with ALTER TABLE ADD COLUMN,
+    so the table is rebuilt to take it. SQLite refuses a UNIQUE column, a
+    NOT NULL column with no default, a default that is not a constant,
+    and a REFERENCES column with a default while foreign keys are on. An
+    enum column needs its CHECK constraint, which SQLite cannot add to a
+    table that exists. A key or identity column is refused on every
+    dialect before this is asked, so it answers False.
+    """
+    if coldef.primary_key or coldef.autoincrement:
+        return False
+    if coldef.type_name == "ENUM" and compiler.enum_strategy() == "check":
+        return True
+    if coldef.unique or (not coldef.nullable and coldef.default is None):
+        return True
+    if coldef.default is None:
+        return False
+    if coldef.references is not None:
+        return True
+    return isinstance(coldef.default, Expression) and not _CONSTANT_DEFAULT_RE.match(
+        str(coldef.default)
+    )
 
 
 def create_indexes_sql(compiler: "Compiler", model: Type["Model"]) -> List[str]:

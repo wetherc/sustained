@@ -8,7 +8,8 @@ import unittest
 
 from sustained import create_model
 from sustained.autogenerate import autogenerate, diff_schema
-from sustained.schema import Index, Integer, String, Text
+from sustained.schema import Index, Integer, String, Text, Timestamp
+from sustained.types import Expression
 
 
 def model_of(columns, indexes=None, table="rb_items"):
@@ -135,6 +136,62 @@ class TestRebuildTightensToNotNull(RebuildTestCase):
         )
         with self.assertRaisesRegex(ValueError, "rb_items.note' to NOT NULL"):
             autogenerate(self.conn, [model], id="m")
+
+
+class TestAddColumnSqliteRefuses(RebuildTestCase):
+    def columns(self, **extra):
+        return {
+            "id": Integer(primary_key=True),
+            "code": Integer(),
+            "note": Text(),
+            **extra,
+        }
+
+    def assert_rebuilt(self, model):
+        migration = autogenerate(self.conn, [model], id="m")
+        self.assertFalse(any("ADD COLUMN" in s for s in migration.up))
+        self.apply(migration)
+        self.assertTrue(diff_schema(self.conn, [model]).is_empty())
+        return migration
+
+    def test_a_unique_column_rebuilds(self):
+        self.assert_rebuilt(model_of(self.columns(sku=String(20, unique=True))))
+
+    def test_a_timestamp_default_rebuilds(self):
+        model = model_of(
+            self.columns(seen=Timestamp(default=Expression("CURRENT_TIMESTAMP")))
+        )
+        self.assert_rebuilt(model)
+        (seen,) = self.conn.execute("SELECT seen FROM rb_items").fetchone()
+        self.assertIsNotNone(seen)
+
+    def test_an_expression_in_parentheses_rebuilds(self):
+        self.assert_rebuilt(
+            model_of(self.columns(rank=Integer(default=Expression("(1 + 1)"))))
+        )
+
+    def test_a_reference_with_a_default_rebuilds(self):
+        self.conn.execute("CREATE TABLE rb_owners (id INTEGER PRIMARY KEY)")
+        self.conn.execute("INSERT INTO rb_owners VALUES (0)")
+        owners = model_of({"id": Integer(primary_key=True)}, table="rb_owners")
+        items = model_of(
+            self.columns(owner_id=Integer(default=0, references="rb_owners.id"))
+        )
+        migration = autogenerate(self.conn, [owners, items], id="m")
+        self.assertFalse(any("ADD COLUMN" in s for s in migration.up))
+
+    def test_every_new_column_of_a_rebuilt_table_comes_from_the_rebuild(self):
+        self.assert_rebuilt(
+            model_of(self.columns(plain=Text(), sku=String(20, unique=True)))
+        )
+
+    def test_a_constant_default_takes_add_column(self):
+        for default in (Expression("'x'"), Expression("-1.5"), Expression("NULL")):
+            with self.subTest(default=str(default)):
+                model = model_of(self.columns(extra=Text(default=default)))
+                migration = autogenerate(self.conn, [model], id="m")
+                self.assertEqual(len(migration.up), 1)
+                self.assertIn("ADD COLUMN", migration.up[0])
 
 
 if __name__ == "__main__":

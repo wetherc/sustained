@@ -78,6 +78,7 @@ from sustained.introspect import (
 )
 from sustained.migrations import Migration, _ReplayConnection
 from sustained.rebuild import (
+    add_column_needs_rebuild,
     create_indexes_sql,
     implied_constraint_names,
     rebuild_steps,
@@ -1394,13 +1395,13 @@ def autogenerate(
                 ):
                     down_steps.insert(0, statement)
 
-    # An enum column held by a CHECK constraint needs the constraint
-    # added beside the new column. A dialect that cannot alter
-    # constraints in place (SQLite) rebuilds the table instead; the
-    # rebuilt CREATE TABLE carries the constraint.
-    if compiler.enum_strategy() == "check" and not compiler.supports_alter_column():
+    # SQLite refuses some columns in ADD COLUMN, and the rebuilt CREATE
+    # TABLE takes them. The scan runs before any column is added, so a
+    # table headed for a rebuild gets no ADD COLUMN for its other new
+    # columns either.
+    if compiler.rebuild_strategy() == "rebuild":
         for model, _, coldef in diff.new_columns:
-            if coldef.type_name == "ENUM":
+            if add_column_needs_rebuild(compiler, coldef):
                 rebuild_tables[(model.tableName or "").lower()] = model
 
     # New columns. A NOT NULL column with no value for the rows already
@@ -1435,9 +1436,9 @@ def autogenerate(
             )
         table_sql = model._qualified_table_sql(compiler)
         if not coldef.nullable and coldef.default is None:
-            if _rebuild_needed(compiler, "add a NOT NULL column"):
-                rebuild_tables[table_key] = model
-                continue
+            # A dialect that rebuilds took this table in the scan above.
+            # One that can neither alter nor rebuild refuses here.
+            _rebuild_needed(compiler, "add a NOT NULL column")
             # Add nullable, backfill, then tighten.
             relaxed = render_column_sql(
                 compiler,
