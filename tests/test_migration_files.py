@@ -100,6 +100,23 @@ class TestSplitSqlStatements(unittest.TestCase):
             ["INSERT INTO t VALUES ('it\\'s')", "INSERT INTO t VALUES ('x')"],
         )
 
+    def test_a_standard_string_ending_in_a_backslash_does_not_merge(self):
+        # Read with escapes, the string runs on to the apostrophe in the
+        # comment, and every quote still closes.
+        text = "INSERT INTO p VALUES ('C:\\');\n-- don't\nSELECT 2;\n"
+        self.assertEqual(
+            split_sql_statements(text),
+            ["INSERT INTO p VALUES ('C:\\')", "-- don't\nSELECT 2"],
+        )
+
+    def test_two_escaped_quotes_do_not_merge(self):
+        text = "INSERT INTO t VALUES ('it\\'s');\nINSERT INTO t VALUES ('he\\'s');\n"
+        self.assertEqual(len(split_sql_statements(text)), 2)
+
+    def test_a_semicolon_inside_a_string_under_both_readings_stays(self):
+        text = "SELECT 'a\\\\;\nb';\nSELECT 2;\n"
+        self.assertEqual(split_sql_statements(text), ["SELECT 'a\\\\;\nb'", "SELECT 2"])
+
     def test_a_quote_in_a_line_comment_opens_nothing(self):
         text = "-- don't;\nSELECT 1;\n-- it's\nSELECT 2;\n"
         self.assertEqual(split_sql_statements(text), ["SELECT 1", "-- it's\nSELECT 2"])

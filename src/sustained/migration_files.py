@@ -132,20 +132,18 @@ def _ignored_name(name: str) -> bool:
     return name.startswith(".") or name.endswith(_IGNORED_SUFFIXES)
 
 
-def _quote_end(text: str, start: int) -> Optional[int]:
+def _quote_end(text: str, start: int, backslash: bool) -> Optional[int]:
     """
     The index just past the quote that closes the one at `start`, or None
-    when the text ends first. A doubled quote stands for itself. A
-    backslash escapes the next character in a string, as MySQL and
-    Postgres E'' strings read it; a standard string that ends in a
-    backslash is the one case this misreads. Backticks take no backslash
-    escape.
+    when the text ends first. A doubled quote stands for itself. With
+    `backslash`, a backslash also escapes the next character, as MySQL
+    and Postgres E'' strings read it. Backticks take no backslash escape.
     """
     quote = text[start]
     index = start + 1
     while index < len(text):
         char = text[index]
-        if char == "\\" and quote != "`":
+        if backslash and char == "\\" and quote != "`":
             index += 2
         elif char != quote:
             index += 1
@@ -156,11 +154,12 @@ def _quote_end(text: str, start: int) -> Optional[int]:
     return None
 
 
-def _quoted_spans(text: str) -> Optional[List[Tuple[int, int]]]:
+def _quoted_spans(text: str, backslash: bool) -> Optional[List[Tuple[int, int]]]:
     """
     The (start, end) index pairs of every string literal, quoted
     identifier, /* */ comment, and dollar-quoted body in the text, or
-    None when one of them is still open at the end.
+    None when one of them is still open at the end. `backslash` says
+    whether a backslash escapes the next character inside quotes.
 
     A '--' comment is skipped so a quote inside it opens nothing, but it
     is not a span, and a line-ending semicolon in one splits the file. A
@@ -182,7 +181,7 @@ def _quoted_spans(text: str) -> Optional[List[Tuple[int, int]]]:
             close = text.find("*/", index + 2)
             end = None if close < 0 else close + 2
         elif char in "'\"`":
-            end = _quote_end(text, index)
+            end = _quote_end(text, index, backslash)
         elif char == "$" and not (index and _identifier_char(text[index - 1])):
             tag = _DOLLAR_TAG_RE.match(text, index)
             if tag is None:
@@ -205,24 +204,47 @@ def _identifier_char(char: str) -> bool:
     return char.isalnum() or char in "_$"
 
 
+def _outside(position: int, starts: List[int], spans: List[Tuple[int, int]]) -> bool:
+    """
+    Whether the position falls outside every span in the sorted list.
+    `starts` lists the spans' start indexes, in the same order.
+    """
+    at = bisect_right(starts, position) - 1
+    return at < 0 or position >= spans[at][1]
+
+
 def _statement_ends(text: str) -> List["re.Match[str]"]:
     """
     The line-ending semicolons that end a statement: every match of the
-    split rule outside the quoted spans. A file with a quote or comment
-    left open splits at every match instead, the rule without quoting,
-    so a quote the scan misreads cannot merge a file into one statement.
+    split rule outside the quoted spans.
+
+    The file does not say whether a backslash escapes a quote, so the
+    text is read both ways, and a match counts when either reading puts
+    it outside every span. A MySQL 'it\\'s' read without escapes, or a
+    standard 'C:\\' read with them, opens a string that swallows the next
+    statement end, and the other reading still finds it. A reading that
+    leaves a quote or comment open at the end is dropped. When both do,
+    the file splits at every match, so a quote the scan misreads cannot
+    merge a file into one statement.
+
+    The one misread left needs a string that holds an escaped quote and
+    a line-ending semicolon, in a file whose quotes also balance when a
+    backslash escapes nothing. The reading without escapes then ends the
+    string early and splits at that semicolon.
     """
     matches = list(_STATEMENT_END_RE.finditer(text))
-    spans = _quoted_spans(text)
-    if not spans:
+    readings = [
+        ([start for start, _ in spans], spans)
+        for spans in (_quoted_spans(text, False), _quoted_spans(text, True))
+        if spans is not None
+    ]
+    if not readings:
         return matches
-    starts = [start for start, _ in spans]
-    kept = []
-    for match in matches:
-        at = bisect_right(starts, match.start()) - 1
-        if at < 0 or match.start() >= spans[at][1]:
-            kept.append(match)
-    return kept
+    return [
+        match
+        for match in matches
+        if any(_outside(match.start(), starts, spans) for starts, spans in readings)
+    ]
 
 
 def split_sql_statements(text: str) -> List[str]:

@@ -543,7 +543,7 @@ split_sql_statements(text) -> list[str]
 ```
 {: .sig #split_sql_statements}
 
-`split_sql_statements` splits on line-ending semicolons, including a semicolon with a `--` comment after it, and drops the pieces that are only whitespace or comments. It skips semicolons inside quotes, `/* */` comments, and dollar-quoted bodies. Inside a quoted string, a doubled quote or a backslash escapes the next character, so both `'it''s'` and MySQL's `'it\'s'` read as one string. A line-ending semicolon inside a `--` comment still splits. If a quote or a comment is still open at the end of the text, the function ignores quoting and splits at every line-ending semicolon, so a quote it misreads cannot merge the whole file into one statement.
+`split_sql_statements` splits on line-ending semicolons, including a semicolon with a `--` comment after it, and drops the pieces that are only whitespace or comments. It skips semicolons inside quotes, `/* */` comments, and dollar-quoted bodies. A doubled quote stands for one quote. The text does not say whether a backslash escapes a quote, as in MySQL's `'it\'s'`, or ends a standard string such as `'C:\'`, so the function reads the text both ways and splits at a semicolon that either reading puts outside every string. A reading that leaves a quote or a comment open at the end of the text is dropped, and when both readings leave one open, the function splits at every line-ending semicolon, so a misread quote cannot merge the whole file into one statement. A line-ending semicolon inside a `--` comment still splits.
 
 ## Autogeneration internals
 
