@@ -122,6 +122,13 @@ class IntrospectedForeignKey(NamedTuple):
     and target_columns is empty. Actions are None when the engine does
     not report them. `name` is the constraint name as the catalog spells
     it, or None where a read does not keep it.
+
+    `target_schema` is the schema of the target table, as the catalog
+    spells it, when that schema is not the one the connection is on. It
+    is None for a target in the connection's schema, and wherever a read
+    does not report it. A key restored to a target in another schema
+    needs the schema, or it points at a table of the same name in the
+    connection's schema.
     """
 
     columns: Tuple[str, ...]
@@ -130,6 +137,7 @@ class IntrospectedForeignKey(NamedTuple):
     on_delete: Optional[str] = None
     on_update: Optional[str] = None
     name: Optional[str] = None
+    target_schema: Optional[str] = None
 
 
 # Defaults for tables introspected without keys, indexes, or checks. A
@@ -1295,14 +1303,23 @@ def _information_schema_plan(
     return schema
 
 
+def _row_schema(row: Sequence[RowValue], index: int) -> Optional[str]:
+    """The schema a row names at `index`, or None when it names none."""
+    if len(row) <= index or row[index] is None:
+        return None
+    return str(row[index])
+
+
 def _replace_foreign_keys(schema: Snapshot, rows: Sequence[Sequence[RowValue]]) -> None:
     """
     Replaces the foreign keys of the shared information_schema read with
     rows that say where each key points: the table, the constraint name,
-    one constrained column, the table and column it references, and the
-    delete and update actions, one row per column in key order. The
-    shared read joins no referential view, so its keys point at '?'.
-    SQL Server spells an action with an underscore, as in SET_NULL.
+    one constrained column, the table and column it references, the
+    delete and update actions, and the schema of the referenced table
+    when it is not the connection's own, one row per column in key
+    order. The shared read joins no referential view, so its keys point
+    at '?'. SQL Server spells an action with an underscore, as in
+    SET_NULL.
     """
     parts: Dict[Tuple[str, str], List[Sequence[RowValue]]] = {}
     for row in rows:
@@ -1317,6 +1334,7 @@ def _replace_foreign_keys(schema: Snapshot, rows: Sequence[Sequence[RowValue]]) 
             on_delete=str(first[5]).replace("_", " ").upper(),
             on_update=str(first[6]).replace("_", " ").upper(),
             name=str(first[1]),
+            target_schema=_row_schema(first, 7),
         )
     for table, existing in list(schema.items()):
         schema[table] = existing._replace(foreign_keys=foreign_keys.get(table, {}))
@@ -1378,7 +1396,8 @@ def _mssql_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
         fk_rows = yield (
             "SELECT t.name, fk.name, pc.name, rt.name, rc.name, "
             "fk.delete_referential_action_desc, "
-            "fk.update_referential_action_desc "
+            "fk.update_referential_action_desc, "
+            "NULLIF(SCHEMA_NAME(rt.schema_id), SCHEMA_NAME()) "
             "FROM sys.foreign_keys fk "
             "JOIN sys.tables t ON t.object_id = fk.parent_object_id "
             "JOIN sys.foreign_key_columns fkc "
@@ -1676,11 +1695,13 @@ def _postgres_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
         # column lists. conrelid tells the two apart for free.
         fk_rows = yield (
             "SELECT src.relname, con.conname, sa.attname, tgt.relname, "
-            "ta.attname, con.confdeltype, con.confupdtype "
+            "ta.attname, con.confdeltype, con.confupdtype, "
+            "NULLIF(tn.nspname, current_schema()) "
             "FROM pg_catalog.pg_constraint con "
             "JOIN pg_catalog.pg_class src ON src.oid = con.conrelid "
             "JOIN pg_catalog.pg_namespace n ON n.oid = src.relnamespace "
             "JOIN pg_catalog.pg_class tgt ON tgt.oid = con.confrelid "
+            "JOIN pg_catalog.pg_namespace tn ON tn.oid = tgt.relnamespace "
             "CROSS JOIN LATERAL unnest(con.conkey, con.confkey) "
             "WITH ORDINALITY AS k(attnum, refattnum, ord) "
             "JOIN pg_catalog.pg_attribute sa "
@@ -1704,6 +1725,7 @@ def _postgres_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
                 on_delete=_pg_fk_action(first[5]),
                 on_update=_pg_fk_action(first[6]),
                 name=str(first[1]),
+                target_schema=_row_schema(first, 7),
             )
         constraints_read = True
     except Exception:
@@ -1928,7 +1950,8 @@ def _mysql_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
         fk_rows = yield (
             "SELECT kcu.table_name, kcu.constraint_name, kcu.column_name, "
             "kcu.referenced_table_name, kcu.referenced_column_name, "
-            "rc.delete_rule, rc.update_rule "
+            "rc.delete_rule, rc.update_rule, "
+            "NULLIF(kcu.referenced_table_schema, DATABASE()) "
             "FROM information_schema.key_column_usage kcu "
             "JOIN information_schema.referential_constraints rc "
             "ON rc.constraint_schema = kcu.constraint_schema "

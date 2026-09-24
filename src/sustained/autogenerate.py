@@ -794,6 +794,30 @@ def _fk_action(action: Optional[str], compiler: Optional["Compiler"] = None) -> 
     return name if compiler is None else compiler.equivalent_fk_action(name)
 
 
+def _fk_target_matches(declared_target: str, actual: IntrospectedForeignKey) -> bool:
+    """
+    Whether a declared key's target names the table the catalog reports.
+    The catalog reports the bare table name, plus the schema when it is
+    not the connection's own. A declared target such as 'app.parents'
+    names a schema, and a bare one means the connection's schema. The
+    two differ when both name a schema and the names differ, or when
+    only the catalog names one. A declared schema that the catalog
+    leaves out is the connection's own, so it matches.
+    """
+    schema, _, table = declared_target.rpartition(".")
+    if table.lower() != actual.target_table:
+        return False
+    if actual.target_schema is None:
+        return True
+    declared_schema = schema.rpartition(".")[2]
+    return declared_schema.lower() == actual.target_schema.lower()
+
+
+def _bare_reference(reference: str) -> str:
+    """A column reference such as 'app.parents.id' as 'parents.id'."""
+    return ".".join(reference.lower().rsplit(".", 2)[-2:])
+
+
 def _fk_matches(
     declared: ForeignKey,
     actual: IntrospectedForeignKey,
@@ -809,7 +833,7 @@ def _fk_matches(
         return False
     if actual.target_table == "?":
         return True
-    if declared.target_table.lower() != actual.target_table:
+    if not _fk_target_matches(declared.target_table, actual):
         return False
     if actual.target_columns and (
         tuple(c.lower() for c in declared.target_columns) != actual.target_columns
@@ -1071,7 +1095,7 @@ def _diff_constraints(
                     f"{table_name}.{name} declares a foreign key to "
                     f"{coldef.references} that the database does not have"
                 )
-            elif actual_fk not in ("?", coldef.references.lower()):
+            elif actual_fk not in ("?", _bare_reference(coldef.references)):
                 diff.constraint_notes.append(
                     f"{table_name}.{name} foreign key targets {actual_fk}, "
                     f"model declares {coldef.references.lower()}"
@@ -2045,7 +2069,8 @@ def _introspected_fk_sql(
     catalog did not say where the key points, which makes the drop
     irreversible. An empty target column list renders without one: the
     key references the target table's primary key. Names are spelled as
-    the snapshot spells them, where it has the table.
+    the snapshot spells them, where it has the table. A target outside
+    the connection's schema takes its schema in front.
     """
     if fk.target_table == "?":
         return None
@@ -2055,17 +2080,20 @@ def _introspected_fk_sql(
     target = snapshot.get(fk.target_table)
     columns = list(fk.columns)
     target_columns = list(fk.target_columns)
-    target_name = fk.target_table
+    target_parts = [fk.target_table]
     if source is not None:
         columns = [source.spelled_column(column) for column in columns]
     if target is not None:
         target_columns = [target.spelled_column(column) for column in target_columns]
-        target_name = target.name or target_name
+        target_parts = [target.name or fk.target_table]
+    target_schema = fk.target_schema or (None if target is None else target.schema)
+    if target_schema is not None:
+        target_parts.insert(0, target_schema)
     return compiler.compile_add_foreign_key(
         table_sql,
         name,
         columns,
-        compiler.quote_fully_qualified_ddl_identifier(target_name),
+        ".".join(compiler.quote_ddl_identifier(part) for part in target_parts),
         target_columns,
         None if on_delete == "NO ACTION" else on_delete,
         None if on_update == "NO ACTION" else on_update,
