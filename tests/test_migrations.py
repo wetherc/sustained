@@ -13,7 +13,8 @@ try:
 except ImportError:
     HAS_DUCKDB = False
 
-import sustained.migrations as migrations_module
+import sustained.migrations.migrator as migrator_module
+import sustained.migrations.rehearsal as rehearsal_module
 from sustained import Model
 from sustained.ddl import drop_table
 from sustained.dialects import Dialects
@@ -1406,12 +1407,12 @@ class TestGeneratedRows(MigrationTestCase):
     def test_a_failed_generated_migration_is_not_kept(self):
         migrator = Migrator(self.conn, [])
         models = self.models()
-        real_run_step = migrations_module._run_step
+        real_run_step = migrator_module._run_step
 
         def refuse(connection, step, compiler):
             raise RuntimeError("no")
 
-        with mock.patch.object(migrations_module, "_run_step", refuse):
+        with mock.patch.object(migrator_module, "_run_step", refuse):
             with self.assertRaises(RuntimeError):
                 migrator.up(models=models)
         # The failed migration is gone from the list, so the next run
@@ -1420,7 +1421,7 @@ class TestGeneratedRows(MigrationTestCase):
         applied = migrator.up(models=models)
         self.assertEqual(len(applied), 1)
         self.assertIn("gen_users", table_names(self.conn))
-        self.assertIs(migrations_module._run_step, real_run_step)
+        self.assertIs(migrator_module._run_step, real_run_step)
 
     def test_a_later_process_can_revert_a_generated_migration(self):
         Migrator(self.conn, []).up(models=self.models())
@@ -1901,14 +1902,14 @@ class TestDestructivePrefixKeys(unittest.TestCase):
 
     def test_each_migration_renders_once(self):
         renders = []
-        real = migrations_module.migration_sql
+        real = rehearsal_module.migration_sql
 
         def counted(migration, direction, compiler=None):
             renders.append(migration.id)
             return real(migration, direction, compiler)
 
-        migrations_module.migration_sql = counted
-        self.addCleanup(setattr, migrations_module, "migration_sql", real)
+        rehearsal_module.migration_sql = counted
+        self.addCleanup(setattr, rehearsal_module, "migration_sql", real)
         _destructive_prefix_keys(self.history, self.pending)
         # Every migration is read once. A later start point needs to know
         # whether the migrations after it remove data, so the scan cannot
@@ -1917,14 +1918,14 @@ class TestDestructivePrefixKeys(unittest.TestCase):
 
     def test_each_checksum_is_computed_once(self):
         computed = []
-        real = migrations_module.migration_checksum
+        real = rehearsal_module.migration_checksum
 
         def counted(migration):
             computed.append(migration.id)
             return real(migration)
 
-        migrations_module.migration_checksum = counted
-        self.addCleanup(setattr, migrations_module, "migration_checksum", real)
+        rehearsal_module.migration_checksum = counted
+        self.addCleanup(setattr, rehearsal_module, "migration_checksum", real)
         _destructive_prefix_keys(self.history, self.pending)
         # The slice loops walk every (start, end) pair, so an uncached
         # checksum would be recomputed hundreds of times on a long run.
