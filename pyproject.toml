@@ -47,6 +47,21 @@ Issues = "https://github.com/wetherc/sustained/issues"
 [tool.isort]
 profile = "black"
 
+# Ruff only checks function size and complexity; black and isort own the
+# formatting. Each limit sits at the worst function in src/ today, so a
+# new function cannot be worse than any we already have. Lower a limit
+# when the function that sets it is broken up.
+[tool.ruff.lint]
+select = [ "C901", "PLR0912", "PLR0913", "PLR0915",]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 27
+
+[tool.ruff.lint.pylint]
+max-branches = 26
+max-args = 14
+max-statements = 93
+
 [tool.mypy]
 mypy_path = "src"
 explicit_package_bases = true
