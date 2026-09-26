@@ -54,7 +54,6 @@ from sustained.migrations.migration import (
     CallbackTarget,
     Migration,
     MigrationStep,
-    _call_on_error,
     _checked_steps,
     _checksum_matches,
     _default_compiler,
@@ -159,7 +158,6 @@ __all__ = [
     "_restore_migration",
     "_tag_migration",
     "_tag_applied",
-    "_call_on_error",
     # from rehearsal
     "RehearsalResult",
     "rehearsal_failed",

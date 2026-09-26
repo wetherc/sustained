@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import sys
 from collections import Counter
 from typing import (
     TYPE_CHECKING,
@@ -318,24 +317,6 @@ def _checked_steps(steps: int) -> int:
     if steps < 0:
         raise ValueError(f"steps must be 0 or more, got {steps}.")
     return steps
-
-
-def _call_on_error(
-    callbacks: Callbacks, connection: CallbackTarget, error: BaseException
-) -> None:
-    """
-    Hands a failed run to the on_error callback. A callback that raises
-    must not replace the error it was told about, so its own failure is
-    reported on stderr and set aside. before_migrate and after_migrate
-    are called plainly: a failure there is the operator's own and stops
-    the run.
-    """
-    if callbacks.on_error is None:
-        return
-    try:
-        callbacks.on_error(connection, getattr(error, "migration_id", None), error)
-    except Exception as callback_error:
-        print(f"error: on_error raised {callback_error!r}", file=sys.stderr)
 
 
 def create_table_migration(model: Type["Model"]) -> Migration:
