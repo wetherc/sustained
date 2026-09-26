@@ -1715,6 +1715,98 @@ def autogenerate(
     )
     models_by_table = {m.tableName.lower(): m for m in models if m.tableName}
 
+    _refuse_undeclared(diff, allow_drops, ignore_undeclared)
+
+    state = _Generation(
+        connection,
+        compiler,
+        diff,
+        actual,
+        models_by_table,
+        allow_drops,
+        ignore_changed_columns,
+        type_casts,
+    )
+    # Renames first, so later steps address the new names.
+    _table_rename_steps(state, table_renames)
+    _column_rename_steps(state, renames)
+    _enum_type_steps(state)
+    _new_table_steps(state)
+    _enum_checks_off(state)
+    _lift_index_steps(state)
+    _changed_column_steps(state)
+    _enum_checks_on(state)
+    _add_column_rebuild_scan(state)
+    _new_column_steps(state)
+    _restore_lifted_index_steps(state)
+    _comment_steps(state)
+    _constraint_rebuild_scan(state)
+    _table_rebuild_steps(state)
+    _index_steps(state)
+    _constraint_steps(state)
+    _drop_steps(state)
+    _created_enum_type_downs(state)
+
+    if not state.up_steps:
+        return None
+    return Migration(
+        id=id,
+        up=state.up_steps,
+        down=state.down_steps if state.reversible and state.down_steps else None,
+        transactional=state.transactional,
+    )
+
+
+class _Generation:
+    """
+    What autogenerate() threads through its phases: the inputs every
+    phase reads, the up and down steps they append to in order, and
+    what one phase leaves for a later one.
+    """
+
+    def __init__(
+        self,
+        connection: Connection,
+        compiler: "Compiler",
+        diff: SchemaDiff,
+        actual: Snapshot,
+        models_by_table: Dict[str, Type["Model"]],
+        allow_drops: bool,
+        ignore_changed_columns: bool,
+        type_casts: Dict[str, str],
+    ) -> None:
+        self.connection = connection
+        self.compiler = compiler
+        self.diff = diff
+        self.actual = actual
+        self.models_by_table = models_by_table
+        self.allow_drops = allow_drops
+        self.ignore_changed_columns = ignore_changed_columns
+        self.type_casts = type_casts
+        self.up_steps: List[str] = []
+        self.down_steps: List[str] = []
+        self.reversible = True
+        self.transactional = True
+        self.rebuild_tables: Dict[str, Type["Model"]] = {}
+        # Enum types this migration creates, dropped last on the way down.
+        self.created_enum_types: List[str] = []
+        # Enum columns whose check comes off before the column changes
+        # and goes back on after them.
+        self.enum_check_adds: List[Tuple[Type["Model"], str]] = []
+        # Indexes dropped before the column changes and created again
+        # after the new columns are in.
+        self.lift_drops: List[str] = []
+        self.lift_creates: List[str] = []
+        # The state each changed column is left in by its type and
+        # nullability statements, for a comment statement that restates
+        # the whole column after them.
+        self.restated_states: Dict[Tuple[str, str], ColumnState] = {}
+
+
+def _refuse_undeclared(
+    diff: SchemaDiff, allow_drops: bool, ignore_undeclared: bool
+) -> None:
+    """Refuses a diff with objects the models do not declare, unless told."""
     if (
         (
             diff.extra_tables
@@ -1737,13 +1829,14 @@ def autogenerate(
             "drops, or add them to exclude_tables."
         )
 
-    up_steps: List[str] = []
-    down_steps: List[str] = []
-    reversible = True
-    transactional = True
-    rebuild_tables: Dict[str, Type["Model"]] = {}
 
-    # Renames first, so later steps address the new names.
+def _table_rename_steps(state: _Generation, table_renames: Dict[str, str]) -> None:
+    """RENAME TABLE for each table rename hint."""
+    compiler = state.compiler
+    actual = state.actual
+    models_by_table = state.models_by_table
+    up_steps = state.up_steps
+    down_steps = state.down_steps
     for old, new in table_renames.items():
         # The renamed table keeps its schema, so the old name takes the
         # schema the model declares for the new one.
@@ -1760,6 +1853,15 @@ def autogenerate(
             )
         )
         down_steps.insert(0, compiler.compile_rename_table(new_sql, old_sql))
+
+
+def _column_rename_steps(state: _Generation, renames: Dict[str, str]) -> None:
+    """RENAME COLUMN for each column rename hint."""
+    compiler = state.compiler
+    actual = state.actual
+    models_by_table = state.models_by_table
+    up_steps = state.up_steps
+    down_steps = state.down_steps
     for path, new_name in renames.items():
         table, old_name = path.rsplit(".", 1)
         table_sql = _declared_table_sql(compiler, models_by_table, actual, table)
@@ -1776,12 +1878,17 @@ def autogenerate(
             0, compiler.compile_rename_column(table_sql, new_name, old_name)
         )
 
+
+def _enum_type_steps(state: _Generation) -> None:
+    """Creates new enum types and appends declared values."""
+    compiler = state.compiler
+    diff = state.diff
+    up_steps = state.up_steps
     # Enum types first, before any table or column that references them.
     # New types are created; declared values that extend the database's
     # list are appended with ADD VALUE, which no engine takes back, so
     # such a migration has no down. Any other value change cannot run in
     # place and refuses with the recipe.
-    created_enum_types: List[str] = []
     for type_name, values in diff.new_enum_types:
         up_steps.append(
             with_intent(
@@ -1791,7 +1898,7 @@ def autogenerate(
                 name=type_name,
             )
         )
-        created_enum_types.append(type_name)
+        state.created_enum_types.append(type_name)
     for type_name, actual_values, expected_values in diff.changed_enum_types:
         additions = _enum_value_additions(actual_values, expected_values)
         if additions is None:
@@ -1813,8 +1920,15 @@ def autogenerate(
                     value=value,
                 )
             )
-        reversible = False
+        state.reversible = False
 
+
+def _new_table_steps(state: _Generation) -> None:
+    """CREATE TABLE for each missing table."""
+    compiler = state.compiler
+    diff = state.diff
+    up_steps = state.up_steps
+    down_steps = state.down_steps
     # New tables. Where the dialect can add a constraint to a table that
     # already exists, every foreign key is left out of CREATE TABLE and
     # added afterwards, so two new tables may point at each other in any
@@ -1835,12 +1949,19 @@ def autogenerate(
                 fk_downs.insert(0, drop_sql)
     down_steps[0:0] = fk_downs + table_downs
 
+
+def _enum_checks_off(state: _Generation) -> None:
+    """Takes off the enum checks whose values changed."""
+    compiler = state.compiler
+    diff = state.diff
+    up_steps = state.up_steps
+    down_steps = state.down_steps
+    rebuild_tables = state.rebuild_tables
     # An enum check whose values changed comes off before the column
     # changes and goes back on after them: SQL Server refuses to alter a
     # column that a CHECK constraint names, and a longer value widens the
     # VARCHAR in the same migration. A dialect that cannot alter in place
     # rebuilds the table, and the rebuilt CREATE TABLE writes the check.
-    enum_check_adds: List[Tuple[Type["Model"], str]] = []
     for model, name, _, expression in diff.changed_enum_checks:
         if _rebuild_needed(compiler, "change a constraint"):
             rebuild_tables[(model.tableName or "").lower()] = model
@@ -1860,38 +1981,24 @@ def autogenerate(
             down_steps.insert(
                 0, compiler.compile_add_check(table_sql, constraint, expression)
             )
-        enum_check_adds.append((model, name))
+        state.enum_check_adds.append((model, name))
 
-    # Changed columns: ALTER in place where the dialect can, otherwise
-    # mark the table for a rebuild.
-    def preserving_state(
-        coldef: "ColumnDef",
-        actual_col: IntrospectedColumn,
-        type_sql: str,
-        nullable: bool,
-    ) -> ColumnState:
-        # MySQL and SQL Server restate the whole column definition, so a
-        # statement aimed at the type or the nullability must carry the
-        # default and the comment the table has today, not the model's.
-        # A default or comment drift stays a note on the diff; folding it
-        # into this statement would change it silently, and the down step
-        # would write the model's value over the one the column held.
-        state = ColumnState.from_column(
-            compiler, coldef, type_sql=type_sql, nullable=nullable
-        )
-        return state._replace(
-            default_sql=actual_col.restated_default(),
-            comment=(actual_col.comment if compiler.stores_column_comments() else None),
-            collation=actual_col.collation,
-            on_update=actual_col.on_update,
-        )
 
+def _lift_index_steps(state: _Generation) -> None:
+    """Drops the indexes an ALTER COLUMN cannot run under."""
+    compiler = state.compiler
+    diff = state.diff
+    actual = state.actual
+    models_by_table = state.models_by_table
+    up_steps = state.up_steps
+    down_steps = state.down_steps
+    ignore_changed_columns = state.ignore_changed_columns
+    lift_drops = state.lift_drops
+    lift_creates = state.lift_creates
     # An engine that refuses ALTER COLUMN while an index depends on the
     # column, or on the table, gets those indexes dropped before the
     # column changes and created again after the new columns are in.
     # The down steps wrap the reversing statements the same way.
-    lift_drops: List[str] = []
-    lift_creates: List[str] = []
     for table_key, index_name, lifted in _lifted_indexes(
         compiler, diff, actual, ignore_changed_columns
     ):
@@ -1907,12 +2014,26 @@ def autogenerate(
     up_steps.extend(lift_drops)
     down_steps[0:0] = lift_creates
     if lift_drops and compiler.index_drop_waits_for_commit():
-        transactional = False
+        state.transactional = False
 
+
+def _changed_column_steps(state: _Generation) -> None:
+    """ALTER COLUMN for type and nullability changes."""
+    compiler = state.compiler
+    diff = state.diff
+    actual = state.actual
+    models_by_table = state.models_by_table
+    up_steps = state.up_steps
+    down_steps = state.down_steps
+    rebuild_tables = state.rebuild_tables
+    type_casts = state.type_casts
+    ignore_changed_columns = state.ignore_changed_columns
+    restated_states = state.restated_states
+    # Changed columns: ALTER in place where the dialect can, otherwise
+    # mark the table for a rebuild.
     # The state each changed column is left in by its type and
     # nullability statements, for a comment statement that restates the
     # whole column after them.
-    restated_states: Dict[Tuple[str, str], ColumnState] = {}
     if not ignore_changed_columns:
         for table, name, actual_desc, expected_desc in diff.changed_columns:
             model = models_by_table[table.lower()]
@@ -1938,8 +2059,8 @@ def autogenerate(
                 # Tightening to NOT NULL is a separate step that runs
                 # after the backfill, and on MySQL and SQL Server the
                 # restated definition would otherwise apply it early.
-                changed_state = preserving_state(
-                    coldef, actual_col, expected_type, actual_col.nullable
+                changed_state = _preserving_state(
+                    compiler, coldef, actual_col, expected_type, actual_col.nullable
                 )
                 restated_states[(table.lower(), name.lower())] = changed_state
                 # SQL Server refuses a type change on a column that has a
@@ -1987,7 +2108,8 @@ def autogenerate(
                     compiler.compile_alter_column_type(
                         table_sql,
                         name,
-                        preserving_state(
+                        _preserving_state(
+                            compiler,
                             coldef,
                             actual_col,
                             actual_col.raw_type,
@@ -2025,8 +2147,8 @@ def autogenerate(
                             name,
                         )
                     )
-                changed_state = preserving_state(
-                    coldef, actual_col, expected_type, coldef.nullable
+                changed_state = _preserving_state(
+                    compiler, coldef, actual_col, expected_type, coldef.nullable
                 )
                 restated_states[(table.lower(), name.lower())] = changed_state
                 up_steps.extend(
@@ -2043,14 +2165,49 @@ def autogenerate(
                     compiler.compile_alter_column_nullability(
                         table_sql,
                         name,
-                        preserving_state(
-                            coldef, actual_col, expected_type, actual_col.nullable
+                        _preserving_state(
+                            compiler,
+                            coldef,
+                            actual_col,
+                            expected_type,
+                            actual_col.nullable,
                         ),
                     )
                 ):
                     down_steps.insert(0, statement)
 
-    for model, name in enum_check_adds:
+
+def _preserving_state(
+    compiler: "Compiler",
+    coldef: "ColumnDef",
+    actual_col: IntrospectedColumn,
+    type_sql: str,
+    nullable: bool,
+) -> ColumnState:
+    """The state a type or nullability statement restates a column in."""
+    # MySQL and SQL Server restate the whole column definition, so a
+    # statement aimed at the type or the nullability must carry the
+    # default and the comment the table has today, not the model's.
+    # A default or comment drift stays a note on the diff; folding it
+    # into this statement would change it silently, and the down step
+    # would write the model's value over the one the column held.
+    state = ColumnState.from_column(
+        compiler, coldef, type_sql=type_sql, nullable=nullable
+    )
+    return state._replace(
+        default_sql=actual_col.restated_default(),
+        comment=(actual_col.comment if compiler.stores_column_comments() else None),
+        collation=actual_col.collation,
+        on_update=actual_col.on_update,
+    )
+
+
+def _enum_checks_on(state: _Generation) -> None:
+    """Puts back the enum checks _enum_checks_off() took off."""
+    compiler = state.compiler
+    up_steps = state.up_steps
+    down_steps = state.down_steps
+    for model, name in state.enum_check_adds:
         assert model.tableColumns is not None
         _add_enum_check(
             compiler,
@@ -2062,6 +2219,12 @@ def autogenerate(
             model.tableColumns[name],
         )
 
+
+def _add_column_rebuild_scan(state: _Generation) -> None:
+    """Marks the tables SQLite cannot ADD COLUMN to for a rebuild."""
+    compiler = state.compiler
+    diff = state.diff
+    rebuild_tables = state.rebuild_tables
     # SQLite refuses some columns in ADD COLUMN, and the rebuilt CREATE
     # TABLE takes them. The scan runs before any column is added, so a
     # table headed for a rebuild gets no ADD COLUMN for its other new
@@ -2071,6 +2234,15 @@ def autogenerate(
             if add_column_needs_rebuild(compiler, coldef):
                 rebuild_tables[(model.tableName or "").lower()] = model
 
+
+def _new_column_steps(state: _Generation) -> None:
+    """ADD COLUMN for each new column."""
+    connection = state.connection
+    compiler = state.compiler
+    diff = state.diff
+    up_steps = state.up_steps
+    down_steps = state.down_steps
+    rebuild_tables = state.rebuild_tables
     # New columns. A NOT NULL column with no value for the rows already
     # there fails the same way on both paths, so the check runs before a
     # table headed for a rebuild is skipped. The rebuild would otherwise
@@ -2172,9 +2344,26 @@ def autogenerate(
         _add_enum_check(compiler, up_steps, down_steps, table_sql, model, name, coldef)
         _add_foreign_key(compiler, up_steps, down_steps, table_sql, model, name, coldef)
 
+
+def _restore_lifted_index_steps(state: _Generation) -> None:
+    """Creates again the indexes _lift_index_steps() dropped."""
+    up_steps = state.up_steps
+    down_steps = state.down_steps
+    lift_drops = state.lift_drops
+    lift_creates = state.lift_creates
     up_steps.extend(lift_creates)
     down_steps[0:0] = lift_drops
 
+
+def _comment_steps(state: _Generation) -> None:
+    """The comment statements for each drifted column comment."""
+    compiler = state.compiler
+    diff = state.diff
+    actual = state.actual
+    models_by_table = state.models_by_table
+    up_steps = state.up_steps
+    down_steps = state.down_steps
+    restated_states = state.restated_states
     # Comment changes. The down step writes the database's old comment
     # back. MySQL restates the whole column, so both directions restate
     # the column as the table has it: the state the type and nullability
@@ -2186,15 +2375,17 @@ def autogenerate(
         assert model.tableColumns is not None
         coldef = model.tableColumns[name]
         table_sql = model._qualified_table_sql(compiler)
-        state = restated_states.get((table.lower(), name.lower()))
-        if state is None:
-            state = _introspected_state(actual[table.lower()].columns[name.lower()])
+        column_state = restated_states.get((table.lower(), name.lower()))
+        if column_state is None:
+            column_state = _introspected_state(
+                actual[table.lower()].columns[name.lower()]
+            )
         try:
             set_new = compiler.compile_set_column_comment(
-                table_sql, name, expected_comment, coldef, state
+                table_sql, name, expected_comment, coldef, column_state
             )
             set_old = compiler.compile_set_column_comment(
-                table_sql, name, actual_comment, coldef, state
+                table_sql, name, actual_comment, coldef, column_state
             )
         except DialectError as error:
             # Athena reports comments but cannot change one in place.
@@ -2211,6 +2402,14 @@ def autogenerate(
         for statement in reversed(set_old):
             down_steps.insert(0, statement)
 
+
+def _constraint_rebuild_scan(state: _Generation) -> None:
+    """Marks the tables whose constraints change for a rebuild."""
+    compiler = state.compiler
+    diff = state.diff
+    models_by_table = state.models_by_table
+    allow_drops = state.allow_drops
+    rebuild_tables = state.rebuild_tables
     # A dialect that cannot alter a table in place takes its constraint
     # changes through the rebuild: the rebuilt CREATE TABLE renders the
     # declared tableConstraints. Extra and changed constraints only
@@ -2240,6 +2439,14 @@ def autogenerate(
             if _rebuild_needed(compiler, "change a constraint"):
                 rebuild_tables[(model.tableName or "").lower()] = model
 
+
+def _table_rebuild_steps(state: _Generation) -> None:
+    """Rebuilds each table marked for a rebuild."""
+    compiler = state.compiler
+    actual = state.actual
+    allow_drops = state.allow_drops
+    up_steps = state.up_steps
+    rebuild_tables = state.rebuild_tables
     # Table rebuilds for SQLite consume every remaining change on the
     # table. They run between the statements that turn foreign key
     # enforcement off and on again, since dropping the old table would
@@ -2264,9 +2471,18 @@ def autogenerate(
             )
         if guarded:
             up_steps.extend(_foreign_keys_setting(compiler.rebuild_finish_sql(), "ON"))
-            transactional = False
-        reversible = False
+            state.transactional = False
+        state.reversible = False
 
+
+def _index_steps(state: _Generation) -> None:
+    """Creates and rebuilds declared indexes."""
+    compiler = state.compiler
+    diff = state.diff
+    actual = state.actual
+    up_steps = state.up_steps
+    down_steps = state.down_steps
+    rebuild_tables = state.rebuild_tables
     # Index changes. A rebuilt table takes its declared indexes from the
     # rebuild, and its old indexes went with the old table, so none of
     # these statements apply to it.
@@ -2317,6 +2533,17 @@ def autogenerate(
         )
         down_steps.insert(0, compiler.compile_drop_index(index.name, table_sql))
 
+
+def _constraint_steps(state: _Generation) -> None:
+    """Adds, changes, and drops constraints in place."""
+    compiler = state.compiler
+    diff = state.diff
+    actual = state.actual
+    models_by_table = state.models_by_table
+    allow_drops = state.allow_drops
+    up_steps = state.up_steps
+    down_steps = state.down_steps
+    rebuild_tables = state.rebuild_tables
     # Constraint changes on dialects that alter in place. A table headed
     # for a rebuild gets its constraints from the rebuilt CREATE TABLE.
     for model, check in diff.new_checks:
@@ -2365,7 +2592,7 @@ def autogenerate(
                 compiler, table_sql, fk.name, actual_fk, actual, model.tableName or ""
             )
             if restore is None:
-                reversible = False
+                state.reversible = False
             else:
                 down_steps.insert(0, restore)
                 down_steps.insert(
@@ -2387,7 +2614,7 @@ def autogenerate(
                 compiler, table_sql, name, actual_fk, actual, table
             )
             if restore is None:
-                reversible = False
+                state.reversible = False
             else:
                 down_steps.insert(0, restore)
         for table, name, expression in diff.extra_checks:
@@ -2406,6 +2633,17 @@ def autogenerate(
                 0, compiler.compile_add_check(table_sql, name, expression)
             )
 
+
+def _drop_steps(state: _Generation) -> None:
+    """Drops the extra indexes, columns, tables, and enum types."""
+    compiler = state.compiler
+    diff = state.diff
+    actual = state.actual
+    models_by_table = state.models_by_table
+    allow_drops = state.allow_drops
+    up_steps = state.up_steps
+    rebuild_tables = state.rebuild_tables
+    down_steps = state.down_steps
     if allow_drops:
         for table, name, actual_index in diff.extra_indexes:
             if table.lower() in rebuild_tables:
@@ -2460,13 +2698,13 @@ def autogenerate(
                     name,
                 )
             )
-            reversible = False
+            state.reversible = False
         if diff.extra_tables:
             drops, bare = _extra_table_drops(compiler, actual, diff.extra_tables)
             up_steps.extend(drops)
             if bare:
-                transactional = False
-            reversible = False
+                state.transactional = False
+            state.reversible = False
         # A type drops after every table and column that used it.
         for type_name in diff.extra_enum_types:
             up_steps.append(
@@ -2478,19 +2716,15 @@ def autogenerate(
                 )
             )
 
+
+def _created_enum_type_downs(state: _Generation) -> None:
+    """Drops the enum types this migration created."""
+    compiler = state.compiler
+    down_steps = state.down_steps
     # Types created in this migration drop last on the way down, after
     # every table that referenced them is gone.
-    for type_name in created_enum_types:
+    for type_name in state.created_enum_types:
         down_steps.append(compiler.compile_drop_enum_type(type_name))
-
-    if not up_steps:
-        return None
-    return Migration(
-        id=id,
-        up=up_steps,
-        down=down_steps if reversible and down_steps else None,
-        transactional=transactional,
-    )
 
 
 def _can_probe_rows(connection: Connection) -> bool:
