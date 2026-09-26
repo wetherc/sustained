@@ -1,6 +1,7 @@
 ---
 layout: default
 title: Relations and Joins
+description: "Declare relations once in a Sustained model and join them by name, with joinRelated() and eager loading through withGraphFetched()."
 ---
 
 Joins are defined once, in a model's `relationMappings`. Once a relation is declared, you join by its name instead of writing the `JOIN` condition each time:

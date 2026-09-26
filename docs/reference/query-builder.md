@@ -1,6 +1,7 @@
 ---
 layout: default
 title: QueryBuilder reference
+description: "Reference for sustained.QueryBuilder: every method that builds, renders, and runs SELECT, INSERT, UPDATE, DELETE, and upsert statements."
 ---
 
 `sustained.QueryBuilder` builds every statement Sustained runs. Get a builder from `Model.query()` rather than constructing one yourself.

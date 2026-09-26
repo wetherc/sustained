@@ -1,3 +1,14 @@
 theme: jekyll-theme-minimal
 title: Sustained.py
-description: A Python query builder and schema migration tool, inspired by Objection.js
+description: A Python ORM, SQL query builder, and schema migration tool, inspired by Objection.js and Knex
+url: https://sustained.tbmh.org
+lang: en-US
+plugins:
+  - jekyll-seo-tag
+  - jekyll-sitemap
+author: Christopher Wetherill
+social:
+  name: Sustained.py
+  links:
+    - https://github.com/wetherc/sustained
+    - https://pypi.org/project/sustained/

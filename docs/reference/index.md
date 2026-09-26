@@ -1,6 +1,7 @@
 ---
 layout: default
 title: API Reference
+description: "API reference for every public Sustained class and method: models, the query builder, predicates, schema types, execution, migrations, the CLI, and errors."
 ---
 
 Technical reference material covering all public Sustained classes and methods.

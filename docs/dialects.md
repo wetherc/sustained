@@ -1,6 +1,7 @@
 ---
 layout: default
 title: SQL Dialects
+description: "One Sustained query compiles for PostgreSQL, MySQL, MariaDB, SQL Server, Presto, AWS Athena, DuckDB, and ANSI SQL. Unsupported features fail at build time."
 ---
 
 Sustained compiles the same query for every database engine it supports: you set the dialect once per model, usually at application startup, and every query, DDL statement, and migration for that model will then in that engine's SQL:

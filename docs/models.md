@@ -1,6 +1,7 @@
 ---
 layout: default
 title: Defining Models
+description: "Define Sustained models in Python: table names, typed columns, indexes, relations, dialects, and connection binding for queries and migrations."
 ---
 
 A model represents one table. It is the one place you describe the table's columns, declare its relations, and start its queries.

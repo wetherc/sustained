@@ -1,6 +1,7 @@
 ---
 layout: default
 title: Grouping and Having Clauses
+description: "Aggregate rows in Sustained with groupBy() and having(), including COUNT, SUM, and other aggregates across every supported SQL dialect."
 ---
 
 `groupBy()` collapses rows, and `having()` filters what is left:

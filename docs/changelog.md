@@ -1,6 +1,7 @@
 ---
 layout: default
 title: Changelog
+description: "Release notes for every version of Sustained, the Python ORM, query builder, and schema migration tool."
 ---
 
 Every released version of Sustained, newest first. The same text lives in `CHANGELOG.md` in the repository; this page is generated from it.

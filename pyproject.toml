@@ -5,10 +5,29 @@ build-backend = "hatchling.build"
 [project]
 name = "sustained"
 version = "2.25.0"
-description = "A Python query builder and schema migration tool, inspired by Objection.js"
+description = "A Python ORM, SQL query builder, and schema migration tool, inspired by Objection.js and Knex"
 readme = "README.md"
 requires-python = ">=3.9"
-classifiers = [ "Programming Language :: Python :: 3", "Operating System :: OS Independent",]
+keywords = [ "orm", "sql", "query builder", "schema migrations", "database migrations", "migration tool", "objection.js", "knex", "postgresql", "mysql", "mariadb", "sql server", "mssql", "sqlite", "duckdb", "athena", "presto", "asyncpg", "aiosqlite",]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: SQL",
+    "Operating System :: OS Independent",
+    "Framework :: AsyncIO",
+    "Topic :: Database",
+    "Topic :: Database :: Front-Ends",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Typing :: Typed",
+]
 license = "MIT"
 license-files = [ "LICENSE",]
 [[project.authors]]
@@ -19,7 +38,10 @@ email = "git@tbmh.org"
 sustained = "sustained.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/wetherc/sustained"
+Homepage = "https://sustained.tbmh.org"
+Documentation = "https://sustained.tbmh.org"
+Changelog = "https://sustained.tbmh.org/changelog"
+Source = "https://github.com/wetherc/sustained"
 Issues = "https://github.com/wetherc/sustained/issues"
 
 [tool.isort]

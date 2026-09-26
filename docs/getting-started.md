@@ -1,6 +1,7 @@
 ---
 layout: default
 title: Getting Started
+description: "Install Sustained, define a model, print SQL without a database, then run parameterized queries and your first schema migration in Python."
 ---
 
 You do not need a database to start with Sustained. Once you describe a table, you can print SQL against it before you connect anything:

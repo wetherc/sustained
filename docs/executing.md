@@ -1,6 +1,7 @@
 ---
 layout: default
 title: Executing Queries
+description: "Run Sustained queries on any DB-API 2.0 connection or pool, with nested transactions, async drivers, and results as models, dicts, pandas, or pyarrow."
 ---
 
 To start running queries, you need to bind a model to a database connection:

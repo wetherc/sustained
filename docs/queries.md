@@ -1,6 +1,7 @@
 ---
 layout: default
 title: Building Queries
+description: "Build SQL in Python with the Sustained query builder: selects, joins, subqueries, CTEs, unions, window functions, CASE, inserts, updates, and upserts."
 ---
 
 `Model.query()` returns a `QueryBuilder`. Chain query methods onto it to build the statement:

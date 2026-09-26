@@ -1,6 +1,7 @@
 ---
 layout: default
 title: Recipes
+description: "Standalone Sustained snippets for common Python database tasks: upserts, pagination, eager loading, CTEs, window functions, async queries, and migrations."
 ---
 
 Each recipe is a standalone snippet that completes one common task.

@@ -1,6 +1,7 @@
 ---
 layout: default
 title: Predicates and expressions reference
+description: "Reference for sustained.expressions and sustained.functions: column predicates, literals, raw SQL, and the per-dialect function registry."
 ---
 
 Everything in `sustained.expressions`, plus the function registry in `sustained.functions`. These objects keep columns, literals, and conditions apart from one another, so the builder never has to guess which one a string was meant to be.

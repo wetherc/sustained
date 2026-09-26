@@ -1,6 +1,7 @@
 ---
 layout: default
 title: Schema types reference
+description: "Reference for sustained.schema: column types, indexes, table options, and the renderers that turn them into DDL for each dialect."
 ---
 
 Everything in `sustained.schema`. These objects go in a model's `tableColumns`, `indexes`, and `tableOptions`, and the renderers below turn them into DDL.

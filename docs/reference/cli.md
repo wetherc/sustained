@@ -1,6 +1,7 @@
 ---
 layout: default
 title: Command line reference
+description: "Reference for the sustained command line: plan, status, rehearse, migrate, down, validate, repair, script, and baseline, with options and exit codes."
 ---
 
 The `sustained` console script installs with the package, and you can also run it as `python -m sustained`.

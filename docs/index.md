@@ -1,6 +1,7 @@
 ---
 layout: default
-title: Sustained Documentation
+title: Python ORM, Query Builder, and Schema Migrations
+description: "Sustained is a Python ORM, SQL query builder, and schema migration tool modeled on Objection.js, for PostgreSQL, MySQL, SQL Server, SQLite, DuckDB, and Athena."
 ---
 
 Sustained is a Python query builder, lightweight ORM, and schema migration tool, originally inspired by [Objection.js](https://vincit.github.io/objection.js/). You describe your tables in one set of model classes, and Sustained uses those classes both to build and run queries and to keep the schema in step.

@@ -1,6 +1,7 @@
 ---
 layout: default
 title: Schema and Migrations
+description: "Generate Python schema migrations from your models, rehearse and roll them back, gate deploys with guards, and run them from the sustained CLI."
 ---
 
 Sustained manages your database schema from your models. You declare typed columns once, then the migrator creates tables, detects drift, generates migrations, rehearses them, applies them, and rolls them back.

@@ -1,6 +1,7 @@
 ---
 layout: default
 title: Filtering Queries
+description: "Filter Sustained queries with where(), typed column predicates, whereIn(), whereExists(), nested AND/OR groups, and NULL checks, all parameterized."
 ---
 
 You can write a condition as three arguments or as a typed predicate:

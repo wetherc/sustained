@@ -1,6 +1,7 @@
 ---
 layout: default
 title: Errors reference
+description: "Every exception Sustained raises, including DialectError and MigrationError, and the condition behind each."
 ---
 
 Every exception Sustained raises, and the condition behind it.

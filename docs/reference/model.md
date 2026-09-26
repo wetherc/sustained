@@ -1,6 +1,7 @@
 ---
 layout: default
 title: Model reference
+description: "Reference for sustained.Model: table names, columns, relation mappings, dialects, connection binding, and query entry points."
 ---
 
 Subclass `sustained.Model` to describe a table. The subclass declares the table's name, its columns, its relations, and the dialect and connection its queries use.

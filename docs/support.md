@@ -1,6 +1,7 @@
 ---
 layout: default
 title: Support Policy
+description: "The databases, database versions, and Python versions Sustained supports, and the deprecation policy for removing any of them."
 ---
 
 Sustained supports a fixed list of databases, database versions, and Python versions, and a deprecation policy governs how any of them is removed.
