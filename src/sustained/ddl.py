@@ -206,6 +206,25 @@ def _table_sql(args: _Args, compiler: "Compiler", key: str = "table") -> str:
     return compiler.quote_fully_qualified_ddl_identifier(table)
 
 
+def _tag(
+    statement: str,
+    kind: str,
+    table: object,
+    column: Optional[str] = None,
+    **details: object,
+) -> str:
+    """
+    The statement tagged with what it is meant to do, for the impact
+    analysis. `table` is the step's dotted table name, or None.
+    """
+    # The analysis module imports the migrations module, which imports
+    # this one, so the import waits until a step renders.
+    from sustained.analysis import with_intent
+
+    assert table is None or isinstance(table, str)
+    return with_intent(statement, kind, table, column, **details)
+
+
 def _op(op: str) -> Callable[[_Renderer], _Renderer]:
     def register(renderer: _Renderer) -> _Renderer:
         _RENDERERS[op] = renderer
@@ -274,32 +293,54 @@ def _render_create_table(args: _Args, compiler: "Compiler") -> List[str]:
     columns = args["columns"]
     assert isinstance(columns, dict)
     table_sql = _table_sql(args, compiler)
+    table = args["table"]
     statements: List[str] = []
     if compiler.enum_strategy() == "native":
         for name, values in collect_enum_types(columns).items():
-            statements.append(compiler.compile_create_enum_type(name, list(values)))
+            statements.append(
+                _tag(
+                    compiler.compile_create_enum_type(name, list(values)),
+                    "create_enum_type",
+                    None,
+                    name=name,
+                )
+            )
     constraints = args["constraints"]
     assert isinstance(constraints, list)
     options = args["options"]
     assert options is None or isinstance(options, TableOptions)
     statements.append(
-        build_create_table_sql(
-            compiler,
-            table_sql,
-            columns,
-            options=options,
-            constraints=constraints or None,
+        _tag(
+            build_create_table_sql(
+                compiler,
+                table_sql,
+                columns,
+                options=options,
+                constraints=constraints or None,
+            ),
+            "create_table",
+            table,
         )
     )
     from sustained.schema import column_comment_statements
 
-    statements.extend(column_comment_statements(compiler, table_sql, columns))
+    statements.extend(
+        _tag(statement, "set_column_comment", table)
+        for statement in column_comment_statements(compiler, table_sql, columns)
+    )
     indexes = args["indexes"]
     assert isinstance(indexes, list)
     for index in indexes:
         statements.append(
-            compiler.compile_create_index(
-                index.name, table_sql, list(index.columns), index.unique
+            _tag(
+                compiler.compile_create_index(
+                    index.name, table_sql, list(index.columns), index.unique
+                ),
+                "create_index",
+                table,
+                name=index.name,
+                columns=tuple(index.columns),
+                unique=index.unique,
             )
         )
     return statements
@@ -334,12 +375,21 @@ def drop_table(table: TableRef) -> DdlStep:
 
 @_op("drop_table")
 def _render_drop_table(args: _Args, compiler: "Compiler") -> List[str]:
-    statements = [f"DROP TABLE {_table_sql(args, compiler)}"]
+    statements = [
+        _tag(f"DROP TABLE {_table_sql(args, compiler)}", "drop_table", args["table"])
+    ]
     enum_types = args["enum_types"]
     assert isinstance(enum_types, list)
     if compiler.enum_strategy() == "native":
         for name in enum_types:
-            statements.append(compiler.compile_drop_enum_type(name))
+            statements.append(
+                _tag(
+                    compiler.compile_drop_enum_type(name),
+                    "drop_enum_type",
+                    None,
+                    name=name,
+                )
+            )
     return statements
 
 
@@ -369,14 +419,27 @@ def _render_add_column(args: _Args, compiler: "Compiler") -> List[str]:
     assert isinstance(name, str)
     table_sql = _table_sql(args, compiler)
     column_sql = render_column_sql(compiler, name, column, inline_pk=False)
-    statements = [compiler.compile_add_column(table_sql, column_sql)]
+    table = args["table"]
+    statements = [
+        _tag(
+            compiler.compile_add_column(table_sql, column_sql),
+            "add_column",
+            table,
+            name,
+            nullable=column.nullable,
+            has_default=column.default is not None,
+        )
+    ]
     if (
         column.comment is not None
         and compiler.stores_column_comments()
         and not compiler.inline_column_comments()
     ):
         statements.extend(
-            compiler.compile_set_column_comment(table_sql, name, column.comment)
+            _tag(statement, "set_column_comment", table, name)
+            for statement in compiler.compile_set_column_comment(
+                table_sql, name, column.comment
+            )
         )
     if column.type_name == "ENUM" and compiler.enum_strategy() == "check":
         assert column.enum_values is not None
@@ -384,8 +447,14 @@ def _render_add_column(args: _Args, compiler: "Compiler") -> List[str]:
         column_ref = compiler.quote_ddl_identifier(name)
         values_sql = ", ".join(compiler.format_value(v) for v in column.enum_values)
         statements.append(
-            compiler.compile_add_check(
-                table_sql, constraint, f"{column_ref} IN ({values_sql})"
+            _tag(
+                compiler.compile_add_check(
+                    table_sql, constraint, f"{column_ref} IN ({values_sql})"
+                ),
+                "add_check",
+                table,
+                name,
+                name=constraint,
             )
         )
     return statements
@@ -425,12 +494,24 @@ def _render_drop_column(args: _Args, compiler: "Compiler") -> List[str]:
     table_sql = _table_sql(args, compiler)
     statements: List[str] = []
     if args["drop_enum_check"] and compiler.enum_strategy() == "check":
+        constraint = _enum_check_name(table_sql, name)
         statements.append(
-            compiler.compile_drop_constraint(
-                table_sql, _enum_check_name(table_sql, name)
+            _tag(
+                compiler.compile_drop_constraint(table_sql, constraint),
+                "drop_constraint",
+                args["table"],
+                name,
+                name=constraint,
             )
         )
-    statements.append(compiler.compile_drop_column(table_sql, name))
+    statements.append(
+        _tag(
+            compiler.compile_drop_column(table_sql, name),
+            "drop_column",
+            args["table"],
+            name,
+        )
+    )
     return statements
 
 
@@ -448,7 +529,15 @@ def _render_rename_column(args: _Args, compiler: "Compiler") -> List[str]:
     old = args["old"]
     new = args["new"]
     assert isinstance(old, str) and isinstance(new, str)
-    return [compiler.compile_rename_column(_table_sql(args, compiler), old, new)]
+    return [
+        _tag(
+            compiler.compile_rename_column(_table_sql(args, compiler), old, new),
+            "rename_column",
+            args["table"],
+            old,
+            new=new,
+        )
+    ]
 
 
 @_inverse_of("rename_column")
@@ -495,9 +584,12 @@ def _render_set_column_comment(args: _Args, compiler: "Compiler") -> List[str]:
     assert isinstance(name, str)
     assert comment is None or isinstance(comment, str)
     assert column is None or isinstance(column, ColumnDef)
-    return compiler.compile_set_column_comment(
-        _table_sql(args, compiler), name, comment, column
-    )
+    return [
+        _tag(statement, "set_column_comment", args["table"], name)
+        for statement in compiler.compile_set_column_comment(
+            _table_sql(args, compiler), name, comment, column
+        )
+    ]
 
 
 @_inverse_of("set_column_comment")
@@ -524,8 +616,13 @@ def rename_table(old: TableRef, new: str) -> DdlStep:
 @_op("rename_table")
 def _render_rename_table(args: _Args, compiler: "Compiler") -> List[str]:
     return [
-        compiler.compile_rename_table(
-            _table_sql(args, compiler, "old"), _table_sql(args, compiler, "new")
+        _tag(
+            compiler.compile_rename_table(
+                _table_sql(args, compiler, "old"), _table_sql(args, compiler, "new")
+            ),
+            "rename_table",
+            args["old"],
+            new=args["new"],
         )
     ]
 
@@ -551,14 +648,20 @@ def _render_add_foreign_key(args: _Args, compiler: "Compiler") -> List[str]:
     fk = args["foreign_key"]
     assert isinstance(fk, ForeignKey)
     return [
-        compiler.compile_add_foreign_key(
-            _table_sql(args, compiler),
-            fk.name,
-            fk.columns,
-            compiler.quote_fully_qualified_ddl_identifier(fk.target_table),
-            fk.target_columns,
-            fk.on_delete,
-            fk.on_update,
+        _tag(
+            compiler.compile_add_foreign_key(
+                _table_sql(args, compiler),
+                fk.name,
+                fk.columns,
+                compiler.quote_fully_qualified_ddl_identifier(fk.target_table),
+                fk.target_columns,
+                fk.on_delete,
+                fk.on_update,
+            ),
+            "add_foreign_key",
+            args["table"],
+            name=fk.name,
+            references=fk.target_table,
         )
     ]
 
@@ -581,7 +684,14 @@ def drop_foreign_key(table: TableRef, name: str) -> DdlStep:
 def _render_drop_foreign_key(args: _Args, compiler: "Compiler") -> List[str]:
     name = args["name"]
     assert isinstance(name, str)
-    return [compiler.compile_drop_foreign_key(_table_sql(args, compiler), name)]
+    return [
+        _tag(
+            compiler.compile_drop_foreign_key(_table_sql(args, compiler), name),
+            "drop_foreign_key",
+            args["table"],
+            name=name,
+        )
+    ]
 
 
 def add_check(table: TableRef, check: Check) -> DdlStep:
@@ -594,8 +704,13 @@ def _render_add_check(args: _Args, compiler: "Compiler") -> List[str]:
     check = args["check"]
     assert isinstance(check, Check)
     return [
-        compiler.compile_add_check(
-            _table_sql(args, compiler), check.name, check.expression
+        _tag(
+            compiler.compile_add_check(
+                _table_sql(args, compiler), check.name, check.expression
+            ),
+            "add_check",
+            args["table"],
+            name=check.name,
         )
     ]
 
@@ -618,7 +733,14 @@ def drop_constraint(table: TableRef, name: str) -> DdlStep:
 def _render_drop_constraint(args: _Args, compiler: "Compiler") -> List[str]:
     name = args["name"]
     assert isinstance(name, str)
-    return [compiler.compile_drop_constraint(_table_sql(args, compiler), name)]
+    return [
+        _tag(
+            compiler.compile_drop_constraint(_table_sql(args, compiler), name),
+            "drop_constraint",
+            args["table"],
+            name=name,
+        )
+    ]
 
 
 # --- indexes --------------------------------------------------------------
@@ -634,8 +756,18 @@ def _render_create_index(args: _Args, compiler: "Compiler") -> List[str]:
     index = args["index"]
     assert isinstance(index, Index)
     return [
-        compiler.compile_create_index(
-            index.name, _table_sql(args, compiler), list(index.columns), index.unique
+        _tag(
+            compiler.compile_create_index(
+                index.name,
+                _table_sql(args, compiler),
+                list(index.columns),
+                index.unique,
+            ),
+            "create_index",
+            args["table"],
+            name=index.name,
+            columns=tuple(index.columns),
+            unique=index.unique,
         )
     ]
 
@@ -658,7 +790,14 @@ def drop_index(table: TableRef, name: str) -> DdlStep:
 def _render_drop_index(args: _Args, compiler: "Compiler") -> List[str]:
     name = args["name"]
     assert isinstance(name, str)
-    return [compiler.compile_drop_index(name, _table_sql(args, compiler))]
+    return [
+        _tag(
+            compiler.compile_drop_index(name, _table_sql(args, compiler)),
+            "drop_index",
+            args["table"],
+            name=name,
+        )
+    ]
 
 
 # --- enum types -------------------------------------------------------------
@@ -682,7 +821,14 @@ def _render_create_enum(args: _Args, compiler: "Compiler") -> List[str]:
     name = args["name"]
     values = args["values"]
     assert isinstance(name, str) and isinstance(values, list)
-    return [compiler.compile_create_enum_type(name, values)]
+    return [
+        _tag(
+            compiler.compile_create_enum_type(name, values),
+            "create_enum_type",
+            None,
+            name=name,
+        )
+    ]
 
 
 @_inverse_of("create_enum")
@@ -701,7 +847,9 @@ def drop_enum(name: str) -> DdlStep:
 def _render_drop_enum(args: _Args, compiler: "Compiler") -> List[str]:
     name = args["name"]
     assert isinstance(name, str)
-    return [compiler.compile_drop_enum_type(name)]
+    return [
+        _tag(compiler.compile_drop_enum_type(name), "drop_enum_type", None, name=name)
+    ]
 
 
 def add_enum_value(name: str, value: str) -> DdlStep:
@@ -720,7 +868,15 @@ def _render_add_enum_value(args: _Args, compiler: "Compiler") -> List[str]:
     name = args["name"]
     value = args["value"]
     assert isinstance(name, str) and isinstance(value, str)
-    return [compiler.compile_add_enum_value(name, value)]
+    return [
+        _tag(
+            compiler.compile_add_enum_value(name, value),
+            "add_enum_value",
+            None,
+            name=name,
+            value=value,
+        )
+    ]
 
 
 # --- escape hatch -------------------------------------------------------

@@ -61,7 +61,7 @@ from typing import (
     Union,
 )
 
-from sustained.analysis import MigrationStatement
+from sustained.analysis import MigrationStatement, with_intent
 from sustained.compilers.base import table_qualifier
 from sustained.dialects import Dialects
 from sustained.exceptions import DialectError
@@ -1317,6 +1317,42 @@ def _declared_table_sql(
     return _snapshot_table_sql(compiler, actual[table.lower()], table)
 
 
+def _intent_table(model: Type["Model"]) -> str:
+    """The dotted, unquoted table name an Intent gives a model's table."""
+    parts = [model.database, model.tableSchema, model.tableName]
+    return ".".join(p for p in parts if p)
+
+
+def _reported_intent_table(
+    models_by_table: Mapping[str, Type["Model"]], actual: Snapshot, table: str
+) -> str:
+    """
+    The Intent table name of a table the diff reports by name: the
+    model's name for a declared table, else the snapshot's.
+    """
+    model = models_by_table.get(table.lower())
+    if model is not None:
+        return _intent_table(model)
+    read = actual.get(table.lower())
+    if read is None:
+        return table
+    parts = [read.name or table]
+    if read.schema is not None:
+        parts.insert(0, read.schema)
+    return ".".join(parts)
+
+
+def _tagged(
+    statements: Sequence[str],
+    kind: str,
+    table: Optional[str],
+    column: Optional[str] = None,
+    **details: object,
+) -> List[str]:
+    """Every statement tagged with the same Intent."""
+    return [with_intent(s, kind, table, column, **details) for s in statements]
+
+
 def _extra_table_drops(
     compiler: "Compiler", actual: Snapshot, extra_tables: List[str]
 ) -> Tuple[List[str], bool]:
@@ -1340,23 +1376,41 @@ def _extra_table_drops(
             if target in children and target != key and key not in children[target]:
                 children[target].append(key)
     ordered, cycles = _dependency_order(keys, lambda key: children[key])
-    drops = [f"DROP TABLE {spelled[key]}" for key in ordered]
+    named = {key: _reported_intent_table({}, actual, key) for key in keys}
+    drops: List[str] = [
+        with_intent(f"DROP TABLE {spelled[key]}", "drop_table", named[key])
+        for key in ordered
+    ]
     in_cycle = {key for cycle in cycles for key in cycle}
     if not in_cycle:
         return drops, False
     if not compiler.supports_add_constraint():
         return (
-            compiler.rebuild_setup_sql() + drops + compiler.rebuild_finish_sql(),
+            _foreign_keys_setting(compiler.rebuild_setup_sql(), "OFF")
+            + drops
+            + _foreign_keys_setting(compiler.rebuild_finish_sql(), "ON"),
             True,
         )
-    key_drops = [
-        compiler.compile_drop_foreign_key(spelled[key], fk.name or name)
+    key_drops: List[str] = [
+        with_intent(
+            compiler.compile_drop_foreign_key(spelled[key], fk.name or name),
+            "drop_foreign_key",
+            named[key],
+            name=fk.name or name,
+        )
         for key in keys
         if key in in_cycle
         for name, fk in actual[key].foreign_keys.items()
         if fk.target_table in in_cycle and fk.target_table != key
     ]
     return key_drops + drops, False
+
+
+def _foreign_keys_setting(statements: Sequence[str], value: str) -> List[str]:
+    """The pragmas that turn SQLite's foreign key enforcement off or on."""
+    return _tagged(
+        statements, "session_setting", None, setting="foreign_keys", value=value
+    )
 
 
 def _create_table_steps(
@@ -1372,21 +1426,45 @@ def _create_table_steps(
 
     assert model.tableColumns is not None
     table_sql = model._qualified_table_sql(compiler)
-    statements = [
-        build_create_table_sql(
-            compiler,
-            table_sql,
-            model.tableColumns,
-            options=model.tableOptions,
-            constraints=model.tableConstraints,
-            defer_foreign_keys=defer_foreign_keys,
+    table = _intent_table(model)
+    statements: List[str] = [
+        with_intent(
+            build_create_table_sql(
+                compiler,
+                table_sql,
+                model.tableColumns,
+                options=model.tableOptions,
+                constraints=model.tableConstraints,
+                defer_foreign_keys=defer_foreign_keys,
+            ),
+            "create_table",
+            table,
         )
     ]
     statements.extend(
-        column_comment_statements(compiler, table_sql, model.tableColumns)
+        _tagged(
+            column_comment_statements(compiler, table_sql, model.tableColumns),
+            "set_column_comment",
+            table,
+        )
     )
-    statements.extend(create_indexes_sql(compiler, model))
+    for index, statement in zip(
+        model.indexes or [], create_indexes_sql(compiler, model)
+    ):
+        statements.append(_index_intent(statement, table, index))
     return statements
+
+
+def _index_intent(statement: str, table: str, index: "Index") -> str:
+    """A CREATE INDEX statement tagged with the index it builds."""
+    return with_intent(
+        statement,
+        "create_index",
+        table,
+        name=index.name,
+        columns=tuple(index.columns),
+        unique=index.unique,
+    )
 
 
 def _deferred_foreign_key_steps(
@@ -1397,6 +1475,7 @@ def _deferred_foreign_key_steps(
     needs, once CREATE TABLE has left them out.
     """
     table_sql = model._qualified_table_sql(compiler)
+    table = _intent_table(model)
     pairs: List[Tuple[str, str]] = []
     for name, coldef in (model.tableColumns or {}).items():
         if coldef.references is None:
@@ -1405,12 +1484,18 @@ def _deferred_foreign_key_steps(
         constraint = f"fk_{model.tableName}_{name}"
         pairs.append(
             (
-                compiler.compile_add_foreign_key(
-                    table_sql,
-                    constraint,
-                    name,
-                    compiler.quote_fully_qualified_ddl_identifier(ref_table),
-                    ref_column,
+                with_intent(
+                    compiler.compile_add_foreign_key(
+                        table_sql,
+                        constraint,
+                        name,
+                        compiler.quote_fully_qualified_ddl_identifier(ref_table),
+                        ref_column,
+                    ),
+                    "add_foreign_key",
+                    table,
+                    name=constraint,
+                    references=ref_table,
                 ),
                 compiler.compile_drop_foreign_key(table_sql, constraint),
             )
@@ -1420,11 +1505,26 @@ def _deferred_foreign_key_steps(
             continue
         pairs.append(
             (
-                _declared_fk_sql(compiler, table_sql, constraint_def),
+                _declared_fk_intent(
+                    _declared_fk_sql(compiler, table_sql, constraint_def),
+                    table,
+                    constraint_def,
+                ),
                 compiler.compile_drop_foreign_key(table_sql, constraint_def.name),
             )
         )
     return pairs
+
+
+def _declared_fk_intent(statement: str, table: str, fk: ForeignKey) -> str:
+    """An ADD CONSTRAINT statement tagged with the foreign key it adds."""
+    return with_intent(
+        statement,
+        "add_foreign_key",
+        table,
+        name=fk.name,
+        references=fk.target_table,
+    )
 
 
 def _refuse_enum_value_removal(
@@ -1498,14 +1598,38 @@ def _lift_statements(
 ) -> Tuple[str, str]:
     """The statements that drop one lifted index and create it again."""
     columns = _spelled_columns(table, index)
+    intent_table = ".".join(p for p in (table.schema, table.name) if p)
     if index.constraint:
         return (
-            compiler.compile_drop_constraint(table_sql, name),
-            compiler.compile_add_unique(table_sql, name, columns),
+            with_intent(
+                compiler.compile_drop_constraint(table_sql, name),
+                "drop_constraint",
+                intent_table,
+                name=name,
+            ),
+            with_intent(
+                compiler.compile_add_unique(table_sql, name, columns),
+                "add_unique",
+                intent_table,
+                name=name,
+                columns=tuple(columns),
+            ),
         )
     return (
-        compiler.compile_drop_index(name, table_sql),
-        compiler.compile_create_index(name, table_sql, columns, index.unique),
+        with_intent(
+            compiler.compile_drop_index(name, table_sql),
+            "drop_index",
+            intent_table,
+            name=name,
+        ),
+        with_intent(
+            compiler.compile_create_index(name, table_sql, columns, index.unique),
+            "create_index",
+            intent_table,
+            name=name,
+            columns=tuple(columns),
+            unique=index.unique,
+        ),
     )
 
 
@@ -1625,12 +1749,29 @@ def autogenerate(
         # schema the model declares for the new one.
         new_sql = _declared_table_sql(compiler, models_by_table, actual, new)
         old_sql = table_qualifier(new_sql) + compiler.quote_ddl_identifier(old)
-        up_steps.append(compiler.compile_rename_table(old_sql, new_sql))
+        new_model = models_by_table.get(new.lower())
+        schema = None if new_model is None else new_model.tableSchema
+        up_steps.append(
+            with_intent(
+                compiler.compile_rename_table(old_sql, new_sql),
+                "rename_table",
+                f"{schema}.{old}" if schema else old,
+                new=new,
+            )
+        )
         down_steps.insert(0, compiler.compile_rename_table(new_sql, old_sql))
     for path, new_name in renames.items():
         table, old_name = path.rsplit(".", 1)
         table_sql = _declared_table_sql(compiler, models_by_table, actual, table)
-        up_steps.append(compiler.compile_rename_column(table_sql, old_name, new_name))
+        up_steps.append(
+            with_intent(
+                compiler.compile_rename_column(table_sql, old_name, new_name),
+                "rename_column",
+                _reported_intent_table(models_by_table, actual, table),
+                old_name,
+                new=new_name,
+            )
+        )
         down_steps.insert(
             0, compiler.compile_rename_column(table_sql, new_name, old_name)
         )
@@ -1642,7 +1783,14 @@ def autogenerate(
     # place and refuses with the recipe.
     created_enum_types: List[str] = []
     for type_name, values in diff.new_enum_types:
-        up_steps.append(compiler.compile_create_enum_type(type_name, list(values)))
+        up_steps.append(
+            with_intent(
+                compiler.compile_create_enum_type(type_name, list(values)),
+                "create_enum_type",
+                None,
+                name=type_name,
+            )
+        )
         created_enum_types.append(type_name)
     for type_name, actual_values, expected_values in diff.changed_enum_types:
         additions = _enum_value_additions(actual_values, expected_values)
@@ -1656,7 +1804,15 @@ def autogenerate(
                 "USING, and drops the old type."
             )
         for value in additions:
-            up_steps.append(compiler.compile_add_enum_value(type_name, value))
+            up_steps.append(
+                with_intent(
+                    compiler.compile_add_enum_value(type_name, value),
+                    "add_enum_value",
+                    None,
+                    name=type_name,
+                    value=value,
+                )
+            )
         reversible = False
 
     # New tables. Where the dialect can add a constraint to a table that
@@ -1692,7 +1848,15 @@ def autogenerate(
         if expression is not None:
             table_sql = model._qualified_table_sql(compiler)
             constraint = f"ck_{bare_table_name(model.tableName or '')}_{name}_enum"
-            up_steps.append(compiler.compile_drop_constraint(table_sql, constraint))
+            up_steps.append(
+                with_intent(
+                    compiler.compile_drop_constraint(table_sql, constraint),
+                    "drop_constraint",
+                    _intent_table(model),
+                    name,
+                    name=constraint,
+                )
+            )
             down_steps.insert(
                 0, compiler.compile_add_check(table_sql, constraint, expression)
             )
@@ -1759,6 +1923,7 @@ def autogenerate(
                 rebuild_tables[table.lower()] = model
                 continue
             table_sql = model._qualified_table_sql(compiler)
+            intent_table = _intent_table(model)
             expected_type = compiler.compile_column_type(coldef)
             if _column_type_changed(compiler, coldef, expected_type, actual_col):
                 using = type_casts.get(f"{table}.{name}")
@@ -1785,10 +1950,24 @@ def autogenerate(
                 )
                 if lift_default:
                     up_steps.append(
-                        compiler.compile_drop_column_default(table_sql, name)
+                        with_intent(
+                            compiler.compile_drop_column_default(table_sql, name),
+                            "drop_column_default",
+                            intent_table,
+                            name,
+                        )
                     )
                 up_steps.extend(
-                    MigrationStatement(statement, destructive=lossy)
+                    with_intent(
+                        MigrationStatement(statement, destructive=lossy),
+                        "alter_column_type",
+                        intent_table,
+                        name,
+                        from_type=actual_col.raw_type,
+                        to_type=expected_type,
+                        using=using,
+                        lossy=lossy,
+                    )
                     for statement in compiler.compile_alter_column_type(
                         table_sql, name, changed_state, using
                     )
@@ -1798,7 +1977,11 @@ def autogenerate(
                     add_default = compiler.compile_add_column_default(
                         table_sql, name, default_sql
                     )
-                    up_steps.append(add_default)
+                    up_steps.append(
+                        with_intent(
+                            add_default, "set_column_default", intent_table, name
+                        )
+                    )
                     down_steps.insert(0, add_default)
                 for statement in reversed(
                     compiler.compile_alter_column_type(
@@ -1830,11 +2013,16 @@ def autogenerate(
                             "a backfill or default value for existing NULLs."
                         )
                     up_steps.extend(
-                        compiler.compile_backfill(
-                            table_sql,
+                        _tagged(
+                            compiler.compile_backfill(
+                                table_sql,
+                                name,
+                                expected_type,
+                                compiler.format_value(filler),
+                            ),
+                            "backfill",
+                            intent_table,
                             name,
-                            expected_type,
-                            compiler.format_value(filler),
                         )
                     )
                 changed_state = preserving_state(
@@ -1842,8 +2030,13 @@ def autogenerate(
                 )
                 restated_states[(table.lower(), name.lower())] = changed_state
                 up_steps.extend(
-                    compiler.compile_alter_column_nullability(
-                        table_sql, name, changed_state
+                    _tagged(
+                        compiler.compile_alter_column_nullability(
+                            table_sql, name, changed_state
+                        ),
+                        "drop_not_null" if coldef.nullable else "set_not_null",
+                        intent_table,
+                        name,
                     )
                 )
                 for statement in reversed(
@@ -1909,6 +2102,7 @@ def autogenerate(
                 "migration."
             )
         table_sql = model._qualified_table_sql(compiler)
+        intent_table = _intent_table(model)
         if not coldef.nullable and coldef.default is None:
             # A dialect that rebuilds took this table in the scan above.
             # One that can neither alter nor rebuild refuses here.
@@ -1920,20 +2114,39 @@ def autogenerate(
                 _relaxed_copy(coldef),
                 inline_pk=False,
             )
-            up_steps.append(compiler.compile_add_column(table_sql, relaxed))
-            up_steps.extend(
-                compiler.compile_backfill(
-                    table_sql,
+            up_steps.append(
+                with_intent(
+                    compiler.compile_add_column(table_sql, relaxed),
+                    "add_column",
+                    intent_table,
                     name,
-                    compiler.compile_column_type(coldef),
-                    compiler.format_value(coldef.backfill),
+                    nullable=True,
+                    has_default=False,
                 )
             )
             up_steps.extend(
-                compiler.compile_alter_column_nullability(
-                    table_sql,
+                _tagged(
+                    compiler.compile_backfill(
+                        table_sql,
+                        name,
+                        compiler.compile_column_type(coldef),
+                        compiler.format_value(coldef.backfill),
+                    ),
+                    "backfill",
+                    intent_table,
                     name,
-                    ColumnState.from_column(compiler, coldef, nullable=False),
+                )
+            )
+            up_steps.extend(
+                _tagged(
+                    compiler.compile_alter_column_nullability(
+                        table_sql,
+                        name,
+                        ColumnState.from_column(compiler, coldef, nullable=False),
+                    ),
+                    "set_not_null",
+                    intent_table,
+                    name,
                 )
             )
             down_steps.insert(0, compiler.compile_drop_column(table_sql, name))
@@ -1945,7 +2158,16 @@ def autogenerate(
             )
             continue
         column_sql = render_column_sql(compiler, name, coldef, inline_pk=False)
-        up_steps.append(compiler.compile_add_column(table_sql, column_sql))
+        up_steps.append(
+            with_intent(
+                compiler.compile_add_column(table_sql, column_sql),
+                "add_column",
+                intent_table,
+                name,
+                nullable=coldef.nullable,
+                has_default=coldef.default is not None,
+            )
+        )
         down_steps.insert(0, compiler.compile_drop_column(table_sql, name))
         _add_enum_check(compiler, up_steps, down_steps, table_sql, model, name, coldef)
         _add_foreign_key(compiler, up_steps, down_steps, table_sql, model, name, coldef)
@@ -1983,7 +2205,9 @@ def autogenerate(
                 f"model declares {expected_comment or 'none'}: {error}"
             )
             continue
-        up_steps.extend(set_new)
+        up_steps.extend(
+            _tagged(set_new, "set_column_comment", _intent_table(model), name)
+        )
         for statement in reversed(set_old):
             down_steps.insert(0, statement)
 
@@ -2026,16 +2250,20 @@ def autogenerate(
         # at needs no pragma and keeps its transaction.
         guarded = rebuild_turns_foreign_keys_off(actual, rebuild_tables)
         if guarded:
-            up_steps.extend(compiler.rebuild_setup_sql())
+            up_steps.extend(_foreign_keys_setting(compiler.rebuild_setup_sql(), "OFF"))
         legacy_rename = rebuild_renames_under_legacy(actual)
         for table_key, model in rebuild_tables.items():
             up_steps.extend(
-                rebuild_steps(
-                    compiler, model, actual[table_key], allow_drops, legacy_rename
+                _tagged(
+                    rebuild_steps(
+                        compiler, model, actual[table_key], allow_drops, legacy_rename
+                    ),
+                    "rebuild_table",
+                    _intent_table(model),
                 )
             )
         if guarded:
-            up_steps.extend(compiler.rebuild_finish_sql())
+            up_steps.extend(_foreign_keys_setting(compiler.rebuild_finish_sql(), "ON"))
             transactional = False
         reversible = False
 
@@ -2047,8 +2275,12 @@ def autogenerate(
             continue
         table_sql = model._qualified_table_sql(compiler)
         up_steps.append(
-            compiler.compile_create_index(
-                index.name, table_sql, list(index.columns), index.unique
+            _index_intent(
+                compiler.compile_create_index(
+                    index.name, table_sql, list(index.columns), index.unique
+                ),
+                _intent_table(model),
+                index,
             )
         )
         down_steps.insert(0, compiler.compile_drop_index(index.name, table_sql))
@@ -2056,10 +2288,22 @@ def autogenerate(
         if (model.tableName or "").lower() in rebuild_tables:
             continue
         table_sql = model._qualified_table_sql(compiler)
-        up_steps.append(compiler.compile_drop_index(index.name, table_sql))
+        intent_table = _intent_table(model)
         up_steps.append(
-            compiler.compile_create_index(
-                index.name, table_sql, list(index.columns), index.unique
+            with_intent(
+                compiler.compile_drop_index(index.name, table_sql),
+                "drop_index",
+                intent_table,
+                name=index.name,
+            )
+        )
+        up_steps.append(
+            _index_intent(
+                compiler.compile_create_index(
+                    index.name, table_sql, list(index.columns), index.unique
+                ),
+                intent_table,
+                index,
             )
         )
         down_steps.insert(
@@ -2080,22 +2324,43 @@ def autogenerate(
             continue
         table_sql = model._qualified_table_sql(compiler)
         up_steps.append(
-            compiler.compile_add_check(table_sql, check.name, check.expression)
+            with_intent(
+                compiler.compile_add_check(table_sql, check.name, check.expression),
+                "add_check",
+                _intent_table(model),
+                name=check.name,
+            )
         )
         down_steps.insert(0, compiler.compile_drop_constraint(table_sql, check.name))
     for model, fk in diff.new_foreign_keys:
         if (model.tableName or "").lower() in rebuild_tables:
             continue
         table_sql = model._qualified_table_sql(compiler)
-        up_steps.append(_declared_fk_sql(compiler, table_sql, fk))
+        up_steps.append(
+            _declared_fk_intent(
+                _declared_fk_sql(compiler, table_sql, fk), _intent_table(model), fk
+            )
+        )
         down_steps.insert(0, compiler.compile_drop_foreign_key(table_sql, fk.name))
     if allow_drops:
         for model, fk, actual_fk in diff.changed_foreign_keys:
             if (model.tableName or "").lower() in rebuild_tables:
                 continue
             table_sql = model._qualified_table_sql(compiler)
-            up_steps.append(compiler.compile_drop_foreign_key(table_sql, fk.name))
-            up_steps.append(_declared_fk_sql(compiler, table_sql, fk))
+            intent_table = _intent_table(model)
+            up_steps.append(
+                with_intent(
+                    compiler.compile_drop_foreign_key(table_sql, fk.name),
+                    "drop_foreign_key",
+                    intent_table,
+                    name=fk.name,
+                )
+            )
+            up_steps.append(
+                _declared_fk_intent(
+                    _declared_fk_sql(compiler, table_sql, fk), intent_table, fk
+                )
+            )
             restore = _introspected_fk_sql(
                 compiler, table_sql, fk.name, actual_fk, actual, model.tableName or ""
             )
@@ -2110,7 +2375,14 @@ def autogenerate(
             if table.lower() in rebuild_tables:
                 continue
             table_sql = _declared_table_sql(compiler, models_by_table, actual, table)
-            up_steps.append(compiler.compile_drop_foreign_key(table_sql, name))
+            up_steps.append(
+                with_intent(
+                    compiler.compile_drop_foreign_key(table_sql, name),
+                    "drop_foreign_key",
+                    _reported_intent_table(models_by_table, actual, table),
+                    name=name,
+                )
+            )
             restore = _introspected_fk_sql(
                 compiler, table_sql, name, actual_fk, actual, table
             )
@@ -2122,7 +2394,14 @@ def autogenerate(
             if table.lower() in rebuild_tables:
                 continue
             table_sql = _declared_table_sql(compiler, models_by_table, actual, table)
-            up_steps.append(compiler.compile_drop_constraint(table_sql, name))
+            up_steps.append(
+                with_intent(
+                    compiler.compile_drop_constraint(table_sql, name),
+                    "drop_constraint",
+                    _reported_intent_table(models_by_table, actual, table),
+                    name=name,
+                )
+            )
             down_steps.insert(
                 0, compiler.compile_add_check(table_sql, name, expression)
             )
@@ -2132,11 +2411,19 @@ def autogenerate(
             if table.lower() in rebuild_tables:
                 continue
             table_sql = _declared_table_sql(compiler, models_by_table, actual, table)
+            intent_table = _reported_intent_table(models_by_table, actual, table)
             actual_table = actual[table.lower()]
             if actual_index.constraint:
                 # The index belongs to a UNIQUE constraint, and the engine
                 # refuses DROP INDEX on it.
-                up_steps.append(compiler.compile_drop_constraint(table_sql, name))
+                up_steps.append(
+                    with_intent(
+                        compiler.compile_drop_constraint(table_sql, name),
+                        "drop_constraint",
+                        intent_table,
+                        name=name,
+                    )
+                )
                 down_steps.insert(
                     0,
                     compiler.compile_add_unique(
@@ -2144,7 +2431,14 @@ def autogenerate(
                     ),
                 )
                 continue
-            up_steps.append(compiler.compile_drop_index(name, table_sql))
+            up_steps.append(
+                with_intent(
+                    compiler.compile_drop_index(name, table_sql),
+                    "drop_index",
+                    intent_table,
+                    name=name,
+                )
+            )
             down_steps.insert(
                 0,
                 compiler.compile_create_index(
@@ -2158,7 +2452,14 @@ def autogenerate(
             if table.lower() in rebuild_tables:
                 continue
             table_sql = _declared_table_sql(compiler, models_by_table, actual, table)
-            up_steps.append(compiler.compile_drop_column(table_sql, name))
+            up_steps.append(
+                with_intent(
+                    compiler.compile_drop_column(table_sql, name),
+                    "drop_column",
+                    _reported_intent_table(models_by_table, actual, table),
+                    name,
+                )
+            )
             reversible = False
         if diff.extra_tables:
             drops, bare = _extra_table_drops(compiler, actual, diff.extra_tables)
@@ -2168,7 +2469,14 @@ def autogenerate(
             reversible = False
         # A type drops after every table and column that used it.
         for type_name in diff.extra_enum_types:
-            up_steps.append(compiler.compile_drop_enum_type(type_name))
+            up_steps.append(
+                with_intent(
+                    compiler.compile_drop_enum_type(type_name),
+                    "drop_enum_type",
+                    None,
+                    name=type_name,
+                )
+            )
 
     # Types created in this migration drop last on the way down, after
     # every table that referenced them is gone.
@@ -2313,12 +2621,18 @@ def _add_foreign_key(
     ref_table, ref_column = coldef.references.rsplit(".", 1)
     constraint = f"fk_{model.tableName}_{name}"
     up_steps.append(
-        compiler.compile_add_foreign_key(
-            table_sql,
-            constraint,
-            name,
-            compiler.quote_fully_qualified_ddl_identifier(ref_table),
-            ref_column,
+        with_intent(
+            compiler.compile_add_foreign_key(
+                table_sql,
+                constraint,
+                name,
+                compiler.quote_fully_qualified_ddl_identifier(ref_table),
+                ref_column,
+            ),
+            "add_foreign_key",
+            _intent_table(model),
+            name=constraint,
+            references=ref_table,
         )
     )
     down_steps.insert(0, compiler.compile_drop_foreign_key(table_sql, constraint))
@@ -2344,7 +2658,15 @@ def _add_enum_check(
 
     table_name = bare_table_name(table_sql)
     constraint_sql = enum_check_constraint_sql(compiler, table_name, name, coldef)
-    up_steps.append(f"ALTER TABLE {table_sql} ADD {constraint_sql}")
+    up_steps.append(
+        with_intent(
+            f"ALTER TABLE {table_sql} ADD {constraint_sql}",
+            "add_check",
+            _intent_table(model),
+            name,
+            name=f"ck_{table_name}_{name}_enum",
+        )
+    )
     down_steps.insert(
         0,
         compiler.compile_drop_constraint(table_sql, f"ck_{table_name}_{name}_enum"),

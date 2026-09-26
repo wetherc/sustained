@@ -16,6 +16,7 @@ in `migrate` reads the same list.
 from __future__ import annotations
 
 import re
+from types import MappingProxyType
 from typing import (
     TYPE_CHECKING,
     List,
@@ -26,6 +27,7 @@ from typing import (
     Union,
 )
 
+from sustained.impact.model import INTENT_KINDS, Intent
 from sustained.impact.tokens import BACKSLASH_TOKEN_RE, TOKEN_RE
 from sustained.migrations import Migration, migration_sql
 
@@ -93,11 +95,20 @@ class MigrationStatement(str):
     type the column has today. `destructive_statements()` labels such a
     statement whatever its text says. When `destructive` is not given, a
     statement wrapped again keeps the mark of the statement it wraps.
+
+    `intent` is what the statement is meant to do, as the code that
+    generated it knows it: the diff and `DdlStep` rendering set it, and
+    hand-written SQL has none. The impact analysis reads it before the
+    text. Like `destructive`, a statement wrapped again keeps the intent
+    of the statement it wraps when none is given. Neither attribute
+    takes part in equality or in a migration's checksum, which reads the
+    statement text alone.
     """
 
     migration_id: Optional[str]
     transactional: bool
     destructive: bool
+    intent: Optional[Intent]
 
     def __new__(
         cls,
@@ -105,6 +116,7 @@ class MigrationStatement(str):
         migration_id: Optional[str] = None,
         transactional: bool = True,
         destructive: Optional[bool] = None,
+        intent: Optional[Intent] = None,
     ) -> "MigrationStatement":
         instance = super().__new__(cls, statement)
         instance.migration_id = migration_id
@@ -114,7 +126,36 @@ class MigrationStatement(str):
                 isinstance(statement, MigrationStatement) and statement.destructive
             )
         instance.destructive = destructive
+        if intent is None and isinstance(statement, MigrationStatement):
+            intent = statement.intent
+        instance.intent = intent
         return instance
+
+
+def with_intent(
+    statement: str,
+    kind: str,
+    table: Optional[str],
+    column: Optional[str] = None,
+    **details: object,
+) -> MigrationStatement:
+    """
+    The statement with an `Intent` attached, keeping whatever else a
+    MigrationStatement it wraps carries, such as the destructive mark.
+    `kind` must be one of `sustained.impact.model.INTENT_KINDS`.
+    """
+    if kind not in INTENT_KINDS:
+        raise ValueError(f"Unknown intent kind: {kind!r}.")
+    intent = Intent(kind, table, column, MappingProxyType(details))
+    if isinstance(statement, MigrationStatement):
+        return MigrationStatement(
+            statement,
+            statement.migration_id,
+            statement.transactional,
+            statement.destructive,
+            intent,
+        )
+    return MigrationStatement(statement, intent=intent)
 
 
 def statement_scope(statement: str) -> Tuple[Optional[str], bool]:
