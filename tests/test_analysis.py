@@ -295,6 +295,50 @@ class QuotedTextTestCase(unittest.TestCase):
         )
 
 
+class DollarQuotedTextTestCase(unittest.TestCase):
+    """A function body is not scanned; a DO block's body runs, and is."""
+
+    def test_a_drop_inside_a_function_body_is_not_labelled(self):
+        statements = [
+            "CREATE FUNCTION purge() RETURNS void AS $$ BEGIN DELETE FROM t; "
+            "END $$ LANGUAGE plpgsql",
+            "CREATE PROCEDURE p() AS $body$ DROP TABLE t $body$ LANGUAGE sql",
+            "INSERT INTO audit (note) VALUES ($$DROP TABLE users$$)",
+        ]
+        self.assertEqual(destructive_statements(statements), [])
+        self.assertEqual(
+            scannable_statement("SELECT $x$ DROP TABLE t $x$"), "SELECT $$"
+        )
+
+    def test_a_drop_after_a_dollar_quote_is_labelled(self):
+        statement = "SELECT $$ it's $$; DROP TABLE users"
+        self.assertEqual(destructive_statements([statement]), [statement])
+
+    def test_a_drop_inside_a_do_block_is_labelled(self):
+        statements = [
+            "DO $$ BEGIN DROP TABLE t; END $$",
+            "/* cleanup */ do $tag$ begin truncate t; end $tag$",
+        ]
+        self.assertEqual(
+            destructive_statements(statements),
+            [
+                "DO $$ BEGIN DROP TABLE t; END $$",
+                "do $tag$ begin truncate t; end $tag$",
+            ],
+        )
+
+    def test_a_do_block_reads_its_own_literals_and_comments(self):
+        statements = [
+            "DO $$ BEGIN RAISE NOTICE 'DROP TABLE t'; END $$",
+            "DO $$ BEGIN -- DROP TABLE t\n NULL; END $$",
+        ]
+        self.assertEqual(destructive_statements(statements), [])
+
+    def test_a_dollar_inside_a_word_opens_no_quote(self):
+        statement = "ALTER TABLE a$b DROP COLUMN c$d"
+        self.assertEqual(destructive_statements([statement]), [statement])
+
+
 class SummarizeTestCase(unittest.TestCase):
     def test_carries_statements_and_labels_drops(self):
         migration = Migration(

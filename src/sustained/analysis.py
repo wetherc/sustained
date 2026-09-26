@@ -7,9 +7,9 @@ drop a constraint, so a preview can label them. `summarize()` reduces one migrat
 and the labels the `plan` command prints.
 
 The scan is textual: it reads the words in a statement and parses no
-SQL. It knows string literals and comments only well enough to keep
-them out of the scan, so a drop written inside a literal or a comment
-is not labelled. The label informs the operator, and the rehearsal gate
+SQL. It knows string literals, comments, and Postgres dollar-quoted
+bodies only well enough to keep them out of the scan, so a drop written
+inside a literal, a comment, or a `$$` function body is not labelled. The label informs the operator, and the rehearsal gate
 in `migrate` reads the same list.
 """
 
@@ -26,31 +26,24 @@ from typing import (
     Union,
 )
 
+from sustained.impact.tokens import BACKSLASH_TOKEN_RE, TOKEN_RE
 from sustained.migrations import Migration, migration_sql
 
 if TYPE_CHECKING:
     from sustained.compilers.base import Compiler
 
-# One pass over a statement finds string literals, quoted identifiers and
-# comments. A comment inside a literal is part of the literal, so the
-# literal alternatives come first and a '--' inside quotes survives.
-_NON_LITERAL_TOKENS = (
-    r'|"(?:[^"]|"")*"'  # quoted identifier
-    r"|`[^`]*`"  # MySQL quoted identifier
-    r"|--[^\n]*"  # line comment
-    r"|/\*.*?\*/"  # block comment
-)
-# '' is an escaped quote inside a string literal.
-_TOKEN_RE = re.compile(r"'(?:[^']|'')*'" + _NON_LITERAL_TOKENS, re.DOTALL)
-# MySQL also reads a backslash inside a literal as an escape. There
-# 'it\'s' is one literal, and a scan with the standard reading ends the
-# literal at the backslash, so a quote later in the statement opens a
-# literal that hides a real DROP. A statement with a backslash is
-# scanned with both readings.
-_BACKSLASH_TOKEN_RE = re.compile(
-    r"'(?:[^'\\]|''|\\.)*'" + _NON_LITERAL_TOKENS, re.DOTALL
-)
+# One pass over a statement finds string literals, quoted identifiers,
+# comments, and Postgres dollar-quoted bodies. The patterns live with the
+# impact tokenizer, so the scan and the recognizer read literals alike.
+# A statement with a backslash is also scanned with the MySQL reading, in
+# which a backslash escapes the next character of a literal.
+_TOKEN_RE = TOKEN_RE
+_BACKSLASH_TOKEN_RE = BACKSLASH_TOKEN_RE
 _WHITESPACE_RE = re.compile(r"\s+")
+# A statement that runs a dollar-quoted body at once, and the tag that
+# opens such a body.
+_DO_RE = re.compile(r"\s*DO\b", re.IGNORECASE)
+_DOLLAR_TAG_RE = re.compile(r"\$\w*\$")
 # DROP DATABASE always takes the data with it. DROP SCHEMA needs CASCADE
 # to do so, since a plain DROP SCHEMA refuses a schema that holds
 # anything. A DELETE at the start of a statement, after a CTE, or in a
@@ -140,10 +133,18 @@ def _rewrite_tokens(
 ) -> str:
     """
     Removes the comments from a statement. When `blank_literals` is true,
-    it also empties every string literal and quoted identifier, so words
-    inside quotes cannot match a scan. A quote that never closes is not a
-    token, so its text stays and reads as plain SQL.
+    it also empties every string literal, quoted identifier, and
+    dollar-quoted body, so words inside quotes cannot match a scan. A
+    quote that never closes is not a token, so its text stays and reads
+    as plain SQL.
+
+    A `DO` block is the exception: Postgres runs its body as soon as the
+    statement runs, so the body is scanned as SQL of its own. A function
+    body runs only when something calls the function, and stays blank.
     """
+    executes_body = blank_literals and _DO_RE.match(
+        _rewrite_tokens(statement, False, tokens)
+    )
 
     def replace(match: "re.Match[str]") -> str:
         token = match.group(0)
@@ -151,6 +152,13 @@ def _rewrite_tokens(
             return ""
         if not blank_literals:
             return token
+        if token.startswith("$"):
+            if executes_body:
+                tag = _DOLLAR_TAG_RE.match(token)
+                assert tag is not None
+                body = token[tag.end() : len(token) - tag.end()]
+                return f" {_rewrite_tokens(body, True, tokens)} "
+            return "$$"
         return token[0] + token[-1]
 
     return tokens.sub(replace, statement)
@@ -222,8 +230,8 @@ def destructive_statements(statements: Union[str, Sequence[str]]) -> List[str]:
     Comments are removed and whitespace is collapsed, so each statement
     comes back on one line and a commented-out drop is not labelled. Both
     `--` and `/* */` comments are handled. The scan reads no text inside
-    quotes, so a statement that names a drop in a string literal is not
-    labelled.
+    quotes or inside a dollar-quoted body, so a statement that names a
+    drop in a string literal or a `$$` function body is not labelled.
     """
     if isinstance(statements, str):
         statements = [statements]

@@ -37,6 +37,19 @@ class NoDropsTest(unittest.TestCase):
         verdicts = self.run_on(["ALTER TABLE users DROP bio"])
         self.assertEqual(len(verdicts), 1)
 
+    def test_blocks_a_drop_a_do_block_runs_but_not_a_function_body(self):
+        verdicts = self.run_on(
+            [
+                "CREATE FUNCTION f() RETURNS void AS $$ DROP TABLE t $$ "
+                "LANGUAGE sql",
+                "DO $$ BEGIN DROP TABLE t; END $$",
+            ],
+            Dialects.POSTGRES,
+        )
+        self.assertEqual(
+            verdicts, [Verdict("no_drops", BLOCK, "DO $$ BEGIN DROP TABLE t; END $$")]
+        )
+
     def test_blocks_view_and_schema_drops(self):
         verdicts = self.run_on(
             [
