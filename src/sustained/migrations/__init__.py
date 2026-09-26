@@ -23,7 +23,8 @@ sustained.autogenerate and Migrator.up(models=[...]).
 The package splits the work across modules: the migration model
 (`migration`), rehearsals (`rehearsal`), the tracking table (`tracking`),
 the checks around a run (`checks`), recorded schema reads (`replay`),
-offline planning (`planning`), and the Migrator itself (`migrator`).
+offline planning (`planning`), the runs Migrator and AsyncMigrator share,
+written once as generators (`core`), and the Migrator itself (`migrator`).
 Every name, the private helpers AsyncMigrator shares included, imports
 from here as it did when this was one module.
 """

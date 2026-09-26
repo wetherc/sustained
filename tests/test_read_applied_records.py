@@ -10,6 +10,7 @@ from unittest import mock
 from sustained.aio import DbApiAsyncAdapter
 from sustained.aio_migrations import AsyncMigrator
 from sustained.migrations import Migration, Migrator
+from sustained.migrations.core import bookkeeping
 
 
 def migrations():
@@ -55,7 +56,8 @@ class TestReadAppliedRecords(unittest.TestCase):
         Migrator(self.conn, migrations()).up()
         migrator = Migrator(self.conn, migrations())
         failure = sqlite3.OperationalError("disk I/O error")
-        with mock.patch.object(Migrator, "_read_records", side_effect=failure):
+        # Both migrators read the rows through the shared core.
+        with mock.patch.object(bookkeeping, "read_records", side_effect=failure):
             with self.assertRaises(sqlite3.OperationalError):
                 migrator.read_applied_records()
 
