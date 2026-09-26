@@ -1,8 +1,11 @@
 """
 Async migration runner tests using the DbApiAsyncAdapter over SQLite.
+
+These cover what only AsyncMigrator does: the async schema read, adapters
+and async steps, and agreement with the sync migrator. The behaviour both
+runners share is tested once, against each, in test_migrator_behaviour.py.
 """
 
-import json
 import re
 import sqlite3
 import unittest
@@ -11,10 +14,7 @@ from unittest import mock
 from sustained.aio import AsyncAdapter, DbApiAsyncAdapter
 from sustained.aio_migrations import AsyncMigrator
 from sustained.dialects import Dialects
-from sustained.exceptions import MigrationError, RehearsalRequired
 from sustained.migrations import (
-    REHEARSAL_FAILED,
-    REHEARSAL_PASSED,
     Migration,
     Migrator,
     SchemaRead,
@@ -51,147 +51,6 @@ class TestAsyncMigrator(unittest.IsolatedAsyncioTestCase):
     def tearDown(self):
         self.conn.close()
 
-    def migrations(self):
-        return [
-            Migration("a", up="CREATE TABLE ta (id INTEGER)", down="DROP TABLE ta"),
-            Migration("b", up="CREATE TABLE tb (id INTEGER)", down="DROP TABLE tb"),
-        ]
-
-    async def test_up_applies_and_records(self):
-        migrator = AsyncMigrator(self.adapter, self.migrations())
-        applied = await migrator.up()
-        self.assertEqual(applied, ["a", "b"])
-        self.assertIn("ta", table_names(self.conn))
-        self.assertEqual(await migrator.pending(), [])
-        self.assertEqual(await migrator.status(), [("a", True), ("b", True)])
-
-    async def test_non_transactional_migration_applies_and_records(self):
-        migrator = AsyncMigrator(
-            self.adapter,
-            [
-                Migration(
-                    "nt",
-                    up="CREATE TABLE nt (id INTEGER)",
-                    down="DROP TABLE nt",
-                    transactional=False,
-                )
-            ],
-        )
-        self.assertEqual(await migrator.up(), ["nt"])
-        self.assertIn("nt", table_names(self.conn))
-        self.assertEqual(await migrator.applied(), ["nt"])
-        self.assertEqual(await migrator.down(), ["nt"])
-        self.assertNotIn("nt", table_names(self.conn))
-
-    async def test_non_transactional_failure_records_a_failure_row(self):
-        migrator = AsyncMigrator(
-            self.adapter,
-            [
-                Migration(
-                    "nt",
-                    up=["CREATE TABLE nt (id INTEGER)", "THIS IS NOT SQL"],
-                    transactional=False,
-                )
-            ],
-        )
-        with self.assertRaises(sqlite3.OperationalError):
-            await migrator.up()
-        row = self.conn.execute(
-            "SELECT id, success FROM sustained_migrations"
-        ).fetchone()
-        self.assertEqual((row[0], row[1]), ("nt", 0))
-        self.assertEqual(await migrator.applied(), [])
-
-    async def test_up_is_idempotent_and_targeted(self):
-        migrator = AsyncMigrator(self.adapter, self.migrations())
-        self.assertEqual(await migrator.up(target="a"), ["a"])
-        self.assertEqual(await migrator.up(target="a"), [])
-        self.assertEqual(await migrator.up(), ["b"])
-
-    async def test_up_takes_the_diff_options_by_keyword_only(self):
-        migrator = AsyncMigrator(self.adapter, self.migrations())
-        with self.assertRaises(TypeError):
-            await migrator.up(None, True, False, True)
-
-    async def test_down_and_down_to(self):
-        migrator = AsyncMigrator(self.adapter, self.migrations())
-        await migrator.up()
-        self.assertEqual(await migrator.down(), ["b"])
-        self.assertNotIn("tb", table_names(self.conn))
-        await migrator.up()
-        self.assertEqual(await migrator.down_to("a"), ["b"])
-        self.assertEqual(await migrator.applied(), ["a"])
-
-    async def test_down_refuses_a_negative_step_count(self):
-        migrator = AsyncMigrator(self.adapter, self.migrations())
-        await migrator.up()
-        for steps in (-1, -2):
-            with self.subTest(steps=steps):
-                with self.assertRaises(ValueError) as caught:
-                    await migrator.down(steps=steps)
-                self.assertIn("steps must be 0 or more", str(caught.exception))
-        self.assertEqual(await migrator.applied(), ["a", "b"])
-
-    async def test_down_with_zero_steps_reverts_nothing(self):
-        migrator = AsyncMigrator(self.adapter, self.migrations())
-        await migrator.up()
-        self.assertEqual(await migrator.down(steps=0), [])
-        self.assertEqual(await migrator.applied(), ["a", "b"])
-
-    async def test_down_refuses_a_migration_edited_after_it_applied(self):
-        migrator = AsyncMigrator(self.adapter, self.migrations())
-        await migrator.up()
-        edited = self.migrations()
-        edited[1] = Migration(
-            "b", up="CREATE TABLE tb (id INTEGER, extra INTEGER)", down="DROP TABLE tb"
-        )
-        later = AsyncMigrator(self.adapter, edited)
-        with self.assertRaises(MigrationError) as caught:
-            await later.down()
-        self.assertIn("changed after it was applied", str(caught.exception))
-        self.assertEqual(await later.applied(), ["a", "b"])
-        self.assertEqual(await later.down(allow_changed=True), ["b"])
-
-    async def test_down_reverts_nothing_when_an_older_migration_changed(self):
-        migrations = self.migrations() + [
-            Migration("c", up="CREATE TABLE tc (id INTEGER)", down="DROP TABLE tc")
-        ]
-        await AsyncMigrator(self.adapter, migrations).up()
-        edited = list(migrations)
-        edited[1] = Migration(
-            "b", up="CREATE TABLE tb (id INTEGER, extra INTEGER)", down="DROP TABLE tb"
-        )
-        later = AsyncMigrator(self.adapter, edited)
-        with self.assertRaises(MigrationError):
-            await later.down(steps=2)
-        self.assertEqual(await later.applied(), ["a", "b", "c"])
-        self.assertIn("tc", table_names(self.conn))
-
-    async def test_down_to_carries_the_changed_flag(self):
-        migrator = AsyncMigrator(self.adapter, self.migrations())
-        await migrator.up()
-        edited = self.migrations()
-        edited[1] = Migration(
-            "b", up="CREATE TABLE tb (id INTEGER, extra INTEGER)", down="DROP TABLE tb"
-        )
-        later = AsyncMigrator(self.adapter, edited)
-        with self.assertRaises(MigrationError):
-            await later.down_to("a")
-        self.assertEqual(await later.down_to("a", allow_changed=True), ["b"])
-        self.assertEqual(await later.down_to("a"), [])
-
-    async def test_failed_step_rolls_back(self):
-        migrations = [
-            Migration(
-                "ok", up="CREATE TABLE ok_t (id INTEGER)", down="DROP TABLE ok_t"
-            ),
-            Migration("boom", up="THIS IS NOT SQL"),
-        ]
-        migrator = AsyncMigrator(self.adapter, migrations)
-        with self.assertRaises(sqlite3.OperationalError):
-            await migrator.up()
-        self.assertEqual(await migrator.applied(), ["ok"])
-
     async def test_async_callable_step(self):
         seen = []
 
@@ -203,202 +62,6 @@ class TestAsyncMigrator(unittest.IsolatedAsyncioTestCase):
         await migrator.up()
         self.assertTrue(seen)
         self.assertIn("cb_t", table_names(self.conn))
-
-    async def test_unknown_target_raises(self):
-        migrator = AsyncMigrator(self.adapter, self.migrations())
-        with self.assertRaises(ValueError):
-            await migrator.up(target="nope")
-
-    async def test_apply_records_checksum_and_seq(self):
-        from sustained.migrations import migration_checksum
-
-        migrations = self.migrations()
-        migrator = AsyncMigrator(self.adapter, migrations)
-        await migrator.up()
-        rows = self.conn.execute(
-            "SELECT id, seq, checksum, success FROM sustained_migrations "
-            "ORDER BY seq"
-        ).fetchall()
-        self.assertEqual(
-            rows,
-            [
-                ("a", 1, migration_checksum(migrations[0]), 1),
-                ("b", 2, migration_checksum(migrations[1]), 1),
-            ],
-        )
-
-    async def test_legacy_tracking_table_is_upgraded(self):
-        self.conn.execute(
-            "CREATE TABLE sustained_migrations "
-            "(id VARCHAR(255) PRIMARY KEY, applied_at TEXT NOT NULL)"
-        )
-        self.conn.execute(
-            "INSERT INTO sustained_migrations VALUES ('a', '2024-01-01T00:00:00')"
-        )
-        self.conn.commit()
-        migrator = AsyncMigrator(self.adapter, self.migrations())
-        self.assertEqual(await migrator.applied(), ["a"])
-        self.assertEqual(await migrator.up(), ["b"])
-        rows = self.conn.execute(
-            "SELECT id, seq, success FROM sustained_migrations ORDER BY seq"
-        ).fetchall()
-        self.assertEqual(rows, [("a", 1, 1), ("b", 2, 1)])
-
-    async def test_validate_detects_edit_and_repair_accepts_it(self):
-        from sustained.exceptions import MigrationError
-
-        await AsyncMigrator(
-            self.adapter, [Migration("a", up="CREATE TABLE va (x INTEGER)")]
-        ).up()
-        edited = AsyncMigrator(
-            self.adapter, [Migration("a", up="CREATE TABLE va (x BIGINT)")]
-        )
-        with self.assertRaises(MigrationError):
-            await edited.validate()
-        actions = await edited.repair()
-        self.assertEqual(actions, ["updated the stored checksum of 'a'"])
-        self.assertEqual(await edited.validate(), [])
-
-    async def test_repair_rewrites_a_legacy_checksum_in_the_current_format(self):
-        from sustained.migrations import _legacy_checksum, migration_checksum
-
-        migration = Migration("a", up="CREATE TABLE va (x INTEGER)")
-        await AsyncMigrator(self.adapter, [migration]).up()
-        self.conn.execute(
-            "UPDATE sustained_migrations SET checksum = ?",
-            (_legacy_checksum(migration),),
-        )
-        migrator = AsyncMigrator(self.adapter, [migration])
-        self.assertEqual(await migrator.validate(), [])
-        self.assertEqual(
-            await migrator.repair(), ["updated the checksum format of 'a'"]
-        )
-        records = await migrator.applied_records()
-        self.assertEqual(records[0].checksum, migration_checksum(migration))
-
-    async def test_repair_leaves_a_changed_repeatable_pending(self):
-        await AsyncMigrator(
-            self.adapter,
-            [Migration("r", up="CREATE VIEW rv AS SELECT 1", repeatable=True)],
-        ).up()
-        changed = AsyncMigrator(
-            self.adapter,
-            [Migration("r", up="CREATE VIEW rv2 AS SELECT 2", repeatable=True)],
-        )
-        self.assertEqual(await changed.repair(), [])
-        self.assertEqual([m.id for m in await changed.pending()], ["r"])
-        self.assertEqual(await changed.up(), ["r"])
-
-    @unittest.skipUnless(HAS_SQLITE_AUTOCOMMIT, "sqlite3 autocommit needs 3.12")
-    async def test_rehearse_rejects_autocommit_connections(self):
-        self.conn.autocommit = True
-        migrator = AsyncMigrator(self.adapter, self.migrations())
-        with self.assertRaisesRegex(ValueError, "autocommit"):
-            await migrator.rehearse()
-
-    async def test_up_validates_by_default(self):
-        from sustained.exceptions import MigrationError
-
-        await AsyncMigrator(
-            self.adapter, [Migration("a", up="CREATE TABLE va (x INTEGER)")]
-        ).up()
-        edited = AsyncMigrator(
-            self.adapter,
-            [
-                Migration("a", up="CREATE TABLE va (x BIGINT)"),
-                Migration("b", up="CREATE TABLE vb (x INTEGER)"),
-            ],
-        )
-        with self.assertRaises(MigrationError):
-            await edited.up()
-        self.assertEqual(await edited.up(validate=False), ["b"])
-
-    async def test_baseline_records_without_running(self):
-        migrator = AsyncMigrator(self.adapter, self.migrations())
-        recorded = await migrator.baseline("a")
-        self.assertEqual(recorded, ["a"])
-        self.assertNotIn("ta", table_names(self.conn))
-        row = self.conn.execute(
-            "SELECT id, seq, execution_ms, success FROM sustained_migrations"
-        ).fetchone()
-        self.assertEqual(row, ("a", 1, None, 1))
-        self.assertEqual(await migrator.up(), ["b"])
-
-    async def test_baseline_unknown_target_raises(self):
-        migrator = AsyncMigrator(self.adapter, self.migrations())
-        with self.assertRaises(ValueError):
-            await migrator.baseline("nope")
-
-
-class TestAsyncRepeatableMigrations(unittest.IsolatedAsyncioTestCase):
-    def setUp(self):
-        self.conn = sqlite3.connect(":memory:", check_same_thread=False)
-        self.adapter = DbApiAsyncAdapter(self.conn)
-
-    def tearDown(self):
-        self.conn.close()
-
-    def migrations(self, view_sql="SELECT id FROM t"):
-        return [
-            Migration("001_t", up="CREATE TABLE t (id INTEGER)", down="DROP TABLE t"),
-            Migration(
-                "active_view",
-                up=f"CREATE VIEW IF NOT EXISTS v AS {view_sql}",
-                repeatable=True,
-            ),
-        ]
-
-    async def test_runs_after_versioned_and_records_once(self):
-        migrator = AsyncMigrator(self.adapter, self.migrations())
-        self.assertEqual(await migrator.up(), ["001_t", "active_view"])
-        self.assertEqual(await migrator.up(), [])
-        records = {r.id: r for r in await migrator.applied_records()}
-        self.assertEqual(records["active_view"].seq, 2)
-
-    async def test_changed_checksum_reruns_and_updates_in_place(self):
-        migrator = AsyncMigrator(self.adapter, self.migrations())
-        await migrator.up()
-        self.conn.execute("DROP VIEW v")
-        changed = AsyncMigrator(
-            self.adapter, self.migrations("SELECT id, id AS b FROM t")
-        )
-        self.assertEqual(await changed.up(), ["active_view"])
-        records = await changed.applied_records()
-        self.assertEqual(len(records), 2)
-        self.assertEqual(await changed.validate(), [])
-
-    async def test_statuses_reports_changed(self):
-        migrator = AsyncMigrator(self.adapter, self.migrations())
-        await migrator.up()
-        changed = AsyncMigrator(
-            self.adapter, self.migrations("SELECT id, id AS b FROM t")
-        )
-        self.assertEqual(
-            await changed.statuses(),
-            [("001_t", "applied"), ("active_view", "changed")],
-        )
-        self.assertEqual([m.id for m in await changed.pending()], ["active_view"])
-
-    async def test_down_skips_repeatables(self):
-        migrator = AsyncMigrator(self.adapter, self.migrations())
-        await migrator.up()
-        self.assertEqual(await migrator.down_to("001_t"), [])
-        self.assertEqual(await migrator.down(), ["001_t"])
-
-    async def test_repeatable_target_rejected(self):
-        migrator = AsyncMigrator(self.adapter, self.migrations())
-        with self.assertRaisesRegex(ValueError, "repeatable"):
-            await migrator.up(target="active_view")
-        with self.assertRaisesRegex(ValueError, "repeatable"):
-            await migrator.baseline("active_view")
-
-    async def test_baseline_records_repeatables_at_current_checksum(self):
-        self.conn.execute("CREATE TABLE t (id INTEGER)")
-        self.conn.execute("CREATE VIEW v AS SELECT id FROM t")
-        self.conn.commit()
-        migrator = AsyncMigrator(self.adapter, self.migrations())
-        self.assertEqual(await migrator.baseline("001_t"), ["001_t", "active_view"])
-        self.assertEqual(await migrator.up(), [])
 
 
 class TestAsyncIntrospection(unittest.IsolatedAsyncioTestCase):
@@ -703,124 +366,6 @@ class TestAsyncRehearse(unittest.IsolatedAsyncioTestCase):
             Migration("rv", up="CREATE VIEW rv1 AS SELECT 1", repeatable=True),
         ]
 
-    async def test_rehearse_proves_both_directions_and_changes_nothing(self):
-        migrator = AsyncMigrator(self.adapter, self.migrations())
-        results = await migrator.rehearse()
-        self.assertEqual(
-            [(r.id, r.up_ok, r.down_ok) for r in results],
-            [("001_a", True, True), ("002_b", True, True), ("rv", True, None)],
-        )
-        self.assertEqual(table_names(self.conn), SUSTAINED_TABLES)
-        self.assertEqual(await migrator.applied_records(), [])
-
-    async def test_a_non_transactional_migration_is_left_out(self):
-        migrations = self.migrations()
-        migrations.insert(
-            1,
-            Migration(
-                "001_nt",
-                up="CREATE TABLE rnt (id INTEGER)",
-                down="DROP TABLE rnt",
-                transactional=False,
-            ),
-        )
-        migrator = AsyncMigrator(self.adapter, migrations)
-        results = await migrator.rehearse()
-        self.assertTrue(results.ok)
-        by_id = {r.id: r for r in results}
-        self.assertIsNone(by_id["001_nt"].up_ok)
-        self.assertIn("outside a transaction", by_id["001_nt"].error)
-        self.assertTrue(by_id["001_a"].up_ok)
-        self.assertEqual(table_names(self.conn), SUSTAINED_TABLES)
-
-    async def test_a_clean_sweep_proves_the_schema_came_back(self):
-        migrator = AsyncMigrator(self.adapter, self.migrations())
-        results = await migrator.rehearse()
-        self.assertEqual([r.reversed for r in results], [[], [], None])
-
-    async def test_a_down_step_that_leaves_an_object_behind_is_reported(self):
-        migrator = AsyncMigrator(
-            self.adapter,
-            [
-                Migration(
-                    "001_a",
-                    up=[
-                        "CREATE TABLE ra (id INTEGER)",
-                        "CREATE TABLE ra_leftover (id INTEGER)",
-                    ],
-                    down="DROP TABLE ra",
-                )
-            ],
-        )
-        results = await migrator.rehearse()
-        self.assertEqual(results[0].reversed, ["table 'ra_leftover' left behind"])
-
-    async def test_nothing_pending_rehearses_nothing(self):
-        migrator = AsyncMigrator(self.adapter, self.migrations())
-        await migrator.up()
-        self.assertEqual(await migrator.rehearse(), [])
-
-    async def test_failing_up_step_stops_the_rehearsal(self):
-        migrator = AsyncMigrator(
-            self.adapter,
-            [
-                self.migrations()[0],
-                Migration("002_bad", up="CRATE TABLE oops", down="DROP TABLE oops"),
-            ],
-        )
-        results = await migrator.rehearse()
-        self.assertEqual(
-            [(r.id, r.up_ok) for r in results], [("001_a", True), ("002_bad", False)]
-        )
-        self.assertIn("syntax error", results[1].error)
-        self.assertEqual(table_names(self.conn), SUSTAINED_TABLES)
-
-    async def test_missing_and_failing_down_steps_are_reported(self):
-        migrator = AsyncMigrator(
-            self.adapter,
-            [
-                self.migrations()[0],
-                Migration("002_forward", up="CREATE TABLE rf (id INTEGER)"),
-            ],
-        )
-        results = await migrator.rehearse()
-        self.assertEqual([r.error for r in results][1], "no down step")
-        self.assertEqual(
-            results[0].error, "down not reached: '002_forward' has no down step"
-        )
-
-        broken = AsyncMigrator(
-            self.adapter,
-            [
-                self.migrations()[0],
-                Migration(
-                    "002_bad_down",
-                    up="CREATE TABLE rbd (id INTEGER)",
-                    down="DROP TABLE r_missing",
-                ),
-            ],
-        )
-        results = await broken.rehearse()
-        self.assertEqual(results[1].down_ok, False)
-        self.assertEqual(
-            results[0].error, "down not reached: '002_bad_down' down failed"
-        )
-
-    async def test_rehearse_refuses_a_dialect_that_cannot_roll_back(self):
-        from sustained.dialects import Dialects
-
-        migrator = AsyncMigrator(
-            self.adapter, self.migrations(), dialect=Dialects.ATHENA
-        )
-        with self.assertRaisesRegex(ValueError, "athena is not on that list"):
-            await migrator.rehearse()
-        # The dialect drives the check; SQLite's compiler keeps the
-        # statements runnable here.
-        migrator._compiler = Dialects.get_compiler(Dialects.DEFAULT)
-        self.assertEqual(len(await migrator.rehearse(scratch=True)), 3)
-        # A scratch rehearsal writes no row.
-        self.assertEqual(table_names(self.conn), {"sustained_migrations"})
-
     async def test_rehearse_refuses_inside_an_open_transaction(self):
         from sustained.aio import async_transaction
 
@@ -872,17 +417,6 @@ class TestAsyncRehearse(unittest.IsolatedAsyncioTestCase):
                 async with pinned_async_transaction(self.adapter):
                     pass
 
-    async def test_validation_problems_stop_the_rehearsal(self):
-        from sustained.exceptions import MigrationError
-
-        migrator = AsyncMigrator(self.adapter, self.migrations())
-        await migrator.up()
-        edited = [
-            Migration("001_a", up="CREATE TABLE ra (id TEXT)", down="DROP TABLE ra")
-        ] + self.migrations()[1:]
-        with self.assertRaises(MigrationError):
-            await AsyncMigrator(self.adapter, edited).rehearse()
-
     async def test_rehearsal_rolls_back_without_help_from_the_adapter(self):
         """
         asyncpg runs in autocommit until a transaction is opened, and its
@@ -925,116 +459,6 @@ class TestAsyncRehearsalRows(unittest.IsolatedAsyncioTestCase):
     def tearDown(self):
         self.conn.close()
 
-    async def test_a_passing_rehearsal_records_its_key(self):
-        migrator = AsyncMigrator(self.adapter, [self.drop])
-        rehearsal = await migrator.rehearse()
-        self.assertTrue(rehearsal.ok)
-        self.assertTrue(rehearsal.recorded)
-        self.assertTrue(await migrator.rehearsed(rehearsal.key))
-        self.assertEqual(
-            await migrator.rehearsal_outcome(rehearsal.key), REHEARSAL_PASSED
-        )
-
-    async def test_a_failing_rehearsal_records_the_failure(self):
-        broken = Migration("001_drop", up=["DROP TABLE gate_old", "NOT SQL"])
-        migrator = AsyncMigrator(self.adapter, [broken])
-        rehearsal = await migrator.rehearse()
-        self.assertFalse(rehearsal.ok)
-        self.assertEqual(
-            await migrator.rehearsal_outcome(rehearsal.key), REHEARSAL_FAILED
-        )
-
-    async def test_an_unrehearsed_drop_is_refused(self):
-        migrator = AsyncMigrator(self.adapter, [self.drop])
-        with self.assertRaises(RehearsalRequired) as caught:
-            await migrator.up()
-        self.assertIn("001_drop  DROP TABLE gate_old", str(caught.exception))
-        self.assertEqual(await migrator.applied(), [])
-
-    async def test_a_rehearsed_drop_runs(self):
-        migrator = AsyncMigrator(self.adapter, [self.drop])
-        await migrator.rehearse()
-        self.assertEqual(await migrator.up(), ["001_drop"])
-        self.assertNotIn("gate_old", table_names(self.conn))
-
-    async def test_the_override_runs_without_a_rehearsal_row(self):
-        migrator = AsyncMigrator(self.adapter, [self.drop])
-        self.assertEqual(await migrator.up(unrehearsed=True), ["001_drop"])
-
-    async def test_an_additive_run_is_never_gated(self):
-        additive = Migration("001_add", up="CREATE TABLE gate_new (id INTEGER)")
-        migrator = AsyncMigrator(self.adapter, [additive])
-        self.assertEqual(await migrator.up(), ["001_add"])
-
-    async def test_an_unknown_outcome_is_refused(self):
-        migrator = AsyncMigrator(self.adapter, [])
-        with self.assertRaises(ValueError):
-            await migrator.record_rehearsal("0" * 64, "maybe")
-
-    async def test_an_unknown_key_has_no_outcome(self):
-        migrator = AsyncMigrator(self.adapter, [])
-        self.assertIsNone(await migrator.rehearsal_outcome("0" * 64))
-        self.assertFalse(await migrator.rehearsed("0" * 64))
-
-    async def test_a_targeted_run_uses_the_prefix_the_rehearsal_proved(self):
-        later = Migration(
-            "002_add",
-            up="CREATE TABLE gate_new (id INTEGER)",
-            down="DROP TABLE gate_new",
-        )
-        migrator = AsyncMigrator(self.adapter, [self.drop, later])
-        self.assertTrue((await migrator.rehearse()).ok)
-        self.assertEqual(await migrator.up(target="001_drop"), ["001_drop"])
-        self.assertNotIn("gate_old", table_names(self.conn))
-        self.assertNotIn("gate_new", table_names(self.conn))
-
-    async def test_a_row_under_the_legacy_key_opens_the_gate(self):
-        from sustained.migrations import _legacy_rehearsal_key, rehearsal_key
-
-        migrator = AsyncMigrator(self.adapter, [self.drop])
-        await migrator.record_rehearsal(_legacy_rehearsal_key([], [self.drop]))
-        self.assertIsNone(
-            await migrator.rehearsal_outcome(rehearsal_key([], [self.drop]))
-        )
-        self.assertEqual(await migrator.up(), ["001_drop"])
-
-    async def test_a_run_without_a_legacy_key_reads_the_current_one(self):
-        def step(connection):
-            return None
-
-        pinned = Migration("001_call", up=step, checksum="abc")
-        migrator = AsyncMigrator(self.adapter, [pinned])
-        self.assertIsNone(await migrator.run_outcome([], [pinned]))
-
-    async def test_a_rehearsal_writes_every_row_with_one_stamp(self):
-        migrations = [
-            Migration(
-                f"00{i}_churn",
-                up=[f"CREATE TABLE churn{i} (id INTEGER)", f"DROP TABLE churn{i}"],
-                down="SELECT 1",
-            )
-            for i in range(1, 4)
-        ]
-        self.assertTrue((await AsyncMigrator(self.adapter, migrations).rehearse()).ok)
-        rows = self.conn.execute(
-            "SELECT outcome, rehearsed_at FROM sustained_rehearsals"
-        ).fetchall()
-        self.assertEqual(len(rows), 6)
-        self.assertEqual(len(set(rows)), 1)
-
-    async def test_a_scratch_rehearsal_records_on_the_real_database(self):
-        scratch = sqlite3.connect(":memory:", check_same_thread=False)
-        self.addCleanup(scratch.close)
-        scratch.execute("CREATE TABLE gate_old (id INTEGER)")
-        scratch_migrator = AsyncMigrator(DbApiAsyncAdapter(scratch), [self.drop])
-        rehearsal = await scratch_migrator.rehearse(scratch=True)
-        self.assertTrue(rehearsal.ok)
-        migrator = AsyncMigrator(self.adapter, [self.drop])
-        key = await migrator.record_scratch_rehearsal(rehearsal)
-        self.assertIsNotNone(key)
-        self.assertEqual(await migrator.up(), ["001_drop"])
-        self.assertIsNone(await migrator.record_scratch_rehearsal(rehearsal))
-
     async def test_a_key_recorded_by_the_sync_migrator_is_accepted(self):
         from sustained.migrations import Migrator, rehearsal_key
 
@@ -1043,10 +467,6 @@ class TestAsyncRehearsalRows(unittest.IsolatedAsyncioTestCase):
         )
         migrator = AsyncMigrator(self.adapter, [self.drop])
         self.assertEqual(await migrator.up(), ["001_drop"])
-
-
-if __name__ == "__main__":
-    unittest.main()
 
 
 class TestAsyncScript(unittest.IsolatedAsyncioTestCase):
@@ -1079,18 +499,6 @@ class TestAsyncScript(unittest.IsolatedAsyncioTestCase):
         self.assertIn("-- up: a", expected)
         self.assertIn("-- repeat: v", expected)
 
-    async def test_script_writes_nothing(self):
-        migrator = AsyncMigrator(self.adapter, self.migrations())
-        await migrator.script("up")
-        self.assertEqual(table_names(self.conn) & SUSTAINED_TABLES, set())
-        self.assertEqual(await migrator.read_applied_records(), [])
-        self.assertEqual(await migrator.read_applied(), [])
-        self.assertEqual(
-            [m.id for m in await migrator.pending()],
-            [m.id for m in self.migrations()],
-        )
-        self.assertEqual(table_names(self.conn) & SUSTAINED_TABLES, set())
-
     async def test_script_down_after_a_run_matches_the_sync_migrator(self):
         migrator = AsyncMigrator(self.adapter, self.migrations())
         await migrator.up()
@@ -1098,19 +506,6 @@ class TestAsyncScript(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await migrator.script("down"), expected)  # no timestamps
         self.assertIn("-- down: b", expected)
         self.assertNotIn("-- down: v", expected)
-
-    async def test_script_reads_the_rows_a_run_left(self):
-        migrator = AsyncMigrator(self.adapter, self.migrations())
-        await migrator.up(target="a")
-        script = await migrator.script("up")
-        self.assertNotIn("-- up: a", script)
-        self.assertIn("-- up: b", script)
-        self.assertEqual(await migrator.read_applied(), ["a"])
-
-    async def test_script_rejects_an_unknown_direction(self):
-        migrator = AsyncMigrator(self.adapter, self.migrations())
-        with self.assertRaises(ValueError):
-            await migrator.script("sideways")
 
 
 class TestAsyncPlanAndDrift(unittest.IsolatedAsyncioTestCase):
@@ -1148,26 +543,6 @@ class TestAsyncPlanAndDrift(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(generated.id, "auto_test")
         self.assertEqual(generated.up, expected.up)
         self.assertEqual(generated.down, expected.down)
-
-    async def test_plan_writes_nothing(self):
-        migrator = AsyncMigrator(self.adapter, [])
-        await migrator.plan(self.models())
-        self.assertEqual(table_names(self.conn), set())
-        await migrator.drift(self.models())
-        self.assertEqual(table_names(self.conn), set())
-
-    async def test_plan_generates_its_own_id(self):
-        migrator = AsyncMigrator(self.adapter, [])
-        generated = await migrator.plan(self.models())
-        self.assertTrue(generated.id.startswith("auto_"))
-
-    async def test_plan_returns_none_when_the_schema_matches(self):
-        migrator = AsyncMigrator(self.adapter, [])
-        self.conn.execute(
-            "CREATE TABLE async_plan_users (id INTEGER PRIMARY KEY, name TEXT)"
-        )
-        self.assertIsNone(await migrator.plan(self.models()))
-        self.assertEqual(await migrator.drift(self.models()), [])
 
     async def test_plan_refuses_a_not_null_column_it_cannot_probe(self):
         # plan() runs the schema read and nothing else on the async path,
@@ -1209,25 +584,6 @@ class TestAsyncPlanAndDrift(unittest.IsolatedAsyncioTestCase):
             await migrator.drift(self.models()),
             ["column 'async_plan_users.name' was not added"],
         )
-
-    async def test_drift_ignores_changed_columns_on_request(self):
-        migrator = AsyncMigrator(self.adapter, [])
-        self.conn.execute(
-            "CREATE TABLE async_plan_users (id INTEGER PRIMARY KEY, name INTEGER)"
-        )
-        self.assertTrue(await migrator.drift(self.models()))
-        self.assertEqual(
-            await migrator.drift(self.models(), ignore_changed_columns=True), []
-        )
-
-    async def test_the_tracking_table_is_left_out_of_the_diff(self):
-        migrator = AsyncMigrator(self.adapter, [])
-        await migrator.up()
-        self.conn.execute(
-            "CREATE TABLE async_plan_users (id INTEGER PRIMARY KEY, name TEXT)"
-        )
-        self.assertEqual(await migrator.drift(self.models()), [])
-        self.assertIsNone(await migrator.plan(self.models(), allow_drops=True))
 
 
 class TestRecordedSchemaRead(unittest.TestCase):
@@ -1275,150 +631,6 @@ class TestRecordedSchemaRead(unittest.TestCase):
         self.assertIsNone(connection.close())
         with self.assertRaises(ValueError):
             connection.cursor().executemany("SELECT 1", [(1,)])
-
-
-class TestAsyncModelRuns(unittest.IsolatedAsyncioTestCase):
-    """up(models=...) and rehearse(models=...) on the async migrator."""
-
-    def setUp(self):
-        self.conn = sqlite3.connect(":memory:", check_same_thread=False)
-        self.adapter = DbApiAsyncAdapter(self.conn)
-
-    def tearDown(self):
-        self.conn.close()
-
-    def models(self, columns=None):
-        from sustained.model import Model
-        from sustained.schema import Integer, Text
-
-        return [
-            type(
-                "AsyncRunUser",
-                (Model,),
-                {
-                    "tableName": "async_run_users",
-                    "tableColumns": columns
-                    or {"id": Integer(primary_key=True), "name": Text()},
-                },
-            )
-        ]
-
-    def migrations(self):
-        return [Migration("a", up="CREATE TABLE ta (id INTEGER)", down="DROP TABLE ta")]
-
-    def rows(self):
-        return self.conn.execute(
-            "SELECT id, generated, steps FROM sustained_migrations ORDER BY seq"
-        ).fetchall()
-
-    async def test_up_applies_the_generated_migration_last(self):
-        migrator = AsyncMigrator(self.adapter, self.migrations())
-        applied = await migrator.up(models=self.models())
-        self.assertEqual(applied[0], "a")
-        self.assertTrue(applied[1].startswith("auto_"))
-        self.assertIn("async_run_users", table_names(self.conn))
-        self.assertEqual(await migrator.drift(self.models()), [])
-
-    async def test_the_generated_statements_live_on_the_tracking_row(self):
-        migrator = AsyncMigrator(self.adapter, [])
-        await migrator.up(models=self.models(), migration_id="auto_run")
-        rows = self.rows()
-        self.assertEqual(rows[0][0], "auto_run")
-        self.assertEqual(rows[0][1], 1)
-        stored = json.loads(rows[0][2])
-        self.assertEqual(
-            stored["up"],
-            ['CREATE TABLE "async_run_users" ("id" INTEGER PRIMARY KEY, "name" TEXT)'],
-        )
-        self.assertEqual(stored["down"], ['DROP TABLE IF EXISTS "async_run_users"'])
-
-    async def test_a_generated_migration_reverts_from_its_row(self):
-        migrator = AsyncMigrator(self.adapter, [])
-        await migrator.up(models=self.models(), migration_id="auto_run")
-        self.assertEqual(await migrator.down(), ["auto_run"])
-        self.assertNotIn("async_run_users", table_names(self.conn))
-
-    async def test_a_registered_migration_stores_no_statements(self):
-        migrator = AsyncMigrator(self.adapter, self.migrations())
-        await migrator.up(models=self.models())
-        self.assertEqual(self.rows()[0], ("a", 0, None))
-
-    async def test_a_second_run_generates_nothing(self):
-        migrator = AsyncMigrator(self.adapter, [])
-        await migrator.up(models=self.models())
-        self.assertEqual(await migrator.up(models=self.models()), [])
-
-    async def test_models_and_a_target_are_refused(self):
-        migrator = AsyncMigrator(self.adapter, self.migrations())
-        with self.assertRaises(ValueError):
-            await migrator.up(target="a", models=self.models())
-
-    async def test_a_blocked_generated_migration_is_not_registered(self):
-        from sustained.exceptions import GuardBlocked
-        from sustained.guards import BLOCK, Verdict
-
-        def no_new_tables(statements, dialect):
-            return [
-                Verdict("no_new_tables", BLOCK, s)
-                for s in statements
-                if "async_run_users" in s
-            ]
-
-        migrator = AsyncMigrator(
-            self.adapter, self.migrations(), guards=[no_new_tables]
-        )
-        with self.assertRaises(GuardBlocked) as caught:
-            await migrator.up(models=self.models())
-        self.assertEqual(caught.exception.applied, ["a"])
-        self.assertNotIn("async_run_users", table_names(self.conn))
-        self.assertEqual([m.id for m in migrator._migrations], ["a"])
-
-    async def test_a_generated_drop_needs_a_rehearsal(self):
-        from sustained.schema import Integer
-
-        self.conn.execute("CREATE TABLE async_run_users (id INTEGER PRIMARY KEY)")
-        self.conn.execute("CREATE TABLE spare (id INTEGER)")
-        self.conn.commit()
-        migrator = AsyncMigrator(self.adapter, [])
-        models = self.models({"id": Integer(primary_key=True)})
-        with self.assertRaises(RehearsalRequired):
-            await migrator.up(models=models, allow_drops=True)
-        self.assertIn("spare", table_names(self.conn))
-        applied = await migrator.up(models=models, allow_drops=True, unrehearsed=True)
-        self.assertEqual(len(applied), 1)
-        self.assertNotIn("spare", table_names(self.conn))
-
-    async def test_rehearse_with_models_reports_the_generated_migration(self):
-        migrator = AsyncMigrator(self.adapter, self.migrations())
-        rehearsal = await migrator.rehearse(models=self.models())
-        self.assertEqual([r.id for r in rehearsal][0], "a")
-        generated = rehearsal[1]
-        self.assertTrue(generated.id.startswith("auto_"))
-        self.assertEqual(generated.landed, [])
-        self.assertTrue(rehearsal.ok)
-        self.assertTrue(rehearsal.recorded)
-        self.assertNotIn("async_run_users", table_names(self.conn))
-        self.assertNotIn("ta", table_names(self.conn))
-        self.assertEqual(await migrator.applied(), [])
-
-    async def test_a_rehearsal_with_models_covers_the_run_without_them(self):
-        migrator = AsyncMigrator(self.adapter, self.migrations())
-        rehearsal = await migrator.rehearse(models=self.models())
-        self.assertTrue(await migrator.rehearsed(rehearsal.key))
-        pending_only = await migrator.rehearse()
-        self.assertTrue(await migrator.rehearsed(pending_only.key))
-
-    async def test_rehearse_with_models_and_nothing_pending_still_diffs(self):
-        migrator = AsyncMigrator(self.adapter, [])
-        rehearsal = await migrator.rehearse(models=self.models())
-        self.assertEqual(len(rehearsal), 1)
-        self.assertEqual(rehearsal[0].landed, [])
-        self.assertNotIn("async_run_users", table_names(self.conn))
-
-    async def test_rehearse_without_models_reports_no_landing(self):
-        migrator = AsyncMigrator(self.adapter, self.migrations())
-        rehearsal = await migrator.rehearse()
-        self.assertIsNone(rehearsal[0].landed)
 
 
 class RecordingAdapter(AsyncAdapter):
@@ -1496,3 +708,7 @@ class TestReplayedSchemaScope(unittest.IsolatedAsyncioTestCase):
         await migrator.drift(self.models())
         scoped = [s for s in adapter.statements if "'app'" in s]
         self.assertTrue(scoped)
+
+
+if __name__ == "__main__":
+    unittest.main()
