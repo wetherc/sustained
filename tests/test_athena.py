@@ -185,6 +185,36 @@ class TestAthenaExecutionParameters(unittest.TestCase):
         self.assertEqual(sql, "SELECT 1 WHERE a = 'it''s?' AND b = NULL")
         self.assertEqual(params, ())
 
+    def test_string_at_the_length_limit_stays_a_parameter(self):
+        value = "x" * 1024
+        sql, params = self.compiler.prepare_execution("SELECT ?", (value,))
+        self.assertEqual(sql, "SELECT ?")
+        self.assertEqual(params, (value,))
+
+    def test_string_over_the_length_limit_becomes_literal(self):
+        value = "x" * 1025
+        sql, params = self.compiler.prepare_execution(
+            "INSERT INTO t (a, b) VALUES (?, ?)", (value, 3)
+        )
+        self.assertEqual(sql, f"INSERT INTO t (a, b) VALUES ('{value}', ?)")
+        self.assertEqual(params, ("3",))
+
+    def test_empty_string_becomes_literal(self):
+        sql, params = self.compiler.prepare_execution(
+            "SELECT 1 WHERE a = ? AND b = ?", ("", "x")
+        )
+        self.assertEqual(sql, "SELECT 1 WHERE a = '' AND b = ?")
+        self.assertEqual(params, ("x",))
+
+    def test_inlined_string_escapes_quotes_and_keeps_question_marks(self):
+        value = "it's? " * 200
+        sql, params = self.compiler.prepare_execution(
+            "SELECT 1 WHERE a = ? AND b = ? AND c = ?", (value, None, 7)
+        )
+        escaped = value.replace("'", "''")
+        self.assertEqual(sql, f"SELECT 1 WHERE a = '{escaped}' AND b = NULL AND c = ?")
+        self.assertEqual(params, ("7",))
+
     def test_binary_rejected(self):
         with self.assertRaises(DialectError):
             self.compiler.prepare_execution("SELECT ?", (b"x",))
