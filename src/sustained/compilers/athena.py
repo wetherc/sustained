@@ -18,7 +18,9 @@ Athena API takes nothing else, and the service pastes each string into
 the statement as written, so each value travels as its SQL literal: a
 string in single quotes, a number bare, a date as DATE '...'. A None
 parameter becomes a literal NULL in the statement, because NULL has no
-parameter spelling.
+parameter spelling. The API takes a parameter of at most 1024
+characters, so a string whose literal is longer travels as several
+parameters joined with ||, each one a string literal within the limit.
 
 Upserts, UPDATE, DELETE, and in-place column changes only work on Iceberg
 tables (created with the table_type=ICEBERG property).
@@ -33,6 +35,10 @@ from .presto import PrestoCompiler
 if TYPE_CHECKING:
     from sustained.schema import ColumnDef, ColumnState, IndexColumn, TableOptions
     from sustained.types import SqlValue
+
+# The longest string Athena's StartQueryExecution API accepts as one
+# execution parameter.
+_MAX_PARAMETER_LENGTH = 1024
 
 
 def _execution_parameter(compiler: "AthenaCompiler", value: "SqlValue") -> str:
@@ -52,23 +58,68 @@ def _execution_parameter(compiler: "AthenaCompiler", value: "SqlValue") -> str:
     return compiler.format_value(value)
 
 
-def _inline_null_parameters(
+def _literal_length(value: str) -> int:
+    """
+    The length of a string's literal: the text, one more character for
+    each quote it doubles, and the two enclosing quotes.
+    """
+    return len(value) + value.count("'") + 2
+
+
+def _needs_rewrite(value: "SqlValue") -> bool:
+    """
+    Whether Athena's API would refuse the value as one execution
+    parameter. The API has no spelling for NULL, and it takes a
+    parameter only when it is at most 1024 characters long.
+    """
+    if value is None:
+        return True
+    return isinstance(value, str) and _literal_length(value) > _MAX_PARAMETER_LENGTH
+
+
+def _split_string(value: str) -> "list[str]":
+    """
+    Splits a string into pieces whose literals each fit in one
+    execution parameter. A quote counts twice, because its literal
+    doubles it.
+    """
+    chunks = []
+    current: list[str] = []
+    size = 2
+    for char in value:
+        width = 2 if char == "'" else 1
+        if size + width > _MAX_PARAMETER_LENGTH:
+            chunks.append("".join(current))
+            current, size = [], 2
+        current.append(char)
+        size += width
+    chunks.append("".join(current))
+    return chunks
+
+
+def _rewrite_parameters(
     sql: str, params: "tuple[SqlValue, ...]"
 ) -> "tuple[str, tuple[SqlValue, ...]]":
     """
-    Rewrites each placeholder bound to None as a literal NULL, keeping
-    the rest. Athena's API has no way to pass NULL as a parameter. The
-    scan tracks quoted regions, so a question mark inside a string
-    literal or a quoted identifier stays put.
+    Rewrites each placeholder bound to a value Athena's API would refuse
+    as one parameter, keeping the rest. None becomes a literal NULL. A
+    string whose literal is too long has its placeholder replaced by one
+    placeholder per piece, joined with ||. The scan tracks quoted
+    regions, so a question mark inside a string literal or a quoted
+    identifier stays put.
     """
     from sustained.rendering import split_value_markers
 
     pieces = split_value_markers(sql)
-    kept = []
+    kept: list[SqlValue] = []
     out = [pieces[0]]
     for value, piece in zip(params, pieces[1:]):
         if value is None:
             out.append("NULL")
+        elif _needs_rewrite(value):
+            chunks = _split_string(str(value))
+            out.append("(" + " || ".join(["?"] * len(chunks)) + ")")
+            kept.extend(chunks)
         else:
             out.append("?")
             kept.append(value)
@@ -121,8 +172,11 @@ class AthenaCompiler(PrestoCompiler):
         # service substitutes each string into the statement as written.
         # NULL has no parameter spelling at all, so a None parameter's
         # placeholder is rewritten to a literal NULL in the statement.
-        if any(value is None for value in params):
-            sql, params = _inline_null_parameters(sql, params)
+        # The API refuses a parameter longer than 1024 characters, so a
+        # string whose literal is longer is split across several
+        # parameters joined with ||.
+        if any(_needs_rewrite(value) for value in params):
+            sql, params = _rewrite_parameters(sql, params)
         return sql, tuple(_execution_parameter(self, value) for value in params)
 
     def normalize_diff_type(self, type_name: str) -> str:

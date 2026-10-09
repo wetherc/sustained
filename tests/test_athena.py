@@ -215,6 +215,41 @@ class TestAthenaExecutionParameters(unittest.TestCase):
         self.assertEqual(sql, "SELECT 1 WHERE a = 'it''s?' AND b = NULL")
         self.assertEqual(params, ())
 
+    def test_literal_at_the_length_limit_stays_one_parameter(self):
+        value = "x" * 1022
+        sql, params = self.compiler.prepare_execution("SELECT ?", (value,))
+        self.assertEqual(sql, "SELECT ?")
+        self.assertEqual(params, (f"'{value}'",))
+
+    def test_literal_over_the_length_limit_splits_into_parameters(self):
+        value = "x" * 1023
+        sql, params = self.compiler.prepare_execution(
+            "INSERT INTO t (a, b) VALUES (?, ?)", (value, 3)
+        )
+        self.assertEqual(sql, "INSERT INTO t (a, b) VALUES ((? || ?), ?)")
+        self.assertEqual(params, ("'" + "x" * 1022 + "'", "'x'", "3"))
+
+    def test_doubled_quotes_count_toward_the_limit(self):
+        value = "'" * 512
+        sql, params = self.compiler.prepare_execution("SELECT ?", (value,))
+        self.assertEqual(sql, "SELECT (? || ?)")
+        self.assertEqual(params, ("'" + "''" * 511 + "'", "''''"))
+
+    def test_split_string_stays_out_of_the_statement(self):
+        value = "it's? " * 1000
+        sql, params = self.compiler.prepare_execution(
+            "SELECT 1 WHERE a = ? AND b = ? AND c = ?", (value, None, 7)
+        )
+        chunks = params[:-1]
+        joined = " || ".join(["?"] * len(chunks))
+        self.assertEqual(sql, f"SELECT 1 WHERE a = ({joined}) AND b = NULL AND c = ?")
+        self.assertEqual(params[-1], "7")
+        self.assertNotIn("it's", sql)
+        for chunk in chunks:
+            self.assertLessEqual(len(chunk), 1024)
+        unquoted = "".join(chunk[1:-1].replace("''", "'") for chunk in chunks)
+        self.assertEqual(unquoted, value)
+
     def test_binary_rejected(self):
         with self.assertRaises(DialectError):
             self.compiler.prepare_execution("SELECT ?", (b"x",))

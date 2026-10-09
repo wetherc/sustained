@@ -179,7 +179,7 @@ The dialect targets Athena engine version 3, the Trino-based engine, which the [
 
 Set `pyathena.paramstyle = "qmark"` before you run a parameterized query, because Sustained passes parameters as a tuple and the default `pyformat` style in `pyathena` accepts only a dict. With `qmark`, `pyathena` 3 or later sends the tuple as native Athena execution parameters.
 
-Athena's API only takes execution parameters as strings, and the service puts each string into the statement as written. So `run()` sends each value as its SQL literal: a string in single quotes with each inner quote doubled, a number bare, a boolean as `TRUE` or `FALSE`, a date as `DATE '...'`, and a datetime as `TIMESTAMP '...'`. `None` becomes a literal `NULL` in the statement. Binary values raise `DialectError`. The conversion runs inside `run()` and the migrator; if you execute `to_sql()` output yourself, pass it through `compiler.prepare_execution(sql, params)` first.
+Athena's API only takes execution parameters as strings, and the service puts each string into the statement as written. So `run()` sends each value as its SQL literal: a string in single quotes with each inner quote doubled, a number bare, a boolean as `TRUE` or `FALSE`, a date as `DATE '...'`, and a datetime as `TIMESTAMP '...'`. `None` becomes a literal `NULL` in the statement. The API refuses a parameter longer than 1,024 characters, so a string whose literal is longer is split across several parameters joined with `||`, each one a string literal within the limit. Binary values raise `DialectError`. The conversion runs inside `run()` and the migrator; if you execute `to_sql()` output yourself, pass it through `compiler.prepare_execution(sql, params)` first.
 
 ```python
 import pyathena
