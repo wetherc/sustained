@@ -1,0 +1,8 @@
+{
+  "contributors": [
+    "wetherc"
+  ],
+  "message": "Thank you for your pull request. Before it can be merged, each person who made commits in it signs the [Sustained Individual Contributor License Agreement](https://github.com/wetherc/sustained/blob/ef2d45757b3891b99b23a04e55e5ee47a4352071/CLA.md) once. These accounts have not signed it: {{usersWithoutCLA}}.\n\nYou sign with a cryptographically signed commit in a separate signing pull request. Follow the steps in [Sign the Contributor License Agreement](https://github.com/wetherc/sustained/blob/main/CONTRIBUTING.md#sign-the-contributor-license-agreement). After the maintainer merges your signing pull request, comment `@cla-bot check` on this pull request.\n\nIf this is your signing pull request, this failure is expected. It clears when the pull request is merged.",
+  "label": "cla-signed",
+  "recheckComment": "cla-bot checked this pull request again against the list of signers in .clabot."
+}
