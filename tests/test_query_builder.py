@@ -21,27 +21,27 @@ class TestQueryBuilder(unittest.TestCase):
         self.assertEqual(str(query), "SELECT DISTINCT country FROM users")
 
     def test_join_related(self):
-        class Person(Model):
-            tableName = "persons"
+        class Venue(Model):
+            tableName = "venues"
 
-        class Animal(Model):
-            tableName = "animals"
+        class Show(Model):
+            tableName = "shows"
             relationMappings = {
-                "owner": {
+                "venue": {
                     "relation": RelationType.BelongsToOneRelation,
-                    "modelClass": Person,
-                    "join": {"from": "animals.ownerId", "to": "persons.id"},
+                    "modelClass": Venue,
+                    "join": {"from": "shows.venue_id", "to": "venues.id"},
                 }
             }
 
         query = (
-            Animal.query()
-            .select("animals.name", "persons.name")
-            .leftOuterJoinRelated("owner")
+            Show.query()
+            .select("shows.title", "venues.name")
+            .leftOuterJoinRelated("venue")
         )
         self.assertEqual(
             str(query),
-            "SELECT animals.name, persons.name FROM animals LEFT OUTER JOIN persons ON animals.ownerId = persons.id",
+            "SELECT shows.title, venues.name FROM shows LEFT OUTER JOIN venues ON shows.venue_id = venues.id",
         )
 
     def test_with_clause_basic(self):

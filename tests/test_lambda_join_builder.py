@@ -8,7 +8,11 @@ class TestLambdaJoinBuilder(unittest.TestCase):
         class User(Model):
             tableName = "users"
 
+        class Order(Model):
+            tableName = "orders"
+
         self.User = User
+        self.Order = Order
 
     def test_join_with_lambda_single_on(self):
         query = self.User.query().join(
@@ -32,27 +36,27 @@ class TestLambdaJoinBuilder(unittest.TestCase):
         )
 
     def test_join_with_lambda_or_on(self):
-        query = self.User.query().join(
-            "accounts",
-            lambda j: j.on("accounts.id", "=", "users.account_id").orOn(
-                "accounts.owner_id", "=", "users.id"
+        query = self.Order.query().join(
+            "shipments",
+            lambda j: j.on("shipments.order_id", "=", "orders.id").orOn(
+                "shipments.replaces_order_id", "=", "orders.id"
             ),
         )
         self.assertEqual(
             str(query),
-            "SELECT * FROM users JOIN accounts ON accounts.id = users.account_id OR accounts.owner_id = users.id",
+            "SELECT * FROM orders JOIN shipments ON shipments.order_id = orders.id OR shipments.replaces_order_id = orders.id",
         )
 
     def test_join_with_lambda_and_on_and_or_on(self):
-        query = self.User.query().join(
-            "accounts",
-            lambda j: j.on("accounts.id", "=", "users.account_id")
-            .andOn("accounts.enabled", "=", QueryBuilder.raw("1"))
-            .orOn("accounts.owner_id", "=", "users.id"),
+        query = self.Order.query().join(
+            "shipments",
+            lambda j: j.on("shipments.order_id", "=", "orders.id")
+            .andOn("shipments.voided", "=", QueryBuilder.raw("0"))
+            .orOn("shipments.replaces_order_id", "=", "orders.id"),
         )
         self.assertEqual(
             str(query),
-            "SELECT * FROM users JOIN accounts ON accounts.id = users.account_id AND accounts.enabled = 1 OR accounts.owner_id = users.id",
+            "SELECT * FROM orders JOIN shipments ON shipments.order_id = orders.id AND shipments.voided = 0 OR shipments.replaces_order_id = orders.id",
         )
 
     def test_join_with_lambda_and_on_before_on_raises(self):

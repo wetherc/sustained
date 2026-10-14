@@ -619,21 +619,21 @@ def create_model(
     Example:
         .. code-block:: python
 
-            Person = create_model('Person', 'persons')
+            Venue = create_model('Venue', 'venues')
 
-            Animal = create_model(
-                'Animal',
-                'animals',
+            Show = create_model(
+                'Show',
+                'shows',
                 mappings={
-                    'owner': {
+                    'venue': {
                         'relation': RelationType.BelongsToOneRelation,
-                        'modelClass': Person,
-                        'join': {'from': 'animals.ownerId', 'to': 'persons.id'}
+                        'modelClass': Venue,
+                        'join': {'from': 'shows.venue_id', 'to': 'venues.id'}
                     }
                 }
             )
 
-            query = Animal.query().select('name').joinRelated('owner')
+            query = Show.query().select('title').joinRelated('venue')
     """
     if mappings is None:
         mappings = {}

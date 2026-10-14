@@ -49,30 +49,30 @@ python3 -m pip install sustained
 ```python
 from sustained import Model, RelationType
 
-class Person(Model):
-    tableName = 'persons'
+class Venue(Model):
+    tableName = 'venues'
 
-class Animal(Model):
-    tableName = 'animals'
+class Show(Model):
+    tableName = 'shows'
     relationMappings = {
-        'owner': {
+        'venue': {
             'relation': RelationType.BelongsToOneRelation,
-            'modelClass': Person,
+            'modelClass': Venue,
             'join': {
-                'from': 'animals.ownerId',
-                'to': 'persons.id'
+                'from': 'shows.venue_id',
+                'to': 'venues.id'
             }
         }
     }
 
 # Build a query
-query = Animal.query().select('animals.name', 'persons.name').leftOuterJoinRelated('owner')
+query = Show.query().select('shows.title', 'venues.name').leftOuterJoinRelated('venue')
 
 print(query)
-# SELECT animals.name, persons.name
-# FROM animals
-# LEFT OUTER JOIN persons
-#   ON animals.ownerId = persons.id
+# SELECT shows.title, venues.name
+# FROM shows
+# LEFT OUTER JOIN venues
+#   ON shows.venue_id = venues.id
 
 
 # Execute against any DB-API 2.0 connection

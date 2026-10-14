@@ -12,38 +12,38 @@ from sustained.types import RelationMapping
 
 class TestJoinBuilder(unittest.TestCase):
     def setUp(self):
-        class Movie(Model):
-            tableName = "movies"
+        class Show(Model):
+            tableName = "shows"
 
-        class Person(Model):
-            tableName = "persons"
+        class Performer(Model):
+            tableName = "performers"
             relationMappings = {
-                "movies": {
+                "shows": {
                     "relation": RelationType.ManyToManyRelation,
-                    "modelClass": Movie,
+                    "modelClass": Show,
                     "join": {
-                        "from": "persons.id",
+                        "from": "performers.id",
                         "through": {
-                            "from": {"table": "persons_movies", "key": "personId"},
-                            "to": {"table": "persons_movies", "key": "movieId"},
+                            "from": {"table": "lineups", "key": "performer_id"},
+                            "to": {"table": "lineups", "key": "show_id"},
                         },
-                        "to": "movies.id",
+                        "to": "shows.id",
                     },
                 }
             }
 
-        class Animal(Model):
-            tableName = "animals"
+        class Recording(Model):
+            tableName = "recordings"
             relationMappings = {
-                "owner": {
+                "performer": {
                     "relation": RelationType.BelongsToOneRelation,
-                    "modelClass": Person,
-                    "join": {"from": "animals.ownerId", "to": "persons.id"},
+                    "modelClass": Performer,
+                    "join": {"from": "recordings.performer_id", "to": "performers.id"},
                 },
                 "unknown_model": {
                     "relation": RelationType.BelongsToOneRelation,
                     "modelClass": "NonExistentModel",  # For testing model resolution
-                    "join": {"from": "animals.unknownId", "to": "unknown.id"},
+                    "join": {"from": "recordings.unknownId", "to": "unknown.id"},
                 },
             }
 
@@ -61,73 +61,73 @@ class TestJoinBuilder(unittest.TestCase):
         class EngineModelWithNoneTableName(Model):
             tableName = None  # Explicitly set to None for the test
 
-        self.Person = Person
-        self.Animal = Animal
-        self.Movie = Movie
+        self.Performer = Performer
+        self.Recording = Recording
+        self.Show = Show
         self.Car = Car
         self.EngineModelWithNoneTableName = EngineModelWithNoneTableName
 
     def test_inner_join_related(self):
-        query = self.Animal.query().innerJoinRelated("owner")
+        query = self.Recording.query().innerJoinRelated("performer")
         self.assertEqual(
             str(query),
-            "SELECT * FROM animals INNER JOIN persons ON animals.ownerId = persons.id",
+            "SELECT * FROM recordings INNER JOIN performers ON recordings.performer_id = performers.id",
         )
 
     def test_left_join_related(self):
-        query = self.Animal.query().leftJoinRelated("owner")
+        query = self.Recording.query().leftJoinRelated("performer")
         self.assertEqual(
             str(query),
-            "SELECT * FROM animals LEFT JOIN persons ON animals.ownerId = persons.id",
+            "SELECT * FROM recordings LEFT JOIN performers ON recordings.performer_id = performers.id",
         )
 
     def test_right_join_related(self):
-        query = self.Animal.query().rightJoinRelated("owner")
+        query = self.Recording.query().rightJoinRelated("performer")
         self.assertEqual(
             str(query),
-            "SELECT * FROM animals RIGHT JOIN persons ON animals.ownerId = persons.id",
+            "SELECT * FROM recordings RIGHT JOIN performers ON recordings.performer_id = performers.id",
         )
 
     def test_right_outer_join_related(self):
-        query = self.Animal.query().rightOuterJoinRelated("owner")
+        query = self.Recording.query().rightOuterJoinRelated("performer")
         self.assertEqual(
             str(query),
-            "SELECT * FROM animals RIGHT OUTER JOIN persons ON animals.ownerId = persons.id",
+            "SELECT * FROM recordings RIGHT OUTER JOIN performers ON recordings.performer_id = performers.id",
         )
 
     def test_full_outer_join_related(self):
-        query = self.Animal.query().fullOuterJoinRelated("owner")
+        query = self.Recording.query().fullOuterJoinRelated("performer")
         self.assertEqual(
             str(query),
-            "SELECT * FROM animals FULL OUTER JOIN persons ON animals.ownerId = persons.id",
+            "SELECT * FROM recordings FULL OUTER JOIN performers ON recordings.performer_id = performers.id",
         )
 
     def test_cross_join_related(self):
-        query = self.Animal.query().crossJoinRelated("owner")
+        query = self.Recording.query().crossJoinRelated("performer")
         self.assertEqual(
             str(query),
-            "SELECT * FROM animals CROSS JOIN persons ON animals.ownerId = persons.id",
+            "SELECT * FROM recordings CROSS JOIN performers ON recordings.performer_id = performers.id",
         )
 
     def test_join_related_with_alias(self):
-        query = self.Animal.query().innerJoinRelated("owner", alias="p")
+        query = self.Recording.query().innerJoinRelated("performer", alias="p")
         self.assertEqual(
             str(query),
-            "SELECT * FROM animals INNER JOIN persons AS p ON animals.ownerId = p.id",
+            "SELECT * FROM recordings INNER JOIN performers AS p ON recordings.performer_id = p.id",
         )
 
     def test_through_join(self):
-        query = self.Person.query().innerJoinRelated("movies")
+        query = self.Performer.query().innerJoinRelated("shows")
         self.assertEqual(
             str(query),
-            "SELECT * FROM persons INNER JOIN persons_movies ON persons.id = persons_movies.personId INNER JOIN movies ON persons_movies.movieId = movies.id",
+            "SELECT * FROM performers INNER JOIN lineups ON performers.id = lineups.performer_id INNER JOIN shows ON lineups.show_id = shows.id",
         )
 
     def test_left_join_related_through(self):
-        query = self.Person.query().leftJoinRelated("movies")
+        query = self.Performer.query().leftJoinRelated("shows")
         self.assertEqual(
             str(query),
-            "SELECT * FROM persons LEFT JOIN persons_movies ON persons.id = persons_movies.personId LEFT JOIN movies ON persons_movies.movieId = movies.id",
+            "SELECT * FROM performers LEFT JOIN lineups ON performers.id = lineups.performer_id LEFT JOIN shows ON lineups.show_id = shows.id",
         )
 
     def test_through_join_link_hop_follows_the_join_type(self):
@@ -140,112 +140,119 @@ class TestJoinBuilder(unittest.TestCase):
         }
         for method, (link_join, far_join) in cases.items():
             with self.subTest(method=method):
-                query = getattr(self.Person.query(), method)("movies")
+                query = getattr(self.Performer.query(), method)("shows")
                 self.assertEqual(
                     str(query),
-                    f"SELECT * FROM persons {link_join} persons_movies "
-                    "ON persons.id = persons_movies.personId "
-                    f"{far_join} movies ON persons_movies.movieId = movies.id",
+                    f"SELECT * FROM performers {link_join} lineups "
+                    "ON performers.id = lineups.performer_id "
+                    f"{far_join} shows ON lineups.show_id = shows.id",
                 )
 
     def test_left_join_through_keeps_rows_with_no_link(self):
         conn = sqlite3.connect(":memory:")
         conn.executescript(
-            "CREATE TABLE persons (id INTEGER, name TEXT);"
-            "CREATE TABLE movies (id INTEGER, title TEXT);"
-            'CREATE TABLE persons_movies ("personId" INTEGER, "movieId" INTEGER);'
-            "INSERT INTO persons VALUES (1, 'Ann'), (2, 'Bo');"
-            "INSERT INTO movies VALUES (10, 'Heat');"
-            "INSERT INTO persons_movies VALUES (1, 10);"
+            "CREATE TABLE performers (id INTEGER, name TEXT);"
+            "CREATE TABLE shows (id INTEGER, title TEXT);"
+            'CREATE TABLE lineups ("performer_id" INTEGER, "show_id" INTEGER);'
+            "INSERT INTO performers VALUES (1, 'Ann'), (2, 'Bo');"
+            "INSERT INTO shows VALUES (10, 'Heat');"
+            "INSERT INTO lineups VALUES (1, 10);"
         )
         query = (
-            self.Person.query()
-            .select("persons.name", "movies.title")
-            .leftJoinRelated("movies")
-            .orderBy("persons.name")
+            self.Performer.query()
+            .select("performers.name", "shows.title")
+            .leftJoinRelated("shows")
+            .orderBy("performers.name")
         )
         rows = conn.execute(str(query)).fetchall()
         self.assertEqual(rows, [("Ann", "Heat"), ("Bo", None)])
         conn.close()
 
     def test_through_join_with_alias(self):
-        query = self.Person.query().innerJoinRelated("movies", alias="m")
+        query = self.Performer.query().innerJoinRelated("shows", alias="m")
         self.assertEqual(
             str(query),
-            "SELECT * FROM persons INNER JOIN persons_movies ON persons.id = persons_movies.personId INNER JOIN movies AS m ON persons_movies.movieId = m.id",
+            "SELECT * FROM performers INNER JOIN lineups ON performers.id = lineups.performer_id INNER JOIN shows AS m ON lineups.show_id = m.id",
         )
 
     def test_repeated_through_join_aliases_the_link_table(self):
         query = (
-            self.Person.query()
-            .innerJoinRelated("movies", alias="first")
-            .leftJoinRelated("movies", alias="second")
+            self.Performer.query()
+            .innerJoinRelated("shows", alias="first")
+            .leftJoinRelated("shows", alias="second")
         )
         self.assertEqual(
             str(query),
-            "SELECT * FROM persons "
-            "INNER JOIN persons_movies ON persons.id = persons_movies.personId "
-            "INNER JOIN movies AS first ON persons_movies.movieId = first.id "
-            "LEFT JOIN persons_movies AS second_persons_movies "
-            "ON persons.id = second_persons_movies.personId "
-            "LEFT JOIN movies AS second ON second_persons_movies.movieId = second.id",
+            "SELECT * FROM performers "
+            "INNER JOIN lineups ON performers.id = lineups.performer_id "
+            "INNER JOIN shows AS first ON lineups.show_id = first.id "
+            "LEFT JOIN lineups AS second_lineups "
+            "ON performers.id = second_lineups.performer_id "
+            "LEFT JOIN shows AS second ON second_lineups.show_id = second.id",
         )
 
     def test_repeated_through_join_without_alias_raises(self):
-        query = self.Person.query().innerJoinRelated("movies")
-        with self.assertRaisesRegex(ValueError, "persons_movies"):
-            query.innerJoinRelated("movies")
+        query = self.Performer.query().innerJoinRelated("shows")
+        with self.assertRaisesRegex(ValueError, "lineups"):
+            query.innerJoinRelated("shows")
 
     def test_default_join_related(self):
-        query = self.Animal.query().joinRelated("owner")
+        query = self.Recording.query().joinRelated("performer")
         self.assertEqual(
             str(query),
-            "SELECT * FROM animals JOIN persons ON animals.ownerId = persons.id",
+            "SELECT * FROM recordings JOIN performers ON recordings.performer_id = performers.id",
         )
 
     def test_raw_join(self):
-        query = self.Animal.query().join(
-            "persons", "animals.ownerId", "=", "persons.id"
+        query = self.Recording.query().join(
+            "performers", "recordings.performer_id", "=", "performers.id"
         )
         self.assertEqual(
             str(query),
-            "SELECT * FROM animals JOIN persons ON animals.ownerId = persons.id",
+            "SELECT * FROM recordings JOIN performers ON recordings.performer_id = performers.id",
         )
 
     def test_raw_left_join(self):
-        query = self.Animal.query().leftJoin(
-            "persons", "animals.ownerId", "=", "persons.id"
+        query = self.Recording.query().leftJoin(
+            "performers", "recordings.performer_id", "=", "performers.id"
         )
         self.assertEqual(
             str(query),
-            "SELECT * FROM animals LEFT JOIN persons ON animals.ownerId = persons.id",
+            "SELECT * FROM recordings LEFT JOIN performers ON recordings.performer_id = performers.id",
         )
 
     def test_raw_join_rejects_an_unknown_operator(self):
         with self.assertRaises(ValueError):
-            self.Animal.query().join(
-                "persons", "animals.ownerId", "= persons.id OR 1=1 --", "persons.id"
+            self.Recording.query().join(
+                "performers",
+                "recordings.performer_id",
+                "= performers.id OR 1=1 --",
+                "performers.id",
             )
 
     def test_raw_join_normalizes_the_operator(self):
-        query = self.Animal.query().join(
-            "persons", "animals.ownerId", "not like", "persons.id"
+        query = self.Recording.query().join(
+            "performers", "recordings.performer_id", "not like", "performers.id"
         )
-        self.assertIn("ON animals.ownerId NOT LIKE persons.id", str(query))
+        self.assertIn("ON recordings.performer_id NOT LIKE performers.id", str(query))
 
     def test_raw_join_with_using(self):
-        query = self.Animal.query().join("persons", using=["ownerId", "personId"])
+        query = self.Recording.query().join(
+            "performers", using=["performer_id", "tour_id"]
+        )
         self.assertEqual(
             str(query),
-            "SELECT * FROM animals JOIN persons USING (ownerId, personId)",
+            "SELECT * FROM recordings JOIN performers USING (performer_id, tour_id)",
         )
 
     def test_raw_join_with_subquery_in_on(self):
-        subquery = self.Person.query().select("id").where("age", ">", 40)
-        query = self.Animal.query().join("persons", "persons.id", "=", subquery)
+        subquery = self.Performer.query().select("id").where("age", ">", 40)
+        query = self.Recording.query().join(
+            "performers", "performers.id", "=", subquery
+        )
         self.assertEqual(
             str(query),
-            "SELECT * FROM animals JOIN persons ON persons.id = (SELECT id FROM persons WHERE age > 40)",
+            "SELECT * FROM recordings JOIN performers ON performers.id = (SELECT id FROM performers WHERE age > 40)",
         )
 
     def test_with_clause(self):
@@ -253,10 +260,10 @@ class TestJoinBuilder(unittest.TestCase):
             tableName = "orders"
 
         large_orders = Order.query().select("id").where("amount", ">", 1000)
-        query = self.Animal.query().with_("large_orders", large_orders).select("*")
+        query = self.Recording.query().with_("large_orders", large_orders).select("*")
         self.assertEqual(
             str(query),
-            "WITH large_orders AS (SELECT id FROM orders WHERE amount > 1000) SELECT * FROM animals",
+            "WITH large_orders AS (SELECT id FROM orders WHERE amount > 1000) SELECT * FROM recordings",
         )
 
     def test_with_and_raw_join(self):
@@ -282,9 +289,9 @@ class TestJoinBuilder(unittest.TestCase):
 
     def test_join_related_missing_relation_raises_error(self):
         with self.assertRaisesRegex(
-            ValueError, "Relation 'non_existent' not found in model 'Animal'"
+            ValueError, "Relation 'non_existent' not found in model 'Recording'"
         ):
-            self.Animal.query().joinRelated("non_existent")
+            self.Recording.query().joinRelated("non_existent")
 
     def test_add_basic_join_with_none_table_name_raises_assertion_error(self):
         # Temporarily modify relationMappings for this test
