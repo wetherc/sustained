@@ -29,7 +29,7 @@ classifiers = [
     "Typing :: Typed",
 ]
 license = "MIT"
-license-files = [ "LICENSE",]
+license-files = [ "LICENSE", "THIRD_PARTY_NOTICES",]
 [[project.authors]]
 name = "Christopher Wetherill"
 email = "git@tbmh.org"
