@@ -10,6 +10,18 @@ Version numbers follow semantic versioning. A major version marks a change that 
 
 ## 2.x
 
+### 2.28.1
+
+#### Changed
+
+- The sdist and the wheel include a `THIRD_PARTY_NOTICES` file with the MIT copyright and permission notices of Objection.js and Knex.js, whose model, relation, and query builder APIs Sustained adapts. The wheel puts the file in `dist-info/licenses` next to `LICENSE`.
+- `LICENSE` names the copyright holder, Christopher Wetherill.
+- The README and the `create_model()` docstring show a `Show` model that belongs to a `Venue`, in place of the example from the Objection.js relation guide.
+
+#### Fixed
+
+- On Athena, a string parameter whose literal is longer than 1,024 characters travels as several parameters joined with `||`, each one within the limit of Athena's API. The migrator's tracking row stores a migration's steps as JSON, which is usually longer than that, so a migration on Athena no longer runs without a tracking row and a failed one records its failed attempt.
+
 ### 2.28.0
 
 #### Added

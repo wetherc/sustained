@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "sustained"
-version = "2.28.0"
+version = "2.28.1"
 description = "A Python ORM, SQL query builder, and schema migration tool, inspired by Objection.js and Knex"
 readme = "README.md"
 requires-python = ">=3.9"
